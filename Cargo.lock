@@ -645,6 +645,7 @@ name = "summerset"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "rand",
  "tokio",
  "tonic",
  "tonic-build",
