@@ -1,4 +1,4 @@
-name: build
+name: build & test
 
 on:
   push:
@@ -23,6 +23,6 @@ jobs:
     - name: Get protobuf
       run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --release
     - name: Run tests
       run: cargo test --verbose
