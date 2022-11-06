@@ -1,4 +1,4 @@
-name: Build
+name: Format
 
 on:
   push:
@@ -10,13 +10,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  format:
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
-    - name: Get protobuf
-      run: sudo apt install -y protobuf-compiler libprotobuf-dev
-    - name: Build
-      run: cargo build --verbose --release
+    - name: Add rustfmt component
+      run: rustup component add rustfmt
+    - name: Format check
+      run: cargo fmt --all -- --check
