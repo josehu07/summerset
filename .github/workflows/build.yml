@@ -1,4 +1,4 @@
-name: Summerset
+name: build
 
 on:
   push:
@@ -20,6 +20,8 @@ jobs:
       run: rustup component add rustfmt
     - name: Format check
       run: cargo fmt --all -- --check
+    - name: Get protobuf
+      run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
