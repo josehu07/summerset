@@ -1,0 +1,32 @@
+syntax = "proto3";
+package kv_api;
+
+service SummersetApi {
+  rpc Get(GetRequest) returns (GetReply);
+  rpc Put(PutRequest) returns (PutReply);
+}
+
+message GetRequest {
+  uint64 request_id = 1;
+  string key = 2;
+}
+
+message GetReply {
+  uint64 request_id = 1;
+  string key = 2;
+  bool found = 3;
+  string value = 4;
+}
+
+message PutRequest {
+  uint64 request_id = 1;
+  string key = 2;
+  string value = 3;
+}
+
+message PutReply {
+  uint64 request_id = 1;
+  string key = 2;
+  bool found = 3;
+  string old_value = 4;
+}
