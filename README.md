@@ -7,4 +7,9 @@
 
 Summerset is a distributed key-value store incorporating a wide range of state machine replication (SMR) protocols for research purposes.
 
-TODO
+## TODO List
+
+- [ ] Multiple server nodes & internal communication
+- [ ] Client side library integration
+- [ ] Better error passing across RPCs
+- [ ] Finer-grained state machine locking

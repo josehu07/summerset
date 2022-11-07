@@ -1,5 +1,6 @@
 [package]
 name = "summerset"
+description = "Distributed KV-store for SMR Protocol Research Purposes"
 version = "0.1.0"
 edition = "2021"
 authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
@@ -20,6 +21,7 @@ tonic = "0.8"
 prost = "0.11"
 tokio = { version = "1.21", features = ["macros", "rt-multi-thread"] }
 rand = "0.8"
+clap = { version = "4.0", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = "0.8"
