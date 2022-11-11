@@ -1,3 +1,5 @@
+//! Replication protocol: do nothing.
+
 use crate::statemach::{Command, CommandResult, StateMachine};
 use crate::replicator::Replicator;
 

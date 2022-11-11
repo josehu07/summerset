@@ -1,3 +1,5 @@
+//! Summerset server state machine implementation.
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 

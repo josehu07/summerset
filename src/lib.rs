@@ -1,10 +1,15 @@
+//! Summerset server side core structures.
+
 mod statemach;
 mod replicator;
 mod smr;
+mod utils;
+
+pub use smr::SMRProtocol;
+pub use utils::CLIError;
 
 use statemach::{Command, CommandResult, StateMachine};
 use replicator::Replicator;
-pub use smr::SMRProtocol;
 
 /// Custom error type for various run-time errors.
 #[derive(Debug)]
@@ -20,7 +25,10 @@ pub enum SummersetError {
 /// state machine HashMap is volatile.
 #[derive(Debug)]
 pub struct SummersetNode {
+    /// Replicator module running a replication protocol.
     replicator: Box<dyn Replicator>,
+
+    /// State machine, which is a simple in-memory HashMap.
     kvlocal: StateMachine,
 }
 

@@ -1,3 +1,5 @@
+//! Summerset server node executable.
+
 mod summerset_proto {
     tonic::include_proto!("kv_api");
 }
@@ -9,7 +11,7 @@ use summerset_proto::{GetRequest, GetReply, PutRequest, PutReply};
 use std::collections::HashSet;
 use clap::Parser;
 
-use summerset::{SummersetNode, SMRProtocol};
+use summerset::{CLIError, SummersetNode, SMRProtocol};
 
 #[tonic::async_trait]
 impl SummersetApi for SummersetNode {
@@ -81,63 +83,80 @@ struct CLIArgs {
     smr_port: u16,
 
     /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("do-nothing"))]
+    #[arg(short, long, default_value_t = String::from("DoNothing"))]
     protocol: String,
 
-    /// List of peer server nodes locations.
+    /// List of peer server nodes (e.g., '-s host1:port -s host2:port').
     #[arg(short, long)]
     node_peers: Vec<String>,
 }
 
 impl CLIArgs {
-    fn sanitize(&self) -> SMRProtocol {
+    fn sanitize(&self) -> Result<SMRProtocol, CLIError> {
         if self.api_port <= 1024 {
-            panic!("api_port {} is invalid", self.api_port);
+            Err(CLIError(format!("api_port {} is invalid", self.api_port)))
         } else if self.smr_port <= 1024 {
-            panic!("smr_port {} is invalid", self.smr_port);
+            Err(CLIError(format!("smr_port {} is invalid", self.smr_port)))
         } else {
             let mut peer_set = HashSet::new();
             for s in self.node_peers.iter() {
                 if peer_set.contains(s) {
-                    panic!("duplicate peer address {} given", s);
+                    return Err(CLIError(format!(
+                        "duplicate peer address {} given",
+                        s
+                    )));
                 }
                 peer_set.insert(s.clone());
             }
-
-            let protocol = SMRProtocol::parse_name(&self.protocol);
-            if protocol.is_none() {
-                panic!("protocol name {} unrecognized", self.protocol);
-            }
-            protocol.unwrap()
+            SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
+                CLIError(format!(
+                    "protocol name {} unrecognized",
+                    self.protocol
+                ))
+            })
         }
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), CLIError> {
     // read in and parse command line arguments
     let args = CLIArgs::parse();
-    let protocol = args.sanitize();
+    let protocol = args.sanitize()?;
 
     // create server node
     let node = SummersetNode::new(protocol);
 
-    // add server-server internal RPC service
-    // let smr_addr = format!("localhost:{}", args.smr_port).parse()?;
+    // add and serve internal RPC service
+    // let smr_addr = format!("[::1]:{}", args.smr_port).parse()?;
 
-    // add client API service
-    let api_addr = format!("[::1]:{}", args.api_port).parse()?;
+    // parse key-value API port
+    let api_addr = format!("[::1]:{}", args.api_port).parse().map_err(|e| {
+        CLIError(format!(
+            "failed to parse key-value API serving port {}: {}",
+            args.api_port, e
+        ))
+    })?;
+    println!("Starting service on address: {}", api_addr);
+
+    // add and serve client API service
     Server::builder()
         .add_service(SummersetApiServer::new(node))
         .serve(api_addr)
-        .await?;
+        .await
+        .map_err(|e| {
+            CLIError(format!(
+                "error occurred when adding key-value API service: {}",
+                e
+            ))
+        })?;
 
     Ok(())
 }
 
 #[cfg(test)]
 mod server_tests {
-    use super::CLIArgs;
+    use super::{CLIArgs, CLIError};
     use crate::SMRProtocol;
 
     #[test]
@@ -146,16 +165,12 @@ mod server_tests {
             api_port: 50077,
             smr_port: 50078,
             protocol: "DoNothing".into(),
-            node_peers: vec![
-                "localhost:50079".into(),
-                "localhost:50080".into(),
-            ],
+            node_peers: vec!["hostA:50078".into(), "hostB:50078".into()],
         };
-        assert_eq!(args.sanitize(), SMRProtocol::DoNothing);
+        assert_eq!(args.sanitize(), Ok(SMRProtocol::DoNothing));
     }
 
     #[test]
-    #[should_panic(expected = "api_port 1023 is invalid")]
     fn sanitize_invalid_api_port() {
         let args = CLIArgs {
             api_port: 1023,
@@ -163,11 +178,13 @@ mod server_tests {
             protocol: "DoNothing".into(),
             node_peers: vec![],
         };
-        args.sanitize();
+        assert_eq!(
+            args.sanitize(),
+            Err(CLIError("api_port 1023 is invalid".into()))
+        );
     }
 
     #[test]
-    #[should_panic(expected = "smr_port 1023 is invalid")]
     fn sanitize_invalid_smr_port() {
         let args = CLIArgs {
             api_port: 50077,
@@ -175,11 +192,13 @@ mod server_tests {
             protocol: "DoNothing".into(),
             node_peers: vec![],
         };
-        args.sanitize();
+        assert_eq!(
+            args.sanitize(),
+            Err(CLIError("smr_port 1023 is invalid".into()))
+        );
     }
 
     #[test]
-    #[should_panic(expected = "protocol name InvalidProtocol unrecognized")]
     fn sanitize_invalid_protocol() {
         let args = CLIArgs {
             api_port: 40077,
@@ -187,11 +206,15 @@ mod server_tests {
             protocol: "InvalidProtocol".into(),
             node_peers: vec![],
         };
-        args.sanitize();
+        assert_eq!(
+            args.sanitize(),
+            Err(CLIError(
+                "protocol name InvalidProtocol unrecognized".into()
+            ))
+        );
     }
 
     #[test]
-    #[should_panic(expected = "duplicate peer address somehost:50078 given")]
     fn sanitize_duplicate_peer() {
         let args = CLIArgs {
             api_port: 50077,
@@ -199,6 +222,11 @@ mod server_tests {
             protocol: "DoNothing".into(),
             node_peers: vec!["somehost:50078".into(), "somehost:50078".into()],
         };
-        args.sanitize();
+        assert_eq!(
+            args.sanitize(),
+            Err(CLIError(
+                "duplicate peer address somehost:50078 given".into()
+            ))
+        );
     }
 }

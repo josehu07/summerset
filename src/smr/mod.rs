@@ -1,3 +1,5 @@
+//! Summerset collection of replication protocols.
+
 mod do_nothing;
 
 use crate::replicator::Replicator;

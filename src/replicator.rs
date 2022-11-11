@@ -1,3 +1,6 @@
+//! Summerset server replicator trait, to be implemented by all replicator
+//! module implementations.
+
 use crate::statemach::{Command, CommandResult, StateMachine};
 
 /// Interface that every replication protocol variant must provide.
