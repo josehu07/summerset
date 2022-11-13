@@ -1,72 +1,28 @@
 //! Summerset server node executable.
 
-mod summerset_proto {
-    tonic::include_proto!("kv_api");
+use tonic::transport::Server;
+use summerset::external_api_proto::external_api_server::ExternalApiServer;
+
+use summerset::{SummersetServerNode, SMRProtocol, InitError};
+
+use clap::Parser;
+use std::collections::HashSet;
+
+/// Server side structure wrapper.
+#[derive(Debug)]
+struct SummersetServer {
+    /// Internal server node struct.
+    node: SummersetServerNode,
 }
 
-use tonic::{transport::Server, Request, Response, Status};
-use summerset_proto::summerset_api_server::{SummersetApi, SummersetApiServer};
-use summerset_proto::{GetRequest, GetReply, PutRequest, PutReply};
-
-use std::collections::HashSet;
-use clap::Parser;
-
-use summerset::{CLIError, SummersetNode, SMRProtocol};
-
-#[tonic::async_trait]
-impl SummersetApi for SummersetNode {
-    /// Handler of client Get request.
-    async fn get(
-        &self,
-        request: Request<GetRequest>,
-    ) -> Result<Response<GetReply>, Status> {
-        println!("Request: {:?}", request);
-        let req = request.into_inner();
-
-        let reply = match self.handle_get(&req.key) {
-            Ok(Some(value)) => GetReply {
-                request_id: req.request_id,
-                key: req.key,
-                found: true,
-                value,
-            },
-            Ok(None) => GetReply {
-                request_id: req.request_id,
-                key: req.key,
-                found: false,
-                value: "".into(),
-            },
-            Err(err) => return Err(Status::unknown(format!("{:?}", err))),
-        };
-
-        Ok(Response::new(reply))
-    }
-
-    /// Handler of client Put request.
-    async fn put(
-        &self,
-        request: Request<PutRequest>,
-    ) -> Result<Response<PutReply>, Status> {
-        println!("Request: {:?}", request);
-        let req = request.into_inner();
-
-        let reply = match self.handle_put(&req.key, &req.value) {
-            Ok(Some(old_value)) => PutReply {
-                request_id: req.request_id,
-                key: req.key,
-                found: true,
-                old_value,
-            },
-            Ok(None) => PutReply {
-                request_id: req.request_id,
-                key: req.key,
-                found: false,
-                old_value: "".into(),
-            },
-            Err(err) => return Err(Status::unknown(format!("{:?}", err))),
-        };
-
-        Ok(Response::new(reply))
+impl SummersetServer {
+    /// Create a new Summerset server structure.
+    fn new(
+        protocol: SMRProtocol,
+        peers: &Vec<String>,
+    ) -> Result<Self, InitError> {
+        SummersetServerNode::new(protocol, peers)
+            .map(|s| SummersetServer { node: s })
     }
 }
 
@@ -86,30 +42,34 @@ struct CLIArgs {
     #[arg(short, long, default_value_t = String::from("DoNothing"))]
     protocol: String,
 
-    /// List of peer server nodes (e.g., '-s host1:port -s host2:port').
+    /// List of peer server nodes (e.g., '-s host1:smr_port -s host2:smr_port').
     #[arg(short, long)]
     node_peers: Vec<String>,
 }
 
 impl CLIArgs {
-    fn sanitize(&self) -> Result<SMRProtocol, CLIError> {
+    /// Sanitize command line arguments, return `Ok(protocol)` on success
+    /// or `Err(InitError)` on any error.
+    fn sanitize(&self) -> Result<SMRProtocol, InitError> {
         if self.api_port <= 1024 {
-            Err(CLIError(format!("api_port {} is invalid", self.api_port)))
+            Err(InitError(format!("api_port {} is invalid", self.api_port)))
         } else if self.smr_port <= 1024 {
-            Err(CLIError(format!("smr_port {} is invalid", self.smr_port)))
+            Err(InitError(format!("smr_port {} is invalid", self.smr_port)))
         } else {
+            // check for duplicate peers
             let mut peer_set = HashSet::new();
             for s in self.node_peers.iter() {
                 if peer_set.contains(s) {
-                    return Err(CLIError(format!(
+                    return Err(InitError(format!(
                         "duplicate peer address {} given",
                         s
                     )));
                 }
                 peer_set.insert(s.clone());
             }
+
             SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
-                CLIError(format!(
+                InitError(format!(
                     "protocol name {} unrecognized",
                     self.protocol
                 ))
@@ -118,21 +78,22 @@ impl CLIArgs {
     }
 }
 
+// Server node executable main entrance.
 #[tokio::main]
-async fn main() -> Result<(), CLIError> {
+async fn main() -> Result<(), InitError> {
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
 
-    // create server node
-    let node = SummersetNode::new(protocol);
+    // create server node with given peers list
+    let server = SummersetServer::new(protocol, &args.node_peers)?;
 
     // add and serve internal RPC service
     // let smr_addr = format!("[::1]:{}", args.smr_port).parse()?;
 
     // parse key-value API port
     let api_addr = format!("[::1]:{}", args.api_port).parse().map_err(|e| {
-        CLIError(format!(
+        InitError(format!(
             "failed to parse key-value API serving port {}: {}",
             args.api_port, e
         ))
@@ -141,11 +102,11 @@ async fn main() -> Result<(), CLIError> {
 
     // add and serve client API service
     Server::builder()
-        .add_service(SummersetApiServer::new(node))
+        .add_service(ExternalApiServer::new(server.node))
         .serve(api_addr)
         .await
         .map_err(|e| {
-            CLIError(format!(
+            InitError(format!(
                 "error occurred when adding key-value API service: {}",
                 e
             ))
@@ -156,8 +117,7 @@ async fn main() -> Result<(), CLIError> {
 
 #[cfg(test)]
 mod server_tests {
-    use super::{CLIArgs, CLIError};
-    use crate::SMRProtocol;
+    use super::{CLIArgs, SMRProtocol, InitError};
 
     #[test]
     fn sanitize_valid() {
@@ -180,7 +140,7 @@ mod server_tests {
         };
         assert_eq!(
             args.sanitize(),
-            Err(CLIError("api_port 1023 is invalid".into()))
+            Err(InitError("api_port 1023 is invalid".into()))
         );
     }
 
@@ -194,7 +154,7 @@ mod server_tests {
         };
         assert_eq!(
             args.sanitize(),
-            Err(CLIError("smr_port 1023 is invalid".into()))
+            Err(InitError("smr_port 1023 is invalid".into()))
         );
     }
 
@@ -208,7 +168,7 @@ mod server_tests {
         };
         assert_eq!(
             args.sanitize(),
-            Err(CLIError(
+            Err(InitError(
                 "protocol name InvalidProtocol unrecognized".into()
             ))
         );
@@ -224,7 +184,7 @@ mod server_tests {
         };
         assert_eq!(
             args.sanitize(),
-            Err(CLIError(
+            Err(InitError(
                 "duplicate peer address somehost:50078 given".into()
             ))
         );

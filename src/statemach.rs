@@ -1,24 +1,28 @@
 //! Summerset server state machine implementation.
 
+use serde::{Serialize, Deserialize};
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Command structure used internally by the server. Client request RPCs are
 /// transformed into this structure.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Command {
     /// Get command. Contains key.
     Get { key: String },
+
     /// Put command. Contains key and new value string.
     Put { key: String, value: String },
 }
 
 /// Command execution result returned by the state machine.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CommandResult {
     /// Result of Get command. Contains Some(value) if key is found in state
     /// machine, else None.
     GetResult { value: Option<String> },
+
     /// Result of Put command. Contains Some(old_value) if key is found in
     /// state machine, else None.
     PutResult { old_value: Option<String> },

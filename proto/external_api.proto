@@ -1,0 +1,16 @@
+syntax = "proto3";
+package external_api;
+
+service ExternalApi {
+  rpc DoCommand(DoCommandRequest) returns (DoCommandReply);
+}
+
+message DoCommandRequest {
+  uint64 request_id = 1;
+  string command = 2;
+}
+
+message DoCommandReply {
+  uint64 request_id = 1;
+  string result = 2;
+}
