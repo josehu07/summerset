@@ -2,6 +2,8 @@
 
 mod do_nothing;
 
+use crate::smr_server::ServerRpcSender;
+use crate::smr_client::ClientRpcSender;
 use crate::replicator::{ReplicatorServerNode, ReplicatorClientStub};
 use crate::utils::InitError;
 
@@ -26,9 +28,10 @@ impl SMRProtocol {
     pub fn new_server_node(
         &self,
         peers: &Vec<String>,
+        sender: &mut ServerRpcSender,
     ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
         match self {
-            Self::DoNothing => DoNothingServerNode::new(peers),
+            Self::DoNothing => DoNothingServerNode::new(peers, sender),
         }
         .map(|s| Box::new(s) as _) // explicitly coerce to unsized Box<dyn ...>
     }
@@ -37,9 +40,10 @@ impl SMRProtocol {
     pub fn new_client_stub(
         &self,
         servers: &Vec<String>,
+        sender: &mut ClientRpcSender,
     ) -> Result<Box<dyn ReplicatorClientStub>, InitError> {
         match self {
-            Self::DoNothing => DoNothingClientStub::new(servers),
+            Self::DoNothing => DoNothingClientStub::new(servers, sender),
         }
         .map(|c| Box::new(c) as _) // explicitly coerce to unsized Box<dyn ...>
     }
@@ -49,12 +53,18 @@ impl SMRProtocol {
 mod protocols_tests {
     use super::SMRProtocol;
 
+    macro_rules! valid_name_test {
+        ($p:ident) => {
+            assert_eq!(
+                SMRProtocol::parse_name(stringify!($p)),
+                Some(SMRProtocol::$p)
+            );
+        };
+    }
+
     #[test]
     fn parse_valid_names() {
-        assert_eq!(
-            SMRProtocol::parse_name("DoNothing"),
-            Some(SMRProtocol::DoNothing)
-        );
+        valid_name_test!(DoNothing);
     }
 
     #[test]

@@ -71,7 +71,7 @@ impl StateMachine {
 mod statemach_tests {
     use super::{Command, CommandResult, StateMachine};
     use std::collections::HashMap;
-    use rand::prelude::*;
+    use rand::{Rng, seq::SliceRandom};
 
     #[test]
     fn get_empty() {

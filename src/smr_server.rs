@@ -1,5 +1,6 @@
 //! Summerset server side core structures.
 
+use tokio::runtime::{Runtime, Builder};
 use tonic::{Request, Response, Status};
 use crate::external_api_proto::{DoCommandRequest, DoCommandReply};
 use crate::external_api_proto::external_api_server::ExternalApi;
@@ -9,6 +10,8 @@ use crate::replicator::ReplicatorServerNode;
 use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
+use std::sync::Mutex;
+
 /// Server node struct, consisting of a replicator module and a state machine.
 /// The replicator module type is specified at new(). The state machine is
 /// currently a simple in-memory key-value HashMap. Anything required to be
@@ -16,7 +19,12 @@ use crate::utils::{SummersetError, InitError};
 /// state machine HashMap itself is volatile.
 #[derive(Debug)]
 pub struct SummersetServerNode {
-    /// Replicator module running a replication protocol.
+    /// Server internal RPC sender state.
+    rpc_sender: Mutex<ServerRpcSender>,
+
+    /// Replicator module running a replication protocol. Not using generic
+    /// here because the type of protocol to be used is known only at runtime
+    /// invocation.
     replicator: Box<dyn ReplicatorServerNode>,
 
     /// State machine, which is a simple in-memory HashMap.
@@ -29,14 +37,18 @@ impl SummersetServerNode {
         protocol: SMRProtocol,
         peers: &Vec<String>,
     ) -> Result<Self, InitError> {
+        // initialize internal RPC sender
+        let mut rpc_sender = ServerRpcSender::new()?;
+
         // return InitError if the peers list does not meet the replication
         // protocol's requirement
-        protocol
-            .new_server_node(peers)
-            .map(|s| SummersetServerNode {
+        protocol.new_server_node(peers, &mut rpc_sender).map(|s| {
+            SummersetServerNode {
+                rpc_sender: Mutex::new(rpc_sender),
                 replicator: s,
                 kvlocal: StateMachine::new(),
-            })
+            }
+        })
     }
 
     /// Handle a command received from client.
@@ -44,7 +56,8 @@ impl SummersetServerNode {
         &self,
         cmd: Command,
     ) -> Result<CommandResult, SummersetError> {
-        self.replicator.replicate(cmd, &self.kvlocal)
+        self.replicator
+            .replicate(cmd, &self.rpc_sender, &self.kvlocal)
     }
 }
 
@@ -91,6 +104,36 @@ impl Default for SummersetServerNode {
     fn default() -> Self {
         // default constructor is of protocol type DoNothing
         Self::new(SMRProtocol::DoNothing, &Vec::new()).unwrap()
+    }
+}
+
+/// Server internal RPC sender state and helper functions.
+#[derive(Debug)]
+pub struct ServerRpcSender {
+    /// Tokio multi-thread runtime, created explicitly.
+    runtime: Runtime,
+}
+
+impl ServerRpcSender {
+    /// Create a new server internal RPC sender struct with explicit tokio
+    /// multi-threaded runtime. Returns `Err(InitError)` if failed to build
+    /// the runtime.
+    fn new() -> Result<Self, InitError> {
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                InitError(format!("failed to build tokio runtime: {}", e))
+            })?;
+        Ok(ServerRpcSender { runtime })
+    }
+
+    /// Get a mutable reference to the tokio runtime. Connections and RPC
+    /// issuing logic will be handled in the corresponding file of the
+    /// protocol (we do not provide helpers here because each protocol
+    /// will have a different RPC client struct type).
+    pub fn runtime(&mut self) -> &mut Runtime {
+        &mut self.runtime
     }
 }
 

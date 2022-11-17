@@ -17,9 +17,10 @@ use rand::Rng;
 #[derive(Debug)]
 pub struct SummersetClientStub {
     /// Client request RPC sender state.
-    request_sender: ClientRequestSender,
+    rpc_sender: ClientRpcSender,
 
-    /// Replication protocol's client stub.
+    /// Replication protocol's client stub. Not using generic here because
+    /// the type of protocol to be used is known only at runtime invocation.
     replicator_stub: Box<dyn ReplicatorClientStub>,
 }
 
@@ -30,16 +31,16 @@ impl SummersetClientStub {
         servers: &Vec<String>,
     ) -> Result<Self, InitError> {
         // initialize RPC request sender
-        let request_sender = ClientRequestSender::new()?;
+        let mut rpc_sender = ClientRpcSender::new()?;
 
         // return InitError if the servers list does not meet the replication
         // protocol's requirement
-        protocol
-            .new_client_stub(servers)
-            .map(|c| SummersetClientStub {
-                request_sender,
+        protocol.new_client_stub(servers, &mut rpc_sender).map(|c| {
+            SummersetClientStub {
+                rpc_sender,
                 replicator_stub: c,
-            })
+            }
+        })
     }
 
     /// Complete the given command on the servers cluster.
@@ -47,21 +48,18 @@ impl SummersetClientStub {
         &mut self,
         cmd: Command,
     ) -> Result<CommandResult, SummersetError> {
-        self.replicator_stub.complete(cmd, &mut self.request_sender)
+        self.replicator_stub.complete(cmd, &mut self.rpc_sender)
     }
 }
 
 /// Client request RPC sender state and helper functions.
 #[derive(Debug)]
-pub struct ClientRequestSender {
+pub struct ClientRpcSender {
     /// Tokio multi-thread runtime, created explicitly.
-    runtime: Runtime, // tokio multi-threaded runtime
-
-    /// List of active client-server connections.
-    pub connections: Vec<ExternalApiClient<Channel>>,
+    runtime: Runtime,
 }
 
-impl ClientRequestSender {
+impl ClientRpcSender {
     /// Create a new client RPC sender struct with explicit tokio
     /// multi-threaded runtime. Returns `Err(InitError)` if failed to build
     /// the runtime.
@@ -72,10 +70,7 @@ impl ClientRequestSender {
             .map_err(|e| {
                 InitError(format!("failed to build tokio runtime: {}", e))
             })?;
-        Ok(ClientRequestSender {
-            runtime,
-            connections: vec![],
-        })
+        Ok(ClientRpcSender { runtime })
     }
 
     /// Add a new client-server connection to list. Returns `Ok(conn_idx)` on
@@ -83,9 +78,8 @@ impl ClientRequestSender {
     pub fn connect(
         &mut self,
         server_addr: &String,
-    ) -> Result<usize, SummersetError> {
-        let client = self
-            .runtime
+    ) -> Result<ExternalApiClient<Channel>, SummersetError> {
+        self.runtime
             .block_on(ExternalApiClient::connect(format!(
                 "http://{}",
                 server_addr
@@ -95,41 +89,16 @@ impl ClientRequestSender {
                     "failed to connect to server address {}: {}",
                     server_addr, e
                 ))
-            })?;
-        self.connections.push(client);
-        Ok(self.connections.len() - 1)
-    }
-
-    /// Disconnect the connection at given index.
-    pub fn disconnect(
-        &mut self,
-        conn_idx: usize,
-    ) -> Result<(), SummersetError> {
-        if conn_idx + 1 > self.connections.len() {
-            Err(SummersetError::ClientConnError(format!(
-                "failed to disconnect: connection index {} out of bound",
-                conn_idx
-            )))
-        } else {
-            self.connections.remove(conn_idx);
-            Ok(())
-        }
+            })
     }
 
     /// Issue a command to the server connection at given index, and block
     /// until its response.
     pub fn issue(
         &mut self,
-        conn_idx: usize,
+        conn: &mut ExternalApiClient<Channel>,
         cmd: Command,
     ) -> Result<CommandResult, SummersetError> {
-        if conn_idx + 1 > self.connections.len() {
-            return Err(SummersetError::ClientConnError(format!(
-                "failed to issue command: connection index {} out of bound",
-                conn_idx
-            )));
-        }
-
         // serialize Command struct into JSON
         let request_str = serde_json::to_string(&cmd).map_err(|e| {
             SummersetError::ClientSerdeError(format!(
@@ -148,7 +117,7 @@ impl ClientRequestSender {
         // issue the request and block until acknowledgement
         let response = self
             .runtime
-            .block_on(self.connections[conn_idx].do_command(request))
+            .block_on(conn.do_command(request))
             .map_err(|e| {
                 SummersetError::ClientConnError(format!(
                     "failed to issue command {:?}: {}",
@@ -176,13 +145,12 @@ impl ClientRequestSender {
 
 #[cfg(test)]
 mod smr_client_tests {
-    use super::{ClientRequestSender, SummersetClientStub, SMRProtocol, InitError};
+    use super::{ClientRpcSender, SummersetClientStub, SMRProtocol, InitError};
 
     #[test]
-    fn new_request_sender() {
-        let sender = ClientRequestSender::new();
+    fn new_rpc_sender() {
+        let sender = ClientRpcSender::new();
         assert!(sender.is_ok());
-        assert!(sender.unwrap().connections.is_empty());
     }
 
     #[test]

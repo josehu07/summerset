@@ -9,6 +9,9 @@ Summerset is a distributed key-value store incorporating a wide range of state m
 
 ## TODO List
 
-- [ ] Better error passing through RPCs
+- [ ] Better serded error passing through RPCs
+- [ ] Tonic client timeout handling
 - [ ] Multiple server nodes & internal communication
+- [ ] quorum RPC sending/waiting helpers
+- [ ] differentiate between read/non-read commands
 - [ ] Finer-grained state machine locking

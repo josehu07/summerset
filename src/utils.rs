@@ -18,6 +18,12 @@ impl fmt::Display for InitError {
     }
 }
 
+impl From<SummersetError> for InitError {
+    fn from(e: SummersetError) -> Self {
+        InitError(format!("{}", e))
+    }
+}
+
 /// Error type for various run-time internal errors.
 #[derive(Debug)]
 pub enum SummersetError {
@@ -25,4 +31,11 @@ pub enum SummersetError {
     WrongCommandType,
     ClientConnError(String),
     ClientSerdeError(String),
+}
+
+impl fmt::Display for SummersetError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // TODO: better display
+        write!(f, "{:?}", self)
+    }
 }
