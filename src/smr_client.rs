@@ -154,19 +154,6 @@ mod smr_client_tests {
     }
 
     #[test]
-    fn new_client_stub() {
-        let stub = SummersetClientStub::new(
-            SMRProtocol::DoNothing,
-            &vec![
-                "hostA:50078".into(),
-                "hostB:50078".into(),
-                "hostC:50078".into(),
-            ],
-        );
-        assert!(stub.is_ok());
-    }
-
-    #[test]
     fn new_client_stub_empty_servers() {
         let stub =
             SummersetClientStub::new(SMRProtocol::DoNothing, &Vec::new());

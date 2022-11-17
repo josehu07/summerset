@@ -99,16 +99,6 @@ mod client_tests {
     use super::{SummersetClient, SMRProtocol, InitError};
 
     #[test]
-    fn sanitize_valid() {
-        let servers = vec![
-            "hostA:50078".into(),
-            "hostB:50078".into(),
-            "hostC:50078".into(),
-        ];
-        assert!(SummersetClient::new(SMRProtocol::DoNothing, &servers).is_ok());
-    }
-
-    #[test]
     fn sanitize_empty_servers() {
         let servers: Vec<String> = Vec::new();
         let client = SummersetClient::new(SMRProtocol::DoNothing, &servers);
