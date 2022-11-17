@@ -139,17 +139,19 @@ impl ServerRpcSender {
 
 #[cfg(test)]
 mod smr_server_tests {
-    use super::{SummersetServerNode, SMRProtocol};
+    use super::{ServerRpcSender, SummersetServerNode, SMRProtocol};
+
+    #[test]
+    fn new_rpc_sender() {
+        let sender = ServerRpcSender::new();
+        assert!(sender.is_ok());
+    }
 
     #[test]
     fn new_server_node() {
         let node = SummersetServerNode::new(
             SMRProtocol::DoNothing,
-            &vec![
-                "hostA:50078".into(),
-                "hostB:50078".into(),
-                "hostC:50078".into(),
-            ],
+            &vec!["hostB:50078".into(), "hostC:50078".into()],
         );
         assert!(node.is_ok());
     }
