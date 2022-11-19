@@ -11,7 +11,7 @@ Summerset is a distributed key-value store incorporating a wide range of state m
 
 - [ ] add cargo tests with network communications
 - [ ] Better serded error passing through RPCs
-- [ ] Tonic client timeout handling
+- [ ] Tonic RPC timeout handling
 - [ ] Multiple server nodes & internal communication
 - [ ] quorum RPC sending/waiting helpers
 - [ ] differentiate between read/non-read commands

@@ -1,6 +1,5 @@
 //! Summerset client side core structures.
 
-use tokio::runtime::{Runtime, Builder};
 use tonic::{transport::Channel, Request};
 use crate::external_api_proto::DoCommandRequest;
 use crate::external_api_proto::external_api_client::ExternalApiClient;
@@ -11,6 +10,7 @@ use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
 use rand::Rng;
+use tokio::runtime::{Runtime, Builder};
 
 /// Client library struct, consisting of an RPC sender struct and a
 /// replicator client-side stub.

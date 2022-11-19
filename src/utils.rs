@@ -31,6 +31,7 @@ pub enum SummersetError {
     WrongCommandType,
     ClientConnError(String),
     ClientSerdeError(String),
+    ServerConnError(String),
 }
 
 impl fmt::Display for SummersetError {
