@@ -7,6 +7,7 @@ use summerset::{SummersetServerNode, SMRProtocol, InitError};
 
 use clap::Parser;
 use std::collections::HashSet;
+use tokio::runtime::Builder;
 
 /// Server side structure wrapper.
 #[derive(Debug)]
@@ -81,8 +82,7 @@ impl CLIArgs {
 }
 
 // Server node executable main entrance.
-#[tokio::main]
-async fn main() -> Result<(), InitError> {
+fn main() -> Result<(), InitError> {
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
@@ -103,10 +103,15 @@ async fn main() -> Result<(), InitError> {
     println!("Starting service on address: {}", api_addr);
 
     // add and serve client API service
-    Server::builder()
-        .add_service(ExternalApiServer::new(server.node))
-        .serve(api_addr)
-        .await
+    Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(
+            Server::builder()
+                .add_service(ExternalApiServer::new(server.node))
+                .serve(api_addr),
+        )
         .map_err(|e| {
             InitError(format!(
                 "error occurred when adding key-value API service: {}",

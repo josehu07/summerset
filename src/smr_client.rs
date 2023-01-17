@@ -55,8 +55,11 @@ impl SummersetClientStub {
 /// Client request RPC sender state and helper functions.
 #[derive(Debug)]
 pub struct ClientRpcSender {
-    /// Tokio multi-thread runtime, created explicitly.
-    runtime: Runtime,
+    /// Tokio multi-threaded runtime, created explicitly.
+    mt_runtime: Runtime,
+
+    /// Tokio current-thread runtime, created explicitly.
+    ct_runtime: Runtime,
 }
 
 impl ClientRpcSender {
@@ -64,13 +67,22 @@ impl ClientRpcSender {
     /// multi-threaded runtime. Returns `Err(InitError)` if failed to build
     /// the runtime.
     fn new() -> Result<Self, InitError> {
-        let runtime = Builder::new_multi_thread()
+        let mt_runtime = Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|e| {
-                InitError(format!("failed to build tokio runtime: {}", e))
+                InitError(format!("failed to build tokio mt_runtime: {}", e))
             })?;
-        Ok(ClientRpcSender { runtime })
+        let ct_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                InitError(format!("failed to build tokio ct_runtime: {}", e))
+            })?;
+        Ok(ClientRpcSender {
+            mt_runtime,
+            ct_runtime,
+        })
     }
 
     /// Add a new client-server connection to list. Returns `Ok(conn)` on
@@ -79,7 +91,7 @@ impl ClientRpcSender {
         &mut self,
         server_addr: &String,
     ) -> Result<ExternalApiClient<Channel>, SummersetError> {
-        self.runtime
+        self.ct_runtime
             .block_on(ExternalApiClient::connect(format!(
                 "http://{}",
                 server_addr
@@ -116,7 +128,7 @@ impl ClientRpcSender {
 
         // issue the request and block until acknowledgement
         let response = self
-            .runtime
+            .ct_runtime
             .block_on(conn.do_command(request))
             .map_err(|e| {
                 SummersetError::ClientConnError(format!(

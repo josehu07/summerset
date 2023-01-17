@@ -114,8 +114,11 @@ impl Default for SummersetServerNode {
 /// Server internal RPC sender state and helper functions.
 #[derive(Debug)]
 pub struct ServerRpcSender {
-    /// Tokio multi-thread runtime, created explicitly.
-    runtime: Runtime,
+    /// Tokio multi-threaded runtime, created explicitly.
+    mt_runtime: Runtime,
+
+    /// Tokio current-thread runtime, created explicitly.
+    ct_runtime: Runtime,
 }
 
 impl ServerRpcSender {
@@ -123,13 +126,22 @@ impl ServerRpcSender {
     /// multi-threaded runtime. Returns `Err(InitError)` if failed to build
     /// the runtime.
     fn new() -> Result<Self, InitError> {
-        let runtime = Builder::new_multi_thread()
+        let mt_runtime = Builder::new_multi_thread()
             .enable_all()
             .build()
             .map_err(|e| {
-                InitError(format!("failed to build tokio runtime: {}", e))
+                InitError(format!("failed to build tokio mt_runtime: {}", e))
             })?;
-        Ok(ServerRpcSender { runtime })
+        let ct_runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| {
+                InitError(format!("failed to build tokio ct_runtime: {}", e))
+            })?;
+        Ok(ServerRpcSender {
+            mt_runtime,
+            ct_runtime,
+        })
     }
 
     /// Connect to one address and block until acknowledgement.
@@ -144,7 +156,7 @@ impl ServerRpcSender {
     where
         Fut: Future<Output = Result<Conn, tonic::transport::Error>>,
     {
-        self.runtime
+        self.mt_runtime
             .block_on(connect_fn(format!("http://{}", peer_addr)))
             .map_err(|e| {
                 SummersetError::ServerConnError(format!(
@@ -160,23 +172,30 @@ impl ServerRpcSender {
     /// Returns error immediately if any of them fails.
     pub fn connect_multi<Conn, Fut>(
         &mut self,
-        connect_fn: impl FnOnce(String) -> Fut + Send + Copy,
+        connect_fn: impl FnOnce(String) -> Fut + Send + Copy + 'static,
         peer_addrs: &Vec<String>,
     ) -> Result<HashMap<usize, Conn>, SummersetError>
     where
-        Conn: Send,
+        Conn: Send + 'static,
         Fut: Future<Output = Result<Conn, tonic::transport::Error>> + Send,
     {
+        if peer_addrs.len() == 0 {
+            return Ok(HashMap::new());
+        }
+
         // spawn all futures concurrently, prefixing the results with index
         let mut jset = JoinSet::new();
         for (idx, addr) in peer_addrs.iter().enumerate() {
             let addr_str = format!("http://{}", addr);
-            jset.spawn(async move { (idx, connect_fn(addr_str).await) });
+            jset.spawn_on(
+                async move { (idx, connect_fn(addr_str).await) },
+                self.mt_runtime.handle(),
+            );
         }
 
         // join them in order of completion
         let mut conns = HashMap::with_capacity(peer_addrs.len());
-        while let Some(jres) = self.runtime.block_on(jset.join_next()) {
+        while let Some(jres) = self.ct_runtime.block_on(jset.join_next()) {
             if let Err(je) = jres {
                 return Err(SummersetError::ServerConnError(format!(
                     "join error in connect_all: {}",
@@ -208,13 +227,14 @@ impl ServerRpcSender {
     /// success.
     pub fn send_rpc<Conn, Request, Reply, Fut>(
         &mut self,
-        rpc_fn: impl FnOnce(Request) -> Fut,
-        request: Request,
-        peer_conns: &Conn,
+        _rpc_fn: impl FnOnce(Request) -> Fut,
+        _request: Request,
+        _peer_conns: &Conn,
     ) -> Result<Reply, SummersetError>
     where
         Fut: Future<Output = Result<Reply, tonic::transport::Error>>,
     {
+        Err(SummersetError::ServerConnError("TODO".into()))
     }
 
     /// Send RPCs to multiple peer connections and block until all have been
@@ -223,14 +243,15 @@ impl ServerRpcSender {
     /// immediately if any of them fails.
     pub fn send_rpc_multi<Conn, Request, Reply, Fut>(
         &mut self,
-        rpc_fn: impl FnOnce(Request) -> Fut + Send + Copy,
-        requests: Vec<Request>,
-        peer_conns: &Vec<Conn>,
+        _rpc_fn: impl FnOnce(Request) -> Fut + Send + Copy,
+        _requests: Vec<Request>,
+        _peer_conns: &Vec<Conn>,
     ) -> Result<HashMap<usize, Reply>, SummersetError>
     where
         Conn: Send,
         Fut: Future<Output = Result<Reply, tonic::transport::Error>> + Send,
     {
+        Err(SummersetError::ServerConnError("TODO".into()))
     }
 }
 

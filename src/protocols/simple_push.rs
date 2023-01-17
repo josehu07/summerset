@@ -47,18 +47,18 @@ impl ReplicatorServerNode for SimplePushServerNode {
     fn replicate(
         &self,
         cmd: Command,
-        sender: &Mutex<ServerRpcSender>,
+        _sender: &Mutex<ServerRpcSender>,
         sm: &StateMachine,
     ) -> Result<CommandResult, SummersetError> {
         // simply push the record to all peers
-        let replies =
-            sender.send_msg_multi(SimplePushClient::push_record, _, conns)?;
-        for reply in replies {
-            if !reply.success {
-                // TODO: use protocol-specific error sub-type.
-                return;
-            }
-        }
+        // let replies =
+        //     sender.send_msg_multi(SimplePushClient::push_record, _, conns)?;
+        // for reply in replies {
+        //     if !reply.success {
+        //         // TODO: use protocol-specific error sub-type.
+        //         return;
+        //     }
+        // }
 
         // the state machine has thread-safe API, so no need to use any
         // additional locks here

@@ -30,6 +30,7 @@ impl SMRProtocol {
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
             "DoNothing" => Some(Self::DoNothing),
+            "SimplePush" => Some(Self::SimplePush),
             _ => None,
         }
     }
