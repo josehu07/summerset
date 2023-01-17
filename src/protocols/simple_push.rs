@@ -35,7 +35,7 @@ impl ReplicatorServerNode for SimplePushServerNode {
         sender: &mut ServerRpcSender,
     ) -> Result<Self, InitError> {
         // establish connection to all peers
-        let conns = sender.connect_all(SimplePushClient::connect, peers)?;
+        let conns = sender.connect_multi(SimplePushClient::connect, peers)?;
 
         Ok(SimplePushServerNode {
             peers: peers.clone(),
@@ -50,6 +50,16 @@ impl ReplicatorServerNode for SimplePushServerNode {
         sender: &Mutex<ServerRpcSender>,
         sm: &StateMachine,
     ) -> Result<CommandResult, SummersetError> {
+        // simply push the record to all peers
+        let replies =
+            sender.send_msg_multi(SimplePushClient::push_record, _, conns)?;
+        for reply in replies {
+            if !reply.success {
+                // TODO: use protocol-specific error sub-type.
+                return;
+            }
+        }
+
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
         Ok(sm.execute(&cmd))
@@ -80,7 +90,7 @@ impl ReplicatorClientStub for SimplePushClientStub {
         if servers.is_empty() {
             Err(InitError("servers list is empty".into()))
         } else {
-            // randomly pick a server and setup connection
+            // randomly pick a server as primary and setup connection
             let primary_idx = rand::thread_rng().gen_range(0..servers.len());
             let primary_conn = sender.connect(&servers[primary_idx])?;
 
@@ -93,8 +103,7 @@ impl ReplicatorClientStub for SimplePushClientStub {
     }
 
     /// Complete the given command by sending it to the currently connected
-    /// server and trust the result unconditionally. If haven't established
-    /// any connection, randomly pick a server and connect to it now.
+    /// server and trust the result unconditionally.
     fn complete(
         &mut self,
         cmd: Command,

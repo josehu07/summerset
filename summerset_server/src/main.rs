@@ -55,6 +55,8 @@ impl CLIArgs {
             Err(InitError(format!("api_port {} is invalid", self.api_port)))
         } else if self.smr_port <= 1024 {
             Err(InitError(format!("smr_port {} is invalid", self.smr_port)))
+        } else if self.api_port == self.smr_port {
+            Err(InitError(format!("api_port == smr_port {}", self.api_port)))
         } else {
             // check for duplicate peers
             let mut peer_set = HashSet::new();
@@ -155,6 +157,20 @@ mod server_tests {
         assert_eq!(
             args.sanitize(),
             Err(InitError("smr_port 1023 is invalid".into()))
+        );
+    }
+
+    #[test]
+    fn sanitize_same_api_smr_port() {
+        let args = CLIArgs {
+            api_port: 50077,
+            smr_port: 50077,
+            protocol: "DoNothing".into(),
+            node_peers: vec![],
+        };
+        assert_eq!(
+            args.sanitize(),
+            Err(InitError("api_port == smr_port 50077".into()))
         );
     }
 

@@ -83,6 +83,7 @@ mod protocols_tests {
     #[test]
     fn parse_valid_names() {
         valid_name_test!(DoNothing);
+        valid_name_test!(SimplePush);
     }
 
     #[test]

@@ -73,7 +73,7 @@ impl ClientRpcSender {
         Ok(ClientRpcSender { runtime })
     }
 
-    /// Add a new client-server connection to list. Returns `Ok(conn_idx)` on
+    /// Add a new client-server connection to list. Returns `Ok(conn)` on
     /// success.
     pub fn connect(
         &mut self,
@@ -92,8 +92,8 @@ impl ClientRpcSender {
             })
     }
 
-    /// Issue a command to the server connection at given index, and block
-    /// until its response.
+    /// Issue a command to the given server connection, and block until its
+    /// response.
     pub fn issue(
         &mut self,
         conn: &mut ExternalApiClient<Channel>,
