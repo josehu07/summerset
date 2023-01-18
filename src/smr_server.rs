@@ -1,14 +1,18 @@
 //! Summerset server side core structures.
 
 use tonic::{Request, Response, Status};
+use tonic::transport::Server;
 use crate::external_api_proto::{DoCommandRequest, DoCommandReply};
-use crate::external_api_proto::external_api_server::ExternalApi;
+use crate::external_api_proto::external_api_server::{
+    ExternalApi, ExternalApiServer,
+};
 
 use crate::statemach::{Command, CommandResult, StateMachine};
 use crate::replicator::ReplicatorServerNode;
 use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
+use std::net::SocketAddr;
 use std::collections::HashMap;
 use std::marker::{Send, Copy};
 use std::sync::Mutex;
@@ -39,20 +43,42 @@ impl SummersetServerNode {
     /// Create a new server node running given replication protocol type.
     pub fn new(
         protocol: SMRProtocol,
-        peers: &Vec<String>,
+        peers: Vec<String>,
+        smr_addr: SocketAddr,
+        main_runtime: &Runtime, // for starting internal communication service
     ) -> Result<Self, InitError> {
         // initialize internal RPC sender
-        let mut rpc_sender = ServerRpcSender::new()?;
+        let rpc_sender = ServerRpcSender::new()?;
 
         // return InitError if the peers list does not meet the replication
         // protocol's requirement
-        protocol.new_server_node(peers, &mut rpc_sender).map(|s| {
-            SummersetServerNode {
+        protocol
+            .new_server_node(peers, smr_addr, main_runtime)
+            .map(|s| SummersetServerNode {
                 rpc_sender: Mutex::new(rpc_sender),
                 replicator: s,
                 kvlocal: StateMachine::new(),
-            }
-        })
+            })
+    }
+
+    /// Establish connections to peers and start the client API service.
+    pub fn start(
+        &mut self,
+        api_addr: SocketAddr,
+        main_runtime: &Runtime, // for starting internal communication service
+    ) -> Result<(), InitError> {
+        // connect to peers
+        self.replicator
+            .connect_peers(&mut self.rpc_sender.lock().unwrap())?;
+
+        // add and start the client key-value API tonic service
+        main_runtime.spawn(
+            Server::builder()
+                .add_service(ExternalApiServer::new(*self))
+                .serve(api_addr),
+        );
+
+        Ok(())
     }
 
     /// Handle a command received from client.
@@ -67,7 +93,7 @@ impl SummersetServerNode {
 
 #[tonic::async_trait]
 impl ExternalApi for SummersetServerNode {
-    /// Handler of client Get request.
+    /// Handler of client command request.
     async fn do_command(
         &self,
         request: Request<DoCommandRequest>,
@@ -101,13 +127,6 @@ impl ExternalApi for SummersetServerNode {
             result: result_str,
         };
         Ok(Response::new(reply))
-    }
-}
-
-impl Default for SummersetServerNode {
-    fn default() -> Self {
-        // default constructor is of protocol type DoNothing
-        Self::new(SMRProtocol::DoNothing, &Vec::new()).unwrap()
     }
 }
 
@@ -258,6 +277,7 @@ impl ServerRpcSender {
 #[cfg(test)]
 mod smr_server_tests {
     use super::{ServerRpcSender, SummersetServerNode, SMRProtocol};
+    use tokio::runtime::Builder;
 
     #[test]
     fn new_rpc_sender() {
@@ -267,9 +287,13 @@ mod smr_server_tests {
 
     #[test]
     fn new_server_node() {
+        let main_runtime =
+            Builder::new_multi_thread().enable_all().build().unwrap();
         let node = SummersetServerNode::new(
             SMRProtocol::DoNothing,
-            &vec!["hostB:50078".into(), "hostC:50078".into()],
+            vec!["hostB:50078".into(), "hostC:50078".into()],
+            "[::1]:50078".parse().unwrap(),
+            &main_runtime,
         );
         assert!(node.is_ok());
     }

@@ -9,8 +9,10 @@ use crate::statemach::{Command, CommandResult, StateMachine};
 use crate::replicator::{ReplicatorServerNode, ReplicatorClientStub};
 use crate::utils::{SummersetError, InitError};
 
+use std::net::SocketAddr;
 use std::sync::Mutex;
 use rand::Rng;
+use tokio::runtime::Runtime;
 
 /// DoNothing replication protocol server module. Immediately executes given
 /// command on state machine without doing anything else.
@@ -20,10 +22,19 @@ pub struct DoNothingServerNode {}
 impl ReplicatorServerNode for DoNothingServerNode {
     /// Create a new DoNothing protocol server module.
     fn new(
-        _peers: &Vec<String>,
-        _sender: &mut ServerRpcSender,
+        _peers: Vec<String>,
+        _smr_addr: SocketAddr,
+        _main_runtime: &Runtime,
     ) -> Result<Self, InitError> {
         Ok(DoNothingServerNode {})
+    }
+
+    /// Establish connections to peers.
+    fn connect_peers(
+        &mut self,
+        _sender: &mut ServerRpcSender,
+    ) -> Result<(), InitError> {
+        Ok(())
     }
 
     /// Do nothing and immediately execute the command on state machine.
@@ -51,28 +62,34 @@ pub struct DoNothingClientStub {
     curr_idx: usize,
 
     /// Connection established to the chosen server.
-    curr_conn: ExternalApiClient<Channel>,
+    curr_conn: Option<ExternalApiClient<Channel>>,
 }
 
 impl ReplicatorClientStub for DoNothingClientStub {
     /// Create a new DoNothing protocol client stub.
-    fn new(
-        servers: &Vec<String>,
-        sender: &mut ClientRpcSender,
-    ) -> Result<Self, InitError> {
+    fn new(servers: Vec<String>) -> Result<Self, InitError> {
         if servers.is_empty() {
             Err(InitError("servers list is empty".into()))
         } else {
             // randomly pick a server and setup connection
             let curr_idx = rand::thread_rng().gen_range(0..servers.len());
-            let curr_conn = sender.connect(&servers[curr_idx])?;
 
             Ok(DoNothingClientStub {
-                servers: servers.clone(),
+                servers,
                 curr_idx,
-                curr_conn,
+                curr_conn: None,
             })
         }
+    }
+
+    /// Establish connection(s) to server(s).
+    fn connect_servers(
+        &mut self,
+        sender: &mut ClientRpcSender,
+    ) -> Result<(), InitError> {
+        // connect to chosen server
+        self.curr_conn = Some(sender.connect(&self.servers[self.curr_idx])?);
+        Ok(())
     }
 
     /// Complete the given command by sending it to the currently connected
@@ -83,6 +100,6 @@ impl ReplicatorClientStub for DoNothingClientStub {
         cmd: Command,
         sender: &mut ClientRpcSender,
     ) -> Result<CommandResult, SummersetError> {
-        sender.issue(&mut self.curr_conn, cmd)
+        sender.issue(self.curr_conn.as_mut().unwrap(), cmd)
     }
 }

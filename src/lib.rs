@@ -14,7 +14,6 @@ pub use statemach::{Command, CommandResult};
 pub use protocols::SMRProtocol;
 pub use utils::{SummersetError, InitError};
 
-// Below are tonic RPC protobufs.
 pub mod external_api_proto {
     tonic::include_proto!("external_api");
 }

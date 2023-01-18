@@ -3,13 +3,14 @@
 mod do_nothing;
 mod simple_push;
 
-use crate::smr_server::ServerRpcSender;
-use crate::smr_client::ClientRpcSender;
 use crate::replicator::{ReplicatorServerNode, ReplicatorClientStub};
 use crate::utils::InitError;
 
 use do_nothing::{DoNothingServerNode, DoNothingClientStub};
 use simple_push::{SimplePushServerNode, SimplePushClientStub};
+
+use std::net::SocketAddr;
+use tokio::runtime::Runtime;
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping.
 macro_rules! box_if_ok {
@@ -38,15 +39,24 @@ impl SMRProtocol {
     /// Create a server replicator module instance of this protocol on heap.
     pub fn new_server_node(
         &self,
-        peers: &Vec<String>,
-        sender: &mut ServerRpcSender,
+        peers: Vec<String>,
+        smr_addr: SocketAddr,
+        main_runtime: &Runtime,
     ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
         match self {
             Self::DoNothing => {
-                box_if_ok!(DoNothingServerNode::new(peers, sender))
+                box_if_ok!(DoNothingServerNode::new(
+                    peers,
+                    smr_addr,
+                    main_runtime
+                ))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushServerNode::new(peers, sender))
+                box_if_ok!(SimplePushServerNode::new(
+                    peers,
+                    smr_addr,
+                    main_runtime
+                ))
             }
         }
     }
@@ -54,15 +64,14 @@ impl SMRProtocol {
     /// Create a client replicator stub instance of this protocol on heap.
     pub fn new_client_stub(
         &self,
-        servers: &Vec<String>,
-        sender: &mut ClientRpcSender,
+        servers: Vec<String>,
     ) -> Result<Box<dyn ReplicatorClientStub>, InitError> {
         match self {
             Self::DoNothing => {
-                box_if_ok!(DoNothingClientStub::new(servers, sender))
+                box_if_ok!(DoNothingClientStub::new(servers))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushClientStub::new(servers, sender))
+                box_if_ok!(SimplePushClientStub::new(servers))
             }
         }
     }

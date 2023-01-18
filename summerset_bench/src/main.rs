@@ -54,6 +54,9 @@ fn main() -> Result<(), InitError> {
     // create client struct with given servers list
     let mut client = SummersetClient::new(protocol, &args.servers)?;
 
+    // connect to server(s)
+    client.connect()?;
+
     println!("{:?}", client.get("Jose"));
     println!("{:?}", client.put("Jose", "123"));
     println!("{:?}", client.get("Jose"));

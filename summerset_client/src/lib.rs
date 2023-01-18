@@ -42,6 +42,11 @@ impl SummersetClient {
             .map(|c| SummersetClient { stub: c })
     }
 
+    /// Establish connection(s) to server(s).
+    pub fn connect(&mut self) -> Result<(), InitError> {
+        self.stub.connect()
+    }
+
     /// Do a Get request, looking up a key in the state machine. Returns
     /// `Ok(Option<String>)` on success, where the option is `Some(value)` if
     /// the key is found in the state machine, or `None` if the key does not

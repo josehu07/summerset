@@ -1,13 +1,13 @@
 //! Summerset server node executable.
 
 use tonic::transport::Server;
-use summerset::external_api_proto::external_api_server::ExternalApiServer;
 
 use summerset::{SummersetServerNode, SMRProtocol, InitError};
 
-use clap::Parser;
+use std::net::SocketAddr;
 use std::collections::HashSet;
-use tokio::runtime::Builder;
+use clap::Parser;
+use tokio::runtime::{Runtime, Builder};
 
 /// Server side structure wrapper.
 #[derive(Debug)]
@@ -21,9 +21,20 @@ impl SummersetServer {
     fn new(
         protocol: SMRProtocol,
         peers: &Vec<String>,
+        smr_addr: SocketAddr,
+        main_runtime: &Runtime, // for starting internal communication service
     ) -> Result<Self, InitError> {
-        SummersetServerNode::new(protocol, peers)
+        SummersetServerNode::new(protocol, peers, smr_addr, main_runtime)
             .map(|s| SummersetServer { node: s })
+    }
+
+    /// Establish connections to peers and start the client API service.
+    fn start(
+        &mut self,
+        api_addr: SocketAddr,
+        main_runtime: &Runtime, // for starting key-value API service
+    ) -> Result<(), InitError> {
+        self.node.start(api_addr, main_runtime)
     }
 }
 
@@ -87,37 +98,44 @@ fn main() -> Result<(), InitError> {
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
 
-    // create server node with given peers list
-    let server = SummersetServer::new(protocol, &args.node_peers)?;
-
-    // add and serve internal RPC service
-    // let smr_addr = format!("[::1]:{}", args.smr_port).parse()?;
+    // parse internal communication port
+    let smr_addr = format!("[::1]:{}", args.smr_port).parse().map_err(|e| {
+        InitError(format!(
+            "failed to parse server internal communication addr: port {}: {}",
+            args.smr_port, e
+        ))
+    })?;
 
     // parse key-value API port
     let api_addr = format!("[::1]:{}", args.api_port).parse().map_err(|e| {
         InitError(format!(
-            "failed to parse key-value API serving port {}: {}",
+            "failed to parse key-value API serving addr: port {}: {}",
             args.api_port, e
         ))
     })?;
     println!("Starting service on address: {}", api_addr);
 
-    // add and serve client API service
-    Builder::new_multi_thread()
+    // create the main tokio runtime for starting tonic services
+    let main_runtime = Builder::new_multi_thread()
         .enable_all()
         .build()
-        .unwrap()
-        .block_on(
-            Server::builder()
-                .add_service(ExternalApiServer::new(server.node))
-                .serve(api_addr),
-        )
         .map_err(|e| {
-            InitError(format!(
-                "error occurred when adding key-value API service: {}",
-                e
-            ))
+            InitError(format!("failed to build main mt_runtime: {}", e))
         })?;
+
+    // create server node with given peers list
+    // this includes starting the internal communication tonic service
+    let server = SummersetServer::new(
+        protocol,
+        &args.node_peers,
+        smr_addr,
+        &main_runtime,
+    )?;
+
+    // TODO: sleep for some time?
+
+    // add and serve the client API service
+    server.start(api_addr, &main_runtime)?;
 
     Ok(())
 }

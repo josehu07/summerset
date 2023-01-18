@@ -28,19 +28,24 @@ impl SummersetClientStub {
     /// Create a new client stub of given replication protocol type.
     pub fn new(
         protocol: SMRProtocol,
-        servers: &Vec<String>,
+        servers: Vec<String>,
     ) -> Result<Self, InitError> {
         // initialize RPC request sender
-        let mut rpc_sender = ClientRpcSender::new()?;
+        let rpc_sender = ClientRpcSender::new()?;
 
         // return InitError if the servers list does not meet the replication
         // protocol's requirement
-        protocol.new_client_stub(servers, &mut rpc_sender).map(|c| {
-            SummersetClientStub {
+        protocol
+            .new_client_stub(servers)
+            .map(|c| SummersetClientStub {
                 rpc_sender,
                 replicator_stub: c,
-            }
-        })
+            })
+    }
+
+    /// Establish connection(s) to server(s).
+    pub fn connect(&mut self) -> Result<(), InitError> {
+        self.replicator_stub.connect_servers(&mut self.rpc_sender)
     }
 
     /// Complete the given command on the servers cluster.
@@ -167,8 +172,7 @@ mod smr_client_tests {
 
     #[test]
     fn new_client_stub_empty_servers() {
-        let stub =
-            SummersetClientStub::new(SMRProtocol::DoNothing, &Vec::new());
+        let stub = SummersetClientStub::new(SMRProtocol::DoNothing, Vec::new());
         assert!(stub.is_err());
         assert_eq!(
             stub.unwrap_err(),
