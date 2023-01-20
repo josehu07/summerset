@@ -1,22 +1,23 @@
 //! Summerset server side core structures.
 
-use tonic::{Request, Response, Status};
-use tonic::transport::Server;
+use std::collections::HashMap;
+use std::marker::{Send, Copy};
+use std::sync::Arc;
+use std::future::Future;
+
 use crate::external_api_proto::{DoCommandRequest, DoCommandReply};
 use crate::external_api_proto::external_api_server::{
     ExternalApi, ExternalApiServer,
 };
 
 use crate::statemach::{Command, CommandResult, StateMachine};
-use crate::replicator::ReplicatorServerNode;
+use crate::replicator::{ReplicatorServerNode, ReplicatorCommService};
 use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
-use std::net::SocketAddr;
-use std::collections::HashMap;
-use std::marker::{Send, Copy};
-use std::sync::Mutex;
-use std::future::Future;
+use tonic::{Request, Response, Status};
+use tonic::transport;
+
 use tokio::runtime::{Runtime, Builder};
 use tokio::task::JoinSet;
 
@@ -27,8 +28,11 @@ use tokio::task::JoinSet;
 /// state machine HashMap itself is volatile.
 #[derive(Debug)]
 pub struct SummersetServerNode {
+    /// The SMR protocol in use.
+    pub protocol: SMRProtocol,
+
     /// Server internal RPC sender state.
-    rpc_sender: Mutex<ServerRpcSender>,
+    rpc_sender: ServerRpcSender,
 
     /// Replicator module running a replication protocol. Not using generic
     /// here because the type of protocol to be used is known only at runtime
@@ -44,44 +48,32 @@ impl SummersetServerNode {
     pub fn new(
         protocol: SMRProtocol,
         peers: Vec<String>,
-        smr_addr: SocketAddr,
-        main_runtime: &Runtime, // for starting internal communication service
     ) -> Result<Self, InitError> {
-        // initialize internal RPC sender
         let rpc_sender = ServerRpcSender::new()?;
 
         // return InitError if the peers list does not meet the replication
         // protocol's requirement
-        protocol
-            .new_server_node(peers, smr_addr, main_runtime)
-            .map(|s| SummersetServerNode {
-                rpc_sender: Mutex::new(rpc_sender),
-                replicator: s,
-                kvlocal: StateMachine::new(),
-            })
+        let replicator = protocol.new_server_node(peers)?;
+
+        Ok(SummersetServerNode {
+            protocol,
+            rpc_sender,
+            replicator,
+            kvlocal: StateMachine::new(),
+        })
     }
 
-    /// Establish connections to peers and start the client API service.
-    pub fn start(
-        &mut self,
-        api_addr: SocketAddr,
-        main_runtime: &Runtime, // for starting internal communication service
-    ) -> Result<(), InitError> {
-        // connect to peers
-        self.replicator
-            .connect_peers(&mut self.rpc_sender.lock().unwrap())?;
-
-        // add and start the client key-value API tonic service
-        main_runtime.spawn(
-            Server::builder()
-                .add_service(ExternalApiServer::new(*self))
-                .serve(api_addr),
-        );
-
+    /// Establish connections to peers.
+    pub fn connect_peers(&self) -> Result<(), InitError> {
+        self.replicator.connect_peers(&self.rpc_sender)?;
         Ok(())
     }
 
     /// Handle a command received from client.
+    ///
+    /// This method takes a shared reference to self and is safe for multiple
+    /// threads to call at the same time. Conflicts should be resolved within
+    /// the implementation of components.
     pub fn handle(
         &self,
         cmd: Command,
@@ -91,8 +83,28 @@ impl SummersetServerNode {
     }
 }
 
+/// Holder struct of the client key-value API tonic service.
+#[derive(Debug)]
+pub struct SummersetApiService {
+    /// Arc reference to node.
+    node: Arc<SummersetServerNode>,
+}
+
+impl SummersetApiService {
+    /// Create a new client API service holder struct.
+    pub fn new(node: Arc<SummersetServerNode>) -> Result<Self, InitError> {
+        Ok(SummersetApiService { node })
+    }
+
+    /// Convert the holder struct into a tonic service that owns the struct,
+    /// and build a new tonic Router for the service.
+    pub fn build_tonic_router(self) -> transport::server::Router {
+        transport::Server::builder().add_service(ExternalApiServer::new(self))
+    }
+}
+
 #[tonic::async_trait]
-impl ExternalApi for SummersetServerNode {
+impl ExternalApi for SummersetApiService {
     /// Handler of client command request.
     async fn do_command(
         &self,
@@ -109,7 +121,7 @@ impl ExternalApi for SummersetServerNode {
         })?;
 
         // handle command on server node
-        let result = self.handle(cmd).map_err(|e| {
+        let result = self.node.handle(cmd).map_err(|e| {
             Status::unknown(format!("error in handling command: {:?}", e))
         })?;
 
@@ -127,6 +139,43 @@ impl ExternalApi for SummersetServerNode {
             result: result_str,
         };
         Ok(Response::new(reply))
+    }
+}
+
+/// Holder struct of the server internal communication tonic service.
+#[derive(Debug)]
+pub struct InternalCommService {
+    /// Box to the protocol-specific struct.
+    replicator_comm: Box<dyn ReplicatorCommService>,
+}
+
+impl InternalCommService {
+    /// Create a new internal communication service holder struct.
+    pub fn new(
+        protocol: SMRProtocol,
+        node: Arc<SummersetServerNode>,
+    ) -> Result<Self, InitError> {
+        if protocol != node.protocol {
+            return Err(InitError(
+                "failed to create InternalCommService: ".to_string()
+                    + &format!(
+                        "protocol {} mismatches {}",
+                        protocol, node.protocol
+                    ),
+            ));
+        }
+
+        // return InitError if the node does not meet the protocol's requirement
+        let replicator_comm = protocol.new_comm_service(node)?;
+
+        Ok(InternalCommService { replicator_comm })
+    }
+
+    /// Convert the holder struct into a tonic service that owns the struct,
+    /// and build a new tonic Router for the service. Returns `None` if the
+    /// protocol in use does not have internal communication protos.
+    pub fn build_tonic_router(self) -> Option<transport::server::Router> {
+        self.replicator_comm.build_tonic_router()
     }
 }
 
@@ -157,6 +206,7 @@ impl ServerRpcSender {
             .map_err(|e| {
                 InitError(format!("failed to build tokio ct_runtime: {}", e))
             })?;
+
         Ok(ServerRpcSender {
             mt_runtime,
             ct_runtime,
@@ -168,7 +218,7 @@ impl ServerRpcSender {
     /// each tonic protobuf client is a different type generated by prost.
     /// Returns `Ok(C)` containing the protobuf RPC client on success.
     pub fn connect<Conn, Fut>(
-        &mut self,
+        &self,
         connect_fn: impl FnOnce(String) -> Fut,
         peer_addr: &String,
     ) -> Result<Conn, SummersetError>
@@ -190,7 +240,7 @@ impl ServerRpcSender {
     /// containing a map from peer index to protobuf RPC client structs.
     /// Returns error immediately if any of them fails.
     pub fn connect_multi<Conn, Fut>(
-        &mut self,
+        &self,
         connect_fn: impl FnOnce(String) -> Fut + Send + Copy + 'static,
         peer_addrs: &Vec<String>,
     ) -> Result<HashMap<usize, Conn>, SummersetError>
@@ -245,7 +295,7 @@ impl ServerRpcSender {
     /// generated by prost. Returns `Ok(Reply)` containing the RPC reply on
     /// success.
     pub fn send_rpc<Conn, Request, Reply, Fut>(
-        &mut self,
+        &self,
         _rpc_fn: impl FnOnce(Request) -> Fut,
         _request: Request,
         _peer_conns: &Conn,
@@ -261,7 +311,7 @@ impl ServerRpcSender {
     /// map from peer index to desired reply structs. Returns error
     /// immediately if any of them fails.
     pub fn send_rpc_multi<Conn, Request, Reply, Fut>(
-        &mut self,
+        &self,
         _rpc_fn: impl FnOnce(Request) -> Fut + Send + Copy,
         _requests: Vec<Request>,
         _peer_conns: &Vec<Conn>,
@@ -277,7 +327,6 @@ impl ServerRpcSender {
 #[cfg(test)]
 mod smr_server_tests {
     use super::{ServerRpcSender, SummersetServerNode, SMRProtocol};
-    use tokio::runtime::Builder;
 
     #[test]
     fn new_rpc_sender() {
@@ -287,13 +336,9 @@ mod smr_server_tests {
 
     #[test]
     fn new_server_node() {
-        let main_runtime =
-            Builder::new_multi_thread().enable_all().build().unwrap();
         let node = SummersetServerNode::new(
             SMRProtocol::DoNothing,
             vec!["hostB:50078".into(), "hostC:50078".into()],
-            "[::1]:50078".parse().unwrap(),
-            &main_runtime,
         );
         assert!(node.is_ok());
     }

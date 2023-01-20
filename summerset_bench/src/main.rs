@@ -1,9 +1,10 @@
 //! Summerset client benchmarking executable.
 
-use summerset_client::{SummersetClient, SMRProtocol, InitError};
+use std::collections::HashSet;
 
 use clap::Parser;
-use std::collections::HashSet;
+
+use summerset_client::{SummersetClient, SMRProtocol, InitError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -52,10 +53,10 @@ fn main() -> Result<(), InitError> {
     let protocol = args.sanitize()?;
 
     // create client struct with given servers list
-    let mut client = SummersetClient::new(protocol, &args.servers)?;
+    let mut client = SummersetClient::new(protocol, args.servers)?;
 
     // connect to server(s)
-    client.connect()?;
+    client.connect_servers()?;
 
     println!("{:?}", client.get("Jose"));
     println!("{:?}", client.put("Jose", "123"));

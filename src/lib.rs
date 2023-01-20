@@ -9,7 +9,9 @@ mod protocols;
 mod utils;
 
 pub use smr_client::SummersetClientStub;
-pub use smr_server::SummersetServerNode;
+pub use smr_server::{
+    SummersetServerNode, SummersetApiService, InternalCommService,
+};
 pub use statemach::{Command, CommandResult};
 pub use protocols::SMRProtocol;
 pub use utils::{SummersetError, InitError};

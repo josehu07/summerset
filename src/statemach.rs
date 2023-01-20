@@ -1,9 +1,9 @@
 //! Summerset server state machine implementation.
 
-use serde::{Serialize, Deserialize};
-
 use std::collections::HashMap;
 use std::sync::Mutex;
+
+use serde::{Serialize, Deserialize};
 
 /// Command structure used internally by the server. Client request RPCs are
 /// transformed into this structure.

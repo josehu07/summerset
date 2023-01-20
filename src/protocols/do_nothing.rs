@@ -1,18 +1,21 @@
 //! Replication protocol: do nothing.
 
-use tonic::transport::Channel;
+use std::sync::Arc;
+
 use crate::external_api_proto::external_api_client::ExternalApiClient;
 
-use crate::smr_server::ServerRpcSender;
+use crate::protocols::SMRProtocol;
+use crate::smr_server::{SummersetServerNode, ServerRpcSender};
 use crate::smr_client::ClientRpcSender;
 use crate::statemach::{Command, CommandResult, StateMachine};
-use crate::replicator::{ReplicatorServerNode, ReplicatorClientStub};
+use crate::replicator::{
+    ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
+};
 use crate::utils::{SummersetError, InitError};
 
-use std::net::SocketAddr;
-use std::sync::Mutex;
+use tonic::transport;
+
 use rand::Rng;
-use tokio::runtime::Runtime;
 
 /// DoNothing replication protocol server module. Immediately executes given
 /// command on state machine without doing anything else.
@@ -21,18 +24,14 @@ pub struct DoNothingServerNode {}
 
 impl ReplicatorServerNode for DoNothingServerNode {
     /// Create a new DoNothing protocol server module.
-    fn new(
-        _peers: Vec<String>,
-        _smr_addr: SocketAddr,
-        _main_runtime: &Runtime,
-    ) -> Result<Self, InitError> {
+    fn new(_peers: Vec<String>) -> Result<Self, InitError> {
         Ok(DoNothingServerNode {})
     }
 
     /// Establish connections to peers.
     fn connect_peers(
-        &mut self,
-        _sender: &mut ServerRpcSender,
+        &self,
+        _sender: &ServerRpcSender,
     ) -> Result<(), InitError> {
         Ok(())
     }
@@ -41,12 +40,37 @@ impl ReplicatorServerNode for DoNothingServerNode {
     fn replicate(
         &self,
         cmd: Command,
-        _sender: &Mutex<ServerRpcSender>,
+        _sender: &ServerRpcSender,
         sm: &StateMachine,
     ) -> Result<CommandResult, SummersetError> {
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
         Ok(sm.execute(&cmd))
+    }
+}
+
+/// DoNothing replication protocol internal communication service struct.
+#[derive(Debug)]
+pub struct DoNothingCommService {}
+
+impl ReplicatorCommService for DoNothingCommService {
+    /// Create a new internal communication service struct.
+    fn new(node: Arc<SummersetServerNode>) -> Result<Self, InitError> {
+        if node.protocol != SMRProtocol::DoNothing {
+            Err(InitError(
+                "cannot create new DoNothingCommService: ".to_string()
+                    + &format!("wrong node.protocol {}", node.protocol),
+            ))
+        } else {
+            Ok(DoNothingCommService {})
+        }
+    }
+
+    /// DoNothing protocol does not have internal communication.
+    fn build_tonic_router(
+        self: Box<Self>,
+    ) -> Option<transport::server::Router> {
+        None
     }
 }
 
@@ -62,7 +86,7 @@ pub struct DoNothingClientStub {
     curr_idx: usize,
 
     /// Connection established to the chosen server.
-    curr_conn: Option<ExternalApiClient<Channel>>,
+    curr_conn: Option<ExternalApiClient<transport::Channel>>,
 }
 
 impl ReplicatorClientStub for DoNothingClientStub {
@@ -85,7 +109,7 @@ impl ReplicatorClientStub for DoNothingClientStub {
     /// Establish connection(s) to server(s).
     fn connect_servers(
         &mut self,
-        sender: &mut ClientRpcSender,
+        sender: &ClientRpcSender,
     ) -> Result<(), InitError> {
         // connect to chosen server
         self.curr_conn = Some(sender.connect(&self.servers[self.curr_idx])?);
@@ -98,7 +122,7 @@ impl ReplicatorClientStub for DoNothingClientStub {
     fn complete(
         &mut self,
         cmd: Command,
-        sender: &mut ClientRpcSender,
+        sender: &ClientRpcSender,
     ) -> Result<CommandResult, SummersetError> {
         sender.issue(self.curr_conn.as_mut().unwrap(), cmd)
     }

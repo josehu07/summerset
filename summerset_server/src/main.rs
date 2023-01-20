@@ -1,40 +1,108 @@
 //! Summerset server node executable.
 
-use tonic::transport::Server;
-
-use summerset::{SummersetServerNode, SMRProtocol, InitError};
-
 use std::net::SocketAddr;
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use tonic::transport;
+
 use clap::Parser;
+
 use tokio::runtime::{Runtime, Builder};
+use tokio::task::JoinHandle;
+
+use summerset::{
+    SummersetServerNode, SummersetApiService, InternalCommService, SMRProtocol,
+    InitError,
+};
 
 /// Server side structure wrapper.
 #[derive(Debug)]
 struct SummersetServer {
-    /// Internal server node struct.
-    node: SummersetServerNode,
+    /// Internal server node struct. This Arc will be cloned by both tonic
+    /// services.
+    node: Arc<SummersetServerNode>,
+
+    /// State flags.
+    api_spawned: bool,
+    smr_spawned: bool,
+    peers_connected: bool,
 }
 
 impl SummersetServer {
     /// Create a new Summerset server structure.
     fn new(
         protocol: SMRProtocol,
-        peers: &Vec<String>,
-        smr_addr: SocketAddr,
-        main_runtime: &Runtime, // for starting internal communication service
+        peers: Vec<String>,
     ) -> Result<Self, InitError> {
-        SummersetServerNode::new(protocol, peers, smr_addr, main_runtime)
-            .map(|s| SummersetServer { node: s })
+        let node = Arc::new(SummersetServerNode::new(protocol, peers)?);
+
+        Ok(SummersetServer {
+            node,
+            api_spawned: false,
+            smr_spawned: false,
+            peers_connected: false,
+        })
     }
 
-    /// Establish connections to peers and start the client API service.
-    fn start(
+    /// Start the client key-value API service on `main_runtime`.
+    fn spawn_api_service(
         &mut self,
         api_addr: SocketAddr,
-        main_runtime: &Runtime, // for starting key-value API service
-    ) -> Result<(), InitError> {
-        self.node.start(api_addr, main_runtime)
+        main_runtime: &Runtime,
+    ) -> Result<JoinHandle<Result<(), transport::Error>>, InitError> {
+        // Tonic service holder struct maintains an Arc reference to `node`.
+        let api_service = SummersetApiService::new(self.node.clone())?;
+
+        // TODO: tweak tonic Server configurations
+        let router = api_service.build_tonic_router();
+
+        let join_handle = main_runtime.spawn(router.serve(api_addr));
+        self.api_spawned = true;
+        Ok(join_handle)
+    }
+
+    /// Start the server internal communication service on `main_runtime`, if
+    /// the protocol in use has internal communication protos.
+    fn spawn_smr_service(
+        &mut self,
+        protocol: SMRProtocol,
+        smr_addr: SocketAddr,
+        main_runtime: &Runtime,
+    ) -> Result<Option<JoinHandle<Result<(), transport::Error>>>, InitError>
+    {
+        // Tonic service holder struct maintains an Arc reference to `node`.
+        let smr_service =
+            InternalCommService::new(protocol, self.node.clone())?;
+
+        // TODO: tweak tonic Server configurations
+        let router = smr_service.build_tonic_router();
+
+        // spawn if has internal communication protos
+        if let Some(router) = router {
+            let join_handle = main_runtime.spawn(router.serve(smr_addr));
+            self.smr_spawned = true;
+            Ok(Some(join_handle))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Establish connections to peers.
+    fn connect_peers(&mut self) -> Result<(), InitError> {
+        if !self.smr_spawned {
+            Err(InitError(
+                "error connecting to peers: smr_service not spawned yet".into(),
+            ))
+        } else if self.peers_connected {
+            Err(InitError(
+                "error connecting to peers: peers already connected".into(),
+            ))
+        } else {
+            self.node.connect_peers()?;
+            self.peers_connected = true;
+            Ok(())
+        }
     }
 }
 
@@ -113,7 +181,6 @@ fn main() -> Result<(), InitError> {
             args.api_port, e
         ))
     })?;
-    println!("Starting service on address: {}", api_addr);
 
     // create the main tokio runtime for starting tonic services
     let main_runtime = Builder::new_multi_thread()
@@ -124,18 +191,36 @@ fn main() -> Result<(), InitError> {
         })?;
 
     // create server node with given peers list
-    // this includes starting the internal communication tonic service
-    let server = SummersetServer::new(
-        protocol,
-        &args.node_peers,
-        smr_addr,
-        &main_runtime,
-    )?;
+    let mut server = SummersetServer::new(protocol, args.node_peers)?;
 
-    // TODO: sleep for some time?
+    // add and start the server internal communication tonic service
+    let smr_join_handle =
+        server.spawn_smr_service(protocol, smr_addr, &main_runtime)?;
+    if let Some(_) = smr_join_handle {
+        println!("Starting internal communication service on {}...", smr_addr);
 
-    // add and serve the client API service
-    server.start(api_addr, &main_runtime)?;
+        // TODO: sleep for some time?
+
+        // connect to server peers
+        server.connect_peers()?;
+    } else {
+        println!("No internal communication service required by protocol...");
+    }
+
+    // add and start the client key-value API tonic service
+    let api_join_handle = server.spawn_api_service(api_addr, &main_runtime)?;
+    println!("Starting client key-value API service on {}...", api_addr);
+
+    // both services should never return in normal execution; here, we block
+    // on the client API service so that the server executable does not exit
+    main_runtime
+        .block_on(api_join_handle)
+        .map_err(|e| {
+            InitError(format!("client key-value API service panicked: {}", e))
+        })?
+        .map_err(|e| {
+            InitError(format!("client key-value API service returned: {}", e))
+        })?;
 
     Ok(())
 }

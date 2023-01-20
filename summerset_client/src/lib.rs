@@ -1,9 +1,9 @@
 //! Summerset client side library.
 
+use std::collections::HashSet;
+
 use summerset::{SummersetClientStub, Command, CommandResult};
 pub use summerset::{SMRProtocol, SummersetError, InitError};
-
-use std::collections::HashSet;
 
 /// Client side structure wrapper providing ergonomic key-value API.
 /// This struct is NOT thread-safe.
@@ -17,7 +17,7 @@ impl SummersetClient {
     /// Create a new Summerset client structure.
     pub fn new(
         protocol: SMRProtocol,
-        servers: &Vec<String>,
+        servers: Vec<String>,
     ) -> Result<Self, InitError> {
         // server list must not be empty
         if servers.is_empty() {
@@ -43,8 +43,8 @@ impl SummersetClient {
     }
 
     /// Establish connection(s) to server(s).
-    pub fn connect(&mut self) -> Result<(), InitError> {
-        self.stub.connect()
+    pub fn connect_servers(&mut self) -> Result<(), InitError> {
+        self.stub.connect_servers()
     }
 
     /// Do a Get request, looking up a key in the state machine. Returns
@@ -106,7 +106,7 @@ mod client_tests {
     #[test]
     fn sanitize_empty_servers() {
         let servers: Vec<String> = Vec::new();
-        let client = SummersetClient::new(SMRProtocol::DoNothing, &servers);
+        let client = SummersetClient::new(SMRProtocol::DoNothing, servers);
         assert!(client.is_err());
         assert_eq!(
             client.unwrap_err(),
@@ -117,7 +117,7 @@ mod client_tests {
     #[test]
     fn sanitize_duplicate_server() {
         let servers = vec!["somehost:50078".into(), "somehost:50078".into()];
-        let client = SummersetClient::new(SMRProtocol::DoNothing, &servers);
+        let client = SummersetClient::new(SMRProtocol::DoNothing, servers);
         assert!(client.is_err());
         assert_eq!(
             client.unwrap_err(),

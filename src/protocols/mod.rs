@@ -3,14 +3,19 @@
 mod do_nothing;
 mod simple_push;
 
-use crate::replicator::{ReplicatorServerNode, ReplicatorClientStub};
+use std::fmt;
+use std::sync::Arc;
+
+use crate::smr_server::SummersetServerNode;
+use crate::replicator::{
+    ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
+};
 use crate::utils::InitError;
 
-use do_nothing::{DoNothingServerNode, DoNothingClientStub};
-use simple_push::{SimplePushServerNode, SimplePushClientStub};
-
-use std::net::SocketAddr;
-use tokio::runtime::Runtime;
+use do_nothing::{DoNothingServerNode, DoNothingCommService, DoNothingClientStub};
+use simple_push::{
+    SimplePushServerNode, SimplePushCommService, SimplePushClientStub,
+};
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping.
 macro_rules! box_if_ok {
@@ -20,7 +25,7 @@ macro_rules! box_if_ok {
 }
 
 /// Enum of supported replication protocol types.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     DoNothing,
     SimplePush,
@@ -40,23 +45,28 @@ impl SMRProtocol {
     pub fn new_server_node(
         &self,
         peers: Vec<String>,
-        smr_addr: SocketAddr,
-        main_runtime: &Runtime,
     ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
         match self {
             Self::DoNothing => {
-                box_if_ok!(DoNothingServerNode::new(
-                    peers,
-                    smr_addr,
-                    main_runtime
-                ))
+                box_if_ok!(DoNothingServerNode::new(peers))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushServerNode::new(
-                    peers,
-                    smr_addr,
-                    main_runtime
-                ))
+                box_if_ok!(SimplePushServerNode::new(peers))
+            }
+        }
+    }
+
+    /// Create a server internal communication tonic service holder struct.
+    pub fn new_comm_service(
+        &self,
+        node: Arc<SummersetServerNode>,
+    ) -> Result<Box<dyn ReplicatorCommService>, InitError> {
+        match self {
+            Self::DoNothing => {
+                box_if_ok!(DoNothingCommService::new(node))
+            }
+            Self::SimplePush => {
+                box_if_ok!(SimplePushCommService::new(node))
             }
         }
     }
@@ -74,6 +84,12 @@ impl SMRProtocol {
                 box_if_ok!(SimplePushClientStub::new(servers))
             }
         }
+    }
+}
+
+impl fmt::Display for SMRProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self)
     }
 }
 

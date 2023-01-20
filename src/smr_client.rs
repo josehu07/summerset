@@ -10,6 +10,7 @@ use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
 use rand::Rng;
+
 use tokio::runtime::{Runtime, Builder};
 
 /// Client library struct, consisting of an RPC sender struct and a
@@ -44,7 +45,7 @@ impl SummersetClientStub {
     }
 
     /// Establish connection(s) to server(s).
-    pub fn connect(&mut self) -> Result<(), InitError> {
+    pub fn connect_servers(&mut self) -> Result<(), InitError> {
         self.replicator_stub.connect_servers(&mut self.rpc_sender)
     }
 
@@ -93,7 +94,7 @@ impl ClientRpcSender {
     /// Add a new client-server connection to list. Returns `Ok(conn)` on
     /// success.
     pub fn connect(
-        &mut self,
+        &self,
         server_addr: &String,
     ) -> Result<ExternalApiClient<Channel>, SummersetError> {
         self.ct_runtime
@@ -112,7 +113,7 @@ impl ClientRpcSender {
     /// Issue a command to the given server connection, and block until its
     /// response.
     pub fn issue(
-        &mut self,
+        &self,
         conn: &mut ExternalApiClient<Channel>,
         cmd: Command,
     ) -> Result<CommandResult, SummersetError> {
