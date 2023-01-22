@@ -1,4 +1,9 @@
 //! Replication protocol: simple push.
+//!
+//! Upon receiving a client command, simply push the command to all peer
+//! servers if it is a Put, wait for all acknowledgments, and then apply it on
+//! my state machine locally. There are no guarantees on the ordering
+//! consistency of operations. There is no persistent log for durability.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,10 +17,11 @@ use simple_push_proto::{PushRecordRequest, PushRecordReply};
 use simple_push_proto::simple_push_client::SimplePushClient;
 use simple_push_proto::simple_push_server::{SimplePush, SimplePushServer};
 
+use crate::{connect_fn, rpc_fn};
 use crate::protocols::SMRProtocol;
-use crate::smr_server::{SummersetServerNode, ServerRpcSender};
-use crate::smr_client::ClientRpcSender;
-use crate::statemach::{Command, CommandResult, StateMachine};
+use crate::smr_server::SummersetServerNode;
+use crate::smr_client::SummersetClientStub;
+use crate::statemach::{Command, CommandResult};
 use crate::replicator::{
     ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
 };
@@ -26,14 +32,25 @@ use tonic::transport;
 
 use rand::Rng;
 
-/// SimplePush replication protocol server module. TODO: description.
+use atomic_refcell::AtomicRefCell;
+
+/// SimplePush replication protocol server module.
 #[derive(Debug, Default)]
 pub struct SimplePushServerNode {
     /// List of peer nodes addresses.
     peers: Vec<String>,
 
-    /// Map from peer index to RPC connection client.
-    conns: Mutex<HashMap<usize, SimplePushClient<transport::Channel>>>,
+    /// Map from peer ID to RPC connection client.
+    ///
+    /// `Mutex` is required over the `HashMap` because the node struct itself
+    /// is shared by multiple tonic services. In each element, `Arc` is needed
+    /// because each connection may need to be moved to a different thread for
+    /// concurrent RPC issuing purposes. `AtomicRefCell` is further required
+    /// because tonic client RPC methods take a mutable reference to self, and
+    /// the standard `RefCell` is not `Sync`.
+    conns: Mutex<
+        HashMap<u64, Arc<AtomicRefCell<SimplePushClient<transport::Channel>>>>,
+    >,
 }
 
 impl ReplicatorServerNode for SimplePushServerNode {
@@ -46,36 +63,82 @@ impl ReplicatorServerNode for SimplePushServerNode {
     }
 
     /// Establish connections to peers.
-    fn connect_peers(&self, sender: &ServerRpcSender) -> Result<(), InitError> {
-        let conns =
-            sender.connect_multi(SimplePushClient::connect, &self.peers)?;
+    fn connect_peers(
+        &self,
+        node: &SummersetServerNode,
+    ) -> Result<(), InitError> {
+        // set up connections to peers concurrently, using peer's index in
+        // addresses vector as its ID
+        let mut peer_addrs = HashMap::with_capacity(self.peers.len());
+        for (idx, addr) in self.peers.iter().enumerate() {
+            peer_addrs.insert(idx as u64, addr);
+        }
+        let peer_conns = node.rpc_sender.connect_multi(
+            connect_fn!(SimplePushClient, connect),
+            peer_addrs,
+        )?;
 
-        // takes lock on `self.conns` map
-        *self.conns.lock().unwrap() = conns;
+        // take lock on `self.conns` map
+        let mut conns_guard = self.conns.lock().unwrap();
+
+        // populate `self.conns` map
+        conns_guard.reserve(peer_conns.len());
+        for (id, conn) in peer_conns.into_iter() {
+            conns_guard.insert(id, Arc::new(AtomicRefCell::new(conn)));
+        }
 
         Ok(())
     }
 
-    /// TODO: description.
+    /// Push the command to all peer servers, wait for them to apply the
+    /// command and acknowledge, and then apply it locally.
     fn replicate(
         &self,
         cmd: Command,
-        _sender: &ServerRpcSender,
-        sm: &StateMachine,
+        node: &SummersetServerNode,
     ) -> Result<CommandResult, SummersetError> {
-        // simply push the record to all peers
-        // let replies =
-        //     sender.send_msg_multi(SimplePushClient::push_record, _, conns)?;
-        // for reply in replies {
-        //     if !reply.success {
-        //         // TODO: use protocol-specific error sub-type.
-        //         return;
-        //     }
-        // }
+        if let Command::Put { ref key, ref value } = cmd {
+            // compose the request struct
+            let request_id: u64 = rand::thread_rng().gen(); // random u64 ID
+            let request = PushRecordRequest {
+                request_id,
+                key: key.clone(),
+                value: value.clone(),
+            };
+
+            // takes lock on `self.conns` map
+            let conns_guard = self.conns.lock().unwrap();
+
+            // simply push the record to all peers
+            let mut conns = HashMap::with_capacity(self.peers.len());
+            for (&id, conn) in conns_guard.iter() {
+                conns.insert(id, conn.clone());
+            }
+            let replies: HashMap<u64, PushRecordReply> =
+                node.rpc_sender.send_rpc_multi(
+                    rpc_fn!(SimplePushClient, push_record),
+                    request,
+                    conns,
+                )?;
+
+            // fail the request if any peer replied unsuccessful
+            for (_, reply) in replies {
+                if !reply.success {
+                    return Err(SummersetError::ProtocolError(
+                        "SimplePush: some peer replied unsuccessful".into(),
+                    ));
+                }
+            }
+        }
+
+        // TODO: remove me
+        if let Command::Put { ref key, ref value } = cmd {
+            println!("apply-C {} {}", key, value);
+        }
 
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
-        Ok(sm.execute(&cmd))
+        Ok(node.kvlocal.execute(&cmd))
     }
 }
 
@@ -94,7 +157,14 @@ impl SimplePush for SimplePushCommService {
     ) -> Result<Response<PushRecordReply>, Status> {
         let req = request.into_inner();
 
-        // TODO: correct logic
+        // TODO: remove me
+        println!("apply-S {} {}", &req.key, &req.value);
+
+        // blindly apply the command locally
+        (*self.node).kvlocal.execute(&Command::Put {
+            key: req.key,
+            value: req.value,
+        });
 
         // compose the reply and return
         let reply = PushRecordReply {
@@ -142,7 +212,9 @@ pub struct SimplePushClientStub {
     primary_idx: usize,
 
     /// Connection established to the primary server.
-    primary_conn: Option<ExternalApiClient<transport::Channel>>,
+    ///
+    /// `Mutex` is required since it may be shared by multiple client threads.
+    primary_conn: Mutex<Option<ExternalApiClient<transport::Channel>>>,
 }
 
 impl ReplicatorClientStub for SimplePushClientStub {
@@ -157,29 +229,37 @@ impl ReplicatorClientStub for SimplePushClientStub {
             Ok(SimplePushClientStub {
                 servers,
                 primary_idx,
-                primary_conn: None,
+                primary_conn: Mutex::new(None),
             })
         }
     }
 
     /// Establish connection(s) to server(s).
     fn connect_servers(
-        &mut self,
-        sender: &ClientRpcSender,
+        &self,
+        stub: &SummersetClientStub,
     ) -> Result<(), InitError> {
+        // take lock on `self.primary_conn`
+        let mut primary_conn_guard = self.primary_conn.lock().unwrap();
+
         // connect to chosen primary server
-        self.primary_conn =
-            Some(sender.connect(&self.servers[self.primary_idx])?);
+        *primary_conn_guard =
+            Some(stub.rpc_sender.connect(&self.servers[self.primary_idx])?);
         Ok(())
     }
 
     /// Complete the given command by sending it to the currently connected
     /// server and trust the result unconditionally.
     fn complete(
-        &mut self,
+        &self,
         cmd: Command,
-        sender: &ClientRpcSender,
+        stub: &SummersetClientStub,
     ) -> Result<CommandResult, SummersetError> {
-        sender.issue(self.primary_conn.as_mut().unwrap(), cmd)
+        // take lock on `self.primary_conn`
+        let mut primary_conn_guard = self.primary_conn.lock().unwrap();
+
+        // send RPC to primary server
+        stub.rpc_sender
+            .issue(primary_conn_guard.as_mut().unwrap(), cmd)
     }
 }

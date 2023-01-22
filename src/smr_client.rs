@@ -18,7 +18,7 @@ use tokio::runtime::{Runtime, Builder};
 #[derive(Debug)]
 pub struct SummersetClientStub {
     /// Client request RPC sender state.
-    rpc_sender: ClientRpcSender,
+    pub rpc_sender: ClientRpcSender,
 
     /// Replication protocol's client stub. Not using generic here because
     /// the type of protocol to be used is known only at runtime invocation.
@@ -45,16 +45,16 @@ impl SummersetClientStub {
     }
 
     /// Establish connection(s) to server(s).
-    pub fn connect_servers(&mut self) -> Result<(), InitError> {
-        self.replicator_stub.connect_servers(&mut self.rpc_sender)
+    pub fn connect_servers(&self) -> Result<(), InitError> {
+        self.replicator_stub.connect_servers(&self)
     }
 
     /// Complete the given command on the servers cluster.
     pub fn complete(
-        &mut self,
+        &self,
         cmd: Command,
     ) -> Result<CommandResult, SummersetError> {
-        self.replicator_stub.complete(cmd, &mut self.rpc_sender)
+        self.replicator_stub.complete(cmd, &self)
     }
 }
 
@@ -62,6 +62,7 @@ impl SummersetClientStub {
 #[derive(Debug)]
 pub struct ClientRpcSender {
     /// Tokio multi-threaded runtime, created explicitly.
+    #[allow(dead_code)]
     mt_runtime: Runtime,
 
     /// Tokio current-thread runtime, created explicitly.
@@ -163,13 +164,7 @@ impl ClientRpcSender {
 
 #[cfg(test)]
 mod smr_client_tests {
-    use super::{ClientRpcSender, SummersetClientStub, SMRProtocol, InitError};
-
-    #[test]
-    fn new_rpc_sender() {
-        let sender = ClientRpcSender::new();
-        assert!(sender.is_ok());
-    }
+    use super::{SummersetClientStub, SMRProtocol, InitError};
 
     #[test]
     fn new_client_stub_empty_servers() {

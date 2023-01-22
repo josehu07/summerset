@@ -1,13 +1,17 @@
 //! Replication protocol: do nothing.
+//!
+//! Immediately executes given command on the state machine upon receiving a
+//! client command, and not doing anything else. There are no inter-server
+//! communication channels.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::external_api_proto::external_api_client::ExternalApiClient;
 
 use crate::protocols::SMRProtocol;
-use crate::smr_server::{SummersetServerNode, ServerRpcSender};
-use crate::smr_client::ClientRpcSender;
-use crate::statemach::{Command, CommandResult, StateMachine};
+use crate::smr_server::SummersetServerNode;
+use crate::smr_client::SummersetClientStub;
+use crate::statemach::{Command, CommandResult};
 use crate::replicator::{
     ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
 };
@@ -17,8 +21,7 @@ use tonic::transport;
 
 use rand::Rng;
 
-/// DoNothing replication protocol server module. Immediately executes given
-/// command on state machine without doing anything else.
+/// DoNothing replication protocol server module.
 #[derive(Debug, Default)]
 pub struct DoNothingServerNode {}
 
@@ -31,7 +34,7 @@ impl ReplicatorServerNode for DoNothingServerNode {
     /// Establish connections to peers.
     fn connect_peers(
         &self,
-        _sender: &ServerRpcSender,
+        _node: &SummersetServerNode,
     ) -> Result<(), InitError> {
         Ok(())
     }
@@ -40,12 +43,11 @@ impl ReplicatorServerNode for DoNothingServerNode {
     fn replicate(
         &self,
         cmd: Command,
-        _sender: &ServerRpcSender,
-        sm: &StateMachine,
+        node: &SummersetServerNode,
     ) -> Result<CommandResult, SummersetError> {
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
-        Ok(sm.execute(&cmd))
+        Ok(node.kvlocal.execute(&cmd))
     }
 }
 
@@ -86,7 +88,9 @@ pub struct DoNothingClientStub {
     curr_idx: usize,
 
     /// Connection established to the chosen server.
-    curr_conn: Option<ExternalApiClient<transport::Channel>>,
+    ///
+    /// `Mutex` is required since it may be shared by multiple client threads.
+    curr_conn: Mutex<Option<ExternalApiClient<transport::Channel>>>,
 }
 
 impl ReplicatorClientStub for DoNothingClientStub {
@@ -101,18 +105,22 @@ impl ReplicatorClientStub for DoNothingClientStub {
             Ok(DoNothingClientStub {
                 servers,
                 curr_idx,
-                curr_conn: None,
+                curr_conn: Mutex::new(None),
             })
         }
     }
 
     /// Establish connection(s) to server(s).
     fn connect_servers(
-        &mut self,
-        sender: &ClientRpcSender,
+        &self,
+        stub: &SummersetClientStub,
     ) -> Result<(), InitError> {
+        // take lock on `self.curr_conn`
+        let mut curr_conn_guard = self.curr_conn.lock().unwrap();
+
         // connect to chosen server
-        self.curr_conn = Some(sender.connect(&self.servers[self.curr_idx])?);
+        *curr_conn_guard =
+            Some(stub.rpc_sender.connect(&self.servers[self.curr_idx])?);
         Ok(())
     }
 
@@ -120,10 +128,15 @@ impl ReplicatorClientStub for DoNothingClientStub {
     /// server and trust the result unconditionally. If haven't established
     /// any connection, randomly pick a server and connect to it now.
     fn complete(
-        &mut self,
+        &self,
         cmd: Command,
-        sender: &ClientRpcSender,
+        stub: &SummersetClientStub,
     ) -> Result<CommandResult, SummersetError> {
-        sender.issue(self.curr_conn.as_mut().unwrap(), cmd)
+        // take lock on `self.curr_conn`
+        let mut curr_conn_guard = self.curr_conn.lock().unwrap();
+
+        // send RPC to connected server
+        stub.rpc_sender
+            .issue(curr_conn_guard.as_mut().unwrap(), cmd)
     }
 }

@@ -51,17 +51,14 @@ impl StateMachine {
         // the .lock() method returns Err only if another thread crashed while
         // holding this mutex, which should naturally lead to this entire
         // SummersetNode process to have crashed anyway
-        let data_guard = self.data.lock();
-        assert!(data_guard.is_ok());
+        let mut data_guard = self.data.lock().unwrap();
 
         match cmd {
             Command::Get { key } => CommandResult::GetResult {
-                value: data_guard.unwrap().get(key).cloned(),
+                value: data_guard.get(key).cloned(),
             },
             Command::Put { key, value } => CommandResult::PutResult {
-                old_value: data_guard
-                    .unwrap()
-                    .insert(key.clone(), value.clone()),
+                old_value: data_guard.insert(key.clone(), value.clone()),
             },
         }
     }

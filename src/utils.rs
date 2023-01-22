@@ -32,11 +32,12 @@ pub enum SummersetError {
     ClientConnError(String),
     ClientSerdeError(String),
     ServerConnError(String),
+    ProtocolError(String),
 }
 
 impl fmt::Display for SummersetError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // TODO: better display
+        // TODO: better display of error message
         write!(f, "{:?}", self)
     }
 }

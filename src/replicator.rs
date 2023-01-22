@@ -5,9 +5,9 @@ use std::marker::Sized;
 use std::fmt;
 use std::sync::Arc;
 
-use crate::smr_server::{SummersetServerNode, ServerRpcSender};
-use crate::smr_client::ClientRpcSender;
-use crate::statemach::{Command, CommandResult, StateMachine};
+use crate::smr_server::SummersetServerNode;
+use crate::smr_client::SummersetClientStub;
+use crate::statemach::{Command, CommandResult};
 use crate::utils::{SummersetError, InitError};
 
 use tonic::transport;
@@ -25,8 +25,12 @@ pub trait ReplicatorServerNode: fmt::Debug + Send + Sync {
     /// This takes an immutable reference to `self` because the replicator
     /// module is supposed to be shared across multiple server threads. Any
     /// concurrency issues should be resolved inside the implementation, e.g.,
-    /// using `Mutex`. Similar semantics apply to `StateMachine`.
-    fn connect_peers(&self, sender: &ServerRpcSender) -> Result<(), InitError>;
+    /// using `Mutex`. Similar semantics apply to the referenced
+    /// `SummersetServerNode`, which should be the struct containing `self`.
+    fn connect_peers(
+        &self,
+        node: &SummersetServerNode,
+    ) -> Result<(), InitError>;
 
     /// Submit a command to the replication protocol module to run whatever
     /// work is required by the protocol. Upon the execution point, executes
@@ -35,12 +39,12 @@ pub trait ReplicatorServerNode: fmt::Debug + Send + Sync {
     /// This takes an immutable reference to `self` because the replicator
     /// module is supposed to be shared across multiple server threads. Any
     /// concurrency issues should be resolved inside the implementation, e.g.,
-    /// using `Mutex`. Similar semantics apply to `StateMachine`.
+    /// using `Mutex`. Similar semantics apply to the referenced
+    /// `SummersetServerNode`, which should be the struct containing `self`.
     fn replicate(
         &self,
         cmd: Command,
-        sender: &ServerRpcSender,
-        sm: &StateMachine,
+        node: &SummersetServerNode,
     ) -> Result<CommandResult, SummersetError>;
 }
 
@@ -72,22 +76,28 @@ pub trait ReplicatorClientStub: fmt::Debug + Send + Sync {
 
     /// Establish connection(s) to server(s).
     ///
-    /// This takes a mutable reference to `self` because the replicator client
-    /// stub is supposed to be used by only one client thread.
+    /// This takes an immutable reference to `self` because the replicator
+    /// stub is allowed to be shared across multiple client threads. Any
+    /// concurrency issues should be resolved inside the implementation, e.g.,
+    /// using `Mutex`. Similar semantics apply to the referenced
+    /// `SummersetClientStub`, which should be the struct containing `self`.
     fn connect_servers(
-        &mut self,
-        sender: &ClientRpcSender,
+        &self,
+        stub: &SummersetClientStub,
     ) -> Result<(), InitError>;
 
     /// Complete a command by sending it to server(s) and wait until its
     /// acknowledgement. Depending on the protocol, this may require multiple
     /// back-and-forth communication rounds, e.g., to find the current leader.
     ///
-    /// This takes a mutable reference to `self` because the replicator client
-    /// stub is supposed to be used by only one client thread.
+    /// This takes an immutable reference to `self` because the replicator
+    /// stub is allowed to be shared across multiple client threads. Any
+    /// concurrency issues should be resolved inside the implementation, e.g.,
+    /// using `Mutex`. Similar semantics apply to the referenced
+    /// `SummersetClientStub`, which should be the struct containing `self`.
     fn complete(
-        &mut self,
+        &self,
         cmd: Command,
-        sender: &ClientRpcSender,
+        stub: &SummersetClientStub,
     ) -> Result<CommandResult, SummersetError>;
 }

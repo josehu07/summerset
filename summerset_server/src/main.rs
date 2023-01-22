@@ -3,6 +3,8 @@
 use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use tonic::transport;
 
@@ -199,10 +201,14 @@ fn main() -> Result<(), InitError> {
     if let Some(_) = smr_join_handle {
         println!("Starting internal communication service on {}...", smr_addr);
 
-        // TODO: sleep for some time?
-
-        // connect to server peers
-        server.connect_peers()?;
+        // retry until connected to server peers
+        println!("Connecting to server peers...");
+        let mut retry_cnt = 0;
+        while let Err(_) = server.connect_peers() {
+            thread::sleep(Duration::from_secs(1));
+            retry_cnt += 1;
+            println!("  retry attempt {}", retry_cnt);
+        }
     } else {
         println!("No internal communication service required by protocol...");
     }

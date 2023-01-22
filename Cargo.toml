@@ -16,9 +16,17 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 tonic = "0.8"
 prost = "0.11"
 tokio = { version = "1.24", features = ["macros", "rt-multi-thread"] }
+futures = "0.3"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+atomic_refcell = "0.1"
 
 [build-dependencies]
 tonic-build = "0.8"
+
+[profile.dev]
+panic = 'abort'
+
+[profile.release]
+panic = 'abort'

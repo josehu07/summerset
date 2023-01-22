@@ -17,7 +17,8 @@ use simple_push::{
     SimplePushServerNode, SimplePushCommService, SimplePushClientStub,
 };
 
-/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping.
+/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
+/// protocol-specific struct creations.
 macro_rules! box_if_ok {
     ($r:expr) => {
         $r.map(|o| Box::new(o) as _) // explicitly coerce to unsized Box<dyn ..>
