@@ -53,6 +53,7 @@ pub struct SimplePushServerNode {
     >,
 }
 
+#[tonic::async_trait]
 impl ReplicatorServerNode for SimplePushServerNode {
     /// Create a new SimplePush protocol server module.
     fn new(peers: Vec<String>) -> Result<Self, InitError> {
@@ -63,7 +64,7 @@ impl ReplicatorServerNode for SimplePushServerNode {
     }
 
     /// Establish connections to peers.
-    fn connect_peers(
+    async fn connect_peers(
         &self,
         node: &SummersetServerNode,
     ) -> Result<(), InitError> {
@@ -71,12 +72,12 @@ impl ReplicatorServerNode for SimplePushServerNode {
         // addresses vector as its ID
         let mut peer_addrs = HashMap::with_capacity(self.peers.len());
         for (idx, addr) in self.peers.iter().enumerate() {
-            peer_addrs.insert(idx as u64, addr);
+            peer_addrs.insert(idx as u64, addr.clone());
         }
-        let peer_conns = node.rpc_sender.connect_multi(
-            connect_fn!(SimplePushClient, connect),
-            peer_addrs,
-        )?;
+        let peer_conns = node
+            .rpc_sender
+            .connect_multi(connect_fn!(SimplePushClient, connect), peer_addrs)
+            .await?;
 
         // take lock on `self.conns` map
         let mut conns_guard = self.conns.lock().unwrap();
@@ -92,7 +93,7 @@ impl ReplicatorServerNode for SimplePushServerNode {
 
     /// Push the command to all peer servers, wait for them to apply the
     /// command and acknowledge, and then apply it locally.
-    fn replicate(
+    async fn replicate(
         &self,
         cmd: Command,
         node: &SummersetServerNode,
@@ -106,20 +107,24 @@ impl ReplicatorServerNode for SimplePushServerNode {
                 value: value.clone(),
             };
 
-            // takes lock on `self.conns` map
-            let conns_guard = self.conns.lock().unwrap();
+            // takes lock on `self.conns` map and populate the `conns` list
+            let mut conns = HashMap::with_capacity(self.peers.len());
+            {
+                let conns_guard = self.conns.lock().unwrap();
+                for (&id, conn) in conns_guard.iter() {
+                    conns.insert(id, conn.clone());
+                }
+            }
 
             // simply push the record to all peers
-            let mut conns = HashMap::with_capacity(self.peers.len());
-            for (&id, conn) in conns_guard.iter() {
-                conns.insert(id, conn.clone());
-            }
-            let replies: HashMap<u64, PushRecordReply> =
-                node.rpc_sender.send_rpc_multi(
+            let replies: HashMap<u64, PushRecordReply> = node
+                .rpc_sender
+                .send_rpc_multi(
                     rpc_fn!(SimplePushClient, push_record),
                     request,
                     conns,
-                )?;
+                )
+                .await?;
 
             // fail the request if any peer replied unsuccessful
             for (_, reply) in replies {
@@ -161,7 +166,7 @@ impl SimplePush for SimplePushCommService {
         println!("apply-S {} {}", &req.key, &req.value);
 
         // blindly apply the command locally
-        (*self.node).kvlocal.execute(&Command::Put {
+        self.node.kvlocal.execute(&Command::Put {
             key: req.key,
             value: req.value,
         });
@@ -214,9 +219,12 @@ pub struct SimplePushClientStub {
     /// Connection established to the primary server.
     ///
     /// `Mutex` is required since it may be shared by multiple client threads.
-    primary_conn: Mutex<Option<ExternalApiClient<transport::Channel>>>,
+    primary_conn: Mutex<
+        Option<Arc<AtomicRefCell<ExternalApiClient<transport::Channel>>>>,
+    >,
 }
 
+#[tonic::async_trait]
 impl ReplicatorClientStub for SimplePushClientStub {
     /// Create a new SimplePush protocol client stub.
     fn new(servers: Vec<String>) -> Result<Self, InitError> {
@@ -235,31 +243,52 @@ impl ReplicatorClientStub for SimplePushClientStub {
     }
 
     /// Establish connection(s) to server(s).
-    fn connect_servers(
+    async fn connect_servers(
         &self,
         stub: &SummersetClientStub,
     ) -> Result<(), InitError> {
-        // take lock on `self.primary_conn`
-        let mut primary_conn_guard = self.primary_conn.lock().unwrap();
+        // connect to chosen server
+        let conn = stub
+            .rpc_sender
+            .connect(
+                connect_fn!(ExternalApiClient, connect),
+                self.servers[self.primary_idx].clone(),
+            )
+            .await?;
 
-        // connect to chosen primary server
-        *primary_conn_guard =
-            Some(stub.rpc_sender.connect(&self.servers[self.primary_idx])?);
+        // take lock on `self.primary_conn` and save the connection struct
+        let mut primary_conn_guard = self.primary_conn.lock().unwrap();
+        *primary_conn_guard = Some(Arc::new(AtomicRefCell::new(conn)));
+
         Ok(())
     }
 
     /// Complete the given command by sending it to the currently connected
     /// server and trust the result unconditionally.
-    fn complete(
+    async fn complete(
         &self,
         cmd: Command,
         stub: &SummersetClientStub,
     ) -> Result<CommandResult, SummersetError> {
-        // take lock on `self.primary_conn`
-        let mut primary_conn_guard = self.primary_conn.lock().unwrap();
+        // compose the request struct
+        let request = SummersetClientStub::serialize_request(&cmd)?;
+        let request_id = request.request_id;
 
-        // send RPC to primary server
-        stub.rpc_sender
-            .issue(primary_conn_guard.as_mut().unwrap(), cmd)
+        // take lock on `self.primary_conn` and get the connection struct
+        let conn = {
+            let primary_conn_guard = self.primary_conn.lock().unwrap();
+            primary_conn_guard.as_ref().unwrap().clone()
+        };
+
+        // send RPC to connected server
+        let reply = stub
+            .rpc_sender
+            .send_rpc(rpc_fn!(ExternalApiClient, do_command), request, conn)
+            .await?;
+
+        // extrace the result struct
+        let result =
+            SummersetClientStub::deserialize_reply(&reply, request_id)?;
+        Ok(result)
     }
 }

@@ -5,6 +5,7 @@ mod smr_client;
 mod smr_server;
 mod statemach;
 mod replicator;
+mod rpc_sender;
 mod protocols;
 mod utils;
 

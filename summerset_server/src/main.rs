@@ -6,11 +6,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tonic::transport;
-
 use clap::Parser;
 
-use tokio::runtime::{Runtime, Builder};
+use tonic::transport;
+
 use tokio::task::JoinHandle;
 
 use summerset::{
@@ -51,7 +50,6 @@ impl SummersetServer {
     fn spawn_api_service(
         &mut self,
         api_addr: SocketAddr,
-        main_runtime: &Runtime,
     ) -> Result<JoinHandle<Result<(), transport::Error>>, InitError> {
         // Tonic service holder struct maintains an Arc reference to `node`.
         let api_service = SummersetApiService::new(self.node.clone())?;
@@ -59,18 +57,18 @@ impl SummersetServer {
         // TODO: tweak tonic Server configurations
         let router = api_service.build_tonic_router();
 
-        let join_handle = main_runtime.spawn(router.serve(api_addr));
+        let join_handle = tokio::spawn(router.serve(api_addr));
         self.api_spawned = true;
         Ok(join_handle)
     }
 
     /// Start the server internal communication service on `main_runtime`, if
-    /// the protocol in use has internal communication protos.
+    /// the protocol in use has internal communication protos. Returns
+    /// `Ok(None)` if the protocol has no internal communication service.
     fn spawn_smr_service(
         &mut self,
         protocol: SMRProtocol,
         smr_addr: SocketAddr,
-        main_runtime: &Runtime,
     ) -> Result<Option<JoinHandle<Result<(), transport::Error>>>, InitError>
     {
         // Tonic service holder struct maintains an Arc reference to `node`.
@@ -82,7 +80,7 @@ impl SummersetServer {
 
         // spawn if has internal communication protos
         if let Some(router) = router {
-            let join_handle = main_runtime.spawn(router.serve(smr_addr));
+            let join_handle = tokio::spawn(router.serve(smr_addr));
             self.smr_spawned = true;
             Ok(Some(join_handle))
         } else {
@@ -91,7 +89,7 @@ impl SummersetServer {
     }
 
     /// Establish connections to peers.
-    fn connect_peers(&mut self) -> Result<(), InitError> {
+    async fn connect_peers(&mut self) -> Result<(), InitError> {
         if !self.smr_spawned {
             Err(InitError(
                 "error connecting to peers: smr_service not spawned yet".into(),
@@ -101,7 +99,7 @@ impl SummersetServer {
                 "error connecting to peers: peers already connected".into(),
             ))
         } else {
-            self.node.connect_peers()?;
+            self.node.connect_peers().await?;
             self.peers_connected = true;
             Ok(())
         }
@@ -163,7 +161,9 @@ impl CLIArgs {
 }
 
 // Server node executable main entrance.
-fn main() -> Result<(), InitError> {
+// TODO: tweak tokio runtime configurations
+#[tokio::main]
+async fn main() -> Result<(), InitError> {
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
@@ -184,27 +184,18 @@ fn main() -> Result<(), InitError> {
         ))
     })?;
 
-    // create the main tokio runtime for starting tonic services
-    let main_runtime = Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| {
-            InitError(format!("failed to build main mt_runtime: {}", e))
-        })?;
-
     // create server node with given peers list
     let mut server = SummersetServer::new(protocol, args.node_peers)?;
 
     // add and start the server internal communication tonic service
-    let smr_join_handle =
-        server.spawn_smr_service(protocol, smr_addr, &main_runtime)?;
-    if let Some(_) = smr_join_handle {
+    let smr_join_handle = server.spawn_smr_service(protocol, smr_addr)?;
+    if smr_join_handle.is_some() {
         println!("Starting internal communication service on {}...", smr_addr);
 
         // retry until connected to server peers
         println!("Connecting to server peers...");
         let mut retry_cnt = 0;
-        while let Err(_) = server.connect_peers() {
+        while server.connect_peers().await.is_err() {
             thread::sleep(Duration::from_secs(1));
             retry_cnt += 1;
             println!("  retry attempt {}", retry_cnt);
@@ -214,25 +205,43 @@ fn main() -> Result<(), InitError> {
     }
 
     // add and start the client key-value API tonic service
-    let api_join_handle = server.spawn_api_service(api_addr, &main_runtime)?;
+    let api_join_handle = server.spawn_api_service(api_addr)?;
     println!("Starting client key-value API service on {}...", api_addr);
 
-    // both services should never return in normal execution; here, we block
-    // on the client API service so that the server executable does not exit
-    main_runtime
-        .block_on(api_join_handle)
-        .map_err(|e| {
-            InitError(format!("client key-value API service panicked: {}", e))
-        })?
-        .map_err(|e| {
-            InitError(format!("client key-value API service returned: {}", e))
+    // both services should never return in normal execution
+    if let Some(smr_join_handle) = smr_join_handle {
+        let jres = tokio::try_join!(smr_join_handle, api_join_handle).map_err(
+            |e| InitError(format!("join error from tonic service: {}", e)),
+        )?;
+        jres.0.map_err(|e| {
+            InitError(format!(
+                "internal communication service failed with transport error: {}",
+                e
+            ))
         })?;
+        jres.1.map_err(|e| {
+            InitError(format!(
+                "client key-value API service failed with transport error: {}",
+                e
+            ))
+        })?;
+    } else {
+        let jres = tokio::try_join!(api_join_handle).map_err(|e| {
+            InitError(format!("join error from tonic service: {}", e))
+        })?;
+        jres.0.map_err(|e| {
+            InitError(format!(
+                "client key-value API service failed with transport error: {}",
+                e
+            ))
+        })?;
+    }
 
     Ok(())
 }
 
 #[cfg(test)]
-mod server_tests {
+mod server_args_tests {
     use super::{CLIArgs, SMRProtocol, InitError};
 
     #[test]

@@ -29,9 +29,8 @@ impl From<SummersetError> for InitError {
 pub enum SummersetError {
     CommandEmptyKey,
     WrongCommandType,
-    ClientConnError(String),
     ClientSerdeError(String),
-    ServerConnError(String),
+    TonicConnError(String),
     ProtocolError(String),
 }
 

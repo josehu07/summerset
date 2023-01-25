@@ -95,7 +95,7 @@ impl fmt::Display for SMRProtocol {
 }
 
 #[cfg(test)]
-mod protocols_tests {
+mod protocols_name_tests {
     use super::SMRProtocol;
 
     macro_rules! valid_name_test {

@@ -13,6 +13,7 @@ use crate::utils::{SummersetError, InitError};
 use tonic::transport;
 
 /// Interface that every replicator server module variant must provide.
+#[tonic::async_trait]
 pub trait ReplicatorServerNode: fmt::Debug + Send + Sync {
     /// Create a new server replicator module.
     fn new(peers: Vec<String>) -> Result<Self, InitError>
@@ -27,7 +28,7 @@ pub trait ReplicatorServerNode: fmt::Debug + Send + Sync {
     /// concurrency issues should be resolved inside the implementation, e.g.,
     /// using `Mutex`. Similar semantics apply to the referenced
     /// `SummersetServerNode`, which should be the struct containing `self`.
-    fn connect_peers(
+    async fn connect_peers(
         &self,
         node: &SummersetServerNode,
     ) -> Result<(), InitError>;
@@ -41,7 +42,7 @@ pub trait ReplicatorServerNode: fmt::Debug + Send + Sync {
     /// concurrency issues should be resolved inside the implementation, e.g.,
     /// using `Mutex`. Similar semantics apply to the referenced
     /// `SummersetServerNode`, which should be the struct containing `self`.
-    fn replicate(
+    async fn replicate(
         &self,
         cmd: Command,
         node: &SummersetServerNode,
@@ -68,6 +69,7 @@ pub trait ReplicatorCommService: fmt::Debug {
 }
 
 /// Interface that every replicator client stub variant must provide.
+#[tonic::async_trait]
 pub trait ReplicatorClientStub: fmt::Debug + Send + Sync {
     /// Create a new client replicator stub.
     fn new(servers: Vec<String>) -> Result<Self, InitError>
@@ -81,7 +83,7 @@ pub trait ReplicatorClientStub: fmt::Debug + Send + Sync {
     /// concurrency issues should be resolved inside the implementation, e.g.,
     /// using `Mutex`. Similar semantics apply to the referenced
     /// `SummersetClientStub`, which should be the struct containing `self`.
-    fn connect_servers(
+    async fn connect_servers(
         &self,
         stub: &SummersetClientStub,
     ) -> Result<(), InitError>;
@@ -95,7 +97,7 @@ pub trait ReplicatorClientStub: fmt::Debug + Send + Sync {
     /// concurrency issues should be resolved inside the implementation, e.g.,
     /// using `Mutex`. Similar semantics apply to the referenced
     /// `SummersetClientStub`, which should be the struct containing `self`.
-    fn complete(
+    async fn complete(
         &self,
         cmd: Command,
         stub: &SummersetClientStub,

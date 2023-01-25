@@ -897,6 +897,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "summerset_client",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]

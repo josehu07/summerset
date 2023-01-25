@@ -47,7 +47,9 @@ impl CLIArgs {
 }
 
 // Client benchmarking executable main entrance.
-fn main() -> Result<(), InitError> {
+// TODO: tweak tokio runtime configurations
+#[tokio::main]
+async fn main() -> Result<(), InitError> {
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
@@ -56,19 +58,19 @@ fn main() -> Result<(), InitError> {
     let mut client = SummersetClient::new(protocol, args.servers)?;
 
     // connect to server(s)
-    client.connect_servers()?;
+    client.connect_servers().await?;
 
-    println!("{:?}", client.get("Jose"));
-    println!("{:?}", client.put("Jose", "123"));
-    println!("{:?}", client.get("Jose"));
-    println!("{:?}", client.put("Jose", "456"));
-    println!("{:?}", client.get("Jose"));
+    println!("{:?}", client.get("Jose").await);
+    println!("{:?}", client.put("Jose", "123").await);
+    println!("{:?}", client.get("Jose").await);
+    println!("{:?}", client.put("Jose", "456").await);
+    println!("{:?}", client.get("Jose").await);
 
     Ok(())
 }
 
 #[cfg(test)]
-mod bench_tests {
+mod bench_args_tests {
     use super::{CLIArgs, SMRProtocol, InitError};
 
     #[test]

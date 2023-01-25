@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::external_api_proto::external_api_client::ExternalApiClient;
 
+use crate::{connect_fn, rpc_fn};
 use crate::protocols::SMRProtocol;
 use crate::smr_server::SummersetServerNode;
 use crate::smr_client::SummersetClientStub;
@@ -21,10 +22,13 @@ use tonic::transport;
 
 use rand::Rng;
 
+use atomic_refcell::AtomicRefCell;
+
 /// DoNothing replication protocol server module.
 #[derive(Debug, Default)]
 pub struct DoNothingServerNode {}
 
+#[tonic::async_trait]
 impl ReplicatorServerNode for DoNothingServerNode {
     /// Create a new DoNothing protocol server module.
     fn new(_peers: Vec<String>) -> Result<Self, InitError> {
@@ -32,7 +36,7 @@ impl ReplicatorServerNode for DoNothingServerNode {
     }
 
     /// Establish connections to peers.
-    fn connect_peers(
+    async fn connect_peers(
         &self,
         _node: &SummersetServerNode,
     ) -> Result<(), InitError> {
@@ -40,7 +44,7 @@ impl ReplicatorServerNode for DoNothingServerNode {
     }
 
     /// Do nothing and immediately execute the command on state machine.
-    fn replicate(
+    async fn replicate(
         &self,
         cmd: Command,
         node: &SummersetServerNode,
@@ -90,9 +94,12 @@ pub struct DoNothingClientStub {
     /// Connection established to the chosen server.
     ///
     /// `Mutex` is required since it may be shared by multiple client threads.
-    curr_conn: Mutex<Option<ExternalApiClient<transport::Channel>>>,
+    curr_conn: Mutex<
+        Option<Arc<AtomicRefCell<ExternalApiClient<transport::Channel>>>>,
+    >,
 }
 
+#[tonic::async_trait]
 impl ReplicatorClientStub for DoNothingClientStub {
     /// Create a new DoNothing protocol client stub.
     fn new(servers: Vec<String>) -> Result<Self, InitError> {
@@ -111,32 +118,52 @@ impl ReplicatorClientStub for DoNothingClientStub {
     }
 
     /// Establish connection(s) to server(s).
-    fn connect_servers(
+    async fn connect_servers(
         &self,
         stub: &SummersetClientStub,
     ) -> Result<(), InitError> {
-        // take lock on `self.curr_conn`
-        let mut curr_conn_guard = self.curr_conn.lock().unwrap();
-
         // connect to chosen server
-        *curr_conn_guard =
-            Some(stub.rpc_sender.connect(&self.servers[self.curr_idx])?);
+        let conn = stub
+            .rpc_sender
+            .connect(
+                connect_fn!(ExternalApiClient, connect),
+                self.servers[self.curr_idx].clone(),
+            )
+            .await?;
+
+        // take lock on `self.curr_conn` and save the connection struct
+        let mut curr_conn_guard = self.curr_conn.lock().unwrap();
+        *curr_conn_guard = Some(Arc::new(AtomicRefCell::new(conn)));
+
         Ok(())
     }
 
     /// Complete the given command by sending it to the currently connected
-    /// server and trust the result unconditionally. If haven't established
-    /// any connection, randomly pick a server and connect to it now.
-    fn complete(
+    /// server and trust the result unconditionally.
+    async fn complete(
         &self,
         cmd: Command,
         stub: &SummersetClientStub,
     ) -> Result<CommandResult, SummersetError> {
-        // take lock on `self.curr_conn`
-        let mut curr_conn_guard = self.curr_conn.lock().unwrap();
+        // compose the request struct
+        let request = SummersetClientStub::serialize_request(&cmd)?;
+        let request_id = request.request_id;
+
+        // take lock on `self.curr_conn` and get the connection struct
+        let conn = {
+            let curr_conn_guard = self.curr_conn.lock().unwrap();
+            curr_conn_guard.as_ref().unwrap().clone()
+        };
 
         // send RPC to connected server
-        stub.rpc_sender
-            .issue(curr_conn_guard.as_mut().unwrap(), cmd)
+        let reply = stub
+            .rpc_sender
+            .send_rpc(rpc_fn!(ExternalApiClient, do_command), request, conn)
+            .await?;
+
+        // extrace the result struct
+        let result =
+            SummersetClientStub::deserialize_reply(&reply, request_id)?;
+        Ok(result)
     }
 }

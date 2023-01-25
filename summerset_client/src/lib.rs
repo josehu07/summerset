@@ -43,15 +43,15 @@ impl SummersetClient {
     }
 
     /// Establish connection(s) to server(s).
-    pub fn connect_servers(&mut self) -> Result<(), InitError> {
-        self.stub.connect_servers()
+    pub async fn connect_servers(&mut self) -> Result<(), InitError> {
+        self.stub.connect_servers().await
     }
 
     /// Do a Get request, looking up a key in the state machine. Returns
     /// `Ok(Option<String>)` on success, where the option is `Some(value)` if
     /// the key is found in the state machine, or `None` if the key does not
     /// exist. Returns `Err(SummersetError)` if any error occurs.
-    pub fn get(
+    pub async fn get(
         &mut self,
         key: impl Into<String>,
     ) -> Result<Option<String>, SummersetError> {
@@ -63,7 +63,7 @@ impl SummersetClient {
         let cmd = Command::Get { key: key_s };
 
         // invoke client stub command interface
-        match self.stub.complete(cmd) {
+        match self.stub.complete(cmd).await {
             Ok(CommandResult::GetResult { value }) => Ok(value),
             Err(e) => Err(e),
             _ => Err(SummersetError::WrongCommandType),
@@ -75,7 +75,7 @@ impl SummersetClient {
     /// `Some(old_value)` if the key was already found in the state machine, or
     /// `None` if the key did not exist. Returns `Err(SummersetError)` if any
     /// error occurs.
-    pub fn put(
+    pub async fn put(
         &mut self,
         key: impl Into<String>,
         value: impl Into<String>,
@@ -91,7 +91,7 @@ impl SummersetClient {
         };
 
         // invoke client stub command interface
-        match self.stub.complete(cmd) {
+        match self.stub.complete(cmd).await {
             Ok(CommandResult::PutResult { old_value }) => Ok(old_value),
             Err(e) => Err(e),
             _ => Err(SummersetError::WrongCommandType),
@@ -100,7 +100,7 @@ impl SummersetClient {
 }
 
 #[cfg(test)]
-mod client_tests {
+mod client_args_tests {
     use super::{SummersetClient, SMRProtocol, InitError};
 
     #[test]
