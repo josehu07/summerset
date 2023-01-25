@@ -12,6 +12,10 @@ use tonic::transport;
 
 use tokio::task::JoinHandle;
 
+use log::info;
+
+use env_logger::Env;
+
 use summerset::{
     SummersetServerNode, SummersetApiService, InternalCommService, SMRProtocol,
     InitError,
@@ -164,6 +168,13 @@ impl CLIArgs {
 // TODO: tweak tokio runtime configurations
 #[tokio::main]
 async fn main() -> Result<(), InitError> {
+    // initialize env_logger
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .format_module_path(true)
+        .format_target(false)
+        .init();
+
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
@@ -190,23 +201,24 @@ async fn main() -> Result<(), InitError> {
     // add and start the server internal communication tonic service
     let smr_join_handle = server.spawn_smr_service(protocol, smr_addr)?;
     if smr_join_handle.is_some() {
-        println!("Starting internal communication service on {}...", smr_addr);
+        info!("Starting internal communication service on {}...", smr_addr);
 
         // retry until connected to server peers
-        println!("Connecting to server peers...");
+        // TODO: better peers initialization logic
+        info!("Connecting to server peers...");
         let mut retry_cnt = 0;
         while server.connect_peers().await.is_err() {
             thread::sleep(Duration::from_secs(1));
             retry_cnt += 1;
-            println!("  retry attempt {}", retry_cnt);
+            info!("  retry attempt {}", retry_cnt);
         }
     } else {
-        println!("No internal communication service required by protocol...");
+        info!("No internal communication service required by protocol...");
     }
 
     // add and start the client key-value API tonic service
     let api_join_handle = server.spawn_api_service(api_addr)?;
-    println!("Starting client key-value API service on {}...", api_addr);
+    info!("Starting client key-value API service on {}...", api_addr);
 
     // both services should never return in normal execution
     if let Some(smr_join_handle) = smr_join_handle {

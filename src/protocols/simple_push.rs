@@ -34,6 +34,8 @@ use rand::Rng;
 
 use atomic_refcell::AtomicRefCell;
 
+use log::debug;
+
 /// SimplePush replication protocol server module.
 #[derive(Debug, Default)]
 pub struct SimplePushServerNode {
@@ -98,6 +100,8 @@ impl ReplicatorServerNode for SimplePushServerNode {
         cmd: Command,
         node: &SummersetServerNode,
     ) -> Result<CommandResult, SummersetError> {
+        debug!("client req {:?}", cmd);
+
         if let Command::Put { ref key, ref value } = cmd {
             // compose the request struct
             let request_id: u64 = rand::thread_rng().gen(); // random u64 ID
@@ -136,10 +140,7 @@ impl ReplicatorServerNode for SimplePushServerNode {
             }
         }
 
-        // TODO: remove me
-        if let Command::Put { ref key, ref value } = cmd {
-            println!("apply-C {} {}", key, value);
-        }
+        debug!("replicated {:?}", cmd);
 
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
@@ -161,9 +162,7 @@ impl SimplePush for SimplePushCommService {
         request: Request<PushRecordRequest>,
     ) -> Result<Response<PushRecordReply>, Status> {
         let req = request.into_inner();
-
-        // TODO: remove me
-        println!("apply-S {} {}", &req.key, &req.value);
+        debug!("push_record {} {}", &req.key, &req.value);
 
         // blindly apply the command locally
         self.node.kvlocal.execute(&Command::Put {

@@ -2,6 +2,8 @@
 
 use std::collections::HashSet;
 
+use log::debug;
+
 use summerset::{SummersetClientStub, Command, CommandResult};
 pub use summerset::{SMRProtocol, SummersetError, InitError};
 
@@ -61,6 +63,8 @@ impl SummersetClient {
             return Err(SummersetError::CommandEmptyKey);
         }
         let cmd = Command::Get { key: key_s };
+
+        debug!("client issue {:?}", cmd);
 
         // invoke client stub command interface
         match self.stub.complete(cmd).await {

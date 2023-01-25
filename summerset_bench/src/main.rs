@@ -4,6 +4,10 @@ use std::collections::HashSet;
 
 use clap::Parser;
 
+use log::info;
+
+use env_logger::Env;
+
 use summerset_client::{SummersetClient, SMRProtocol, InitError};
 
 /// Command line arguments definition.
@@ -50,6 +54,12 @@ impl CLIArgs {
 // TODO: tweak tokio runtime configurations
 #[tokio::main]
 async fn main() -> Result<(), InitError> {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .format_module_path(true)
+        .format_target(false)
+        .init();
+
     // read in and parse command line arguments
     let args = CLIArgs::parse();
     let protocol = args.sanitize()?;
@@ -60,11 +70,11 @@ async fn main() -> Result<(), InitError> {
     // connect to server(s)
     client.connect_servers().await?;
 
-    println!("{:?}", client.get("Jose").await);
-    println!("{:?}", client.put("Jose", "123").await);
-    println!("{:?}", client.get("Jose").await);
-    println!("{:?}", client.put("Jose", "456").await);
-    println!("{:?}", client.get("Jose").await);
+    info!("{:?}", client.get("Jose").await);
+    info!("{:?}", client.put("Jose", "123").await);
+    info!("{:?}", client.get("Jose").await);
+    info!("{:?}", client.put("Jose", "456").await);
+    info!("{:?}", client.get("Jose").await);
 
     Ok(())
 }

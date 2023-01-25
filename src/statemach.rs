@@ -5,6 +5,8 @@ use std::sync::Mutex;
 
 use serde::{Serialize, Deserialize};
 
+use log::debug;
+
 /// Command structure used internally by the server. Client request RPCs are
 /// transformed into this structure.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -53,14 +55,17 @@ impl StateMachine {
         // SummersetNode process to have crashed anyway
         let mut data_guard = self.data.lock().unwrap();
 
-        match cmd {
+        let result = match cmd {
             Command::Get { key } => CommandResult::GetResult {
                 value: data_guard.get(key).cloned(),
             },
             Command::Put { key, value } => CommandResult::PutResult {
                 old_value: data_guard.insert(key.clone(), value.clone()),
             },
-        }
+        };
+
+        debug!("executed {:?}", cmd);
+        result
     }
 }
 

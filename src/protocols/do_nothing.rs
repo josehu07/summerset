@@ -24,6 +24,8 @@ use rand::Rng;
 
 use atomic_refcell::AtomicRefCell;
 
+use log::debug;
+
 /// DoNothing replication protocol server module.
 #[derive(Debug, Default)]
 pub struct DoNothingServerNode {}
@@ -49,6 +51,8 @@ impl ReplicatorServerNode for DoNothingServerNode {
         cmd: Command,
         node: &SummersetServerNode,
     ) -> Result<CommandResult, SummersetError> {
+        debug!("client req {:?}", cmd);
+
         // the state machine has thread-safe API, so no need to use any
         // additional locks here
         Ok(node.kvlocal.execute(&cmd))
