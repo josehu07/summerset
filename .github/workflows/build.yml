@@ -19,4 +19,4 @@ jobs:
     - name: Get protobuf
       run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Build
-      run: cargo build --verbose --release
+      run: cargo build --all --verbose
