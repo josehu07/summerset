@@ -25,11 +25,3 @@ log = "0.4"
 
 [build-dependencies]
 tonic-build = "0.8"
-
-[features]
-default = ["all_protocols", "all_transport"]
-all_protocols = ["protocol_do_nothing", "protocol_simple_push"]
-protocol_do_nothing = []
-protocol_simple_push = []
-all_transport = ["transport_rpc"]
-transport_rpc = []
