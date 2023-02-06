@@ -1,6 +1,8 @@
 //! Public interface to the Summerset core library, linked by both server
 //! executable and client library.
 
+#![allow(clippy::uninlined_format_args)]
+
 mod smr_client;
 mod smr_server;
 mod statemach;
