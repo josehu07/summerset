@@ -2,6 +2,8 @@ import matplotlib
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
+import argparse
+from enum import Enum
 
 def calc_F_2_tier(F_formula, f_val, c_range):
     return [F_formula(f_val, c * f_val) for c in c_range]
@@ -23,13 +25,17 @@ def plot_F_2_tier(f_val, c_range, F_results_sym, F_results_asym):
     plt.savefig("F_2_tier.png", dpi=120)
     plt.close()
 
-if __name__ == "__main__":
-    f_val = 0.01
-    c_range = range(1, 16)
+def fail_rate_2_tier_model():
     F_sym = lambda f, fp: fp**3 + 6 * f * fp**2 + 3 * f**2 * fp
     F_asym = lambda f, fp: f**2 + 6 * f * fp**2
 
+    f_val = 0.01
+    c_range = range(1, 16)
+    
     F_sym_results = calc_F_2_tier(F_sym, f_val, c_range)
     F_asym_results = calc_F_2_tier(F_asym, f_val, c_range)
 
     plot_F_2_tier(f_val, c_range, F_sym_results, F_asym_results)
+
+if __name__ == "__main__":
+    fail_rate_2_tier_model()
