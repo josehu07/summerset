@@ -19,4 +19,8 @@ jobs:
     - name: Get protobuf
       run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Build
-      run: cargo build --all --verbose
+      run: cargo build --workspace --verbose
+    - name: Add clippy component
+      run: rustup component add clippy
+    - name: Clippy check
+      uses: actions-rs/clippy-check@v1
