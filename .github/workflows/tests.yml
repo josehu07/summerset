@@ -19,4 +19,4 @@ jobs:
     - name: Get protobuf
       run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Run tests
-      run: cargo test --all --verbose
+      run: cargo test --workspace --verbose

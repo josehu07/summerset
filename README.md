@@ -13,48 +13,46 @@ This codebase comprises the following pieces:
 
 * `proto/`: protobuf definitions for various APIs and replication protocols
 * `src/`: the core Summerset library, linked by both `_server` and `_client`
-* `summerset_server`: the Summerset server standalone executable
-* `summerset_client`: the Summerset client-side library, linked by all client executables
+* `summerset_server`: the server-side standalone executable
+* `summerset_client`: the client-side library, linked by all client executables
 * `summerset_bench`: a client executable for benchmarking purposes
 
 ## Build
 
-Build in debug mode:
+Build everything in debug or release (`-r`) mode:
 
 ```bash
-cargo build --all
+cargo build [-r] --workspace
 ```
 
 Run all unit tests:
 
 ```bash
-cargo test --all
-```
-
-Build in release mode:
-
-```bash
-cargo build --all --release
+cargo test [-r] --workspace
 ```
 
 ## Usage
 
+### Run Servers
+
 Run a server executable:
 
 ```bash
-cargo run -p summerset_server -- -h
+cargo run [-r] -p summerset_server -- -h
 ```
+
+The default logging level is set as >= `info`. To display debugging or even tracing logs, set the `RUST_LOG` environment variable to `debug` or `trace`, e.g.:
+
+```bash
+RUST_LOG=debug cargo run ...
+```
+
+### Run Clients
 
 Run the benchmarking client:
 
 ```bash
-cargo run -p summerset_bench -- -h
-```
-
-The default logging level is set as >= `info`. To display debugging or even tracing logs, set the `RUST_LOG` environment variable to `debug` or `trace`:
-
-```bash
-RUST_LOG=debug cargo run ...
+cargo run [-r] -p summerset_bench -- -h
 ```
 
 ## TODO List
@@ -67,3 +65,7 @@ RUST_LOG=debug cargo run ...
 * [ ] more protocols, comprehensive tests & CI
 * [ ] true benchmarking client
 * [ ] better usage README
+
+---
+
+**Lore**: [Summerset](https://en.uesp.net/wiki/Online:Summerset) Isles is the name of an elvish archipelagic province in the Elder Scrolls series.

@@ -1,5 +1,7 @@
 //! Summerset server node executable.
 
+#![allow(clippy::uninlined_format_args)]
+
 use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -126,7 +128,7 @@ struct CLIArgs {
     #[arg(short, long, default_value_t = String::from("DoNothing"))]
     protocol: String,
 
-    /// List of peer server nodes (e.g., '-s host1:smr_port -s host2:smr_port').
+    /// List of peer server nodes (e.g., '-n host1:smr_port -n host2:smr_port').
     #[arg(short, long)]
     node_peers: Vec<String>,
 }
