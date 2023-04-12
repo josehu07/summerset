@@ -22,7 +22,7 @@ def launch_servers(protocol, num_replicas):
     api_ports = list(range(50700, 50700 + num_replicas))
     comm_ports = list(range(50800, 50800 + num_replicas))
     assert len(comm_ports) == len(api_ports)
-    
+
     for api_port, comm_port in zip(api_ports, comm_ports):
         peers = []
         for peer_port in comm_ports:
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     #     raise ValueError("length of `comm_ports` does not match `api_ports`")
     if args.num_replicas <= 0 or args.num_replicas > 9:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
-    
+
     # kill all existing server processes
     print("NOTE: Killing all existing server processes...")
     os.system("pkill summerset_server")
