@@ -24,3 +24,4 @@ jobs:
       run: rustup component add clippy
     - name: Clippy check
       uses: actions-rs/clippy-check@v1
+      args: --workspace
