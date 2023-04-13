@@ -1,9 +1,10 @@
 //! Summerset server state machine implementation.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use serde::{Serialize, Deserialize};
+
+use tokio::sync::mpsc;
 
 use log::debug;
 
@@ -33,34 +34,26 @@ pub enum CommandResult {
 /// The local volatile state machine, which is simply an in-memory HashMap.
 #[derive(Debug, Default)]
 pub struct StateMachine {
-    // SummersetNode's async RPC handle is already wrapped in Arc, so we can
-    // directly use Mutex here without wrapping an Arc
-    data: Mutex<HashMap<String, String>>,
+    data: HashMap<String, String>,
 }
 
 impl StateMachine {
     /// Creates a new state machine.
     pub fn new() -> Self {
         StateMachine {
-            data: Mutex::new(HashMap::new()),
+            data: HashMap::new(),
         }
     }
 
-    /// Executes given command on the state machine. This method is thread-safe
-    /// (given that the state machine itself is wrapped in Arc) and handles
-    /// proper locking of state.
-    pub fn execute(&self, cmd: &Command) -> CommandResult {
-        // the .lock() method returns Err only if another thread crashed while
-        // holding this mutex, which should naturally lead to this entire
-        // SummersetNode process to have crashed anyway
-        let mut data_guard = self.data.lock().unwrap();
-
+    /// Executes given command on the state machine. This method is not
+    /// thread-safe and should only be called by the executer thread.
+    fn execute(&mut self, cmd: &Command) -> CommandResult {
         let result = match cmd {
             Command::Get { key } => CommandResult::GetResult {
-                value: data_guard.get(key).cloned(),
+                value: self.data.get(key).cloned(),
             },
             Command::Put { key, value } => CommandResult::PutResult {
-                old_value: data_guard.insert(key.clone(), value.clone()),
+                old_value: self.data.insert(key.clone(), value.clone()),
             },
         };
 
@@ -77,7 +70,7 @@ mod statemach_tests {
 
     #[test]
     fn get_empty() {
-        let sm = StateMachine::new();
+        let mut sm = StateMachine::new();
         assert_eq!(
             sm.execute(&Command::Get { key: "Jose".into() }),
             CommandResult::GetResult { value: None }
@@ -86,7 +79,7 @@ mod statemach_tests {
 
     #[test]
     fn put_one_get_one() {
-        let sm = StateMachine::new();
+        let mut sm = StateMachine::new();
         assert_eq!(
             sm.execute(&Command::Put {
                 key: "Jose".into(),
@@ -104,7 +97,7 @@ mod statemach_tests {
 
     #[test]
     fn put_twice() {
-        let sm = StateMachine::new();
+        let mut sm = StateMachine::new();
         assert_eq!(
             sm.execute(&Command::Put {
                 key: "Jose".into(),
@@ -133,7 +126,7 @@ mod statemach_tests {
 
     #[test]
     fn put_rand_get_rand() {
-        let sm = StateMachine::new();
+        let mut sm = StateMachine::new();
         let mut ref_sm = HashMap::<String, String>::new();
         for _ in 0..100 {
             let key = gen_rand_str(1);
