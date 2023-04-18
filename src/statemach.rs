@@ -1,52 +1,73 @@
-//! Summerset server state machine implementation.
+//! Summerset server state machine module implementation.
 
 use std::collections::HashMap;
 
 use serde::{Serialize, Deserialize};
 
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
-use log::debug;
+use log::{debug, error};
 
-/// Command structure used internally by the server. Client request RPCs are
-/// transformed into this structure.
+/// Command to the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Command {
-    /// Get command. Contains key.
+    /// Get the value of given key.
     Get { key: String },
 
-    /// Put command. Contains key and new value string.
+    /// Put a new value into key.
     Put { key: String, value: String },
 }
 
 /// Command execution result returned by the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CommandResult {
-    /// Result of Get command. Contains Some(value) if key is found in state
-    /// machine, else None.
+    /// Some(value) if key is found in state machine, else None.
     GetResult { value: Option<String> },
 
-    /// Result of Put command. Contains Some(old_value) if key is found in
-    /// state machine, else None.
+    /// Some(old_value) if key was in state machine, else None.
     PutResult { old_value: Option<String> },
 }
 
 /// The local volatile state machine, which is simply an in-memory HashMap.
 #[derive(Debug, Default)]
 pub struct StateMachine {
+    /// HashMap from key -> value.
     data: HashMap<String, String>,
+
+    /// Join handle of the executor thread, if there is one.
+    executor_handle: Option<JoinHandle<()>>,
 }
 
 impl StateMachine {
-    /// Creates a new state machine.
+    /// Creates a new state machine with one executor thread.
     pub fn new() -> Self {
         StateMachine {
             data: HashMap::new(),
+            executor_handle: None,
         }
     }
 
+    /// Spawns the executor thread. Creates an exec channel for submitting
+    /// commands to the state machine and an ack channel for getting results.
+    /// Returns the sender of the channel.
+    pub fn spawn_executor(
+        &mut self,
+        chan_exec_cap: usize,
+        chan_ack_cap: usize,
+    ) -> (mpsc::Sender<&Command>, mpsc::Receiver<CommandResult>) {
+        let (tx_exec, mut rx_exec) = mpsc::channel(chan_exec_cap);
+        let (tx_ack, mut rx_ack) = mpsc::channel(chan_ack_cap);
+
+        let executor_handle =
+            tokio::spawn(self.executor_thread(rx_exec, tx_ack));
+        self.executor_handle = Some(executor_handle);
+
+        (tx_exec, rx_ack)
+    }
+
     /// Executes given command on the state machine. This method is not
-    /// thread-safe and should only be called by the executer thread.
+    /// thread-safe and should only be called by the executor thread.
     fn execute(&mut self, cmd: &Command) -> CommandResult {
         let result = match cmd {
             Command::Get { key } => CommandResult::GetResult {
@@ -60,11 +81,30 @@ impl StateMachine {
         debug!("executed {:?}", cmd);
         result
     }
+
+    /// Executor thread function.
+    async fn executor_thread(
+        &mut self,
+        mut rx_exec: mpsc::Receiver<&Command>,
+        tx_ack: mpsc::Sender<CommandResult>,
+    ) {
+        loop {
+            match rx_exec.recv().await {
+                Some(cmd) => {
+                    let res = self.execute(cmd);
+                    if let Err(e) = tx_ack.send(res).await {
+                        error!("error sending to tx_ack: {}", e);
+                    }
+                }
+                None => break, // channel gets closed and no messages remain
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod statemach_tests {
-    use super::{Command, CommandResult, StateMachine};
+    use super::*;
     use std::collections::HashMap;
     use rand::{Rng, seq::SliceRandom};
 
@@ -113,7 +153,7 @@ mod statemach_tests {
             CommandResult::PutResult {
                 old_value: Some("180".into())
             }
-        )
+        );
     }
 
     fn gen_rand_str(len: usize) -> String {
@@ -153,7 +193,31 @@ mod statemach_tests {
                 CommandResult::GetResult {
                     value: ref_sm.get(&key).cloned()
                 }
-            )
+            );
         }
+    }
+
+    #[test]
+    fn channels_exec_ack() {
+        let mut sm = StateMachine::new();
+        let (tx_exec, mut rx_ack) = sm.spawn_executor(2, 2);
+        tokio_test::block_on(tx_exec.send(&Command::Put {
+            key: "Jose".into(),
+            value: "179".into(),
+        }));
+        tokio_test::block_on(tx_exec.send(&Command::Put {
+            key: "Jose".into(),
+            value: "180".into(),
+        }));
+        assert_eq!(
+            tokio_test::block_on(rx_ack.recv()),
+            Some(CommandResult::PutResult { old_value: None })
+        );
+        assert_eq!(
+            tokio_test::block_on(rx_ack.recv()),
+            Some(CommandResult::PutResult {
+                old_value: Some("179".into())
+            })
+        );
     }
 }

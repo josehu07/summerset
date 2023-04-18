@@ -9,7 +9,7 @@ use crate::external_api_proto::external_api_server::{
 
 use crate::statemach::{Command, CommandResult, StateMachine};
 use crate::replicator::{ReplicatorServerNode, ReplicatorCommService};
-use crate::rpc_sender::TonicRPCSender;
+use crate::transport::TonicRPCSender;
 use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 

@@ -4,7 +4,7 @@ use crate::external_api_proto::{DoCommandRequest, DoCommandReply};
 
 use crate::statemach::{Command, CommandResult};
 use crate::replicator::ReplicatorClientStub;
-use crate::rpc_sender::TonicRPCSender;
+use crate::transport::TonicRPCSender;
 use crate::protocols::SMRProtocol;
 use crate::utils::{SummersetError, InitError};
 
