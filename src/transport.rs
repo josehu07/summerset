@@ -1,32 +1,54 @@
-//! Server internal RPC transport module implementation.
+//! Server internal TCP transport module implementation.
 
 use std::collections::HashMap;
 
 use crate::utils::SummersetError;
+use crate::replica::GenericReplica;
 
-use tonic::{Request, Response, Status};
-use tonic::transport;
+use tokio::net::{TcpListener, TcpStream};
 
-/// Server internal RPC transport module.
+use log::error;
+
+/// Server internal TCP transport module.
 #[derive(Debug)]
-pub struct TransportHub<RpcClient> {
-    /// Map from peer ID -> RPC client connection.
-    peers: HashMap<u8, RpcClient>,
+pub struct TransportHub<'r, R: 'r + GenericReplica> {
+    /// Reference to protocol-specific replica struct.
+    replica: &'r R,
+
+    /// Map from peer ID -> address string.
+    peer_addrs: HashMap<u8, String>,
+
+    /// Map from peer ID -> TCP connection.
+    peer_conns: HashMap<u8, TcpStream>,
 }
 
-impl<RpcClient> TransportHub<RpcClient> {
-    /// Create a new server internal RPC transport hub.
-    pub fn new() -> Self {
-        TransportHub {
-            peers: HashMap::new(),
-        }
+impl<'r, R> TransportHub<'r, R> {
+    /// Create a new server internal TCP transport hub.
+    pub fn new(replica: &'r R) -> Result<Self, SummersetError> {
+        Ok(TransportHub {
+            replica,
+            peer_addrs: HashMap::new(),
+            peer_conns: HashMap::new(),
+        })
     }
 
     pub async fn connect_peer(
+        &mut self,
         id: u8,
         addr: String,
     ) -> Result<(), SummersetError> {
-        let addr_str = format!("http://{}", &addr);
-        RpcClient::connect(addr_str).await?;
+        if self.peer_addrs.contains_key(&id) {
+            return logged_err!(
+                self.replica.id(),
+                "peer ID {} already in peer_addrs",
+                id
+            );
+        }
+
+        let mut stream = TcpStream::connect(format!("http://{}", addr)).await?;
+        self.peer_addrs.insert(id, addr);
+        self.peer_conns.insert(id, stream);
+
+        Ok(())
     }
 }

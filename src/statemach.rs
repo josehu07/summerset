@@ -2,12 +2,15 @@
 
 use std::collections::HashMap;
 
+use crate::utils::SummersetError;
+use crate::replica::GenericReplica;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use log::{debug, error};
+use log::{debug, info, error};
 
 /// Command to the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -31,7 +34,10 @@ pub enum CommandResult {
 
 /// The local volatile state machine, which is simply an in-memory HashMap.
 #[derive(Debug, Default)]
-pub struct StateMachine {
+pub struct StateMachine<'r, R: 'r + GenericReplica> {
+    /// Reference to protocol-specific replica struct.
+    replica: &'r R,
+
     /// HashMap from key -> value.
     data: HashMap<String, String>,
 
@@ -39,13 +45,14 @@ pub struct StateMachine {
     executor_handle: Option<JoinHandle<()>>,
 }
 
-impl StateMachine {
+impl<'r, R> StateMachine<'r, R> {
     /// Creates a new state machine with one executor thread.
-    pub fn new() -> Self {
-        StateMachine {
+    pub fn new(replica: &'r R) -> Result<Self, SummersetError> {
+        Ok(StateMachine {
+            replica,
             data: HashMap::new(),
             executor_handle: None,
-        }
+        })
     }
 
     /// Spawns the executor thread. Creates an exec channel for submitting
@@ -78,7 +85,7 @@ impl StateMachine {
             },
         };
 
-        debug!("executed {:?}", cmd);
+        pf_debug!(self.replica.id(), "executed {:?}", cmd);
         result
     }
 
@@ -88,17 +95,25 @@ impl StateMachine {
         mut rx_exec: mpsc::Receiver<&Command>,
         tx_ack: mpsc::Sender<CommandResult>,
     ) {
+        pf_info!(self.replica.id(), "executor thread spawned");
+
         loop {
             match rx_exec.recv().await {
                 Some(cmd) => {
                     let res = self.execute(cmd);
                     if let Err(e) = tx_ack.send(res).await {
-                        error!("error sending to tx_ack: {}", e);
+                        pf_error!(
+                            self.replica.id(),
+                            "error sending to tx_ack: {}",
+                            e
+                        );
                     }
                 }
                 None => break, // channel gets closed and no messages remain
             }
         }
+
+        pf_info!(self.replica.id(), "executor thread exitted");
     }
 }
 
@@ -106,11 +121,13 @@ impl StateMachine {
 mod statemach_tests {
     use super::*;
     use std::collections::HashMap;
+    use crate::replica::DummyReplica;
     use rand::{Rng, seq::SliceRandom};
 
     #[test]
     fn get_empty() {
-        let mut sm = StateMachine::new();
+        let replica = DummyReplica::new(7);
+        let mut sm = StateMachine::new(&replica);
         assert_eq!(
             sm.execute(&Command::Get { key: "Jose".into() }),
             CommandResult::GetResult { value: None }
@@ -119,7 +136,8 @@ mod statemach_tests {
 
     #[test]
     fn put_one_get_one() {
-        let mut sm = StateMachine::new();
+        let replica = DummyReplica::new(7);
+        let mut sm = StateMachine::new(&replica);
         assert_eq!(
             sm.execute(&Command::Put {
                 key: "Jose".into(),
@@ -137,7 +155,8 @@ mod statemach_tests {
 
     #[test]
     fn put_twice() {
-        let mut sm = StateMachine::new();
+        let replica = DummyReplica::new(7);
+        let mut sm = StateMachine::new(&replica);
         assert_eq!(
             sm.execute(&Command::Put {
                 key: "Jose".into(),
@@ -166,7 +185,8 @@ mod statemach_tests {
 
     #[test]
     fn put_rand_get_rand() {
-        let mut sm = StateMachine::new();
+        let replica = DummyReplica::new(7);
+        let mut sm = StateMachine::new(&replica);
         let mut ref_sm = HashMap::<String, String>::new();
         for _ in 0..100 {
             let key = gen_rand_str(1);
@@ -199,7 +219,8 @@ mod statemach_tests {
 
     #[test]
     fn channels_exec_ack() {
-        let mut sm = StateMachine::new();
+        let replica = DummyReplica::new(7);
+        let mut sm = StateMachine::new(&replica);
         let (tx_exec, mut rx_ack) = sm.spawn_executor(2, 2);
         tokio_test::block_on(tx_exec.send(&Command::Put {
             key: "Jose".into(),

@@ -1,24 +1,13 @@
 //! Public interface to the Summerset core library, linked by both server
 //! executable and client library.
 
-#![allow(clippy::uninlined_format_args)]
-
-mod smr_client;
-mod smr_server;
-mod statemach;
-mod replicator;
-mod transport;
-mod protocols;
+#[macro_use]
 mod utils;
 
-pub use smr_client::SummersetClientStub;
-pub use smr_server::{
-    SummersetServerNode, SummersetApiService, InternalCommService,
-};
-pub use statemach::{Command, CommandResult};
-pub use protocols::SMRProtocol;
-pub use utils::{SummersetError, InitError};
+mod statemach;
+mod replica;
+mod transport;
+mod storage;
+mod protocols;
 
-pub mod external_api_proto {
-    tonic::include_proto!("external_api");
-}
+pub use utils::SummersetError;
