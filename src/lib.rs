@@ -3,5 +3,3 @@
 
 mod core;
 mod protocols;
-
-pub use crate::core::utils::SummersetError;
