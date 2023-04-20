@@ -57,14 +57,11 @@ cargo run [-r] -p summerset_bench -- -h
 
 ## TODO List
 
+* [*] event-based programming structure
 * [ ] transport layer abstraction
-* [ ] user-friendly swarm run scripts
-* [ ] Tonic RPC timeout handling
 * [ ] differentiate between read/non-read commands
-* [ ] finer-grained state machine locking
-* [ ] more protocols, comprehensive tests & CI
-* [ ] true benchmarking client
-* [ ] better usage README
+* [ ] membership discovery & view changes
+* [ ] better README
 
 ---
 

@@ -117,11 +117,11 @@ impl SummersetServer {
 #[command(author, version, about, long_about = None)]
 struct CLIArgs {
     /// Key-value API port open to clients.
-    #[arg(short, long, default_value_t = 50077)]
+    #[arg(short, long, default_value_t = 52700)]
     api_port: u16,
 
     /// Internal port used for SMR server-server RPCs.
-    #[arg(short, long, default_value_t = 50078)]
+    #[arg(short, long, default_value_t = 52800)]
     smr_port: u16,
 
     /// Name of SMR protocol to use.

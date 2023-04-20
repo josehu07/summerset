@@ -16,8 +16,6 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    - name: Get protobuf
-      run: sudo apt install -y protobuf-compiler libprotobuf-dev
     - name: Build
       run: cargo build --workspace --verbose
     - name: Add clippy component
