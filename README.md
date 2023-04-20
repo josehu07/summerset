@@ -65,4 +65,4 @@ cargo run [-r] -p summerset_bench -- -h
 
 ---
 
-**Lore**: [Summerset](https://en.uesp.net/wiki/Online:Summerset) Isles is the name of an elvish archipelagic province in the Elder Scrolls series.
+**Lore**: [Summerset Isles](https://en.uesp.net/wiki/Online:Summerset) is the name of an elvish archipelagic province in the Elder Scrolls series.

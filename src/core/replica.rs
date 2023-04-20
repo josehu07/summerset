@@ -42,7 +42,7 @@ impl DummyReplica {
                 id, population
             )));
         }
-        if let Err(e) = addr.parse::<SocketAddr>() {
+        if let Err(_) = addr.parse::<SocketAddr>() {
             return Err(SummersetError(format!(
                 "invalid addr string '{}'",
                 addr

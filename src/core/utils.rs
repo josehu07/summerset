@@ -99,7 +99,7 @@ macro_rules! logged_err {
 pub type ReplicaId = u8;
 
 /// Compact bitmap for replica ID -> bool mapping, suited for transport.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ReplicaMap(pub bitv::BitVec<u8>);
 
 impl ReplicaMap {
