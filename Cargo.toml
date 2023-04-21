@@ -14,7 +14,7 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 
 [dependencies]
 bitvec = "1.0"
-tokio = { version = "1.24", features = ["macros", "rt-multi-thread", "sync", "time", "net"] }
+tokio = { version = "1.27", features = ["macros", "rt-multi-thread", "sync", "time", "net", "fs"] }
 rand = "0.8"
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }

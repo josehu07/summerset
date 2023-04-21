@@ -26,10 +26,10 @@ pub enum Command {
 /// Command execution result returned by the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CommandResult {
-    /// Some(value) if key is found in state machine, else None.
+    /// `Some(value)` if key is found in state machine, else `None`.
     GetResult { value: Option<String> },
 
-    /// Some(old_value) if key was in state machine, else None.
+    /// `Some(old_value)` if key was in state machine, else `None`.
     PutResult { old_value: Option<String> },
 }
 
@@ -37,8 +37,11 @@ pub enum CommandResult {
 type State = HashMap<String, String>;
 
 /// The local volatile state machine, which is simply an in-memory HashMap.
-#[derive(Debug, Default)]
-pub struct StateMachine<'r, Rpl: 'r + GenericReplica> {
+#[derive(Debug)]
+pub struct StateMachine<'r, Rpl>
+where
+    Rpl: 'r + GenericReplica,
+{
     /// Reference to protocol-specific replica struct.
     replica: &'r Rpl,
 
@@ -51,7 +54,7 @@ pub struct StateMachine<'r, Rpl: 'r + GenericReplica> {
     /// Receiver side of the ack channel.
     rx_ack: Option<mpsc::Receiver<CommandResult>>,
 
-    /// Join handle of the executor thread, if there is one.
+    /// Join handle of the executor thread.
     executor_handle: Option<JoinHandle<()>>,
 }
 
@@ -75,25 +78,16 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         chan_exec_cap: usize,
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
+        let me = self.replica.id();
+
         if let Some(_) = self.executor_handle {
-            return logged_err!(
-                self.replica.id(),
-                "executor thread already spawned"
-            );
+            return logged_err!(me, "executor thread already spawned");
         }
         if chan_exec_cap == 0 {
-            return logged_err!(
-                self.replica.id(),
-                "invalid chan_exec_cap {}",
-                chan_exec_cap
-            );
+            return logged_err!(me, "invalid chan_exec_cap {}", chan_exec_cap);
         }
         if chan_ack_cap == 0 {
-            return logged_err!(
-                self.replica.id(),
-                "invalid chan_ack_cap {}",
-                chan_ack_cap
-            );
+            return logged_err!(me, "invalid chan_ack_cap {}", chan_ack_cap);
         }
 
         let (tx_exec, mut rx_exec) = mpsc::channel(chan_exec_cap);
@@ -102,7 +96,7 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         self.rx_ack = Some(rx_ack);
 
         let executor_handle = tokio::spawn(StateMachine::executor_thread(
-            self.replica.id(),
+            me,
             self.state.clone(),
             rx_exec,
             tx_ack,
@@ -143,15 +137,13 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
 // StateMachine executor thread implementation
 impl<'r, Rpl> StateMachine<'r, Rpl> {
     /// Executes given command on the state machine state.
-    fn execute(state: &Mutex<State>, cmd: &Command) -> CommandResult {
-        let mut state_guard = state.lock().unwrap();
-
+    fn execute(state: &mut State, cmd: &Command) -> CommandResult {
         let result = match cmd {
             Command::Get { key } => CommandResult::GetResult {
-                value: state_guard.get(key).cloned(),
+                value: state.get(key).cloned(),
             },
             Command::Put { key, value } => CommandResult::PutResult {
-                old_value: state_guard.insert(key.clone(), value.clone()),
+                old_value: state.insert(key.clone(), value.clone()),
             },
         };
 
@@ -170,7 +162,10 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         loop {
             match rx_exec.recv().await {
                 Some(cmd) => {
-                    let res = StateMachine::execute(&state, &cmd);
+                    let res = {
+                        let mut state_guard = state.lock().unwrap();
+                        StateMachine::execute(&mut state_guard, &cmd)
+                    };
                     pf_trace!(me, "executed {:?}", cmd);
 
                     if let Err(e) = tx_ack.send(res).await {
@@ -197,9 +192,10 @@ mod statemach_tests {
     fn get_empty() {
         let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
         let mut sm = StateMachine::new(&replica);
+        let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
-                &sm.state,
+                &mut state_guard,
                 &Command::Get { key: "Jose".into() }
             ),
             CommandResult::GetResult { value: None }
@@ -210,9 +206,10 @@ mod statemach_tests {
     fn put_one_get_one() {
         let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
         let mut sm = StateMachine::new(&replica);
+        let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
-                &sm.state,
+                &mut state_guard,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "180".into(),
@@ -222,7 +219,7 @@ mod statemach_tests {
         );
         assert_eq!(
             StateMachine::execute(
-                &sm.state,
+                &mut state_guard,
                 &Command::Get { key: "Jose".into() }
             ),
             CommandResult::GetResult {
@@ -235,9 +232,10 @@ mod statemach_tests {
     fn put_twice() {
         let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
         let mut sm = StateMachine::new(&replica);
+        let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
-                &sm.state,
+                &mut state_guard,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "180".into()
@@ -247,7 +245,7 @@ mod statemach_tests {
         );
         assert_eq!(
             StateMachine::execute(
-                &sm.state,
+                &mut state_guard,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "185".into()
@@ -272,12 +270,13 @@ mod statemach_tests {
         let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
         let mut sm = StateMachine::new(&replica);
         let mut ref_sm = HashMap::<String, String>::new();
+        let mut state_guard = sm.state.lock().unwrap();
         for _ in 0..100 {
             let key = gen_rand_str(1);
             let value = gen_rand_str(10);
             assert_eq!(
                 StateMachine::execute(
-                    &sm.state,
+                    &mut state_guard,
                     &Command::Put {
                         key: key.clone(),
                         value: value.clone()
@@ -297,7 +296,7 @@ mod statemach_tests {
             };
             assert_eq!(
                 StateMachine::execute(
-                    &sm.state,
+                    &mut state_guard,
                     &Command::Get { key: key.clone() }
                 ),
                 CommandResult::GetResult {

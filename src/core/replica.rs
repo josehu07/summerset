@@ -18,6 +18,7 @@ pub trait GenericReplica {
 }
 
 /// Dummy replica type, mainly for testing purposes.
+#[derive(Debug)]
 pub struct DummyReplica {
     id: ReplicaId,
     population: u8,

@@ -1,8 +1,9 @@
 //! Server internal TCP transport module implementation.
 
 use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::core::utils::{SummersetError, ReplicaId, ReplicaMap};
 use crate::core::replica::GenericReplica;
@@ -13,7 +14,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -21,11 +22,11 @@ use log::{trace, debug, info, error};
 
 /// Server internal TCP transport module.
 #[derive(Debug)]
-pub struct TransportHub<
-    'r,
+pub struct TransportHub<'r, Rpl, Msg>
+where
     Rpl: 'r + GenericReplica,
     Msg: Serialize + DeserializeOwned,
-> {
+{
     /// Reference to protocol-specific replica struct.
     replica: &'r Rpl,
 
@@ -39,7 +40,7 @@ pub struct TransportHub<
     /// Receiver side of the recv channel.
     rx_recv: Option<mpsc::Receiver<(ReplicaId, Msg)>>,
 
-    /// TCP Listener for peer connections, if there is one.
+    /// TCP Listener for peer connections.
     peer_listener: Option<TcpListener>,
 
     /// Map from peer ID -> TCP connection used in sending direction, shared
@@ -50,7 +51,7 @@ pub struct TransportHub<
     /// stream is shared with the corresponding message receiver thread.
     peer_recv_conns: HashMap<ReplicaId, Arc<Mutex<TcpStream>>>,
 
-    /// Join handle of the message sender thread, if there is one.
+    /// Join handle of the message sender thread.
     msg_sender_handle: Option<JoinHandle<()>>,
 
     /// Map from peer ID -> message listener thread join handles.
@@ -334,6 +335,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         loop {
             match rx_send.recv().await {
                 Some((msg, target)) => {
+                    // need tokio::sync::Mutex here since held across await
                     let mut send_conns_guard = send_conns.lock().unwrap();
 
                     for (id, to_send) in target.iter().enumerate() {
@@ -357,8 +359,9 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
                             .await
                             {
                                 pf_error!(me, "error sending to {}: {}", id, e);
+                            } else {
+                                pf_trace!(me, "sent to {} msg {:?}", id, msg);
                             }
-                            pf_trace!(me, "sent to {} msg {:?}", id, msg);
                         }
                     }
                 }
@@ -375,7 +378,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
 impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     /// Reads a message from given TcpStream.
     async fn read_msg(conn: &mut TcpStream) -> Result<Msg, SummersetError> {
-        let msg_buf: Vec<u8> = vec![0; std::mem::size_of::<Msg>()];
+        let msg_buf: Vec<u8> = vec![0; size_of::<Msg>()];
         conn.read_exact(&mut msg_buf[..]).await?;
         let msg = decode_from_slice(&msg_buf)?;
         Ok(msg)
@@ -390,6 +393,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     ) {
         pf_debug!(me, "msg_recver thread for {} spawned", id);
 
+        // need tokio::sync::Mutex here since held across await
         let mut recv_conn_guard = recv_conn.lock().unwrap();
 
         loop {

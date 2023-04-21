@@ -7,7 +7,7 @@ use bitvec::prelude as bitv;
 use serde::{Serialize, Deserialize};
 
 /// Customized error type for Summerset.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SummersetError(pub String);
 
 impl fmt::Display for SummersetError {
@@ -99,7 +99,7 @@ macro_rules! logged_err {
 pub type ReplicaId = u8;
 
 /// Compact bitmap for replica ID -> bool mapping, suited for transport.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplicaMap(pub bitv::BitVec<u8>);
 
 impl ReplicaMap {
