@@ -60,6 +60,9 @@ where
 
 // TransportHub public API implementation
 impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
+    /// Size of a message in bytes.
+    const MSG_SIZE: usize = size_of::<Msg>();
+
     /// Creates a new server internal TCP transport hub.
     pub fn new(replica: &'r Rpl) -> Self {
         TransportHub {
@@ -110,7 +113,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         self.tx_recv = Some(tx_recv);
         self.rx_recv = Some(rx_recv);
 
-        let msg_sender_handle = tokio::spawn(TransportHub::msg_sender_thread(
+        let msg_sender_handle = tokio::spawn(Self::msg_sender_thread(
             self.replica.id(),
             self.peer_send_conns.clone(),
             rx_send,
@@ -186,7 +189,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         self.peer_recv_conns
             .insert(id, Arc::new(Mutex::new(stream)));
 
-        let msg_recver_handle = tokio::spawn(TransportHub::msg_recver_thread(
+        let msg_recver_handle = tokio::spawn(Self::msg_recver_thread(
             me,
             id,
             self.peer_recv_conns[id].clone(),
@@ -352,11 +355,9 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
                         }
 
                         if to_send {
-                            if let Err(e) = TransportHub::write_msg(
-                                &msg,
-                                &mut send_conns_guard[id],
-                            )
-                            .await
+                            if let Err(e) =
+                                Self::write_msg(&msg, &mut send_conns_guard[id])
+                                    .await
                             {
                                 pf_error!(me, "error sending to {}: {}", id, e);
                             } else {
@@ -378,7 +379,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
 impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     /// Reads a message from given TcpStream.
     async fn read_msg(conn: &mut TcpStream) -> Result<Msg, SummersetError> {
-        let msg_buf: Vec<u8> = vec![0; size_of::<Msg>()];
+        let msg_buf: Vec<u8> = vec![0; Self::MSG_SIZE];
         conn.read_exact(&mut msg_buf[..]).await?;
         let msg = decode_from_slice(&msg_buf)?;
         Ok(msg)
@@ -397,7 +398,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         let mut recv_conn_guard = recv_conn.lock().unwrap();
 
         loop {
-            match TransportHub::read_msg(&mut recv_conn_guard).await {
+            match Self::read_msg(&mut recv_conn_guard).await {
                 Ok(msg) => {
                     pf_trace!(me, "recv from {} msg {:?}", id, msg);
                     if let Err(e) = tx_recv.send((id, msg)).await {

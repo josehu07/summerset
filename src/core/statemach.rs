@@ -95,7 +95,7 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         self.tx_exec = Some(tx_exec);
         self.rx_ack = Some(rx_ack);
 
-        let executor_handle = tokio::spawn(StateMachine::executor_thread(
+        let executor_handle = tokio::spawn(Self::executor_thread(
             me,
             self.state.clone(),
             rx_exec,
@@ -164,7 +164,7 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
                 Some(cmd) => {
                     let res = {
                         let mut state_guard = state.lock().unwrap();
-                        StateMachine::execute(&mut state_guard, &cmd)
+                        Self::execute(&mut state_guard, &cmd)
                     };
                     pf_trace!(me, "executed {:?}", cmd);
 

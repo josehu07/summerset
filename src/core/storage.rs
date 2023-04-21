@@ -1,6 +1,7 @@
 //! Server durable storage logging module implementation.
 
 use std::path::Path;
+use std::io::SeekFrom;
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -77,6 +78,9 @@ where
 
 // StorageHub public API implementation
 impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
+    /// Size of a log entry in bytes.
+    const ENTRY_SIZE: usize = size_of::<Ent>();
+
     /// Creates a new durable storage logging hub.
     pub fn new(replica: &'r Rpl) -> Self {
         StorageHub {
@@ -127,7 +131,7 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         self.tx_log = Some(tx_log);
         self.rx_ack = Some(rx_ack);
 
-        let logger_handle = tokio::spawn(StorageHub::logger_thread(
+        let logger_handle = tokio::spawn(Self::logger_thread(
             me,
             self.backer.unwrap().clone(),
             rx_log,
@@ -170,28 +174,45 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
 impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
     /// Compute file offset from entry index.
     fn idx_to_offset(idx: usize) -> Result<usize, SummersetError> {
-        let entry_size = size_of::<Ent>();
-        Ok(entry_size * idx)
+        Ok(Self::ENTRY_SIZE * idx)
     }
 
     /// Compute entry index from file offset.
     fn offset_to_idx(offset: usize) -> Result<usize, SummersetError> {
-        let entry_size = size_of::<Ent>();
-        if offset % entry_size != 0 {
+        if offset % Self::ENTRY_SIZE != 0 {
             Err(SummersetError(format!(
                 "invalid offset {} given entry size {}",
-                offset, entry_size
+                offset,
+                Self::ENTRY_SIZE
             )))
         } else {
-            Ok(offset / entry_size)
+            Ok(offset / Self::ENTRY_SIZE)
         }
     }
 
     /// Read out entry at given index.
+    /// TODO: better management of file cursor.
     async fn read_entry(
         backer: &mut File,
         idx: usize,
     ) -> Result<Option<Ent>, SummersetError> {
+        let file_len = backer.metadata().await?.len();
+        let offset_s = Self::idx_to_offset(idx);
+        let offset_e = Self::idx_to_offset(idx + 1);
+
+        if offset_e > file_len {
+            Err(SummersetError(format!(
+                "idx {} out of file bound {}/{}",
+                idx, offset_e, file_len
+            )))
+        } else {
+            backer.seek(SeekFrom::Start(offset_s)).await?;
+            let entry_buf: Vec<u8> = vec![0; Self::ENTRY_SIZE];
+            backer.read_exact(&mut entry_buf[..]).await?;
+            let entry = decode_from_slice(&entry_buf)?;
+            backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
+            Ok(entry)
+        }
     }
 
     /// Append given entry to given index.
@@ -215,19 +236,17 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         action: LogAction<Ent>,
     ) -> Result<LogResult<Ent>, SummersetError> {
         let result = match action {
-            LogAction::Read { idx } => StorageHub::read_entry(backer, idx)
+            LogAction::Read { idx } => Self::read_entry(backer, idx)
                 .await
                 .map(|entry| LogResult::ReadResult { entry }),
             LogAction::Append { entry, idx } => {
-                StorageHub::append_entry(backer, entry, idx)
+                Self::append_entry(backer, entry, idx)
                     .await
                     .map(|(ok, cidx)| LogResult::AppendResult { ok, idx: cidx })
             }
-            LogAction::Truncate { idx } => {
-                StorageHub::truncate_log(backer, idx)
-                    .await
-                    .map(|ok, cidx| LogResult::TruncateResult { ok, idx: cidx })
-            }
+            LogAction::Truncate { idx } => Self::truncate_log(backer, idx)
+                .await
+                .map(|ok, cidx| LogResult::TruncateResult { ok, idx: cidx }),
         };
 
         result
@@ -249,7 +268,7 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
                     let res = {
                         // need tokio::sync::Mutex here since held across await
                         let mut backer_guard = backer.lock().unwrap();
-                        StorageHub::do_action(&mut backer_guard, action).await
+                        Self::do_action(&mut backer_guard, action).await
                     };
                     if let Err(e) = res {
                         pf_error!(me, "error during logging: {}", e);
