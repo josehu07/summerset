@@ -1,4 +1,4 @@
-//! Server durable storage logging module implementation.
+//! Summerset server durable storage logging module implementation.
 
 use std::path::Path;
 use std::io::SeekFrom;
@@ -6,7 +6,7 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use crate::core::utils::{SummersetError, ReplicaId};
-use crate::core::replica::GenericReplica;
+use crate::core::replica::GeneralReplica;
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -17,7 +17,7 @@ use tokio::fs::{self, File, OpenOptions};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use log::{trace, debug, info, error};
+use log::{trace, debug, info, warn, error};
 
 /// Action command to the logger.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -57,7 +57,7 @@ where
 #[derive(Debug)]
 pub struct StorageHub<'r, Rpl, Ent>
 where
-    Rpl: 'r + GenericReplica,
+    Rpl: 'r + GeneralReplica,
     Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
 {
     /// Reference to protocol-specific replica struct.
@@ -147,8 +147,15 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         &mut self,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
+        if let None = self.backer {
+            return logged_err!(
+                self.replica.id(),
+                "submit_action called before setup"
+            );
+        }
+
         match self.tx_log {
-            Some(ref tx_log) => tx_log.send(action).await?,
+            Some(ref tx_log) => Ok(tx_log.send(action).await?),
             None => logged_err!(self.replica.id(), "tx_log not created yet"),
         }
     }
@@ -157,9 +164,16 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
     pub async fn get_result(
         &mut self,
     ) -> Result<LogResult<Ent>, SummersetError> {
+        if let None = self.backer {
+            return logged_err!(
+                self.replica.id(),
+                "get_result called before setup"
+            );
+        }
+
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some(result) => result,
+                Some(result) => Ok(result),
                 None => logged_err!(
                     self.replica.id(),
                     "ack channel has been closed"
@@ -193,58 +207,99 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
     /// Read out entry at given index.
     /// TODO: better management of file cursor.
     async fn read_entry(
+        me: ReplicaId,
         backer: &mut File,
         idx: usize,
     ) -> Result<Option<Ent>, SummersetError> {
         let file_len = backer.metadata().await?.len();
-        let offset_s = Self::idx_to_offset(idx);
-        let offset_e = Self::idx_to_offset(idx + 1);
+        let offset_s = Self::idx_to_offset(idx)?;
+        let offset_e = Self::idx_to_offset(idx + 1)?;
 
         if offset_e > file_len {
-            Err(SummersetError(format!(
-                "idx {} out of file bound {}/{}",
-                idx, offset_e, file_len
-            )))
+            pf_warn!(
+                me,
+                "read idx {} out of file bound {} / {}",
+                idx,
+                offset_e,
+                file_len
+            );
+            Ok(None)
         } else {
             backer.seek(SeekFrom::Start(offset_s)).await?;
             let entry_buf: Vec<u8> = vec![0; Self::ENTRY_SIZE];
             backer.read_exact(&mut entry_buf[..]).await?;
             let entry = decode_from_slice(&entry_buf)?;
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
-            Ok(entry)
+            Ok(Some(entry))
         }
     }
 
     /// Append given entry to given index.
     async fn append_entry(
+        me: ReplicaId,
         backer: &mut File,
-        entry: Ent,
+        entry: &Ent,
         idx: usize,
     ) -> Result<(bool, usize), SummersetError> {
+        let file_len = backer.metadata().await?.len();
+        let offset = Self::idx_to_offset(idx)?;
+
+        if offset != file_len {
+            pf_warn!(
+                me,
+                "append idx {} not at file end {} / {}",
+                idx,
+                offset,
+                file_len
+            );
+            Ok((false, Self::offset_to_idx(file_len)?))
+        } else {
+            let entry_bytes = encode_to_vec(entry)?;
+            backer.write_all(&entry_bytes[..]).await?;
+            Ok((true, idx + 1))
+        }
     }
 
     /// Truncate the file to given index.
     async fn truncate_log(
+        me: ReplicaId,
         backer: &mut File,
         idx: usize,
     ) -> Result<(bool, usize), SummersetError> {
+        let file_len = backer.metadata().await?.len();
+        let offset = Self::idx_to_offset(idx)?;
+
+        if offset > file_len {
+            pf_warn!(
+                me,
+                "truncate idx {} exceeds file end {} / {}",
+                idx,
+                offset,
+                file_len
+            );
+            Ok((false, Self::offset_to_idx(file_len)?))
+        } else {
+            backer.set_len(offset).await?;
+            Ok((true, idx))
+        }
     }
 
     /// Carry out the given action on logger.
     async fn do_action(
+        me: ReplicaId,
         backer: &mut File,
         action: LogAction<Ent>,
     ) -> Result<LogResult<Ent>, SummersetError> {
         let result = match action {
-            LogAction::Read { idx } => Self::read_entry(backer, idx)
+            LogAction::Read { idx } => Self::read_entry(me, backer, idx)
                 .await
                 .map(|entry| LogResult::ReadResult { entry }),
             LogAction::Append { entry, idx } => {
-                Self::append_entry(backer, entry, idx)
+                Self::append_entry(me, backer, &entry, idx)
                     .await
                     .map(|(ok, cidx)| LogResult::AppendResult { ok, idx: cidx })
             }
-            LogAction::Truncate { idx } => Self::truncate_log(backer, idx)
+            LogAction::Truncate { idx } => Self::truncate_log(me, backer, idx)
                 .await
                 .map(|ok, cidx| LogResult::TruncateResult { ok, idx: cidx }),
         };
@@ -268,7 +323,7 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
                     let res = {
                         // need tokio::sync::Mutex here since held across await
                         let mut backer_guard = backer.lock().unwrap();
-                        Self::do_action(&mut backer_guard, action).await
+                        Self::do_action(me, &mut backer_guard, action).await
                     };
                     if let Err(e) = res {
                         pf_error!(me, "error during logging: {}", e);
@@ -292,4 +347,189 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
 mod storage_tests {
     use super::*;
     use crate::core::replica::DummyReplica;
+
+    #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
+    struct TestEntry(String);
+
+    #[test]
+    fn hub_setup() -> Result<(), SummersetError> {
+        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let mut hub = StorageHub::new(&replica);
+        let path = Path::new("test-backer.log");
+        assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
+        tokio_test::block_on(hub.setup(&path, 100, 100))?;
+        assert!(hub.backer.is_some());
+        assert!(hub.tx_log.is_some());
+        assert!(hub.rx_ack.is_some());
+        assert!(hub.logger_handle.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn append_entries() -> Result<(), SummersetError> {
+        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let mut hub = StorageHub::new(&replica);
+        let path = Path::new("test-backer.log");
+        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
+        let entry = TestEntry("test-entry-dummy-string".into());
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                0
+            ))?,
+            (true, 1)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                1
+            ))?,
+            (true, 2)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                1
+            ))?,
+            (false, 2)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                3
+            ))?,
+            (false, 2)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_entries() -> Result<(), SummersetError> {
+        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let mut hub = StorageHub::new(&replica);
+        let path = Path::new("test-backer.log");
+        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
+        let entry = TestEntry("test-entry-dummy-string".into());
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                0
+            ))?,
+            (true, 1)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                1
+            ))?,
+            (true, 2)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::read_entry(
+                replica.id(),
+                &mut backer_guard,
+                0
+            ))?,
+            Some("test-entry-dummy-string".into())
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::read_entry(
+                replica.id(),
+                &mut backer_guard,
+                3
+            ))?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn truncate_log() -> Result<(), SummersetError> {
+        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let mut hub = StorageHub::new(&replica);
+        let path = Path::new("test-backer.log");
+        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
+        let entry = TestEntry("test-entry-dummy-string".into());
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                0
+            ))?,
+            (true, 1)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::append_entry(
+                replica.id(),
+                &mut backer_guard,
+                &entry,
+                1
+            ))?,
+            (true, 2)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::truncate_log(
+                replica.id(),
+                &mut backer_guard,
+                1
+            ))?,
+            (true, 1)
+        );
+        assert_eq!(
+            tokio_test::block_on(StorageHub::truncate_log(
+                replica.id(),
+                &mut backer_guard,
+                3
+            ))?,
+            (false, 1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn log_ack_api() -> Result<(), SummersetError> {
+        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let mut hub = StorageHub::new(&replica);
+        let path = Path::new("test-backer.log");
+        let entry = TestEntry("abcdefgh".into());
+        tokio_test::block_on(hub.setup(&path, 3, 3))?;
+        tokio_test::block_on(
+            hub.submit_action(LogAction::Append { entry, idx: 0 }),
+        )?;
+        tokio_test::block_on(hub.submit_action(LogAction::Read { idx: 0 }))?;
+        tokio_test::block_on(
+            hub.submit_action(LogAction::Truncate { idx: 0 }),
+        )?;
+        assert_eq!(
+            tokio_test::block_on(hub.get_result())?,
+            LogResult::AppendResult { ok: true, idx: 1 }
+        );
+        assert_eq!(
+            tokio_test::block_on(hub.get_result())?,
+            LogResult::ReadResult {
+                entry: Some(TestEntry("abcdefgh".into()))
+            }
+        );
+        assert_eq!(
+            tokio_test::block_on(hub.get_result())?,
+            LogResult::TruncateResult { ok: true, idx: 0 }
+        );
+        Ok(())
+    }
 }

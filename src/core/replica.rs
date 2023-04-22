@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use crate::core::utils::{SummersetError, ReplicaId};
 
 /// Replica trait to be implement by all protocol-specific server structs.
-pub trait GenericReplica {
+pub trait GeneralReplica {
     /// Get the ID of this replica.
     fn id(&self) -> ReplicaId;
 
@@ -58,7 +58,7 @@ impl DummyReplica {
     }
 }
 
-impl GenericReplica for DummyReplica {
+impl GeneralReplica for DummyReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }

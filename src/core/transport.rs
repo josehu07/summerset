@@ -1,4 +1,4 @@
-//! Server internal TCP transport module implementation.
+//! Summerset server internal TCP transport module implementation.
 
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::core::utils::{SummersetError, ReplicaId, ReplicaMap};
-use crate::core::replica::GenericReplica;
+use crate::core::replica::GeneralReplica;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -24,7 +24,7 @@ use log::{trace, debug, info, error};
 #[derive(Debug)]
 pub struct TransportHub<'r, Rpl, Msg>
 where
-    Rpl: 'r + GenericReplica,
+    Rpl: 'r + GeneralReplica,
     Msg: Serialize + DeserializeOwned,
 {
     /// Reference to protocol-specific replica struct.

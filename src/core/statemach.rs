@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::core::utils::{SummersetError, ReplicaId};
-use crate::core::replica::GenericReplica;
+use crate::core::replica::GeneralReplica;
 
 use serde::{Serialize, Deserialize};
 
@@ -40,7 +40,7 @@ type State = HashMap<String, String>;
 #[derive(Debug)]
 pub struct StateMachine<'r, Rpl>
 where
-    Rpl: 'r + GenericReplica,
+    Rpl: 'r + GeneralReplica,
 {
     /// Reference to protocol-specific replica struct.
     replica: &'r Rpl,
@@ -111,8 +111,15 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         &mut self,
         cmd: Command,
     ) -> Result<(), SummersetError> {
+        if let None = self.executor_handle {
+            return logged_err!(
+                self.replica.id(),
+                "submit_cmd called before setup"
+            );
+        }
+
         match self.tx_exec {
-            Some(ref tx_exec) => tx_exec.send(cmd).await?,
+            Some(ref tx_exec) => Ok(tx_exec.send(cmd).await?),
             None => logged_err!(self.replica.id(), "tx_exec not created yet"),
         }
     }
@@ -121,9 +128,16 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
     pub async fn get_result(
         &mut self,
     ) -> Result<CommandResult, SummersetError> {
+        if let None = self.executor_handle {
+            return logged_err!(
+                self.replica.id(),
+                "get_result called before setup"
+            );
+        }
+
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some(result) => result,
+                Some(result) => Ok(result),
                 None => logged_err!(
                     self.replica.id(),
                     "ack channel has been closed"
@@ -323,23 +337,23 @@ mod statemach_tests {
         let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
         let mut sm = StateMachine::new(&replica);
         tokio_test::block_on(sm.setup(2, 2))?;
-        tokio_test::block_on(sm.submit_cmd(&Command::Put {
+        tokio_test::block_on(sm.submit_cmd(Command::Put {
             key: "Jose".into(),
             value: "179".into(),
         }))?;
-        tokio_test::block_on(sm.submit_cmd(&Command::Put {
+        tokio_test::block_on(sm.submit_cmd(Command::Put {
             key: "Jose".into(),
             value: "180".into(),
         }))?;
         assert_eq!(
             tokio_test::block_on(sm.get_result())?,
-            Some(CommandResult::PutResult { old_value: None })
+            CommandResult::PutResult { old_value: None }
         );
         assert_eq!(
             tokio_test::block_on(sm.get_result())?,
-            Some(CommandResult::PutResult {
+            CommandResult::PutResult {
                 old_value: Some("179".into())
-            })
+            }
         );
         Ok(())
     }
