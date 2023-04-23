@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::core::utils::{SummersetError, ReplicaId};
-use crate::core::replica::GeneralReplica;
+use crate::core::utils::SummersetError;
+use crate::core::replica::{ReplicaId, GeneralReplica};
 
 use serde::{Serialize, Deserialize};
 
@@ -199,12 +199,11 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
 mod statemach_tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::core::replica::DummyReplica;
     use rand::{Rng, seq::SliceRandom};
 
     #[test]
     fn get_empty() {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
@@ -218,7 +217,7 @@ mod statemach_tests {
 
     #[test]
     fn put_one_get_one() {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
@@ -244,7 +243,7 @@ mod statemach_tests {
 
     #[test]
     fn put_twice() {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
@@ -281,7 +280,7 @@ mod statemach_tests {
 
     #[test]
     fn put_rand_get_rand() {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         let mut ref_sm = HashMap::<String, String>::new();
         let mut state_guard = sm.state.lock().unwrap();
@@ -322,7 +321,7 @@ mod statemach_tests {
 
     #[test]
     fn sm_setup() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         assert!(tokio_test::block_on(sm.setup(0, 0)).is_err());
         tokio_test::block_on(sm.setup(100, 100))?;
@@ -334,7 +333,7 @@ mod statemach_tests {
 
     #[test]
     fn exec_ack_api() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut sm = StateMachine::new(&replica);
         tokio_test::block_on(sm.setup(2, 2))?;
         tokio_test::block_on(sm.submit_cmd(Command::Put {

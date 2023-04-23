@@ -13,6 +13,7 @@ edition = "2021"
 authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 
 [dependencies]
+async-trait = "0.1"
 bitvec = "1.0"
 tokio = { version = "1.27", features = ["full"] }
 rand = "0.8"

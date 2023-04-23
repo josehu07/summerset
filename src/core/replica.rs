@@ -3,7 +3,10 @@
 
 use std::net::SocketAddr;
 
-use crate::core::utils::{SummersetError, ReplicaId};
+use crate::core::utils::SummersetError;
+
+/// Server replica ID type.
+pub type ReplicaId = u8;
 
 /// Replica trait to be implement by all protocol-specific server structs.
 pub trait GeneralReplica {
@@ -13,8 +16,11 @@ pub trait GeneralReplica {
     /// Get the cluster size (number of replicas).
     fn population(&self) -> u8;
 
-    /// Get the address string of this replica.
-    fn addr(&self) -> &str;
+    /// Get the address string of this replica on peer-to-peer connections.
+    fn smr_addr(&self) -> &str;
+
+    /// Get the address string of this replica on client requests.
+    fn api_addr(&self) -> &str;
 }
 
 /// Dummy replica type, mainly for testing purposes.
@@ -22,14 +28,16 @@ pub trait GeneralReplica {
 pub struct DummyReplica {
     id: ReplicaId,
     population: u8,
-    addr: String,
+    smr_addr: String,
+    api_addr: String,
 }
 
 impl DummyReplica {
     pub fn new(
         id: ReplicaId,
         population: u8,
-        addr: String,
+        smr_addr: String,
+        api_addr: String,
     ) -> Result<Self, SummersetError> {
         if population == 0 {
             return Err(SummersetError(format!(
@@ -43,18 +51,36 @@ impl DummyReplica {
                 id, population
             )));
         }
-        if let Err(_) = addr.parse::<SocketAddr>() {
+        if let Err(_) = smr_addr.parse::<SocketAddr>() {
             return Err(SummersetError(format!(
-                "invalid addr string '{}'",
-                addr
+                "invalid smr_addr string '{}'",
+                smr_addr
+            )));
+        }
+        if let Err(_) = api_addr.parse::<SocketAddr>() {
+            return Err(SummersetError(format!(
+                "invalid api_addr string '{}'",
+                api_addr
             )));
         }
 
         Ok(DummyReplica {
             id,
             population,
-            addr,
+            smr_addr,
+            api_addr,
         })
+    }
+}
+
+impl Default for DummyReplica {
+    fn default() -> Self {
+        DummyReplica {
+            id: 0,
+            population: 3,
+            smr_addr: "127.0.0.1:52800".into(),
+            api_addr: "127.0.0.1:52700".into(),
+        }
     }
 }
 
@@ -67,8 +93,12 @@ impl GeneralReplica for DummyReplica {
         self.population
     }
 
-    fn addr(&self) -> &str {
-        &self.addr
+    fn smr_addr(&self) -> &str {
+        &self.smr_addr
+    }
+
+    fn api_addr(&self) -> &str {
+        &self.api_addr
     }
 }
 
@@ -78,27 +108,77 @@ mod replica_test {
 
     #[test]
     fn dummy_replica_new() {
-        assert!(DummyReplica::new(0, 0, "127.0.0.1:52800".into()).is_err());
-        assert!(DummyReplica::new(3, 3, "127.0.0.1:52800".into()).is_err());
-        assert!(DummyReplica::new(0, 5, "987abc123".into()).is_err());
-        assert!(DummyReplica::new(0, 5, "127.0.0.1:52800".into()).is_ok());
+        assert!(DummyReplica::new(
+            0,
+            0,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into()
+        )
+        .is_err());
+        assert!(DummyReplica::new(
+            3,
+            3,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into()
+        )
+        .is_err());
+        assert!(DummyReplica::new(
+            0,
+            5,
+            "987abc123".into(),
+            "127.0.0.1:52700".into()
+        )
+        .is_err());
+        assert!(DummyReplica::new(
+            0,
+            5,
+            "127.0.0.1:52800".into(),
+            "987abc123".into()
+        )
+        .is_err());
+        assert!(DummyReplica::new(
+            0,
+            5,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into()
+        )
+        .is_ok());
     }
 
     #[test]
     fn dummy_replica_id() {
-        let dr = DummyReplica::new(0, 7, "127.0.0.1:52800".into()).unwrap();
+        let dr = DummyReplica::new(
+            0,
+            7,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into(),
+        )
+        .unwrap();
         assert_eq!(dr.id(), 0);
     }
 
     #[test]
     fn dummy_replica_population() {
-        let dr = DummyReplica::new(0, 7, "127.0.0.1:52800".into()).unwrap();
+        let dr = DummyReplica::new(
+            0,
+            7,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into(),
+        )
+        .unwrap();
         assert_eq!(dr.population(), 7);
     }
 
     #[test]
     fn dummy_replica_addr() {
-        let dr = DummyReplica::new(0, 7, "127.0.0.1:52800".into()).unwrap();
-        assert_eq!(dr.addr(), "127.0.0.1:52800");
+        let dr = DummyReplica::new(
+            0,
+            7,
+            "127.0.0.1:52800".into(),
+            "127.0.0.1:52700".into(),
+        )
+        .unwrap();
+        assert_eq!(dr.smr_addr(), "127.0.0.1:52800");
+        assert_eq!(dr.api_addr(), "127.0.0.1:52700");
     }
 }

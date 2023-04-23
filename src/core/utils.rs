@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::core::replica::ReplicaId;
+
 use bitvec::prelude as bitv;
 
 use serde::{Serialize, Deserialize};
@@ -95,17 +97,14 @@ macro_rules! logged_err {
     };
 }
 
-/// Server replica ID type.
-pub type ReplicaId = u8;
-
 /// Compact bitmap for replica ID -> bool mapping, suited for transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplicaMap(pub bitv::BitVec<u8>);
+pub struct ReplicaMap(pub bitv::BitVec<ReplicaId>);
 
 impl ReplicaMap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
     /// marked true initially; otherwise, all slots are initially false.
-    pub fn new(size: u8, ones: bool) -> Result<Self, SummersetError> {
+    pub fn new(size: ReplicaId, ones: bool) -> Result<Self, SummersetError> {
         if size == 0 {
             return Err(SummersetError(format!(
                 "invalid bitmap size {}",
@@ -118,7 +117,11 @@ impl ReplicaMap {
     }
 
     /// Sets bit at index to given flag.
-    pub fn set(&mut self, idx: u8, flag: bool) -> Result<(), SummersetError> {
+    pub fn set(
+        &mut self,
+        idx: ReplicaId,
+        flag: bool,
+    ) -> Result<(), SummersetError> {
         if idx >= self.0.len() {
             return Err(SummersetError(format!("index {} out of bound", idx)));
         }
@@ -127,7 +130,7 @@ impl ReplicaMap {
     }
 
     /// Gets the bit flag at index.
-    pub fn get(&self, idx: u8) -> Result<bool, SummersetError> {
+    pub fn get(&self, idx: ReplicaId) -> Result<bool, SummersetError> {
         if idx >= self.0.len() {
             return Err(SummersetError(format!("index {} out of bound", idx)));
         }

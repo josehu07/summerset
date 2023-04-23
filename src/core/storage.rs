@@ -5,8 +5,8 @@ use std::io::SeekFrom;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use crate::core::utils::{SummersetError, ReplicaId};
-use crate::core::replica::GeneralReplica;
+use crate::core::utils::SummersetError;
+use crate::core::replica::{ReplicaId, GeneralReplica};
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -346,16 +346,15 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
 #[cfg(test)]
 mod storage_tests {
     use super::*;
-    use crate::core::replica::DummyReplica;
 
     #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
     struct TestEntry(String);
 
     #[test]
     fn hub_setup() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut hub = StorageHub::new(&replica);
-        let path = Path::new("test-backer.log");
+        let path = Path::new("/tmp/test-backer-0.log");
         assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
         tokio_test::block_on(hub.setup(&path, 100, 100))?;
         assert!(hub.backer.is_some());
@@ -367,9 +366,9 @@ mod storage_tests {
 
     #[test]
     fn append_entries() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut hub = StorageHub::new(&replica);
-        let path = Path::new("test-backer.log");
+        let path = Path::new("/tmp/test-backer-1.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
@@ -414,9 +413,9 @@ mod storage_tests {
 
     #[test]
     fn read_entries() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut hub = StorageHub::new(&replica);
-        let path = Path::new("test-backer.log");
+        let path = Path::new("/tmp/test-backer-2.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
@@ -459,9 +458,9 @@ mod storage_tests {
 
     #[test]
     fn truncate_log() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut hub = StorageHub::new(&replica);
-        let path = Path::new("test-backer.log");
+        let path = Path::new("/tmp/test-backer-3.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
@@ -504,9 +503,9 @@ mod storage_tests {
 
     #[test]
     fn log_ack_api() -> Result<(), SummersetError> {
-        let replica = DummyReplica::new(0, 3, "127.0.0.1:52800".into());
+        let replica = Default::default();
         let mut hub = StorageHub::new(&replica);
-        let path = Path::new("test-backer.log");
+        let path = Path::new("/tmp/test-backer-4.log");
         let entry = TestEntry("abcdefgh".into());
         tokio_test::block_on(hub.setup(&path, 3, 3))?;
         tokio_test::block_on(
