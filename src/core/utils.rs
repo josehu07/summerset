@@ -104,7 +104,7 @@ pub struct ReplicaMap(pub bitv::BitVec<ReplicaId>);
 impl ReplicaMap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
     /// marked true initially; otherwise, all slots are initially false.
-    pub fn new(size: ReplicaId, ones: bool) -> Result<Self, SummersetError> {
+    pub fn new(size: u8, ones: bool) -> Result<Self, SummersetError> {
         if size == 0 {
             return Err(SummersetError(format!(
                 "invalid bitmap size {}",

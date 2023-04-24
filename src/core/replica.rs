@@ -5,11 +5,16 @@ use std::net::SocketAddr;
 
 use crate::core::utils::SummersetError;
 
+use async_trait::async_trait;
+
+use log::error;
+
 /// Server replica ID type.
 pub type ReplicaId = u8;
 
 /// Replica trait to be implement by all protocol-specific server structs.
-pub trait GeneralReplica {
+#[async_trait]
+pub trait GenericReplica {
     /// Get the ID of this replica.
     fn id(&self) -> ReplicaId;
 
@@ -17,10 +22,16 @@ pub trait GeneralReplica {
     fn population(&self) -> u8;
 
     /// Get the address string of this replica on peer-to-peer connections.
-    fn smr_addr(&self) -> &str;
+    fn smr_addr(&self) -> &SocketAddr;
 
     /// Get the address string of this replica on client requests.
-    fn api_addr(&self) -> &str;
+    fn api_addr(&self) -> &SocketAddr;
+
+    /// Set up required functionality modules.
+    async fn setup(&mut self) -> Result<(), SummersetError>;
+
+    /// Main event loop logic of running this replica.
+    async fn run(&mut self) -> Result<(), SummersetError>;
 }
 
 /// Dummy replica type, mainly for testing purposes.
@@ -28,16 +39,16 @@ pub trait GeneralReplica {
 pub struct DummyReplica {
     id: ReplicaId,
     population: u8,
-    smr_addr: String,
-    api_addr: String,
+    smr_addr: SocketAddr,
+    api_addr: SocketAddr,
 }
 
 impl DummyReplica {
     pub fn new(
         id: ReplicaId,
         population: u8,
-        smr_addr: String,
-        api_addr: String,
+        smr_addr: SocketAddr,
+        api_addr: SocketAddr,
     ) -> Result<Self, SummersetError> {
         if population == 0 {
             return Err(SummersetError(format!(
@@ -51,17 +62,8 @@ impl DummyReplica {
                 id, population
             )));
         }
-        if let Err(_) = smr_addr.parse::<SocketAddr>() {
-            return Err(SummersetError(format!(
-                "invalid smr_addr string '{}'",
-                smr_addr
-            )));
-        }
-        if let Err(_) = api_addr.parse::<SocketAddr>() {
-            return Err(SummersetError(format!(
-                "invalid api_addr string '{}'",
-                api_addr
-            )));
+        if smr_addr == api_addr {
+            return logged_err!(id, "smr_addr == api_addr '{}'", smr_addr);
         }
 
         Ok(DummyReplica {
@@ -84,7 +86,8 @@ impl Default for DummyReplica {
     }
 }
 
-impl GeneralReplica for DummyReplica {
+#[async_trait]
+impl GenericReplica for DummyReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
@@ -93,17 +96,25 @@ impl GeneralReplica for DummyReplica {
         self.population
     }
 
-    fn smr_addr(&self) -> &str {
+    fn smr_addr(&self) -> &SocketAddr {
         &self.smr_addr
     }
 
-    fn api_addr(&self) -> &str {
+    fn api_addr(&self) -> &SocketAddr {
         &self.api_addr
+    }
+
+    async fn setup(&mut self) -> Result<(), SummersetError> {
+        Err(SummersetError("setting up DummyReplica".into()))
+    }
+
+    async fn run(&mut self) -> Result<(), SummersetError> {
+        Err(SummersetError("running DummyReplica".into()))
     }
 }
 
 #[cfg(test)]
-mod replica_test {
+mod dummy_replica_test {
     use super::*;
 
     #[test]

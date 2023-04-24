@@ -1,21 +1,12 @@
 //! Summerset's collection of replication protocols.
 
 use std::fmt;
-use std::sync::Arc;
 
-use crate::smr_server::SummersetServerNode;
-use crate::replicator::{
-    ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
-};
-use crate::utils::InitError;
-
-mod do_nothing;
-use do_nothing::{DoNothingServerNode, DoNothingCommService, DoNothingClientStub};
+mod rep_nothing;
+use rep_nothing::{RepNothingServerNode, RepNothingClientStub};
 
 mod simple_push;
-use simple_push::{
-    SimplePushServerNode, SimplePushCommService, SimplePushClientStub,
-};
+use simple_push::{SimplePushServerNode, SimplePushClientStub};
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
 /// protocol-specific struct creations.
@@ -29,7 +20,7 @@ macro_rules! box_if_ok {
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
-    DoNothing,
+    RepNothing,
     SimplePush,
 }
 
@@ -37,7 +28,7 @@ impl SMRProtocol {
     /// Parse command line string into SMRProtocol enum.
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
-            "DoNothing" => Some(Self::DoNothing),
+            "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
             _ => None,
         }
@@ -49,26 +40,11 @@ impl SMRProtocol {
         peers: Vec<String>,
     ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
         match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingServerNode::new(peers))
+            Self::RepNothing => {
+                box_if_ok!(RepNothingServerNode::new(peers))
             }
             Self::SimplePush => {
                 box_if_ok!(SimplePushServerNode::new(peers))
-            }
-        }
-    }
-
-    /// Create a server internal communication tonic service holder struct.
-    pub fn new_comm_service(
-        &self,
-        node: Arc<SummersetServerNode>,
-    ) -> Result<Box<dyn ReplicatorCommService>, InitError> {
-        match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingCommService::new(node))
-            }
-            Self::SimplePush => {
-                box_if_ok!(SimplePushCommService::new(node))
             }
         }
     }
@@ -79,8 +55,8 @@ impl SMRProtocol {
         servers: Vec<String>,
     ) -> Result<Box<dyn ReplicatorClientStub>, InitError> {
         match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingClientStub::new(servers))
+            Self::RepNothing => {
+                box_if_ok!(RepNothingClientStub::new(servers))
             }
             Self::SimplePush => {
                 box_if_ok!(SimplePushClientStub::new(servers))
@@ -110,7 +86,7 @@ mod protocols_name_tests {
 
     #[test]
     fn parse_valid_names() {
-        valid_name_test!(DoNothing);
+        valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
     }
 

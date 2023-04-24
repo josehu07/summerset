@@ -2,11 +2,10 @@
 
 use std::path::Path;
 use std::io::SeekFrom;
-use std::mem::size_of;
 use std::sync::Arc;
 
 use crate::core::utils::SummersetError;
-use crate::core::replica::{ReplicaId, GeneralReplica};
+use crate::core::replica::ReplicaId;
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -19,6 +18,9 @@ use tokio::task::JoinHandle;
 
 use log::{trace, debug, info, warn, error};
 
+/// Log action ID type.
+pub type LogActionId = u64;
+
 /// Action command to the logger.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum LogAction<Ent>
@@ -26,13 +28,13 @@ where
     Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
 {
     /// Read a log entry out.
-    Read { idx: usize },
+    Read { offset: usize },
 
     /// Append a log entry.
-    Append { entry: Ent, idx: usize },
+    Append { entry: Ent, offset: usize },
 
     /// Truncate the log at and after given index.
-    Truncate { idx: usize },
+    Truncate { offset: usize },
 }
 
 /// Action result returned by the logger.
@@ -44,47 +46,43 @@ where
     /// `Some(entry)` if successful, else `None`.
     ReadResult { entry: Option<Ent> },
 
-    /// `ok` is true if append successful, else false. `idx` is the index of
-    /// the next empty slot in log after this append.
-    AppendResult { ok: bool, idx: usize },
+    /// `ok` is true if append successful, else false. `offset` is the offset
+    /// of the file cursor after this.
+    AppendResult { ok: bool, offset: usize },
 
-    /// `ok` is true if truncate successful, else false. `idx` is the index of
-    /// the next empty slot in log after this truncate.
-    TruncateResult { ok: bool, idx: usize },
+    /// `ok` is true if truncate successful, else false. `offset` is the
+    /// offset of the file cursor after this.
+    TruncateResult { ok: bool, offset: usize },
 }
 
 /// Durable storage logging module.
 #[derive(Debug)]
-pub struct StorageHub<'r, Rpl, Ent>
+pub struct StorageHub<Ent>
 where
-    Rpl: 'r + GeneralReplica,
     Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
 {
-    /// Reference to protocol-specific replica struct.
-    replica: &'r Rpl,
+    /// My replica ID.
+    me: ReplicaId,
 
     /// Backing file for durability.
     backer: Option<Arc<Mutex<File>>>,
 
     /// Sender side of the log channel.
-    tx_log: Option<mpsc::Sender<LogAction<Ent>>>,
+    tx_log: Option<mpsc::Sender<(LogActionId, LogAction<Ent>)>>,
 
     /// Receiver side of the ack channel.
-    rx_ack: Option<mpsc::Receiver<LogResult<Ent>>>,
+    rx_ack: Option<mpsc::Receiver<(LogActionId, LogResult<Ent>)>>,
 
     /// Join handle of the logger thread.
     logger_handle: Option<JoinHandle<()>>,
 }
 
 // StorageHub public API implementation
-impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
-    /// Size of a log entry in bytes.
-    const ENTRY_SIZE: usize = size_of::<Ent>();
-
+impl<Ent> StorageHub<Ent> {
     /// Creates a new durable storage logging hub.
-    pub fn new(replica: &'r Rpl) -> Self {
+    pub fn new(me: ReplicaId) -> Self {
         StorageHub {
-            replica,
+            me,
             backer: None,
             tx_log: None,
             rx_ack: None,
@@ -101,26 +99,32 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         chan_log_cap: usize,
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
-        let me = self.replica.id();
-
         if let Some(_) = self.logger_handle {
-            return logged_err!(me, "logger thread already spawned");
+            return logged_err!(self.me, "logger thread already spawned");
         }
         if chan_log_cap == 0 {
-            return logged_err!(me, "invalid chan_log_cap {}", chan_log_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_log_cap {}",
+                chan_log_cap
+            );
         }
         if chan_ack_cap == 0 {
-            return logged_err!(me, "invalid chan_ack_cap {}", chan_ack_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_ack_cap {}",
+                chan_ack_cap
+            );
         }
 
         // prepare backing file
         if !fs::try_exists(path).await? {
             File::create(path).await?;
-            pf_info!(me, "created backer file '{}'", path);
+            pf_info!(self.me, "created backer file '{}'", path);
         } else {
             let mut file = OpenOptions::new().write(true).open(path).await?;
             file.set_len(0).await?;
-            pf_info!(me, "truncated backer file '{}'", path);
+            pf_info!(self.me, "truncated backer file '{}'", path);
         }
         let mut file =
             OpenOptions::new().read(true).write(true).open(path).await?;
@@ -132,7 +136,7 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         self.rx_ack = Some(rx_ack);
 
         let logger_handle = tokio::spawn(Self::logger_thread(
-            me,
+            self.me,
             self.backer.unwrap().clone(),
             rx_log,
             tx_ack,
@@ -145,18 +149,16 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
     /// Submits an action by sending it to the log channel.
     pub async fn submit_action(
         &mut self,
+        id: LogActionId,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
         if let None = self.backer {
-            return logged_err!(
-                self.replica.id(),
-                "submit_action called before setup"
-            );
+            return logged_err!(self.me, "submit_action called before setup");
         }
 
         match self.tx_log {
-            Some(ref tx_log) => Ok(tx_log.send(action).await?),
-            None => logged_err!(self.replica.id(), "tx_log not created yet"),
+            Some(ref tx_log) => Ok(tx_log.send((id, action)).await?),
+            None => logged_err!(self.me, "tx_log not created yet"),
         }
     }
 
@@ -165,47 +167,24 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
         &mut self,
     ) -> Result<LogResult<Ent>, SummersetError> {
         if let None = self.backer {
-            return logged_err!(
-                self.replica.id(),
-                "get_result called before setup"
-            );
+            return logged_err!(self.me, "get_result called before setup");
         }
 
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some(result) => Ok(result),
-                None => logged_err!(
-                    self.replica.id(),
-                    "ack channel has been closed"
-                ),
+                Some((id, result)) => Ok((id, result)),
+                None => logged_err!(self.me, "ack channel has been closed"),
             },
-            None => logged_err!(self.replica.id(), "rx_ack not created yet"),
+            None => logged_err!(self.me, "rx_ack not created yet"),
         }
     }
 }
 
 // StorageHub logger thread implementation
-impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
-    /// Compute file offset from entry index.
-    fn idx_to_offset(idx: usize) -> Result<usize, SummersetError> {
-        Ok(Self::ENTRY_SIZE * idx)
-    }
-
-    /// Compute entry index from file offset.
-    fn offset_to_idx(offset: usize) -> Result<usize, SummersetError> {
-        if offset % Self::ENTRY_SIZE != 0 {
-            Err(SummersetError(format!(
-                "invalid offset {} given entry size {}",
-                offset,
-                Self::ENTRY_SIZE
-            )))
-        } else {
-            Ok(offset / Self::ENTRY_SIZE)
-        }
-    }
-
+impl<Ent> StorageHub<Ent> {
     /// Read out entry at given index.
     /// TODO: better management of file cursor.
+    /// TODO: maybe just support scanning.
     async fn read_entry(
         me: ReplicaId,
         backer: &mut File,
@@ -311,14 +290,14 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
     async fn logger_thread(
         me: ReplicaId,
         backer: Arc<Mutex<File>>,
-        mut rx_log: mpsc::Receiver<LogAction<Ent>>,
-        tx_ack: mpsc::Sender<LogResult<Ent>>,
+        mut rx_log: mpsc::Receiver<(LogActionId, LogAction<Ent>)>,
+        tx_ack: mpsc::Sender<(LogActionId, LogResult<Ent>)>,
     ) {
         pf_debug!(me, "logger thread spawned");
 
         loop {
             match rx_log.recv().await {
-                Some(action) => {
+                Some((id, action)) => {
                     pf_trace!(me, "log action {:?}", action);
                     let res = {
                         // need tokio::sync::Mutex here since held across await
@@ -330,7 +309,7 @@ impl<'r, Rpl, Ent> StorageHub<'r, Rpl, Ent> {
                         continue;
                     }
 
-                    if let Err(e) = tx_ack.send(res.unwrap()).await {
+                    if let Err(e) = tx_ack.send((id, res.unwrap())).await {
                         pf_error!(me, "error sending to tx_ack: {}", e);
                     }
                 }
@@ -352,8 +331,7 @@ mod storage_tests {
 
     #[test]
     fn hub_setup() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = StorageHub::new(&replica);
+        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-0.log");
         assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
         tokio_test::block_on(hub.setup(&path, 100, 100))?;
@@ -366,15 +344,14 @@ mod storage_tests {
 
     #[test]
     fn append_entries() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = StorageHub::new(&replica);
+        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-1.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 0
@@ -383,7 +360,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 1
@@ -392,7 +369,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 1
@@ -401,7 +378,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 3
@@ -413,15 +390,14 @@ mod storage_tests {
 
     #[test]
     fn read_entries() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = StorageHub::new(&replica);
+        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-2.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 0
@@ -430,7 +406,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 1
@@ -439,7 +415,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 0
             ))?,
@@ -447,7 +423,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 3
             ))?,
@@ -458,15 +434,14 @@ mod storage_tests {
 
     #[test]
     fn truncate_log() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = StorageHub::new(&replica);
+        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-3.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
         let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 0
@@ -475,7 +450,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::append_entry(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 &entry,
                 1
@@ -484,7 +459,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::truncate_log(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 1
             ))?,
@@ -492,7 +467,7 @@ mod storage_tests {
         );
         assert_eq!(
             tokio_test::block_on(StorageHub::truncate_log(
-                replica.id(),
+                0,
                 &mut backer_guard,
                 3
             ))?,
@@ -503,31 +478,33 @@ mod storage_tests {
 
     #[test]
     fn log_ack_api() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = StorageHub::new(&replica);
+        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-4.log");
         let entry = TestEntry("abcdefgh".into());
         tokio_test::block_on(hub.setup(&path, 3, 3))?;
         tokio_test::block_on(
-            hub.submit_action(LogAction::Append { entry, idx: 0 }),
+            hub.submit_action(0, LogAction::Append { entry, idx: 0 }),
         )?;
-        tokio_test::block_on(hub.submit_action(LogAction::Read { idx: 0 }))?;
+        tokio_test::block_on(hub.submit_action(1, LogAction::Read { idx: 0 }))?;
         tokio_test::block_on(
-            hub.submit_action(LogAction::Truncate { idx: 0 }),
+            hub.submit_action(2, LogAction::Truncate { idx: 0 }),
         )?;
         assert_eq!(
             tokio_test::block_on(hub.get_result())?,
-            LogResult::AppendResult { ok: true, idx: 1 }
+            (0, LogResult::AppendResult { ok: true, idx: 1 })
         );
         assert_eq!(
             tokio_test::block_on(hub.get_result())?,
-            LogResult::ReadResult {
-                entry: Some(TestEntry("abcdefgh".into()))
-            }
+            (
+                1,
+                LogResult::ReadResult {
+                    entry: Some(TestEntry("abcdefgh".into()))
+                }
+            )
         );
         assert_eq!(
             tokio_test::block_on(hub.get_result())?,
-            LogResult::TruncateResult { ok: true, idx: 0 }
+            (2, LogResult::TruncateResult { ok: true, idx: 0 })
         );
         Ok(())
     }

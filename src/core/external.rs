@@ -1,11 +1,11 @@
 //! Summerset server external API module implementation.
 
 use std::collections::{HashMap, VecDeque};
-use std::mem::size_of;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::core::utils::SummersetError;
-use crate::core::replica::{ReplicaId, GeneralReplica};
+use crate::core::replica::ReplicaId;
 use crate::core::client::ClientId;
 use crate::core::statemach::{Command, CommandResult};
 
@@ -49,12 +49,9 @@ pub struct ApiReply {
 
 /// The external client-facing API module.
 #[derive(Debug)]
-pub struct ExternalApi<'r, Rpl>
-where
-    Rpl: 'r + GeneralReplica,
-{
-    /// Reference to protocol-specific replica struct.
-    replica: &'r Rpl,
+pub struct ExternalApi {
+    /// My replica ID.
+    me: ReplicaId,
 
     /// Receiver side of the req channel.
     rx_req: Option<mpsc::Receiver<(ClientId, ApiRequest)>>,
@@ -82,17 +79,11 @@ where
 }
 
 // ExternalApi Public API implementation
-impl<'r, Rpl> ExternalApi<'r, Rpl> {
-    /// Size of a request in bytes.
-    pub const REQ_SIZE: usize = size_of::<ApiRequest>();
-
-    /// Size of a reply in bytes.
-    pub const REPLY_SIZE: usize = size_of::<ApiReply>();
-
+impl ExternalApi {
     /// Creates a new external API module.
-    pub fn new(replica: &'r Rpl) -> Self {
+    pub fn new(me: ReplicaId) -> Self {
         ExternalApi {
-            replica,
+            me,
             rx_req: None,
             tx_replies: Arc::new(Mutex::new(HashMap::new())),
             client_listener: None,
@@ -110,31 +101,37 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
     /// buffer for batching. Creates a TCP listener for client connections.
     pub async fn setup(
         &mut self,
+        api_addr: SocketAddr,
+        batch_interval: Duration,
         chan_req_cap: usize,
         chan_reply_cap: usize,
-        batch_interval: Duration,
     ) -> Result<(), SummersetError> {
-        let me = self.replica.id();
-
         if let Some(_) = self.client_acceptor_handle {
-            return logged_err!(me, "client_acceptor thread already spawned");
+            return logged_err!(
+                self.me,
+                "client_acceptor thread already spawned"
+            );
         }
         if let Some(_) = self.batch_ticker_handle {
-            return logged_err!(me, "batch_ticker thread already spawned");
+            return logged_err!(self.me, "batch_ticker thread already spawned");
         }
         if chan_req_cap == 0 {
-            return logged_err!(me, "invalid chan_req_cap {}", chan_req_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_req_cap {}",
+                chan_req_cap
+            );
         }
         if chan_reply_cap == 0 {
             return logged_err!(
-                me,
+                self.me,
                 "invalid chan_reply_cap {}",
                 chan_reply_cap
             );
         }
         if batch_interval < Duration::as_micros(1) {
             return logged_err!(
-                me,
+                self.me,
                 "batch_interval '{}' too small",
                 batch_interval
             );
@@ -143,12 +140,11 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
         let (tx_req, mut rx_req) = mpsc::channel(chan_req_cap);
         self.rx_req = Some(rx_req);
 
-        let client_listener =
-            TcpListener::bind(self.replica.api_addr()).await?;
+        let client_listener = TcpListener::bind(api_addr).await?;
         self.client_listener = Some(Arc::new(Mutex::new(client_listener)));
 
         let client_waiter_handle = tokio::spawn(Self::client_waiter_thread(
-            me,
+            self.me,
             tx_req,
             chan_reply_cap,
             self.client_listener.unwrap().clone(),
@@ -156,7 +152,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
             self.client_servant_handles.clone(),
         ));
         let batch_ticker_handle = tokio::spawn(Self::batch_ticker_thread(
-            me,
+            self.me,
             batch_interval,
             self.batch_notify.clone(),
         ));
@@ -173,10 +169,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
         &mut self,
     ) -> Result<VecDeque<(ClientId, ApiRequest)>, SummersetError> {
         if let None = self.client_waiter_handle {
-            return logged_err!(
-                self.replica.id(),
-                "get_req_batch called before setup"
-            );
+            return logged_err!(self.me, "get_req_batch called before setup");
         }
 
         self.batch_notify.notified().await;
@@ -190,7 +183,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
                     Err(e) => return Err(e),
                 }
             },
-            None => logged_err!(self.replica.id(), "rx_req not created yet"),
+            None => logged_err!(self.me, "rx_req not created yet"),
         }
 
         Ok(batch)
@@ -205,7 +198,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
         let mut tx_replies_guard = self.tx_replies.lock().unwrap();
         if !tx_replies_guard.contains_key(client) {
             return logged_err!(
-                self.replica.id(),
+                self.me,
                 "client ID {} not found among active clients",
                 client
             );
@@ -217,7 +210,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
 }
 
 // ExternalApi client_acceptor thread implementation
-impl<'r, Rpl> ExternalApi<'r, Rpl> {
+impl ExternalApi {
     /// Client acceptor thread function.
     async fn client_acceptor_thread(
         me: ReplicaId,
@@ -276,12 +269,13 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
 }
 
 // ExternalApi client_servant thread implementation
-impl<'r, Rpl> ExternalApi<'r, Rpl> {
+impl ExternalApi {
     /// Reads a client request from given TcpStream.
     async fn read_req(
         conn: &mut TcpStream,
     ) -> Result<ApiRequest, SummersetError> {
-        let req_buf: Vec<u8> = vec![0; Self::REQ_SIZE];
+        let req_len = conn.read_u64().await?; // receive length first
+        let req_buf: Vec<u8> = vec![0; req_len];
         conn.read_exact(&mut req_buf[..]).await?;
         let req = decode_from_slice(&req_buf)?;
         Ok(req)
@@ -293,6 +287,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
         conn: &mut TcpStream,
     ) -> Result<(), SummersetError> {
         let reply_bytes = encode_to_vec(reply)?;
+        conn.write_u64(reply_bytes.len()).await?; // send length first
         conn.write_all(&reply_bytes[..]).await?;
         Ok(())
     }
@@ -317,7 +312,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
                 reply = rx_reply.recv() => {
                     match reply {
                         Some(reply) => {
-                            if let Err(e) = Self::write_reply(&reply,&mut conn).await {
+                            if let Err(e) = Self::write_reply(&reply, &mut conn).await {
                                 pf_error!(me, "error replying to {}: {}", id, e);
                             } else {
                                 pf_trace!(me, "replied to {} reply {:?}", id, reply);
@@ -351,7 +346,7 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
 }
 
 // ExternalApi batch_ticker thread implementation
-impl<'r, Rpl> ExternalApi<'r, Rpl> {
+impl ExternalApi {
     /// Batch ticker thread function.
     async fn batch_ticker_thread(
         me: ReplicaId,
@@ -371,9 +366,8 @@ impl<'r, Rpl> ExternalApi<'r, Rpl> {
 #[cfg(test)]
 mod external_tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::time::SystemTime;
-    use crate::core::replica::DummyReplica;
-    use crate::core::client::DummyClient;
     use crate::core::external::{ApiRequest, ApiReply};
     use crate::core::statemach::{Command, CommandResult};
     use tokio::sync::Barrier;
@@ -394,19 +388,27 @@ mod external_tests {
 
     #[test]
     fn api_setup() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut api = ExternalApi::new(&replica);
-        assert!(
-            tokio_test::block_on(api.setup(0, 0, Duration::as_millis(1)))
-                .is_err()
-        );
+        let mut api = ExternalApi::new(0);
         assert!(tokio_test::block_on(api.setup(
-            100,
-            100,
-            Duration::as_nanos(10)
+            "127.0.0.1:52700",
+            Duration::as_millis(1),
+            0,
+            0
         ))
         .is_err());
-        tokio_test::block_on(api.setup(100, 100, Duration::as_millis(1)))?;
+        assert!(tokio_test::block_on(api.setup(
+            "127.0.0.1:52700",
+            Duration::as_nanos(10),
+            100,
+            100,
+        ))
+        .is_err());
+        tokio_test::block_on(api.setup(
+            "127.0.0.1:52700",
+            Duration::as_millis(1),
+            100,
+            100,
+        ))?;
         assert!(api.rx_req.is_some());
         assert!(api.client_listener.is_some());
         assert!(api.client_acceptor_handle.is_some());
@@ -420,11 +422,51 @@ mod external_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // server-side
-            let replica: DummyReplica = Default::default();
-            let mut api = ExternalApi::new(&replica);
-            api.setup(5, 5, Duration::from_millis(1)).await?;
+            let mut api = ExternalApi::new(0);
+            api.setup("127.0.0.1:53700", Duration::from_millis(1), 5, 5)
+                .await?;
             barrier2.wait().await;
-            // TODO: complete me!
+            let reqs: VecDeque<(ClientId, ApiRequest)> = vec![];
+            while reqs.len() < 2 {
+                let req_batch = api.get_req_batch().await?;
+                reqs.append(&mut req_batch);
+            }
+            let client = reqs[0].0;
+            assert_eq!(
+                reqs.pop_front().unwrap().1,
+                ApiRequest {
+                    id: 0,
+                    cmd: Command::Put {
+                        key: "Jose".into(),
+                        value: "123".into(),
+                    },
+                }
+            );
+            assert_eq!(
+                reqs.pop_front().unwrap().1,
+                ApiRequest {
+                    id: 1,
+                    cmd: Command::Get { key: "Jose".into() },
+                }
+            );
+            api.send_reply(
+                ApiReply {
+                    id: 0,
+                    result: CommandResult::PutResult { old_value: None },
+                },
+                client,
+            )
+            .await?;
+            api.send_reply(
+                ApiReply {
+                    id: 1,
+                    result: CommandResult::GetResult {
+                        value: "123".into(),
+                    },
+                },
+                client,
+            )
+            .await?;
         });
         // client-side
         let client: DummyClient = Default::default();

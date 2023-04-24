@@ -72,25 +72,17 @@ pub trait GenericClient {
 /// Dummy client type, mainly for testing purposes.
 pub struct DummyClient {
     id: ClientId,
-    servers: Vec<String>,
+    servers: Vec<SocketAddr>,
     conn: Option<TcpStream>,
 }
 
 impl DummyClient {
     pub fn new(
         id: ClientId,
-        servers: Vec<String>,
+        servers: Vec<SocketAddr>,
     ) -> Result<Self, SummersetError> {
         if servers.len() == 0 {
             return Err(SummersetError("servers list is empty".into()));
-        }
-        for &server in &servers {
-            if let Err(_) = server.parse::<SocketAddr>() {
-                return Err(SummersetError(format!(
-                    "invalid server addr string '{}'",
-                    server
-                )));
-            }
         }
 
         Ok(DummyClient {
@@ -149,7 +141,7 @@ impl GenericClient for DummyClient {
 }
 
 #[cfg(test)]
-mod client_test {
+mod dummy_client_test {
     use super::*;
     use rand::Rng;
 

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::core::utils::SummersetError;
-use crate::core::replica::{ReplicaId, GeneralReplica};
+use crate::core::replica::ReplicaId;
 
 use serde::{Serialize, Deserialize};
 
@@ -12,6 +12,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use log::{trace, debug, error};
+
+/// Command ID type.
+pub type CommandId = u64;
 
 /// Command to the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -38,32 +41,29 @@ type State = HashMap<String, String>;
 
 /// The local volatile state machine, which is simply an in-memory HashMap.
 #[derive(Debug)]
-pub struct StateMachine<'r, Rpl>
-where
-    Rpl: 'r + GeneralReplica,
-{
-    /// Reference to protocol-specific replica struct.
-    replica: &'r Rpl,
+pub struct StateMachine {
+    /// My replica ID.
+    me: ReplicaId,
 
     /// HashMap from key -> value, shared with executor thread.
     state: Arc<Mutex<State>>,
 
     /// Sender side of the exec channel.
-    tx_exec: Option<mpsc::Sender<Command>>,
+    tx_exec: Option<mpsc::Sender<(CommandId, Command)>>,
 
     /// Receiver side of the ack channel.
-    rx_ack: Option<mpsc::Receiver<CommandResult>>,
+    rx_ack: Option<mpsc::Receiver<(CommandId, CommandResult)>>,
 
     /// Join handle of the executor thread.
     executor_handle: Option<JoinHandle<()>>,
 }
 
 // StateMachine public API implementation
-impl<'r, Rpl> StateMachine<'r, Rpl> {
+impl StateMachine {
     /// Creates a new state machine with one executor thread.
-    pub fn new(replica: &'r Rpl) -> Self {
+    pub fn new(me: ReplicaId) -> Self {
         StateMachine {
-            replica,
+            me,
             state: Arc::new(Mutex::new(State::new())),
             tx_exec: None,
             rx_ack: None,
@@ -78,16 +78,22 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         chan_exec_cap: usize,
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
-        let me = self.replica.id();
-
         if let Some(_) = self.executor_handle {
-            return logged_err!(me, "executor thread already spawned");
+            return logged_err!(self.me, "executor thread already spawned");
         }
         if chan_exec_cap == 0 {
-            return logged_err!(me, "invalid chan_exec_cap {}", chan_exec_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_exec_cap {}",
+                chan_exec_cap
+            );
         }
         if chan_ack_cap == 0 {
-            return logged_err!(me, "invalid chan_ack_cap {}", chan_ack_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_ack_cap {}",
+                chan_ack_cap
+            );
         }
 
         let (tx_exec, mut rx_exec) = mpsc::channel(chan_exec_cap);
@@ -96,7 +102,7 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
         self.rx_ack = Some(rx_ack);
 
         let executor_handle = tokio::spawn(Self::executor_thread(
-            me,
+            self.me,
             self.state.clone(),
             rx_exec,
             tx_ack,
@@ -109,47 +115,39 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
     /// Submits a command by sending it to the exec channel.
     pub async fn submit_cmd(
         &mut self,
+        id: CommandId,
         cmd: Command,
     ) -> Result<(), SummersetError> {
         if let None = self.executor_handle {
-            return logged_err!(
-                self.replica.id(),
-                "submit_cmd called before setup"
-            );
+            return logged_err!(self.me, "submit_cmd called before setup");
         }
 
         match self.tx_exec {
-            Some(ref tx_exec) => Ok(tx_exec.send(cmd).await?),
-            None => logged_err!(self.replica.id(), "tx_exec not created yet"),
+            Some(ref tx_exec) => Ok(tx_exec.send((id, cmd)).await?),
+            None => logged_err!(self.me, "tx_exec not created yet"),
         }
     }
 
     /// Waits for the next execution result by receiving from the ack channel.
     pub async fn get_result(
         &mut self,
-    ) -> Result<CommandResult, SummersetError> {
+    ) -> Result<(CommandId, CommandResult), SummersetError> {
         if let None = self.executor_handle {
-            return logged_err!(
-                self.replica.id(),
-                "get_result called before setup"
-            );
+            return logged_err!(self.me, "get_result called before setup");
         }
 
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some(result) => Ok(result),
-                None => logged_err!(
-                    self.replica.id(),
-                    "ack channel has been closed"
-                ),
+                Some((id, result)) => Ok((id, result)),
+                None => logged_err!(self.me, "ack channel has been closed"),
             },
-            None => logged_err!(self.replica.id(), "rx_ack not created yet"),
+            None => logged_err!(self.me, "rx_ack not created yet"),
         }
     }
 }
 
 // StateMachine executor thread implementation
-impl<'r, Rpl> StateMachine<'r, Rpl> {
+impl StateMachine {
     /// Executes given command on the state machine state.
     fn execute(state: &mut State, cmd: &Command) -> CommandResult {
         let result = match cmd {
@@ -168,21 +166,21 @@ impl<'r, Rpl> StateMachine<'r, Rpl> {
     async fn executor_thread(
         me: ReplicaId,
         state: Arc<Mutex<State>>,
-        mut rx_exec: mpsc::Receiver<Command>,
-        tx_ack: mpsc::Sender<CommandResult>,
+        mut rx_exec: mpsc::Receiver<(CommandId, Command)>,
+        tx_ack: mpsc::Sender<(CommandId, CommandResult)>,
     ) {
         pf_debug!(me, "executor thread spawned");
 
         loop {
             match rx_exec.recv().await {
-                Some(cmd) => {
+                Some((id, cmd)) => {
                     let res = {
                         let mut state_guard = state.lock().unwrap();
                         Self::execute(&mut state_guard, &cmd)
                     };
                     pf_trace!(me, "executed {:?}", cmd);
 
-                    if let Err(e) = tx_ack.send(res).await {
+                    if let Err(e) = tx_ack.send((id, res)).await {
                         pf_error!(me, "error sending to tx_ack: {}", e);
                     }
                 }
@@ -203,8 +201,7 @@ mod statemach_tests {
 
     #[test]
     fn get_empty() {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
@@ -217,8 +214,7 @@ mod statemach_tests {
 
     #[test]
     fn put_one_get_one() {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
@@ -243,8 +239,7 @@ mod statemach_tests {
 
     #[test]
     fn put_twice() {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         let mut state_guard = sm.state.lock().unwrap();
         assert_eq!(
             StateMachine::execute(
@@ -280,8 +275,7 @@ mod statemach_tests {
 
     #[test]
     fn put_rand_get_rand() {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         let mut ref_sm = HashMap::<String, String>::new();
         let mut state_guard = sm.state.lock().unwrap();
         for _ in 0..100 {
@@ -321,8 +315,7 @@ mod statemach_tests {
 
     #[test]
     fn sm_setup() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         assert!(tokio_test::block_on(sm.setup(0, 0)).is_err());
         tokio_test::block_on(sm.setup(100, 100))?;
         assert!(sm.tx_exec.is_some());
@@ -333,26 +326,34 @@ mod statemach_tests {
 
     #[test]
     fn exec_ack_api() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut sm = StateMachine::new(&replica);
+        let mut sm = StateMachine::new(0);
         tokio_test::block_on(sm.setup(2, 2))?;
-        tokio_test::block_on(sm.submit_cmd(Command::Put {
-            key: "Jose".into(),
-            value: "179".into(),
-        }))?;
-        tokio_test::block_on(sm.submit_cmd(Command::Put {
-            key: "Jose".into(),
-            value: "180".into(),
-        }))?;
+        tokio_test::block_on(sm.submit_cmd(
+            0,
+            Command::Put {
+                key: "Jose".into(),
+                value: "179".into(),
+            },
+        ))?;
+        tokio_test::block_on(sm.submit_cmd(
+            1,
+            Command::Put {
+                key: "Jose".into(),
+                value: "180".into(),
+            },
+        ))?;
         assert_eq!(
             tokio_test::block_on(sm.get_result())?,
-            CommandResult::PutResult { old_value: None }
+            (0, CommandResult::PutResult { old_value: None })
         );
         assert_eq!(
             tokio_test::block_on(sm.get_result())?,
-            CommandResult::PutResult {
-                old_value: Some("179".into())
-            }
+            (
+                1,
+                CommandResult::PutResult {
+                    old_value: Some("179".into())
+                }
+            )
         );
         Ok(())
     }

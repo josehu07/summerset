@@ -1,12 +1,11 @@
 //! Summerset server internal TCP transport module implementation.
 
 use std::collections::{HashMap, HashSet};
-use std::mem::size_of;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::core::utils::{SummersetError, ReplicaMap};
-use crate::core::replica::{ReplicaId, GeneralReplica};
+use crate::core::replica::ReplicaId;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -22,13 +21,15 @@ use log::{trace, debug, info, error};
 
 /// Server internal TCP transport module.
 #[derive(Debug)]
-pub struct TransportHub<'r, Rpl, Msg>
+pub struct TransportHub<Msg>
 where
-    Rpl: 'r + GeneralReplica,
     Msg: Serialize + DeserializeOwned,
 {
-    /// Reference to protocol-specific replica struct.
-    replica: &'r Rpl,
+    /// My replica ID.
+    me: ReplicaId,
+
+    /// Cluster size (total number of replicas).
+    population: u8,
 
     /// Sender side of the send channel.
     tx_send: Option<mpsc::Sender<(Msg, ReplicaMap)>>,
@@ -59,14 +60,12 @@ where
 }
 
 // TransportHub public API implementation
-impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
-    /// Size of a message in bytes.
-    const MSG_SIZE: usize = size_of::<Msg>();
-
+impl<Msg> TransportHub<Msg> {
     /// Creates a new server internal TCP transport hub.
-    pub fn new(replica: &'r Rpl) -> Self {
+    pub fn new(me: ReplicaId, population: u8) -> Self {
         TransportHub {
-            replica,
+            me,
+            population,
             tx_send: None,
             tx_recv: None,
             rx_recv: None,
@@ -83,19 +82,26 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     /// Creates a TCP listener for peer connections.
     pub async fn setup(
         &mut self,
+        smr_addr: SocketAddr,
         chan_send_cap: usize,
         chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
-        let me = self.replica.id();
-
         if let Some(_) = self.msg_sender_handle {
-            return logged_err!(me, "msg_sender thread already spawned");
+            return logged_err!(self.me, "msg_sender thread already spawned");
         }
         if chan_send_cap == 0 {
-            return logged_err!(me, "invalid chan_send_cap {}", chan_send_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_send_cap {}",
+                chan_send_cap
+            );
         }
         if chan_recv_cap == 0 {
-            return logged_err!(me, "invalid chan_recv_cap {}", chan_recv_cap);
+            return logged_err!(
+                self.me,
+                "invalid chan_recv_cap {}",
+                chan_recv_cap
+            );
         }
 
         let (tx_send, mut rx_send) = mpsc::channel(chan_send_cap);
@@ -105,13 +111,13 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         self.rx_recv = Some(rx_recv);
 
         let msg_sender_handle = tokio::spawn(Self::msg_sender_thread(
-            me,
+            self.me,
             self.peer_send_conns.clone(),
             rx_send,
         ));
         self.msg_sender_handle = Some(msg_sender_handle);
 
-        let peer_listener = TcpListener::bind(self.replica.smr_addr()).await?;
+        let peer_listener = TcpListener::bind(smr_addr).await?;
         self.peer_listener = Some(peer_listener);
 
         Ok(())
@@ -122,34 +128,29 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     pub async fn connect_peer(
         &mut self,
         id: ReplicaId,
-        addr: String,
+        addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        let me = self.replica.id();
-
         if let None = self.msg_sender_handle {
-            return logged_err!(me, "connect_peer called before setup");
+            return logged_err!(self.me, "connect_peer called before setup");
         }
-        if id == me || id >= self.replica.population() {
-            return logged_err!(me, "invalid peer ID {} to connect", id);
+        if id == self.me || id >= self.population {
+            return logged_err!(self.me, "invalid peer ID {} to connect", id);
         }
         if self.peer_send_conns.contains_key(&id) {
             return logged_err!(
-                me,
+                self.me,
                 "peer ID {} already in peer_send_conns",
                 id
             );
         }
-        if let Err(_) = addr.parse::<SocketAddr>() {
-            return logged_err!(me, "invalid addr string '{}'", addr);
-        }
 
         let mut stream = TcpStream::connect(addr).await?;
-        stream.write_u8(me).await?; // send my ID
+        stream.write_u8(self.me).await?; // send my ID
 
         let mut send_conns_guard = self.peer_send_conns.lock().unwrap();
         send_conns_guard.insert(id, stream);
 
-        pf_debug!(me, "connected to peer {}", id);
+        pf_debug!(self.me, "connected to peer {}", id);
         Ok(())
     }
 
@@ -157,21 +158,19 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     /// corresponding message recver thread. Should be called after `setup`.
     /// Returns the connecting peer's ID if successful.
     pub async fn wait_on_peer(&mut self) -> Result<ReplicaId, SummersetError> {
-        let me = self.replica.id();
-
         if let None = self.msg_sender_handle {
-            return logged_err!(me, "wait_on_peer called before setup");
+            return logged_err!(self.me, "wait_on_peer called before setup");
         }
 
         let mut stream = self.peer_listener.accept().await?;
         let id = stream.read_u8().await?; // receive connecting peer's ID
 
-        if id == me || id >= self.replica.population() {
-            return logged_err!(me, "invalid peer ID {} waited on", id);
+        if id == self.me || id >= self.population {
+            return logged_err!(self.me, "invalid peer ID {} waited on", id);
         }
         if self.peer_recv_conns.contains_key(&id) {
             return logged_err!(
-                me,
+                self.me,
                 "peer ID {} already in peer_recv_conns",
                 id
             );
@@ -181,14 +180,14 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
             .insert(id, Arc::new(Mutex::new(stream)));
 
         let msg_recver_handle = tokio::spawn(Self::msg_recver_thread(
-            me,
+            self.me,
             id,
             self.peer_recv_conns[id].clone(),
             self.tx_recv.clone(),
         ));
         self.msg_recver_handles.insert(id, msg_recver_handle);
 
-        pf_debug!(me, "waited on peer {}", id);
+        pf_debug!(self.me, "waited on peer {}", id);
         Ok(())
     }
 
@@ -197,21 +196,23 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
     /// IDs connected if successful.
     pub async fn group_connect(
         &mut self,
-        peer_addrs: HashMap<ReplicaId, String>,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
     ) -> Result<HashSet<ReplicaId>, SummersetError> {
-        let me = self.replica.id();
-
         // sort peers ID list
         let peer_ids: Vec<ReplicaId> = peer_addrs
             .keys()
-            .filter(|&id| id != me && id < self.replica.population())
+            .filter(|&id| *id != self.me && *id < self.population)
             .collect()
             .sort();
         if peer_ids.len() == 0 {
-            return logged_err!(me, "invalid peer_addrs keys '{}'", peer_ids);
+            return logged_err!(
+                self.me,
+                "invalid peer_addrs keys '{}'",
+                peer_ids
+            );
         }
 
-        let mid_idx = peer_ids.partition_point(|&id| id < me);
+        let mid_idx = peer_ids.partition_point(|&id| *id < self.me);
         let connected: HashSet<ReplicaId> = HashSet::new();
 
         // for peers with ID smaller than me, do `connect_peer` to them first,
@@ -225,10 +226,18 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
 
             let oid = self.wait_on_peer().await?;
             if oid != id {
-                return logged_err!(me, "unexpected peer ID {} waited on", oid);
+                return logged_err!(
+                    self.me,
+                    "unexpected peer ID {} waited on",
+                    oid
+                );
             }
             if connected.contains(&oid) {
-                return logged_err!(me, "duplicate peer ID {} waited on", oid);
+                return logged_err!(
+                    self.me,
+                    "duplicate peer ID {} waited on",
+                    oid
+                );
             }
 
             connected.insert(oid);
@@ -238,11 +247,19 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         // followed `connect_peer` to waited peer, in interleaving order
         for _ in &peer_ids[mid_idx..] {
             let oid = self.wait_on_peer().await?;
-            if oid <= me || oid >= self.replica.population() {
-                return logged_err!(me, "invalid peer ID {} waited on", oid);
+            if oid <= self.me || oid >= self.population {
+                return logged_err!(
+                    self.me,
+                    "invalid peer ID {} waited on",
+                    oid
+                );
             }
             if connected.contains(&oid) {
-                return logged_err!(me, "duplicate peer ID {} waited on", oid);
+                return logged_err!(
+                    self.me,
+                    "duplicate peer ID {} waited on",
+                    oid
+                );
             }
 
             let addr = peer_addrs[oid];
@@ -258,7 +275,7 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         for id in &peer_ids {
             assert!(connected.contains(id));
         }
-        pf_info!(me, "group-connected with peers {}", peer_ids);
+        pf_info!(self.me, "group-connected with peers {}", peer_ids);
         Ok(connected)
     }
 
@@ -269,15 +286,12 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         target: ReplicaMap,
     ) -> Result<(), SummersetError> {
         if let None = self.msg_sender_handle {
-            return logged_err!(
-                self.replica.id(),
-                "send_msg called before setup"
-            );
+            return logged_err!(self.me, "send_msg called before setup");
         }
 
         match self.tx_send {
             Some(ref tx_send) => Ok(tx_send.send((msg, target)).await?),
-            None => logged_err!(self.replica.id(), "tx_send not created yet"),
+            None => logged_err!(self.me, "tx_send not created yet"),
         }
     }
 
@@ -287,33 +301,28 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
         if let None = self.msg_sender_handle {
-            return logged_err!(
-                self.replica.id(),
-                "recv_msg called before setup"
-            );
+            return logged_err!(self.me, "recv_msg called before setup");
         }
 
         match self.rx_recv {
             Some(ref mut rx_recv) => match rx_recv.recv().await {
                 Some((id, msg)) => Ok((id, msg)),
-                None => logged_err!(
-                    self.replica.id(),
-                    "recv channel has been closed"
-                ),
+                None => logged_err!(self.me, "recv channel has been closed"),
             },
-            None => logged_err!(self.replica.id(), "rx_recv not created yet"),
+            None => logged_err!(self.me, "rx_recv not created yet"),
         }
     }
 }
 
 // TransportHub msg_sender thread implementation
-impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
+impl<Msg> TransportHub<Msg> {
     /// Writes a message through given TcpStream.
     async fn write_msg(
         msg: &Msg,
         conn: &mut TcpStream,
     ) -> Result<(), SummersetError> {
         let msg_bytes = encode_to_vec(msg)?;
+        conn.write_u64(msg_bytes.len()).await?; // send length first
         conn.write_all(&msg_bytes[..]).await?;
         Ok(())
     }
@@ -367,10 +376,11 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
 }
 
 // TransportHub msg_recver thread implementation
-impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
+impl<Msg> TransportHub<Msg> {
     /// Reads a message from given TcpStream.
     async fn read_msg(conn: &mut TcpStream) -> Result<Msg, SummersetError> {
-        let msg_buf: Vec<u8> = vec![0; Self::MSG_SIZE];
+        let msg_len = conn.read_u64().await?; // receive length first
+        let msg_buf: Vec<u8> = vec![0; msg_len];
         conn.read_exact(&mut msg_buf[..]).await?;
         let msg = decode_from_slice(&msg_buf)?;
         Ok(msg)
@@ -416,15 +426,15 @@ impl<'r, Rpl, Msg> TransportHub<'r, Rpl, Msg> {
 mod transport_tests {
     use super::*;
     use std::collections::HashSet;
-    use crate::core::replica::DummyReplica;
     use serde::{Serialize, Deserialize};
 
     #[test]
     fn hub_setup() -> Result<(), SummersetError> {
-        let replica = Default::default();
-        let mut hub = TransportHub::new(&replica);
-        assert!(tokio_test::block_on(hub.setup(0, 0)).is_err());
-        tokio_test::block_on(hub.setup(100, 100))?;
+        let mut hub = TransportHub::new(0, 3);
+        assert!(
+            tokio_test::block_on(hub.setup("127.0.0.1:52800", 0, 0)).is_err()
+        );
+        tokio_test::block_on(hub.setup("127.0.0.1:52800", 100, 100))?;
         assert!(hub.tx_send.is_some());
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
@@ -437,45 +447,23 @@ mod transport_tests {
     fn manual_connect() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
-            let replica = DummyReplica::new(
-                1,
-                3,
-                "127.0.0.1:53801".into(),
-                "127.0.0.1:53701".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
-            while let Err(e) =
-                hub.connect_peer(0, "127.0.0.1:53800".into()).await
-            {
+            let mut hub = TransportHub::new(1, 3);
+            hub.setup("127.0.0.1:53801", 1, 1).await?;
+            while let Err(e) = hub.connect_peer(0, "127.0.0.1:53800").await {
                 sleep(Duration::from_millis(1)).await;
             }
         });
         tokio::spawn(async move {
             // replica 2
-            let replica = DummyReplica::new(
-                2,
-                3,
-                "127.0.0.1:53802".into(),
-                "127.0.0.1:53702".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
-            while let Err(e) =
-                hub.connect_peer(0, "127.0.0.1:53800".into()).await
-            {
+            let mut hub = TransportHub::new(2, 3);
+            hub.setup("127.0.0.1:53802", 1, 1).await?;
+            while let Err(e) = hub.connect_peer(0, "127.0.0.1:53800").await {
                 sleep(Duration::from_millis(1)).await;
             }
         });
         // replica 0
-        let replica = DummyReplica::new(
-            0,
-            3,
-            "127.0.0.1:53800".into(),
-            "127.0.0.1:53700".into(),
-        );
-        let mut hub = TransportHub::new(&replica);
-        tokio_test::block_on(hub.setup(1, 1))?;
+        let mut hub = TransportHub::new(0, 3);
+        tokio_test::block_on(hub.setup("127.0.0.1:53800", 1, 1))?;
         let peers = HashSet::new();
         peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
         peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
@@ -488,14 +476,8 @@ mod transport_tests {
     fn group_connect() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
-            let replica = DummyReplica::new(
-                1,
-                3,
-                "127.0.0.1:54801".into(),
-                "127.0.0.1:54701".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
+            let mut hub = TransportHub::new(1, 3);
+            hub.setup("127.0.0.1:54801", 1, 1).await?;
             hub.group_connect(HashMap::from([
                 (0, "127.0.0.1:54800".into()),
                 (2, "127.0.0.1:54802".into()),
@@ -504,14 +486,8 @@ mod transport_tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let replica = DummyReplica::new(
-                2,
-                3,
-                "127.0.0.1:54802".into(),
-                "127.0.0.1:54702".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
+            let mut hub = TransportHub::new(2, 3);
+            hub.setup("127.0.0.1:54802", 1, 1).await?;
             hub.group_connect(HashMap::from([
                 (0, "127.0.0.1:54800".into()),
                 (1, "127.0.0.1:54801".into()),
@@ -519,14 +495,8 @@ mod transport_tests {
             .await?;
         });
         // replica 0
-        let replica = DummyReplica::new(
-            0,
-            3,
-            "127.0.0.1:54800".into(),
-            "127.0.0.1:54700".into(),
-        );
-        let mut hub = TransportHub::new(&replica);
-        tokio_test::block_on(hub.setup(1, 1))?;
+        let mut hub = TransportHub::new(0, 3);
+        tokio_test::block_on(hub.setup("127.0.0.1:54800", 1, 1))?;
         let connected =
             tokio_test::block_on(hub.group_connect(HashMap::from([
                 (1, "127.0.0.1:54801".into()),
@@ -543,14 +513,8 @@ mod transport_tests {
     fn send_recv_api() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
-            let replica = DummyReplica::new(
-                1,
-                3,
-                "127.0.0.1:55801".into(),
-                "127.0.0.1:55701".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
+            let mut hub = TransportHub::new(1, 3);
+            hub.setup("127.0.0.1:55801", 1, 1).await?;
             hub.group_connect(HashMap::from([
                 (0, "127.0.0.1:55800".into()),
                 (2, "127.0.0.1:55802".into()),
@@ -577,14 +541,8 @@ mod transport_tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let replica = DummyReplica::new(
-                2,
-                3,
-                "127.0.0.1:55802".into(),
-                "127.0.0.1:55702".into(),
-            );
-            let mut hub = TransportHub::new(&replica);
-            hub.setup(1, 1).await?;
+            let mut hub = TransportHub::new(2, 3);
+            hub.setup("127.0.0.1:55802", 1, 1).await?;
             hub.group_connect(HashMap::from([
                 (0, "127.0.0.1:55800".into()),
                 (1, "127.0.0.1:55801".into()),
@@ -610,14 +568,8 @@ mod transport_tests {
             assert_eq!(msg, TestMsg("terminate".into()));
         });
         // replica 0
-        let replica = DummyReplica::new(
-            0,
-            3,
-            "127.0.0.1:55800".into(),
-            "127.0.0.1:55700".into(),
-        );
-        let mut hub = TransportHub::new(&replica);
-        tokio_test::block_on(hub.setup(1, 1))?;
+        let mut hub = TransportHub::new(0, 3);
+        tokio_test::block_on(hub.setup("127.0.0.1:55800", 1, 1))?;
         tokio_test::block_on(hub.group_connect(HashMap::from([
             (1, "127.0.0.1:55801".into()),
             (2, "127.0.0.1:55802".into()),
