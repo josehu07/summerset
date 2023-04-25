@@ -15,6 +15,7 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 [dependencies]
 async-trait = "0.1"
 bitvec = "1.0"
+flashmap = "0.1"
 tokio = { version = "1.27", features = ["full"] }
 rand = "0.8"
 rmp-serde = "1.1"

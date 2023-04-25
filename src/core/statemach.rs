@@ -1,7 +1,6 @@
 //! Summerset server state machine module implementation.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use crate::core::utils::SummersetError;
 use crate::core::replica::ReplicaId;
@@ -45,16 +44,14 @@ pub struct StateMachine {
     /// My replica ID.
     me: ReplicaId,
 
-    /// HashMap from key -> value, shared with executor thread.
-    state: Arc<Mutex<State>>,
-
     /// Sender side of the exec channel.
     tx_exec: Option<mpsc::Sender<(CommandId, Command)>>,
 
     /// Receiver side of the ack channel.
     rx_ack: Option<mpsc::Receiver<(CommandId, CommandResult)>>,
 
-    /// Join handle of the executor thread.
+    /// Join handle of the executor thread. The state HashMap is owned by this
+    /// thread.
     executor_handle: Option<JoinHandle<()>>,
 }
 
@@ -64,7 +61,6 @@ impl StateMachine {
     pub fn new(me: ReplicaId) -> Self {
         StateMachine {
             me,
-            state: Arc::new(Mutex::new(State::new())),
             tx_exec: None,
             rx_ack: None,
             executor_handle: None,
@@ -101,12 +97,8 @@ impl StateMachine {
         self.tx_exec = Some(tx_exec);
         self.rx_ack = Some(rx_ack);
 
-        let executor_handle = tokio::spawn(Self::executor_thread(
-            self.me,
-            self.state.clone(),
-            rx_exec,
-            tx_ack,
-        ));
+        let executor_handle =
+            tokio::spawn(Self::executor_thread(self.me, rx_exec, tx_ack));
         self.executor_handle = Some(executor_handle);
 
         Ok(())
@@ -165,19 +157,18 @@ impl StateMachine {
     /// Executor thread function.
     async fn executor_thread(
         me: ReplicaId,
-        state: Arc<Mutex<State>>,
         mut rx_exec: mpsc::Receiver<(CommandId, Command)>,
         tx_ack: mpsc::Sender<(CommandId, CommandResult)>,
     ) {
         pf_debug!(me, "executor thread spawned");
 
+        // create the state HashMap
+        let mut state = State::new();
+
         loop {
             match rx_exec.recv().await {
                 Some((id, cmd)) => {
-                    let res = {
-                        let mut state_guard = state.lock().unwrap();
-                        Self::execute(&mut state_guard, &cmd)
-                    };
+                    let res = Self::execute(&mut state, &cmd);
                     pf_trace!(me, "executed {:?}", cmd);
 
                     if let Err(e) = tx_ack.send((id, res)).await {
@@ -196,16 +187,14 @@ impl StateMachine {
 #[cfg(test)]
 mod statemach_tests {
     use super::*;
-    use std::collections::HashMap;
     use rand::{Rng, seq::SliceRandom};
 
     #[test]
     fn get_empty() {
-        let mut sm = StateMachine::new(0);
-        let mut state_guard = sm.state.lock().unwrap();
+        let mut state = State::new();
         assert_eq!(
             StateMachine::execute(
-                &mut state_guard,
+                &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
             CommandResult::GetResult { value: None }
@@ -214,11 +203,10 @@ mod statemach_tests {
 
     #[test]
     fn put_one_get_one() {
-        let mut sm = StateMachine::new(0);
-        let mut state_guard = sm.state.lock().unwrap();
+        let mut state = State::new();
         assert_eq!(
             StateMachine::execute(
-                &mut state_guard,
+                &mut state,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "180".into(),
@@ -228,7 +216,7 @@ mod statemach_tests {
         );
         assert_eq!(
             StateMachine::execute(
-                &mut state_guard,
+                &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
             CommandResult::GetResult {
@@ -239,11 +227,10 @@ mod statemach_tests {
 
     #[test]
     fn put_twice() {
-        let mut sm = StateMachine::new(0);
-        let mut state_guard = sm.state.lock().unwrap();
+        let mut state = State::new();
         assert_eq!(
             StateMachine::execute(
-                &mut state_guard,
+                &mut state,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "180".into()
@@ -253,7 +240,7 @@ mod statemach_tests {
         );
         assert_eq!(
             StateMachine::execute(
-                &mut state_guard,
+                &mut state,
                 &Command::Put {
                     key: "Jose".into(),
                     value: "185".into()
@@ -275,26 +262,25 @@ mod statemach_tests {
 
     #[test]
     fn put_rand_get_rand() {
-        let mut sm = StateMachine::new(0);
-        let mut ref_sm = HashMap::<String, String>::new();
-        let mut state_guard = sm.state.lock().unwrap();
+        let mut state = State::new();
+        let mut ref_state = State::new();
         for _ in 0..100 {
             let key = gen_rand_str(1);
             let value = gen_rand_str(10);
             assert_eq!(
                 StateMachine::execute(
-                    &mut state_guard,
+                    &mut state,
                     &Command::Put {
                         key: key.clone(),
                         value: value.clone()
                     }
                 ),
                 CommandResult::PutResult {
-                    old_value: ref_sm.insert(key, value)
+                    old_value: ref_state.insert(key, value)
                 }
             );
         }
-        let keys: Vec<&String> = ref_sm.keys().collect();
+        let keys: Vec<&String> = ref_state.keys().collect();
         for _ in 0..100 {
             let key: String = if rand::random() {
                 (*keys.choose(&mut rand::thread_rng()).unwrap()).into()
@@ -303,11 +289,11 @@ mod statemach_tests {
             };
             assert_eq!(
                 StateMachine::execute(
-                    &mut state_guard,
+                    &mut state,
                     &Command::Get { key: key.clone() }
                 ),
                 CommandResult::GetResult {
-                    value: ref_sm.get(&key).cloned()
+                    value: ref_state.get(&key).cloned()
                 }
             );
         }

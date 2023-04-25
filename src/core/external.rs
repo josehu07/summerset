@@ -1,6 +1,6 @@
 //! Summerset server external API module implementation.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -9,13 +9,16 @@ use crate::core::replica::ReplicaId;
 use crate::core::client::ClientId;
 use crate::core::statemach::{Command, CommandResult};
 
+use flashmap;
+
 use serde::{Serialize, Deserialize};
 
 use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex, Notify};
+use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::sync::{mpsc, OnceCell, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
@@ -57,11 +60,11 @@ pub struct ExternalApi {
     rx_req: Option<mpsc::Receiver<(ClientId, ApiRequest)>>,
 
     /// Map from client ID -> sender side of its reply channel.
-    tx_replies: Arc<Mutex<HashMap<ClientId, mpsc::Sender<ApiReply>>>>,
+    tx_replies: Option<flashmap::ReadHandle<ClientId, mpsc::Sender<ApiReply>>>,
 
     /// TCP listener for client connections, shared with the client acceptor
     /// thread.
-    client_listener: Option<Arc<Mutex<TcpListener>>>,
+    client_listener: Arc<OnceCell<TcpListener>>,
 
     /// Notify used as batch dumping signal, shared with the batch ticker
     /// thread.
@@ -72,7 +75,8 @@ pub struct ExternalApi {
 
     /// Map from client ID -> request listener thread join handles, shared
     /// with the client acceptor thread.
-    client_servant_handles: Arc<Mutex<HashMap<ClientId, JoinHandle<()>>>>,
+    client_servant_handles:
+        Option<flashmap::ReadHandle<ClientId, JoinHandle<()>>>,
 
     /// Join handle of the batch ticker thread.
     batch_ticker_handle: Option<JoinHandle<()>>,
@@ -85,11 +89,11 @@ impl ExternalApi {
         ExternalApi {
             me,
             rx_req: None,
-            tx_replies: Arc::new(Mutex::new(HashMap::new())),
-            client_listener: None,
+            tx_replies: None,
+            client_listener: Arc::new(OnceCell::new()),
             batch_notify: Arc::new(Notify::new()),
             client_acceptor_handle: None,
-            client_servant_handles: Arc::new(Mutex::new(HashMap::new())),
+            client_servant_handles: None,
             batch_ticker_handle: None,
         }
     }
@@ -140,23 +144,33 @@ impl ExternalApi {
         let (tx_req, mut rx_req) = mpsc::channel(chan_req_cap);
         self.rx_req = Some(rx_req);
 
-        let client_listener = TcpListener::bind(api_addr).await?;
-        self.client_listener = Some(Arc::new(Mutex::new(client_listener)));
+        let (tx_replies_write, tx_replies_read) =
+            flashmap::new::<ClientId, mpsc::Sender<ApiReply>>();
+        self.tx_replies = Some(tx_replies_read);
 
-        let client_waiter_handle = tokio::spawn(Self::client_waiter_thread(
-            self.me,
-            tx_req,
-            chan_reply_cap,
-            self.client_listener.unwrap().clone(),
-            self.tx_replies.clone(),
-            self.client_servant_handles.clone(),
-        ));
+        let client_listener = TcpListener::bind(api_addr).await?;
+        self.client_listener.set(client_listener)?;
+
+        let (client_servant_handles_write, client_servant_handles_read) =
+            flashmap::new::<ClientId, JoinHandle<()>>();
+        self.client_acceptor_handle = Some(client_servant_handles_read);
+
+        let client_acceptor_handle =
+            tokio::spawn(Self::client_acceptor_thread(
+                self.me,
+                tx_req,
+                chan_reply_cap,
+                self.client_listener.clone(),
+                tx_replies_write,
+                client_servant_handles_write,
+            ));
+        self.client_acceptor_handle = Some(client_acceptor_handle);
+
         let batch_ticker_handle = tokio::spawn(Self::batch_ticker_thread(
             self.me,
             batch_interval,
             self.batch_notify.clone(),
         ));
-        self.client_waiter_handle = Some(client_waiter_handle);
         self.batch_ticker_handle = Some(batch_ticker_handle);
 
         Ok(())
@@ -168,7 +182,7 @@ impl ExternalApi {
     pub async fn get_req_batch(
         &mut self,
     ) -> Result<VecDeque<(ClientId, ApiRequest)>, SummersetError> {
-        if let None = self.client_waiter_handle {
+        if let None = self.client_acceptor_handle {
             return logged_err!(self.me, "get_req_batch called before setup");
         }
 
@@ -195,17 +209,20 @@ impl ExternalApi {
         reply: ApiReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        let mut tx_replies_guard = self.tx_replies.lock().unwrap();
-        if !tx_replies_guard.contains_key(client) {
-            return logged_err!(
-                self.me,
-                "client ID {} not found among active clients",
-                client
-            );
+        let tx_replies_guard = self.tx_replies.guard();
+        match tx_replies_guard.get(&client) {
+            Some(tx_reply) => {
+                tx_reply.send(reply).await?;
+                Ok(())
+            }
+            None => {
+                logged_err!(
+                    self.me,
+                    "client ID {} not found among active clients",
+                    client
+                )
+            }
         }
-
-        tx_replies_guard[client].send(reply).await?;
-        Ok(())
     }
 }
 
@@ -216,17 +233,14 @@ impl ExternalApi {
         me: ReplicaId,
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
         chan_reply_cap: usize,
-        client_listener: Arc<Mutex<TcpListener>>,
-        tx_replies: Arc<Mutex<HashMap<ClientId, mpsc::Sender<ApiReply>>>>,
-        client_servant_handles: Arc<Mutex<HashMap<ClientId, JoinHandle<()>>>>,
+        client_listener: Arc<OnceCell<TcpListener>>,
+        tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
+        client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
     ) {
         pf_debug!(me, "client_acceptor thread spawned");
 
-        // need tokio::sync::Mutex here since held across await
-        let mut client_listener_guard = client_listener.lock().unwrap();
-
         loop {
-            let mut stream = client_listener_guard.accept().await;
+            let mut stream = client_listener.get().unwrap().accept().await;
             if let Err(e) = stream {
                 pf_warn!(me, "error accepting client connection: {}", e);
                 continue;
@@ -240,11 +254,12 @@ impl ExternalApi {
             }
             let id = id.unwrap();
 
-            let mut tx_replies_guard = tx_replies.lock().unwrap();
+            let mut tx_replies_guard = tx_replies.guard();
             if tx_replies_guard.contains_key(&id) {
                 pf_error!(me, "duplicate client ID listened: {}", id);
                 continue;
             }
+            pf_info!(me, "accepted new client {}", id);
 
             let (tx_reply, mut rx_reply) = mpsc::channel(chan_reply_cap);
             tx_replies_guard.insert(id, tx_reply);
@@ -258,10 +273,11 @@ impl ExternalApi {
                     rx_reply,
                 ));
             let mut client_servant_handles_guard =
-                client_servant_handles.lock().unwrap();
+                client_servant_handles.guard();
             client_servant_handles_guard.insert(id, client_servant_handle);
 
-            pf_info!(me, "accepted new client {}", id);
+            client_servant_handles_guard.publish();
+            tx_replies_guard.publish();
         }
 
         pf_debug!(me, "client_acceptor thread exitted");
@@ -272,11 +288,11 @@ impl ExternalApi {
 impl ExternalApi {
     /// Reads a client request from given TcpStream.
     async fn read_req(
-        conn: &mut TcpStream,
+        conn_read: &mut ReadHalf<'_>,
     ) -> Result<ApiRequest, SummersetError> {
-        let req_len = conn.read_u64().await?; // receive length first
+        let req_len = conn_read.read_u64().await?; // receive length first
         let req_buf: Vec<u8> = vec![0; req_len];
-        conn.read_exact(&mut req_buf[..]).await?;
+        conn_read.read_exact(&mut req_buf[..]).await?;
         let req = decode_from_slice(&req_buf)?;
         Ok(req)
     }
@@ -284,11 +300,11 @@ impl ExternalApi {
     /// Writes a reply through given TcpStream.
     async fn write_reply(
         reply: &ApiReply,
-        conn: &mut TcpStream,
+        conn_write: &mut WriteHalf<'_>,
     ) -> Result<(), SummersetError> {
         let reply_bytes = encode_to_vec(reply)?;
-        conn.write_u64(reply_bytes.len()).await?; // send length first
-        conn.write_all(&reply_bytes[..]).await?;
+        conn_write.write_u64(reply_bytes.len()).await?; // send length first
+        conn_write.write_all(&reply_bytes[..]).await?;
         Ok(())
     }
 
@@ -302,6 +318,8 @@ impl ExternalApi {
     ) {
         pf_debug!(me, "client_servant thread for {} spawned", id);
 
+        let (conn_read, conn_write) = conn.split();
+
         loop {
             tokio::select! {
                 // select between getting a new reply to send back and receiving
@@ -312,7 +330,7 @@ impl ExternalApi {
                 reply = rx_reply.recv() => {
                     match reply {
                         Some(reply) => {
-                            if let Err(e) = Self::write_reply(&reply, &mut conn).await {
+                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
                                 pf_error!(me, "error replying to {}: {}", id, e);
                             } else {
                                 pf_trace!(me, "replied to {} reply {:?}", id, reply);
@@ -323,7 +341,7 @@ impl ExternalApi {
                 },
 
                 // receives client request
-                req = Self::read_req(&mut conn) => {
+                req = Self::read_req(&mut conn_read) => {
                     match req {
                         Ok(req) => {
                             pf_trace!(me, "request from {} req {:?}", id, req);
@@ -370,8 +388,9 @@ mod external_tests {
     use std::time::SystemTime;
     use crate::core::external::{ApiRequest, ApiReply};
     use crate::core::statemach::{Command, CommandResult};
-    use crate::core::client::{ClientStub, ClientId};
+    use crate::core::client::{ClientSendStub, ClientRecvStub, ClientId};
     use rand::Rng;
+    use tokio::net::TcpStream;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 
@@ -412,7 +431,7 @@ mod external_tests {
             100,
         ))?;
         assert!(api.rx_req.is_some());
-        assert!(api.client_listener.is_some());
+        assert!(api.client_listener.initialized());
         assert!(api.client_acceptor_handle.is_some());
         assert!(api.batch_ticker_handle.is_some());
         Ok(())
@@ -472,29 +491,33 @@ mod external_tests {
         });
         // client-side
         let client: ClientId = rand::thread_rng().gen();
-        let stub = ClientStub::new(client);
         tokio_test::block_on(barrier.wait());
-        tokio_test::block_on(stub.connect("127.0.0.1:53700"))?;
-        tokio_test::block_on(stub.send_req(ApiRequest {
+        let mut stream =
+            tokio_test::block_on(TcpStream::connect("127.0.0.1:53700"))?;
+        tokio_test::block_on(stream.write_u64(client))?; // send my client ID
+        let (read_half, write_half) = stream.into_split();
+        let send_stub = ClientSendStub::new(client, write_half);
+        let recv_stub = ClientRecvStub::new(client, read_half);
+        tokio_test::block_on(send_stub.send_req(ApiRequest {
             id: 0,
             cmd: Command::Put {
                 key: "Jose".into(),
                 value: "123".into(),
             },
         }))?;
-        tokio_test::block_on(stub.send_req(ApiRequest {
+        tokio_test::block_on(send_stub.send_req(ApiRequest {
             id: 1,
             cmd: Command::Get { key: "Jose".into() },
         }))?;
         assert_eq!(
-            tokio_test::block_on(stub.recv_reply())?,
+            tokio_test::block_on(recv_stub.recv_reply())?,
             ApiReply {
                 id: 0,
                 result: CommandResult::PutResult { old_value: None }
             }
         );
         assert_eq!(
-            tokio_test::block_on(stub.recv_reply())?,
+            tokio_test::block_on(recv_stub.recv_reply())?,
             ApiReply {
                 id: 1,
                 result: CommandResult::GetResult {

@@ -13,7 +13,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::fs::{self, File, OpenOptions};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinHandle;
 
 use log::{trace, debug, info, warn, error};
@@ -65,7 +65,7 @@ where
     me: ReplicaId,
 
     /// Backing file for durability.
-    backer: Option<Arc<Mutex<File>>>,
+    backer: Arc<OnceCell<File>>,
 
     /// Sender side of the log channel.
     tx_log: Option<mpsc::Sender<(LogActionId, LogAction<Ent>)>>,
@@ -83,7 +83,7 @@ impl<Ent> StorageHub<Ent> {
     pub fn new(me: ReplicaId) -> Self {
         StorageHub {
             me,
-            backer: None,
+            backer: Arc::new(OnceCell::new()),
             tx_log: None,
             rx_ack: None,
             logger_handle: None,
@@ -127,7 +127,7 @@ impl<Ent> StorageHub<Ent> {
         let mut file =
             OpenOptions::new().read(true).write(true).open(path).await?;
         file.seek(SeekFrom::End(0)).await?; // seek to EOF
-        self.backer = Some(Arc::new(Mutex::new(file)));
+        self.backer.set(file);
 
         let (tx_log, mut rx_log) = mpsc::channel(chan_log_cap);
         let (tx_ack, mut rx_ack) = mpsc::channel(chan_ack_cap);
@@ -136,7 +136,7 @@ impl<Ent> StorageHub<Ent> {
 
         let logger_handle = tokio::spawn(Self::logger_thread(
             self.me,
-            self.backer.unwrap().clone(),
+            self.backer.clone(),
             rx_log,
             tx_ack,
         ));
@@ -151,7 +151,7 @@ impl<Ent> StorageHub<Ent> {
         id: LogActionId,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
-        if let None = self.backer {
+        if let None = self.logger_handle {
             return logged_err!(self.me, "submit_action called before setup");
         }
 
@@ -165,7 +165,7 @@ impl<Ent> StorageHub<Ent> {
     pub async fn get_result(
         &mut self,
     ) -> Result<LogResult<Ent>, SummersetError> {
-        if let None = self.backer {
+        if let None = self.logger_handle {
             return logged_err!(self.me, "get_result called before setup");
         }
 
@@ -300,7 +300,7 @@ impl<Ent> StorageHub<Ent> {
     /// Logger thread function.
     async fn logger_thread(
         me: ReplicaId,
-        backer: Arc<Mutex<File>>,
+        backer: Arc<OnceCell<File>>,
         mut rx_log: mpsc::Receiver<(LogActionId, LogAction<Ent>)>,
         tx_ack: mpsc::Sender<(LogActionId, LogResult<Ent>)>,
     ) {
@@ -310,11 +310,9 @@ impl<Ent> StorageHub<Ent> {
             match rx_log.recv().await {
                 Some((id, action)) => {
                     pf_trace!(me, "log action {:?}", action);
-                    let res = {
-                        // need tokio::sync::Mutex here since held across await
-                        let mut backer_guard = backer.lock().unwrap();
-                        Self::do_action(me, &mut backer_guard, action).await
-                    };
+                    let res =
+                        Self::do_action(me, backer.get_mut().unwrap(), action)
+                            .await;
                     if let Err(e) = res {
                         pf_error!(me, "error during logging: {}", e);
                         continue;
@@ -344,7 +342,7 @@ mod storage_tests {
         let path = Path::new("/tmp/test-backer-0.log");
         assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
         tokio_test::block_on(hub.setup(&path, 100, 100))?;
-        assert!(hub.backer.is_some());
+        assert!(hub.backer.initialized());
         assert!(hub.tx_log.is_some());
         assert!(hub.rx_ack.is_some());
         assert!(hub.logger_handle.is_some());
@@ -359,32 +357,31 @@ mod storage_tests {
         let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-1.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
-        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             now_offset,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             now_offset + 10,
         ))?;
         assert!(!ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             0,
         ))?;
@@ -397,18 +394,17 @@ mod storage_tests {
         let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-2.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
-        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             now_offset,
         ))?;
@@ -416,7 +412,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 0
             ))?,
             Some(TestEntry("test-entry-dummy-string".into()))
@@ -424,7 +420,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 now_offset + 10
             ))?,
             None
@@ -432,7 +428,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 now_offset - 4
             ))?,
             None
@@ -445,18 +441,17 @@ mod storage_tests {
         let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-3.log");
         tokio_test::block_on(hub.setup(&path, 1, 1))?;
-        let mut backer_guard = hub.backer.unwrap().lock().unwrap();
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, mid_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, end_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            &mut backer_guard,
+            hub.backer.get_mut(),
             &entry,
             mid_offset,
         ))?;
@@ -464,7 +459,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::truncate_log(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 mid_offset
             ))?,
             (true, mid_offset)
@@ -472,7 +467,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::truncate_log(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 end_offset
             ))?,
             (false, mid_offset)
@@ -480,7 +475,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::truncate_log(
                 0,
-                &mut backer_guard,
+                hub.backer.get_mut(),
                 0
             ))?,
             (true, 0)

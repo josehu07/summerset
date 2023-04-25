@@ -2,10 +2,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use crate::core::utils::{SummersetError, ReplicaMap};
 use crate::core::replica::ReplicaId;
+
+use flashmap;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -13,7 +14,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 

@@ -11,7 +11,6 @@ Summerset is a distributed key-value store incorporating a wide range of state m
 
 This codebase comprises the following pieces:
 
-* `proto/`: protobuf definitions for various APIs and replication protocols
 * `src/`: the core Summerset library, linked by both `_server` and `_client`
 * `summerset_server`: the server-side standalone executable
 * `summerset_client`: the client-side library, linked by all client executables
@@ -58,8 +57,8 @@ cargo run [-r] -p summerset_bench -- -h
 ## TODO List
 
 * [*] event-based programming structure
-* [ ] transport layer abstraction
-* [ ] differentiate between read/non-read commands
+* [ ] implementation of class protocols
+* [ ] differentiate read/non-read commands
 * [ ] membership discovery & view changes
 * [ ] better README
 
