@@ -370,6 +370,8 @@ mod external_tests {
     use std::time::SystemTime;
     use crate::core::external::{ApiRequest, ApiReply};
     use crate::core::statemach::{Command, CommandResult};
+    use crate::core::client::{ClientStub, ClientId};
+    use rand::Rng;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 
@@ -469,29 +471,30 @@ mod external_tests {
             .await?;
         });
         // client-side
-        let client: DummyClient = Default::default();
+        let client: ClientId = rand::thread_rng().gen();
+        let stub = ClientStub::new(client);
         tokio_test::block_on(barrier.wait());
-        tokio_test::block_on(client.connect())?;
-        tokio_test::block_on(client.send_req(ApiRequest {
+        tokio_test::block_on(stub.connect("127.0.0.1:53700"))?;
+        tokio_test::block_on(stub.send_req(ApiRequest {
             id: 0,
             cmd: Command::Put {
                 key: "Jose".into(),
                 value: "123".into(),
             },
         }))?;
-        tokio_test::block_on(client.send_req(ApiRequest {
+        tokio_test::block_on(stub.send_req(ApiRequest {
             id: 1,
             cmd: Command::Get { key: "Jose".into() },
         }))?;
         assert_eq!(
-            tokio_test::block_on(client.recv_reply())?,
+            tokio_test::block_on(stub.recv_reply())?,
             ApiReply {
                 id: 0,
                 result: CommandResult::PutResult { old_value: None }
             }
         );
         assert_eq!(
-            tokio_test::block_on(client.recv_reply())?,
+            tokio_test::block_on(stub.recv_reply())?,
             ApiReply {
                 id: 1,
                 result: CommandResult::GetResult {

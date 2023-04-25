@@ -3,15 +3,18 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::core::utils::SummersetError;
 use crate::core::replica::{GenericReplica, ReplicaId};
 use crate::core::client::{GenericClient, ClientId};
-use crate::core::external::ExternalApi;
+use crate::core::external::{ExternalApi, ApiRequest, ApiReply};
 use crate::core::statemach::{StateMachine, Command};
 use crate::core::storage::StorageHub;
+
+use async_trait::async_trait;
 
 use tokio::time::Duration;
 
@@ -24,7 +27,7 @@ struct LogEntry {
 
 /// RepNothing server replica module.
 #[derive(Debug)]
-pub struct RepNothingReplica<'r> {
+pub struct RepNothingReplica {
     /// Is this replica running?
     running: bool,
 
@@ -50,24 +53,24 @@ pub struct RepNothingReplica<'r> {
     chan_cap_base: usize,
 
     /// ExternalApi module.
-    external_api: Option<ExternalApi<'r, Self>>,
+    external_api: Option<ExternalApi>,
 
     /// StateMachine module.
-    state_machine: Option<StateMachine<'r, Self>>,
+    state_machine: Option<StateMachine>,
 
     /// StorageHub module.
-    storage_hub: Option<StorageHub<'r, Self, LogEntry>>,
+    storage_hub: Option<StorageHub<LogEntry>>,
     // TransportHub module not needed here.
 }
 
-impl<'r> RepNothingReplica<'r> {
-    /// Creates a new RepNothing replica.
-    pub fn new(
+#[async_trait]
+impl GenericReplica for RepNothingReplica {
+    async fn new(
         id: ReplicaId,
         population: u8,
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
-        backer_file: Path,
+        backer_file: Option<Path>,
         batch_interval: Duration,
         chan_cap_base: usize,
     ) -> Result<Self, SummersetError> {
@@ -90,6 +93,16 @@ impl<'r> RepNothingReplica<'r> {
                 smr_addr
             );
         }
+        if batch_interval < Duration::from_micros(1) {
+            return logged_err!(
+                id,
+                "batch_interval '{}' too small",
+                batch_interval
+            );
+        }
+        if chan_cap_base == 0 {
+            return logged_err!(id, "invalid chan_cap_base {}", chan_cap_base);
+        }
 
         Ok(RepNothingReplica {
             running: false,
@@ -105,29 +118,32 @@ impl<'r> RepNothingReplica<'r> {
             storage_hub: None,
         })
     }
+
+    async fn run(&mut self) -> Result<(), SummersetError> {
+        todo!();
+    }
+}
+
+/// RepNothing client-side module.
+pub struct RepNothingClient {
+    /// Client ID.
+    id: ClientId,
 }
 
 #[async_trait]
-impl GenericReplica for RepNothingReplica {
-    fn id(&self) -> ReplicaId {
-        self.id
+impl GenericClient for RepNothingClient {
+    async fn new(
+        id: ClientId,
+        servers: HashMap<ReplicaId, SocketAddr>,
+    ) -> Result<Self, SummersetError> {
+        todo!();
     }
 
-    fn population(&self) -> u8 {
-        self.population
+    async fn send_req(&self, req: ApiRequest) -> Result<(), SummersetError> {
+        todo!()
     }
 
-    fn smr_addr(&self) -> &str {
-        &self.smr_addr
+    async fn recv_reply(&self) -> Result<ApiReply, SummersetError> {
+        todo!()
     }
-
-    fn api_addr(&self) -> &str {
-        &self.api_addr
-    }
-
-    async fn setup(&mut self) -> Result<(), SummersetError> {
-        let mut external_api = ExternalApi::new(&self)
-    }
-
-    async fn run(&mut self) -> Result<(), SummersetError> {}
 }
