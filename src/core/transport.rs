@@ -6,19 +6,18 @@ use std::net::SocketAddr;
 use crate::core::utils::{SummersetError, ReplicaMap};
 use crate::core::replica::ReplicaId;
 
-use flashmap;
-
 use serde::{Serialize, de::DeserializeOwned};
 
 use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
+use tokio::net::tcp::{ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
-use log::{trace, debug, info, error};
+use log::{trace, debug, info, warn, error};
 
 /// Server internal TCP transport module.
 #[derive(Debug)]
@@ -32,11 +31,14 @@ where
     /// Cluster size (total number of replicas).
     population: u8,
 
-    /// Sender side of the send channel.
-    tx_send: Option<mpsc::Sender<(Msg, ReplicaMap)>>,
+    /// Capacity of a send channel.
+    chan_send_cap: usize,
+
+    /// Map from peer ID -> Sender side of the send channel.
+    tx_sends: HashMap<ReplicaId, mpsc::Sender<Msg>>,
 
     /// Sender side of the recv channel, stored here so that we can clone it
-    /// to a message recver thread whenever a new peer is connected.
+    /// to a message recver thread when a new peer is connected.
     tx_recv: Option<mpsc::Sender<(ReplicaId, Msg)>>,
 
     /// Receiver side of the recv channel.
@@ -45,19 +47,8 @@ where
     /// TCP listener for peer connections.
     peer_listener: Option<TcpListener>,
 
-    /// Map from peer ID -> TCP connection used in sending direction, shared
-    /// with the message sender thread.
-    peer_send_conns: Arc<Mutex<HashMap<ReplicaId, TcpStream>>>,
-
-    /// Map from peer ID -> TCP connection used in recving direction. Each
-    /// stream is shared with the corresponding message receiver thread.
-    peer_recv_conns: HashMap<ReplicaId, Arc<Mutex<TcpStream>>>,
-
-    /// Join handle of the message sender thread.
-    msg_sender_handle: Option<JoinHandle<()>>,
-
-    /// Map from peer ID -> message listener thread join handles.
-    msg_recver_handles: HashMap<ReplicaId, JoinHandle<()>>,
+    /// Map from peer ID -> peer messenger thread join handles.
+    peer_messenger_handles: HashMap<ReplicaId, JoinHandle<()>>,
 }
 
 // TransportHub public API implementation
@@ -67,14 +58,12 @@ impl<Msg> TransportHub<Msg> {
         TransportHub {
             me,
             population,
-            tx_send: None,
+            chan_send_cap: 0,
+            tx_sends: HashMap::new(),
             tx_recv: None,
             rx_recv: None,
             peer_listener: None,
-            peer_send_conns: Arc::new(Mutex::new(HashMap::new())),
-            peer_recv_conns: HashMap::new(),
-            msg_sender_handle: None,
-            msg_recver_handles: HashMap::new(),
+            peer_messenger_handles: HashMap::new(),
         }
     }
 
@@ -87,8 +76,8 @@ impl<Msg> TransportHub<Msg> {
         chan_send_cap: usize,
         chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
-        if let Some(_) = self.msg_sender_handle {
-            return logged_err!(self.me, "msg_sender thread already spawned");
+        if let Some(_) = self.peer_listener {
+            return logged_err!(self.me, "setup already done");
         }
         if chan_send_cap == 0 {
             return logged_err!(
@@ -105,18 +94,11 @@ impl<Msg> TransportHub<Msg> {
             );
         }
 
-        let (tx_send, mut rx_send) = mpsc::channel(chan_send_cap);
+        self.chan_send_cap = chan_send_cap;
+
         let (tx_recv, mut rx_recv) = mpsc::channel(chan_recv_cap);
-        self.tx_send = Some(tx_send);
         self.tx_recv = Some(tx_recv);
         self.rx_recv = Some(rx_recv);
-
-        let msg_sender_handle = tokio::spawn(Self::msg_sender_thread(
-            self.me,
-            self.peer_send_conns.clone(),
-            rx_send,
-        ));
-        self.msg_sender_handle = Some(msg_sender_handle);
 
         let peer_listener = TcpListener::bind(smr_addr).await?;
         self.peer_listener = Some(peer_listener);
@@ -124,23 +106,22 @@ impl<Msg> TransportHub<Msg> {
         Ok(())
     }
 
-    /// Connects to a new peer replica in the sending direction. Should be
-    /// called after `setup`.
+    /// Connects to a new peer replica actively.
     pub async fn connect_peer(
         &mut self,
         id: ReplicaId,
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        if let None = self.msg_sender_handle {
+        if let None = self.peer_listener {
             return logged_err!(self.me, "connect_peer called before setup");
         }
         if id == self.me || id >= self.population {
             return logged_err!(self.me, "invalid peer ID {} to connect", id);
         }
-        if self.peer_send_conns.contains_key(&id) {
+        if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!(
                 self.me,
-                "peer ID {} already in peer_send_conns",
+                "peer ID {} already in peer_messenger_handles",
                 id
             );
         }
@@ -148,8 +129,18 @@ impl<Msg> TransportHub<Msg> {
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u8(self.me).await?; // send my ID
 
-        let mut send_conns_guard = self.peer_send_conns.lock().unwrap();
-        send_conns_guard.insert(id, stream);
+        let (tx_send, mut rx_send) = mpsc::channel(self.chan_send_cap);
+        self.tx_sends.insert(id, tx_send);
+
+        let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
+            self.me,
+            id,
+            stream,
+            rx_send,
+            self.tx_recv.clone(),
+        ));
+        self.peer_messenger_handles
+            .insert(id, peer_messenger_handle);
 
         pf_debug!(self.me, "connected to peer {}", id);
         Ok(())
@@ -159,7 +150,7 @@ impl<Msg> TransportHub<Msg> {
     /// corresponding message recver thread. Should be called after `setup`.
     /// Returns the connecting peer's ID if successful.
     pub async fn wait_on_peer(&mut self) -> Result<ReplicaId, SummersetError> {
-        if let None = self.msg_sender_handle {
+        if let None = self.peer_listener {
             return logged_err!(self.me, "wait_on_peer called before setup");
         }
 
@@ -169,27 +160,29 @@ impl<Msg> TransportHub<Msg> {
         if id == self.me || id >= self.population {
             return logged_err!(self.me, "invalid peer ID {} waited on", id);
         }
-        if self.peer_recv_conns.contains_key(&id) {
+        if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!(
                 self.me,
-                "peer ID {} already in peer_recv_conns",
+                "peer ID {} already in peer_messenger_handles",
                 id
             );
         }
 
-        self.peer_recv_conns
-            .insert(id, Arc::new(Mutex::new(stream)));
+        let (tx_send, mut rx_send) = mpsc::channel(self.chan_send_cap);
+        self.tx_sends.insert(id, tx_send);
 
-        let msg_recver_handle = tokio::spawn(Self::msg_recver_thread(
+        let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
             self.me,
             id,
-            self.peer_recv_conns[id].clone(),
+            stream,
+            rx_send,
             self.tx_recv.clone(),
         ));
-        self.msg_recver_handles.insert(id, msg_recver_handle);
+        self.peer_messenger_handles
+            .insert(id, peer_messenger_handle);
 
         pf_debug!(self.me, "waited on peer {}", id);
-        Ok(())
+        Ok(id)
     }
 
     /// Convenience function of a simple deadlock-free strategy for a group of
@@ -216,67 +209,41 @@ impl<Msg> TransportHub<Msg> {
         let mid_idx = peer_ids.partition_point(|&id| *id < self.me);
         let connected: HashSet<ReplicaId> = HashSet::new();
 
-        // for peers with ID smaller than me, do `connect_peer` to them first,
-        // followed by `wait_on_peer`, in interleaving order
+        // for peers with ID smaller than me, connect to them actively
         for &id in &peer_ids[..mid_idx] {
             let addr = peer_addrs[id];
             while let Err(_) = self.connect_peer(id, addr).await {
                 // retry until connected
                 sleep(Duration::from_millis(1)).await;
             }
+            connected.insert(id);
+        }
 
-            let oid = self.wait_on_peer().await?;
-            if oid != id {
+        // for peers with ID larger than me, wait on their connection
+        for _ in &peer_ids[mid_idx..] {
+            let id = self.wait_on_peer().await?;
+            if id <= self.me || id >= self.population {
                 return logged_err!(
                     self.me,
                     "unexpected peer ID {} waited on",
-                    oid
+                    id
                 );
             }
-            if connected.contains(&oid) {
+            if connected.contains(&id) {
                 return logged_err!(
                     self.me,
                     "duplicate peer ID {} waited on",
-                    oid
+                    id
                 );
             }
-
-            connected.insert(oid);
-        }
-
-        // for peers with ID larger than me, do `wait_on_peer` on anyone,
-        // followed `connect_peer` to waited peer, in interleaving order
-        for _ in &peer_ids[mid_idx..] {
-            let oid = self.wait_on_peer().await?;
-            if oid <= self.me || oid >= self.population {
-                return logged_err!(
-                    self.me,
-                    "invalid peer ID {} waited on",
-                    oid
-                );
-            }
-            if connected.contains(&oid) {
-                return logged_err!(
-                    self.me,
-                    "duplicate peer ID {} waited on",
-                    oid
-                );
-            }
-
-            let addr = peer_addrs[oid];
-            while let Err(_) = self.connect_peer(oid, addr).await {
-                // retry until connected
-                sleep(Duration::from_millis(1)).await;
-            }
-
-            connected.insert(oid);
+            connected.insert(id);
         }
 
         assert_eq!(connected.len(), peer_ids.len());
         for id in &peer_ids {
             assert!(connected.contains(id));
         }
-        pf_info!(self.me, "group-connected with peers {}", peer_ids);
+        pf_info!(self.me, "group connected peers {}", peer_ids);
         Ok(connected)
     }
 
@@ -286,14 +253,30 @@ impl<Msg> TransportHub<Msg> {
         msg: Msg,
         target: ReplicaMap,
     ) -> Result<(), SummersetError> {
-        if let None = self.msg_sender_handle {
+        if let None = self.peer_listener {
             return logged_err!(self.me, "send_msg called before setup");
         }
 
-        match self.tx_send {
-            Some(ref tx_send) => Ok(tx_send.send((msg, target)).await?),
-            None => logged_err!(self.me, "tx_send not created yet"),
+        for (peer, to_send) in target.iter().enumerate() {
+            if !to_send {
+                continue;
+            }
+
+            match self.tx_sends.get(&peer) {
+                Some(tx_send) => {
+                    tx_send.send(msg).await?;
+                }
+                None => {
+                    pf_warn!(
+                        self.me,
+                        "peer ID {} not found among connected ones",
+                        peer
+                    );
+                }
+            }
         }
+
+        Ok(())
     }
 
     /// Receives a message from some peer by receiving from the recv channel.
@@ -301,7 +284,7 @@ impl<Msg> TransportHub<Msg> {
     pub async fn recv_msg(
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
-        if let None = self.msg_sender_handle {
+        if let None = self.peer_listener {
             return logged_err!(self.me, "recv_msg called before setup");
         }
 
@@ -315,111 +298,86 @@ impl<Msg> TransportHub<Msg> {
     }
 }
 
-// TransportHub msg_sender thread implementation
+// TransportHub peer_messenger thread implementation
 impl<Msg> TransportHub<Msg> {
     /// Writes a message through given TcpStream.
     async fn write_msg(
         msg: &Msg,
-        conn: &mut TcpStream,
+        conn_write: &mut WriteHalf<'_>,
     ) -> Result<(), SummersetError> {
         let msg_bytes = encode_to_vec(msg)?;
-        conn.write_u64(msg_bytes.len()).await?; // send length first
-        conn.write_all(&msg_bytes[..]).await?;
+        conn_write.write_u64(msg_bytes.len()).await?; // send length first
+        conn_write.write_all(&msg_bytes[..]).await?;
         Ok(())
     }
 
-    /// Message sender thread function.
-    async fn msg_sender_thread(
-        me: ReplicaId,
-        send_conns: Arc<Mutex<HashMap<ReplicaId, TcpStream>>>,
-        mut rx_send: mpsc::Receiver<(Msg, ReplicaMap)>,
-    ) {
-        pf_debug!(me, "msg_sender thread spawned");
-
-        loop {
-            match rx_send.recv().await {
-                Some((msg, target)) => {
-                    // need tokio::sync::Mutex here since held across await
-                    let mut send_conns_guard = send_conns.lock().unwrap();
-
-                    for (id, to_send) in target.iter().enumerate() {
-                        if id == me {
-                            continue;
-                        }
-                        if !send_conns_guard.contains_key(&id) {
-                            pf_error!(
-                                me,
-                                "replica ID {} not found in send_conns",
-                                id
-                            );
-                            continue;
-                        }
-
-                        if to_send {
-                            if let Err(e) =
-                                Self::write_msg(&msg, &mut send_conns_guard[id])
-                                    .await
-                            {
-                                pf_error!(me, "error sending to {}: {}", id, e);
-                            } else {
-                                pf_trace!(me, "sent to {} msg {:?}", id, msg);
-                            }
-                        }
-                    }
-                }
-
-                None => break, // channel gets closed and no messages remain
-            }
-        }
-
-        pf_debug!(me, "msg_sender thread exitted");
-    }
-}
-
-// TransportHub msg_recver thread implementation
-impl<Msg> TransportHub<Msg> {
     /// Reads a message from given TcpStream.
-    async fn read_msg(conn: &mut TcpStream) -> Result<Msg, SummersetError> {
-        let msg_len = conn.read_u64().await?; // receive length first
+    async fn read_msg(
+        conn_read: &mut ReadHalf<'_>,
+    ) -> Result<Msg, SummersetError> {
+        let msg_len = conn_read.read_u64().await?; // receive length first
         let msg_buf: Vec<u8> = vec![0; msg_len];
-        conn.read_exact(&mut msg_buf[..]).await?;
+        conn_read.read_exact(&mut msg_buf[..]).await?;
         let msg = decode_from_slice(&msg_buf)?;
         Ok(msg)
     }
 
-    /// Message recver thread function.
-    async fn msg_recver_thread(
+    /// Peer messenger thread function.
+    async fn peer_messenger_thread(
         me: ReplicaId,
-        id: ReplicaId, // corresponding peer's ID
-        recv_conn: Arc<Mutex<TcpStream>>,
+        id: ReplicaId, // corresonding peer's ID
+        conn: TcpStream,
+        mut rx_send: mpsc::Receiver<Msg>,
         tx_recv: mpsc::Sender<(ReplicaId, Msg)>,
     ) {
-        pf_debug!(me, "msg_recver thread for {} spawned", id);
+        pf_debug!(me, "peer_messenger thread for {} spawned", id);
 
-        // need tokio::sync::Mutex here since held across await
-        let mut recv_conn_guard = recv_conn.lock().unwrap();
+        let (conn_read, conn_write) = conn.split();
 
         loop {
-            match Self::read_msg(&mut recv_conn_guard).await {
-                Ok(msg) => {
-                    pf_trace!(me, "recv from {} msg {:?}", id, msg);
-                    if let Err(e) = tx_recv.send((id, msg)).await {
-                        pf_error!(
-                            me,
-                            "error sending to tx_recv for {}: {}",
-                            id,
-                            e
-                        );
-                    }
-                }
+            tokio::select! {
+                // select between getting a new message to send out and
+                // receiving a new message from peer
 
-                Err(e) => {
-                    pf_error!(me, "error receiving msg for {}: {}", id, e)
-                }
+                // gets a message to send out
+                msg = rx_send.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            if let Err(e) = Self::write_msg(&msg, &mut conn_write)
+                                            .await
+                                    {
+                                        pf_error!(me, "error sending to {}: {}", id, e);
+                                    } else {
+                                        pf_trace!(me, "sent to {} msg {:?}", id, msg);
+                                    }
+                        },
+                        None => break, // channel gets closed and no messages remain
+                    }
+                },
+
+                // receives new message from peer
+                msg = Self::read_msg(&mut conn_read) => {
+                    match msg {
+                        Ok(msg) => {
+                            pf_trace!(me, "recv from {} msg {:?}", id, msg);
+                            if let Err(e) = tx_recv.send((id, msg)).await {
+                                pf_error!(
+                                    me,
+                                    "error sending to tx_recv for {}: {}",
+                                    id,
+                                    e
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            pf_error!(me, "error receiving msg from {}: {}", id, e);
+                        }
+                    }
+                },
             }
         }
 
-        pf_debug!(me, "msg_recver thread for {} exitted", id);
+        pf_debug!(me, "peer_messenger thread for {} exitted", id);
     }
 }
 
@@ -436,11 +394,9 @@ mod transport_tests {
             tokio_test::block_on(hub.setup("127.0.0.1:52800", 0, 0)).is_err()
         );
         tokio_test::block_on(hub.setup("127.0.0.1:52800", 100, 100))?;
-        assert!(hub.tx_send.is_some());
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
         assert!(hub.peer_listener.is_some());
-        assert!(hub.msg_sender_handle.is_some());
         Ok(())
     }
 

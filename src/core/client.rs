@@ -16,8 +16,6 @@ use rmp_serde::decode::from_slice as decode_from_slice;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-use log::error;
-
 /// Client stub ID type.
 pub type ClientId = u64;
 
@@ -28,10 +26,12 @@ pub trait GenericClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
+        config_str: Option<&str>, // protocol-specific config in TOML format
     ) -> Result<Self, SummersetError>;
 
-    /// Establish connection to the service, return two owned TCP connection
-    /// halves for possibly open-loop clients.
+    /// Establishes connection to the service according to protocol-specific
+    /// logic, returning two owned TCP connection halves (for possibly
+    /// open-loop clients).
     async fn connect(
         &mut self,
     ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>;
@@ -41,23 +41,15 @@ pub trait GenericClient {
     /// provided here, so most protocol-specific implementations can just use
     /// it out-of-the-box.
     async fn connect_server(
-        &mut self,
-        server: ReplicaId,
+        id: ClientId,
+        addr: SocketAddr,
     ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
-        if !self.servers.contains_key(server) {
-            return logged_err!(
-                self.id,
-                "replica ID {} not found in servers map",
-                server
-            );
-        }
-
-        let mut stream = TcpStream::connect(self.servers[server]).await?;
-        stream.write_u64(self.id).await?; // send my client ID
+        let mut stream = TcpStream::connect(addr).await?;
+        stream.write_u64(id).await?; // send my client ID
 
         let (read_half, write_half) = stream.into_split();
-        let send_stub = ClientSendStub::new(self.id, write_half);
-        let recv_stub = ClientRecvStub::new(self.id, read_half);
+        let send_stub = ClientSendStub::new(id, write_half);
+        let recv_stub = ClientRecvStub::new(id, read_half);
 
         Ok((send_stub, recv_stub))
     }
@@ -78,7 +70,7 @@ impl ClientSendStub {
         ClientSendStub { id, conn_write }
     }
 
-    /// Send a request to established server connection.
+    /// Sends a request to established server connection.
     pub async fn send_req(
         &mut self,
         req: ApiRequest,
@@ -106,7 +98,7 @@ impl ClientRecvStub {
         ClientRecvStub { id, conn_read }
     }
 
-    /// Receive a reply from established server connection.
+    /// Receives a reply from established server connection.
     pub async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         let reply_len = self.conn_read.read_u64().await?;
         let reply_buf: Vec<u8> = vec![0; reply_len];

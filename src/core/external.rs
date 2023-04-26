@@ -59,7 +59,8 @@ pub struct ExternalApi {
     /// Receiver side of the req channel.
     rx_req: Option<mpsc::Receiver<(ClientId, ApiRequest)>>,
 
-    /// Map from client ID -> sender side of its reply channel.
+    /// Map from client ID -> sender side of its reply channel, shared with
+    /// the client acceptor thread.
     tx_replies: Option<flashmap::ReadHandle<ClientId, mpsc::Sender<ApiReply>>>,
 
     /// TCP listener for client connections, shared with the client acceptor
@@ -73,8 +74,8 @@ pub struct ExternalApi {
     /// Join handle of the client acceptor thread.
     client_acceptor_handle: Option<JoinHandle<()>>,
 
-    /// Map from client ID -> request listener thread join handles, shared
-    /// with the client acceptor thread.
+    /// Map from client ID -> client servant thread join handles, shared with
+    /// the client acceptor thread.
     client_servant_handles:
         Option<flashmap::ReadHandle<ClientId, JoinHandle<()>>>,
 
@@ -111,13 +112,7 @@ impl ExternalApi {
         chan_reply_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.client_acceptor_handle {
-            return logged_err!(
-                self.me,
-                "client_acceptor thread already spawned"
-            );
-        }
-        if let Some(_) = self.batch_ticker_handle {
-            return logged_err!(self.me, "batch_ticker thread already spawned");
+            return logged_err!(self.me, "setup already done");
         }
         if chan_req_cap == 0 {
             return logged_err!(
@@ -352,7 +347,7 @@ impl ExternalApi {
                             }
                         },
                         Err(e) => {
-                            pf_error!(me, "error reading request from {}", id);
+                            pf_error!(me, "error reading request from {}: {}", id, e);
                         }
                     }
                 },

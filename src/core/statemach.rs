@@ -75,7 +75,7 @@ impl StateMachine {
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.executor_handle {
-            return logged_err!(self.me, "executor thread already spawned");
+            return logged_err!(self.me, "setup already done");
         }
         if chan_exec_cap == 0 {
             return logged_err!(

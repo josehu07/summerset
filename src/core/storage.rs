@@ -100,7 +100,7 @@ impl<Ent> StorageHub<Ent> {
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.logger_handle {
-            return logged_err!(self.me, "logger thread already spawned");
+            return logged_err!(self.me, "setup already done");
         }
         if chan_log_cap == 0 {
             return logged_err!(

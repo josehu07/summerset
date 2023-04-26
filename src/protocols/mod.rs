@@ -2,11 +2,11 @@
 
 use std::fmt;
 
-mod rep_nothing;
-use rep_nothing::{RepNothingServerNode, RepNothingClientStub};
+use crate::core::utils::SummersetError;
+use crate::core::replica::GenericReplica;
 
-mod simple_push;
-use simple_push::{SimplePushServerNode, SimplePushClientStub};
+mod rep_nothing;
+use rep_nothing::{RepNo, RepNothingClientStub};
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
 /// protocol-specific struct creations.
@@ -21,7 +21,7 @@ macro_rules! box_if_ok {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     RepNothing,
-    SimplePush,
+    // SimplePush,
 }
 
 impl SMRProtocol {
@@ -29,7 +29,7 @@ impl SMRProtocol {
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
             "RepNothing" => Some(Self::RepNothing),
-            "SimplePush" => Some(Self::SimplePush),
+            // "SimplePush" => Some(Self::SimplePush),
             _ => None,
         }
     }
@@ -38,7 +38,7 @@ impl SMRProtocol {
     pub fn new_server_node(
         &self,
         peers: Vec<String>,
-    ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
+    ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
             Self::RepNothing => {
                 box_if_ok!(RepNothingServerNode::new(peers))
@@ -73,7 +73,7 @@ impl fmt::Display for SMRProtocol {
 
 #[cfg(test)]
 mod protocols_name_tests {
-    use super::SMRProtocol;
+    use super::*;
 
     macro_rules! valid_name_test {
         ($p:ident) => {
@@ -87,7 +87,7 @@ mod protocols_name_tests {
     #[test]
     fn parse_valid_names() {
         valid_name_test!(RepNothing);
-        valid_name_test!(SimplePush);
+        // valid_name_test!(SimplePush);
     }
 
     #[test]

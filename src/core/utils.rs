@@ -143,6 +143,9 @@ impl ReplicaMap {
     }
 }
 
+/// Helper function for parsing a RON format configuration struct string into
+/// the given
+
 #[cfg(test)]
 mod utils_tests {
     use super::*;

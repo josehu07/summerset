@@ -9,28 +9,55 @@ use std::net::SocketAddr;
 
 use crate::core::utils::SummersetError;
 use crate::core::replica::{GenericReplica, ReplicaId};
-use crate::core::client::{GenericClient, ClientId};
-use crate::core::external::{ExternalApi, ApiRequest, ApiReply};
+use crate::core::client::{GenericClient, ClientSendStub, ClientRecvStub, ClientId};
+use crate::core::external::ExternalApi;
 use crate::core::statemach::{StateMachine, Command};
 use crate::core::storage::StorageHub;
 
 use async_trait::async_trait;
+
+use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
 
 use log::error;
 
 /// Log entry type.
-struct LogEntry {
-    cmd: Command,
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+enum LogEntry {
+    Cmd { cmd: Command },
+}
+
+/// Configuration parameters struct.
+#[derive(Debug, Deserialize)]
+pub struct RepNothingReplicaConfig {
+    /// Client request batching interval.
+    batch_interval: Duration,
+
+    /// Path to backing file.
+    backer_path: Path,
+
+    /// Base capacity for most channels.
+    base_chan_cap: usize,
+
+    /// Capacity for req/reply channels.
+    api_chan_cap: usize,
+}
+
+impl Default for RepNothingReplicaConfig {
+    fn default() -> Self {
+        RepNothingReplicaConfig {
+            batch_interval: Duration::from_millis(1),
+            backer_path: Path::new("/tmp/summerset.rep_nothing.wal"),
+            base_chan_cap: 1000,
+            api_chan_cap: 10000,
+        }
+    }
 }
 
 /// RepNothing server replica module.
 #[derive(Debug)]
 pub struct RepNothingReplica {
-    /// Is this replica running?
-    running: bool,
-
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -43,14 +70,8 @@ pub struct RepNothingReplica {
     /// Address string for client requests API.
     api_addr: SocketAddr,
 
-    /// Backer file path.
-    backer_file: Path,
-
-    /// Client requqest batch interval.
-    batch_interval: Duration,
-
-    /// Base capacity of channels across modules.
-    chan_cap_base: usize,
+    /// Configuraiton parameters struct.
+    config: RepNothingReplicaConfig,
 
     /// ExternalApi module.
     external_api: Option<ExternalApi>,
@@ -65,14 +86,12 @@ pub struct RepNothingReplica {
 
 #[async_trait]
 impl GenericReplica for RepNothingReplica {
-    async fn new(
+    fn new(
         id: ReplicaId,
         population: u8,
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
-        backer_file: Option<Path>,
-        batch_interval: Duration,
-        chan_cap_base: usize,
+        config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         if population == 0 {
             return Err(SummersetError(format!(
@@ -93,57 +112,135 @@ impl GenericReplica for RepNothingReplica {
                 smr_addr
             );
         }
-        if batch_interval < Duration::from_micros(1) {
+
+        if config.batch_interval < Duration::from_micros(1) {
             return logged_err!(
                 id,
                 "batch_interval '{}' too small",
-                batch_interval
+                config.batch_interval
             );
         }
-        if chan_cap_base == 0 {
-            return logged_err!(id, "invalid chan_cap_base {}", chan_cap_base);
+        if config.base_chan_cap == 0 {
+            return logged_err!(
+                id,
+                "invalid base_chan_cap {}",
+                config.base_chan_cap
+            );
+        }
+        if config.api_chan_cap == 0 {
+            return logged_err!(
+                id,
+                "invalid api_chan_cap {}",
+                config.api_chan_cap
+            );
         }
 
         Ok(RepNothingReplica {
-            running: false,
             id,
             population,
             smr_addr,
             api_addr,
-            backer_file,
-            batch_interval,
-            chan_cap_base,
+            config,
             external_api: None,
             state_machine: None,
             storage_hub: None,
         })
     }
 
+    async fn setup(&mut self) -> Result<(), SummersetError> {
+        let state_machine = StateMachine::new(self.id);
+        state_machine
+            .setup(self.base_chan_cap, self.base_chan_cap)
+            .await?;
+        self.state_machine = Some(state_machine);
+
+        let storage_hub = StorageHub::new(self.id);
+        storage_hub
+            .setup(
+                &self.config.backer_path,
+                self.config.base_chan_cap,
+                self.config.base_chan_cap,
+            )
+            .await?;
+        self.storage_hub = Some(storage_hub);
+
+        let external_api = ExternalApi::new(self.id);
+        external_api
+            .setup(
+                self.api_addr,
+                self.config.batch_interval,
+                self.config.api_chan_cap,
+                self.config.api_chan_cap,
+            )
+            .await?;
+        self.external_api = Some(external_api);
+
+        Ok(())
+    }
+
     async fn run(&mut self) -> Result<(), SummersetError> {
-        todo!();
+        loop {
+            todo!();
+        }
+
+        Ok(())
+    }
+}
+
+/// Configuration parameters struct.
+#[derive(Debug)]
+pub struct RepNothingClientConfig {
+    /// Which server to pick.
+    server_id: ReplicaId,
+}
+
+impl Default for RepNothingClientConfig {
+    fn default() -> Self {
+        RepNothingClientConfig { server_id: 0 }
     }
 }
 
 /// RepNothing client-side module.
+#[derive(Debug)]
 pub struct RepNothingClient {
     /// Client ID.
     id: ClientId,
+
+    /// Server addresses of the service.
+    servers: HashMap<ReplicaId, SocketAddr>,
+
+    /// Configuration parameters struct.
+    config: RepNothingClientConfig,
 }
 
 #[async_trait]
 impl GenericClient for RepNothingClient {
-    async fn new(
+    fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
+        config_str: &str,
     ) -> Result<Self, SummersetError> {
-        todo!();
+        if servers.len() == 0 {
+            return logged_err!(id, "empty servers list");
+        }
+        if !servers.contains_key(&config.server_id) {
+            return logged_err!(
+                id,
+                "server_id {} not found in servers",
+                config.server_id
+            );
+        }
+
+        Ok(RepNothingClient {
+            id,
+            servers,
+            config,
+        })
     }
 
-    async fn send_req(&self, req: ApiRequest) -> Result<(), SummersetError> {
-        todo!()
-    }
-
-    async fn recv_reply(&self) -> Result<ApiReply, SummersetError> {
-        todo!()
+    async fn connect(
+        &mut self,
+    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+        Self::connect_server(self.id, self.servers[self.config.server_id]).await
     }
 }
