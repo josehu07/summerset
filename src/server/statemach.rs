@@ -10,8 +10,6 @@ use serde::{Serialize, Deserialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use log::{trace, debug, error};
-
 /// Command ID type.
 pub type CommandId = u64;
 
@@ -75,18 +73,18 @@ impl StateMachine {
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.executor_handle {
-            return logged_err!(self.me, "setup already done");
+            return logged_err!(self.me; "setup already done");
         }
         if chan_exec_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_exec_cap {}",
                 chan_exec_cap
             );
         }
         if chan_ack_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_ack_cap {}",
                 chan_ack_cap
             );
@@ -160,7 +158,7 @@ impl StateMachine {
         mut rx_exec: mpsc::Receiver<(CommandId, Command)>,
         tx_ack: mpsc::Sender<(CommandId, CommandResult)>,
     ) {
-        pf_debug!(me, "executor thread spawned");
+        pf_debug!(me; "executor thread spawned");
 
         // create the state HashMap
         let mut state = State::new();
@@ -169,10 +167,10 @@ impl StateMachine {
             match rx_exec.recv().await {
                 Some((id, cmd)) => {
                     let res = Self::execute(&mut state, &cmd);
-                    pf_trace!(me, "executed {:?}", cmd);
+                    pf_trace!(me; "executed {:?}", cmd);
 
                     if let Err(e) = tx_ack.send((id, res)).await {
-                        pf_error!(me, "error sending to tx_ack: {}", e);
+                        pf_error!(me; "error sending to tx_ack: {}", e);
                     }
                 }
 
@@ -180,7 +178,7 @@ impl StateMachine {
             }
         }
 
-        pf_debug!(me, "executor thread exitted");
+        pf_debug!(me; "executor thread exitted");
     }
 }
 

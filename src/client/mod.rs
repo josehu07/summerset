@@ -1,6 +1,7 @@
 //! Summerset's client functionality modules and trait.
 
-pub mod client;
-pub mod apistub;
+mod client;
+mod apistub;
 
 pub use client::{GenericClient, ClientId};
+pub use apistub::{ClientApiStub, ClientSendStub, ClientRecvStub};

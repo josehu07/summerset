@@ -81,10 +81,10 @@ mod protocols_name_tests {
     use super::*;
 
     macro_rules! valid_name_test {
-        ($p:ident) => {
+        ($protocol:ident) => {
             assert_eq!(
-                SMRProtocol::parse_name(stringify!($p)),
-                Some(SMRProtocol::$p)
+                SMRProtocol::parse_name(stringify!($protocol)),
+                Some(SMRProtocol::$protocol)
             );
         };
     }

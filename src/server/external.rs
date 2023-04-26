@@ -22,8 +22,6 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
-use log::{trace, debug, info, warn, error};
-
 /// External API request ID type.
 pub type RequestId = u64;
 
@@ -111,25 +109,25 @@ impl ExternalApi {
         chan_reply_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.client_acceptor_handle {
-            return logged_err!(self.me, "setup already done");
+            return logged_err!(self.me; "setup already done");
         }
         if chan_req_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_req_cap {}",
                 chan_req_cap
             );
         }
         if chan_reply_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_reply_cap {}",
                 chan_reply_cap
             );
         }
         if batch_interval < Duration::as_micros(1) {
             return logged_err!(
-                self.me,
+                self.me;
                 "batch_interval '{}' too small",
                 batch_interval
             );
@@ -177,7 +175,7 @@ impl ExternalApi {
         &mut self,
     ) -> Result<VecDeque<(ClientId, ApiRequest)>, SummersetError> {
         if let None = self.client_acceptor_handle {
-            return logged_err!(self.me, "get_req_batch called before setup");
+            return logged_err!(self.me; "get_req_batch called before setup");
         }
 
         self.batch_notify.notified().await;
@@ -191,7 +189,7 @@ impl ExternalApi {
                     Err(e) => return Err(e),
                 }
             },
-            None => logged_err!(self.me, "rx_req not created yet"),
+            None => logged_err!(self.me; "rx_req not created yet"),
         }
 
         Ok(batch)
@@ -211,7 +209,7 @@ impl ExternalApi {
             }
             None => {
                 logged_err!(
-                    self.me,
+                    self.me;
                     "client ID {} not found among active clients",
                     client
                 )
@@ -231,29 +229,29 @@ impl ExternalApi {
         tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
         client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
     ) {
-        pf_debug!(me, "client_acceptor thread spawned");
+        pf_debug!(me; "client_acceptor thread spawned");
 
         loop {
             let mut stream = client_listener.get().unwrap().accept().await;
             if let Err(e) = stream {
-                pf_warn!(me, "error accepting client connection: {}", e);
+                pf_warn!(me; "error accepting client connection: {}", e);
                 continue;
             }
             let mut stream = stream.unwrap();
 
             let id = stream.read_u64().await; // receive client ID
             if let Err(e) = id {
-                pf_error!(me, "error receiving new client ID: {}", e);
+                pf_error!(me; "error receiving new client ID: {}", e);
                 continue;
             }
             let id = id.unwrap();
 
             let mut tx_replies_guard = tx_replies.guard();
             if tx_replies_guard.contains_key(&id) {
-                pf_error!(me, "duplicate client ID listened: {}", id);
+                pf_error!(me; "duplicate client ID listened: {}", id);
                 continue;
             }
-            pf_info!(me, "accepted new client {}", id);
+            pf_info!(me; "accepted new client {}", id);
 
             let (tx_reply, mut rx_reply) = mpsc::channel(chan_reply_cap);
             tx_replies_guard.insert(id, tx_reply);
@@ -274,7 +272,7 @@ impl ExternalApi {
             tx_replies_guard.publish();
         }
 
-        pf_debug!(me, "client_acceptor thread exitted");
+        pf_debug!(me; "client_acceptor thread exitted");
     }
 }
 
@@ -310,7 +308,7 @@ impl ExternalApi {
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
         rx_reply: mpsc::Receiver<ApiReply>,
     ) {
-        pf_debug!(me, "client_servant thread for {} spawned", id);
+        pf_debug!(me; "client_servant thread for {} spawned", id);
 
         let (conn_read, conn_write) = conn.split();
 
@@ -325,9 +323,9 @@ impl ExternalApi {
                     match reply {
                         Some(reply) => {
                             if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
-                                pf_error!(me, "error replying to {}: {}", id, e);
+                                pf_error!(me; "error replying to {}: {}", id, e);
                             } else {
-                                pf_trace!(me, "replied to {} reply {:?}", id, reply);
+                                pf_trace!(me; "replied to {} reply {:?}", id, reply);
                             }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -338,22 +336,22 @@ impl ExternalApi {
                 req = Self::read_req(&mut conn_read) => {
                     match req {
                         Ok(req) => {
-                            pf_trace!(me, "request from {} req {:?}", id, req);
+                            pf_trace!(me; "request from {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)).await {
                                 pf_error!(
-                                    me, "error sending to tx_req for {}: {}", id, e
+                                    me; "error sending to tx_req for {}: {}", id, e
                                 );
                             }
                         },
                         Err(e) => {
-                            pf_error!(me, "error reading request from {}: {}", id, e);
+                            pf_error!(me; "error reading request from {}: {}", id, e);
                         }
                     }
                 },
             }
         }
 
-        pf_debug!(me, "client_servant thread for {} exitted", id);
+        pf_debug!(me; "client_servant thread for {} exitted", id);
     }
 }
 
@@ -370,7 +368,7 @@ impl ExternalApi {
         loop {
             interval.tick().await;
             batch_notify.notify_one();
-            pf_debug!(me, "batch interval ticked");
+            pf_debug!(me; "batch interval ticked");
         }
     }
 }
@@ -381,9 +379,8 @@ mod external_tests {
     use std::collections::VecDeque;
     use std::time::SystemTime;
     use crate::server::{Command, CommandResult};
-    use crate::client::{ClientId, ClientSendStub, ClientRecvStub};
+    use crate::client::{ClientId, ClientApiStub, ClientSendStub, ClientRecvStub};
     use rand::Rng;
-    use tokio::net::TcpStream;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 
@@ -485,12 +482,9 @@ mod external_tests {
         // client-side
         let client: ClientId = rand::thread_rng().gen();
         tokio_test::block_on(barrier.wait());
-        let mut stream =
-            tokio_test::block_on(TcpStream::connect("127.0.0.1:53700"))?;
-        tokio_test::block_on(stream.write_u64(client))?; // send my client ID
-        let (read_half, write_half) = stream.into_split();
-        let send_stub = ClientSendStub::new(client, write_half);
-        let recv_stub = ClientRecvStub::new(client, read_half);
+        let api_stub = ClientApiStub::new(client);
+        let (mut send_stub, mut recv_stub) =
+            tokio_test::block_on(api_stub.connect("127.0.0.1:53700"))?;
         tokio_test::block_on(send_stub.send_req(ApiRequest {
             id: 0,
             cmd: Command::Put {

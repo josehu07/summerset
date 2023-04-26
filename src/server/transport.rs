@@ -17,8 +17,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
-use log::{trace, debug, info, warn, error};
-
 /// Server internal TCP transport module.
 #[derive(Debug)]
 pub struct TransportHub<Msg> {
@@ -77,18 +75,18 @@ where
         chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.peer_listener {
-            return logged_err!(self.me, "setup already done");
+            return logged_err!(self.me; "setup already done");
         }
         if chan_send_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_send_cap {}",
                 chan_send_cap
             );
         }
         if chan_recv_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_recv_cap {}",
                 chan_recv_cap
             );
@@ -113,14 +111,14 @@ where
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         if let None = self.peer_listener {
-            return logged_err!(self.me, "connect_peer called before setup");
+            return logged_err!(self.me; "connect_peer called before setup");
         }
         if id == self.me || id >= self.population {
-            return logged_err!(self.me, "invalid peer ID {} to connect", id);
+            return logged_err!(self.me; "invalid peer ID {} to connect", id);
         }
         if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!(
-                self.me,
+                self.me;
                 "peer ID {} already in peer_messenger_handles",
                 id
             );
@@ -142,7 +140,7 @@ where
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
 
-        pf_debug!(self.me, "connected to peer {}", id);
+        pf_debug!(self.me; "connected to peer {}", id);
         Ok(())
     }
 
@@ -151,18 +149,18 @@ where
     /// Returns the connecting peer's ID if successful.
     pub async fn wait_on_peer(&mut self) -> Result<ReplicaId, SummersetError> {
         if let None = self.peer_listener {
-            return logged_err!(self.me, "wait_on_peer called before setup");
+            return logged_err!(self.me; "wait_on_peer called before setup");
         }
 
         let mut stream = self.peer_listener.accept().await?;
         let id = stream.read_u8().await?; // receive connecting peer's ID
 
         if id == self.me || id >= self.population {
-            return logged_err!(self.me, "invalid peer ID {} waited on", id);
+            return logged_err!(self.me; "invalid peer ID {} waited on", id);
         }
         if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!(
-                self.me,
+                self.me;
                 "peer ID {} already in peer_messenger_handles",
                 id
             );
@@ -181,7 +179,7 @@ where
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
 
-        pf_debug!(self.me, "waited on peer {}", id);
+        pf_debug!(self.me; "waited on peer {}", id);
         Ok(id)
     }
 
@@ -200,7 +198,7 @@ where
             .sort();
         if peer_ids.len() == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid peer_addrs keys '{}'",
                 peer_ids
             );
@@ -224,14 +222,14 @@ where
             let id = self.wait_on_peer().await?;
             if id <= self.me || id >= self.population {
                 return logged_err!(
-                    self.me,
+                    self.me;
                     "unexpected peer ID {} waited on",
                     id
                 );
             }
             if connected.contains(&id) {
                 return logged_err!(
-                    self.me,
+                    self.me;
                     "duplicate peer ID {} waited on",
                     id
                 );
@@ -243,7 +241,7 @@ where
         for id in &peer_ids {
             assert!(connected.contains(id));
         }
-        pf_info!(self.me, "group connected peers {}", peer_ids);
+        pf_info!(self.me; "group connected peers {}", peer_ids);
         Ok(connected)
     }
 
@@ -254,7 +252,7 @@ where
         target: ReplicaMap,
     ) -> Result<(), SummersetError> {
         if let None = self.peer_listener {
-            return logged_err!(self.me, "send_msg called before setup");
+            return logged_err!(self.me; "send_msg called before setup");
         }
 
         for (peer, to_send) in target.iter().enumerate() {
@@ -268,7 +266,7 @@ where
                 }
                 None => {
                     pf_warn!(
-                        self.me,
+                        self.me;
                         "peer ID {} not found among connected ones",
                         peer
                     );
@@ -285,15 +283,15 @@ where
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
         if let None = self.peer_listener {
-            return logged_err!(self.me, "recv_msg called before setup");
+            return logged_err!(self.me; "recv_msg called before setup");
         }
 
         match self.rx_recv {
             Some(ref mut rx_recv) => match rx_recv.recv().await {
                 Some((id, msg)) => Ok((id, msg)),
-                None => logged_err!(self.me, "recv channel has been closed"),
+                None => logged_err!(self.me; "recv channel has been closed"),
             },
-            None => logged_err!(self.me, "rx_recv not created yet"),
+            None => logged_err!(self.me; "rx_recv not created yet"),
         }
     }
 }
@@ -333,7 +331,7 @@ where
         mut rx_send: mpsc::Receiver<Msg>,
         tx_recv: mpsc::Sender<(ReplicaId, Msg)>,
     ) {
-        pf_debug!(me, "peer_messenger thread for {} spawned", id);
+        pf_debug!(me; "peer_messenger thread for {} spawned", id);
 
         let (conn_read, conn_write) = conn.split();
 
@@ -349,9 +347,9 @@ where
                             if let Err(e) = Self::write_msg(&msg, &mut conn_write)
                                             .await
                                     {
-                                        pf_error!(me, "error sending to {}: {}", id, e);
+                                        pf_error!(me; "error sending to {}: {}", id, e);
                                     } else {
-                                        pf_trace!(me, "sent to {} msg {:?}", id, msg);
+                                        pf_trace!(me; "sent to {} msg {:?}", id, msg);
                                     }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -362,10 +360,10 @@ where
                 msg = Self::read_msg(&mut conn_read) => {
                     match msg {
                         Ok(msg) => {
-                            pf_trace!(me, "recv from {} msg {:?}", id, msg);
+                            pf_trace!(me; "recv from {} msg {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)).await {
                                 pf_error!(
-                                    me,
+                                    me;
                                     "error sending to tx_recv for {}: {}",
                                     id,
                                     e
@@ -373,14 +371,14 @@ where
                             }
                         },
                         Err(e) => {
-                            pf_error!(me, "error receiving msg from {}: {}", id, e);
+                            pf_error!(me; "error receiving msg from {}: {}", id, e);
                         }
                     }
                 },
             }
         }
 
-        pf_debug!(me, "peer_messenger thread for {} exitted", id);
+        pf_debug!(me; "peer_messenger thread for {} exitted", id);
     }
 }
 

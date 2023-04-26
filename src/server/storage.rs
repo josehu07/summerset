@@ -16,8 +16,6 @@ use tokio::fs::{self, File, OpenOptions};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinHandle;
 
-use log::{trace, debug, info, warn, error};
-
 /// Log action ID type.
 pub type LogActionId = u64;
 
@@ -114,9 +112,9 @@ where
         // prepare backing file
         if !fs::try_exists(path).await? {
             File::create(path).await?;
-            pf_info!(self.me, "created backer file '{}'", path);
+            pf_info!(self.me; "created backer file '{}'", path);
         } else {
-            pf_info!(self.me, "backer file '{}' already exists", path);
+            pf_info!(self.me; "backer file '{}' already exists", path);
         }
         let mut file =
             OpenOptions::new().read(true).write(true).open(path).await?;
@@ -146,12 +144,12 @@ where
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
         if let None = self.logger_handle {
-            return logged_err!(self.me, "submit_action called before setup");
+            return logged_err!(self.me; "submit_action called before setup");
         }
 
         match self.tx_log {
             Some(ref tx_log) => Ok(tx_log.send((id, action)).await?),
-            None => logged_err!(self.me, "tx_log not created yet"),
+            None => logged_err!(self.me; "tx_log not created yet"),
         }
     }
 
@@ -160,15 +158,15 @@ where
         &mut self,
     ) -> Result<LogResult<Ent>, SummersetError> {
         if let None = self.logger_handle {
-            return logged_err!(self.me, "get_result called before setup");
+            return logged_err!(self.me; "get_result called before setup");
         }
 
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
                 Some((id, result)) => Ok((id, result)),
-                None => logged_err!(self.me, "ack channel has been closed"),
+                None => logged_err!(self.me; "ack channel has been closed"),
             },
-            None => logged_err!(self.me, "rx_ack not created yet"),
+            None => logged_err!(self.me; "rx_ack not created yet"),
         }
     }
 }
@@ -189,7 +187,7 @@ where
         let file_len = backer.metadata().await?.len();
         if offset + 8 > file_len {
             pf_warn!(
-                me,
+                me;
                 "read header end offset {} out of file bound {}",
                 offset + 8,
                 file_len
@@ -202,7 +200,7 @@ where
         let entry_len = backer.read_u64().await?;
         let offset_e = offset + 8 + entry_len;
         if offset_e > file_len {
-            pf_warn!(me, "read entry invalid length {}", entry_len);
+            pf_warn!(me; "read entry invalid length {}", entry_len);
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
             return Ok(None);
         }
@@ -225,7 +223,7 @@ where
         let file_len = backer.metadata().await?.len();
         if offset != file_len {
             pf_warn!(
-                me,
+                me;
                 "append offset {} not at file end {}",
                 offset,
                 file_len
@@ -251,7 +249,7 @@ where
         let file_len = backer.metadata().await?.len();
         if offset > file_len {
             pf_warn!(
-                me,
+                me;
                 "truncate offset {} exceeds file end {}",
                 offset,
                 file_len
@@ -301,22 +299,22 @@ where
         mut rx_log: mpsc::Receiver<(LogActionId, LogAction<Ent>)>,
         tx_ack: mpsc::Sender<(LogActionId, LogResult<Ent>)>,
     ) {
-        pf_debug!(me, "logger thread spawned");
+        pf_debug!(me; "logger thread spawned");
 
         loop {
             match rx_log.recv().await {
                 Some((id, action)) => {
-                    pf_trace!(me, "log action {:?}", action);
+                    pf_trace!(me; "log action {:?}", action);
                     let res =
                         Self::do_action(me, backer.get_mut().unwrap(), action)
                             .await;
                     if let Err(e) = res {
-                        pf_error!(me, "error during logging: {}", e);
+                        pf_error!(me; "error during logging: {}", e);
                         continue;
                     }
 
                     if let Err(e) = tx_ack.send((id, res.unwrap())).await {
-                        pf_error!(me, "error sending to tx_ack: {}", e);
+                        pf_error!(me; "error sending to tx_ack: {}", e);
                     }
                 }
 
@@ -324,7 +322,7 @@ where
             }
         }
 
-        pf_debug!(me, "logger thread exitted");
+        pf_debug!(me; "logger thread exitted");
     }
 }
 
