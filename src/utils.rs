@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::core::replica::ReplicaId;
+use crate::server::replica::ReplicaId;
 
 use bitvec::prelude as bitv;
 

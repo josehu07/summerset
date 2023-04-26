@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::core::utils::SummersetError;
+use crate::utils::SummersetError;
 
 use async_trait::async_trait;
 
@@ -30,12 +30,8 @@ pub trait GenericReplica {
     async fn setup(
         &mut self,
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
-    ) -> Result<(), SummersetError>
-    where
-        Self: Sized;
+    ) -> Result<(), SummersetError>;
 
     /// Main event loop logic of running this replica.
-    async fn run(&mut self) -> Result<(), SummersetError>
-    where
-        Self: Sized;
+    async fn run(&mut self) -> Result<(), SummersetError>;
 }

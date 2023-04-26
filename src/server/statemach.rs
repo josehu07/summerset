@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::ReplicaId;
+use crate::utils::SummersetError;
+use crate::server::ReplicaId;
 
 use serde::{Serialize, Deserialize};
 

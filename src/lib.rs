@@ -2,20 +2,23 @@
 //! executable and client library.
 
 #[macro_use]
-mod core;
+mod utils;
+
+mod server;
+mod client;
 
 mod protocols;
 
 // Things (other than exported macros) exposed to users of this crate:
 
 #[doc(inline)]
-pub use crate::core::utils::{SummersetError, ReplicaMap};
+pub use crate::utils::{SummersetError, ReplicaMap};
 
 #[doc(inline)]
-pub use crate::core::replica::{GenericReplica, ReplicaId};
+pub use crate::server::ReplicaId;
 
 #[doc(inline)]
-pub use crate::core::client::{GenericClient, ClientId};
+pub use crate::client::ClientId;
 
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;

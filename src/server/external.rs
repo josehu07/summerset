@@ -4,10 +4,9 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::ReplicaId;
-use crate::core::client::ClientId;
-use crate::core::statemach::{Command, CommandResult};
+use crate::utils::SummersetError;
+use crate::server::{ReplicaId, Command, CommandResult};
+use crate::client::ClientId;
 
 use flashmap;
 
@@ -381,9 +380,8 @@ mod external_tests {
     use super::*;
     use std::collections::VecDeque;
     use std::time::SystemTime;
-    use crate::core::external::{ApiRequest, ApiReply};
-    use crate::core::statemach::{Command, CommandResult};
-    use crate::core::client::{ClientSendStub, ClientRecvStub, ClientId};
+    use crate::server::{Command, CommandResult};
+    use crate::client::{ClientId, ClientSendStub, ClientRecvStub};
     use rand::Rng;
     use tokio::net::TcpStream;
     use tokio::sync::Barrier;

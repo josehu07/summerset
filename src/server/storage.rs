@@ -4,8 +4,8 @@ use std::path::Path;
 use std::io::SeekFrom;
 use std::sync::Arc;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::ReplicaId;
+use crate::utils::SummersetError;
+use crate::server::ReplicaId;
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -23,10 +23,7 @@ pub type LogActionId = u64;
 
 /// Action command to the logger.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub enum LogAction<Ent>
-where
-    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
-{
+pub enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
 
@@ -39,10 +36,7 @@ where
 
 /// Action result returned by the logger.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub enum LogResult<Ent>
-where
-    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
-{
+pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
     ReadResult { entry: Option<Ent> },
 
@@ -57,10 +51,7 @@ where
 
 /// Durable storage logging module.
 #[derive(Debug)]
-pub struct StorageHub<Ent>
-where
-    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
-{
+pub struct StorageHub<Ent> {
     /// My replica ID.
     me: ReplicaId,
 
@@ -78,7 +69,10 @@ where
 }
 
 // StorageHub public API implementation
-impl<Ent> StorageHub<Ent> {
+impl<Ent> StorageHub<Ent>
+where
+    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+{
     /// Creates a new durable storage logging hub.
     pub fn new(me: ReplicaId) -> Self {
         StorageHub {
@@ -180,7 +174,10 @@ impl<Ent> StorageHub<Ent> {
 }
 
 // StorageHub logger thread implementation
-impl<Ent> StorageHub<Ent> {
+impl<Ent> StorageHub<Ent>
+where
+    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+{
     /// Read out entry at given offset.
     /// TODO: better management of file cursor.
     /// TODO: maybe just support scanning.

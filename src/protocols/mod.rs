@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::{GenericReplica, ReplicaId};
-use crate::core::client::{GenericClient, ClientId};
+use crate::utils::SummersetError;
+use crate::server::{GenericReplica, ReplicaId};
+use crate::client::{GenericClient, ClientId};
 
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};

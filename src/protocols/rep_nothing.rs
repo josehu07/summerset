@@ -7,12 +7,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::{GenericReplica, ReplicaId};
-use crate::core::client::{GenericClient, ClientSendStub, ClientRecvStub, ClientId};
-use crate::core::external::ExternalApi;
-use crate::core::statemach::{StateMachine, Command};
-use crate::core::storage::StorageHub;
+use crate::utils::SummersetError;
+use crate::server::{
+    GenericReplica, ReplicaId, StateMachine, Command, ExternalApi, StorageHub,
+};
+use crate::client::{GenericClient, ClientId, ClientSendStub, ClientRecvStub};
 
 use async_trait::async_trait;
 

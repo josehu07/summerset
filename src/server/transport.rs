@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use crate::core::utils::{SummersetError, ReplicaMap};
-use crate::core::replica::ReplicaId;
+use crate::utils::{SummersetError, ReplicaMap};
+use crate::server::ReplicaId;
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -21,10 +21,7 @@ use log::{trace, debug, info, warn, error};
 
 /// Server internal TCP transport module.
 #[derive(Debug)]
-pub struct TransportHub<Msg>
-where
-    Msg: Serialize + DeserializeOwned,
-{
+pub struct TransportHub<Msg> {
     /// My replica ID.
     me: ReplicaId,
 
@@ -52,7 +49,10 @@ where
 }
 
 // TransportHub public API implementation
-impl<Msg> TransportHub<Msg> {
+impl<Msg> TransportHub<Msg>
+where
+    Msg: Serialize + DeserializeOwned,
+{
     /// Creates a new server internal TCP transport hub.
     pub fn new(me: ReplicaId, population: u8) -> Self {
         TransportHub {
@@ -299,7 +299,10 @@ impl<Msg> TransportHub<Msg> {
 }
 
 // TransportHub peer_messenger thread implementation
-impl<Msg> TransportHub<Msg> {
+impl<Msg> TransportHub<Msg>
+where
+    Msg: Serialize + DeserializeOwned,
+{
     /// Writes a message through given TcpStream.
     async fn write_msg(
         msg: &Msg,

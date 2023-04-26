@@ -4,9 +4,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::core::utils::SummersetError;
-use crate::core::replica::ReplicaId;
-use crate::core::external::{ApiRequest, ApiReply};
+use crate::utils::SummersetError;
+use crate::server::{ReplicaId, ApiRequest, ApiReply};
 
 use async_trait::async_trait;
 
@@ -36,9 +35,7 @@ pub trait GenericClient {
     /// open-loop clients).
     async fn connect(
         &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>
-    where
-        Self: Sized;
+    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>;
 
     /// Procedure to connect to the given server address and splitting the
     /// result TCP stream into read/write halves. Default implementation is
@@ -47,10 +44,7 @@ pub trait GenericClient {
     async fn connect_server(
         id: ClientId,
         addr: SocketAddr,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>
-    where
-        Self: Sized,
-    {
+    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u64(id).await?; // send my client ID
 
