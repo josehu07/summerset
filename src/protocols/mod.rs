@@ -1,12 +1,15 @@
 //! Summerset's collection of replication protocols.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::net::SocketAddr;
 
 use crate::core::utils::SummersetError;
-use crate::core::replica::GenericReplica;
+use crate::core::replica::{GenericReplica, ReplicaId};
+use crate::core::client::{GenericClient, ClientId};
 
 mod rep_nothing;
-use rep_nothing::{RepNo, RepNothingClientStub};
+use rep_nothing::{RepNothingReplica, RepNothingClient};
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
 /// protocol-specific struct creations.
@@ -37,14 +40,17 @@ impl SMRProtocol {
     /// Create a server replicator module instance of this protocol on heap.
     pub fn new_server_node(
         &self,
-        peers: Vec<String>,
+        id: ReplicaId,
+        population: u8,
+        smr_addr: SocketAddr,
+        api_addr: SocketAddr,
+        config_str: Option<&str>,
     ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(RepNothingServerNode::new(peers))
-            }
-            Self::SimplePush => {
-                box_if_ok!(SimplePushServerNode::new(peers))
+                box_if_ok!(RepNothingReplica::new(
+                    id, population, smr_addr, api_addr, config_str
+                ))
             }
         }
     }
@@ -52,14 +58,13 @@ impl SMRProtocol {
     /// Create a client replicator stub instance of this protocol on heap.
     pub fn new_client_stub(
         &self,
-        servers: Vec<String>,
-    ) -> Result<Box<dyn ReplicatorClientStub>, InitError> {
+        id: ClientId,
+        servers: HashMap<ReplicaId, SocketAddr>,
+        config_str: Option<&str>,
+    ) -> Result<Box<dyn GenericClient>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(RepNothingClientStub::new(servers))
-            }
-            Self::SimplePush => {
-                box_if_ok!(SimplePushClientStub::new(servers))
+                box_if_ok!(RepNothingClient::new(id, servers, config_str))
             }
         }
     }

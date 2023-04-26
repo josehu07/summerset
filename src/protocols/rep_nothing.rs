@@ -31,26 +31,26 @@ enum LogEntry {
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct RepNothingReplicaConfig {
-    /// Client request batching interval.
-    batch_interval: Duration,
+    /// Client request batching interval in microsecs.
+    batch_interval_us: Option<u64>,
 
     /// Path to backing file.
-    backer_path: Path,
+    backer_path: Option<String>,
 
     /// Base capacity for most channels.
-    base_chan_cap: usize,
+    base_chan_cap: Option<usize>,
 
     /// Capacity for req/reply channels.
-    api_chan_cap: usize,
+    api_chan_cap: Option<usize>,
 }
 
 impl Default for RepNothingReplicaConfig {
     fn default() -> Self {
         RepNothingReplicaConfig {
-            batch_interval: Duration::from_millis(1),
-            backer_path: Path::new("/tmp/summerset.rep_nothing.wal"),
-            base_chan_cap: 1000,
-            api_chan_cap: 10000,
+            batch_interval_us: Some(1000),
+            backer_path: Some("/tmp/summerset.rep_nothing.wal".into()),
+            base_chan_cap: Some(1000),
+            api_chan_cap: Some(10000),
         }
     }
 }
@@ -113,24 +113,40 @@ impl GenericReplica for RepNothingReplica {
             );
         }
 
-        if config.batch_interval < Duration::from_micros(1) {
+        let mut config: RepNothingReplicaConfig = Default::default();
+        if let Some(s) = config_str {
+            let input_config: RepNothingReplicaConfig = toml::from_str(s)?;
+            if let Some(val) = input_config.batch_interval_us {
+                config.batch_interval_us = Some(val);
+            }
+            if let Some(val) = input_config.backer_path {
+                config.backer_path = Some(val);
+            }
+            if let Some(val) = input_config.base_chan_cap {
+                config.base_chan_cap = Some(val);
+            }
+            if let Some(val) = input_config.api_chan_cap {
+                config.api_chan_cap = Some(val);
+            }
+        }
+        if config.batch_interval_us == 0 {
             return logged_err!(
                 id,
-                "batch_interval '{}' too small",
+                "invalid config.batch_interval_us '{}'",
                 config.batch_interval
             );
         }
         if config.base_chan_cap == 0 {
             return logged_err!(
                 id,
-                "invalid base_chan_cap {}",
+                "invalid config.base_chan_cap {}",
                 config.base_chan_cap
             );
         }
         if config.api_chan_cap == 0 {
             return logged_err!(
                 id,
-                "invalid api_chan_cap {}",
+                "invalid config.api_chan_cap {}",
                 config.api_chan_cap
             );
         }
@@ -147,7 +163,10 @@ impl GenericReplica for RepNothingReplica {
         })
     }
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
+    async fn setup(
+        &mut self,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+    ) -> Result<(), SummersetError> {
         let state_machine = StateMachine::new(self.id);
         state_machine
             .setup(self.base_chan_cap, self.base_chan_cap)
@@ -157,7 +176,7 @@ impl GenericReplica for RepNothingReplica {
         let storage_hub = StorageHub::new(self.id);
         storage_hub
             .setup(
-                &self.config.backer_path,
+                &Path::new(&self.config.backer_path.unwrap()),
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
@@ -168,7 +187,7 @@ impl GenericReplica for RepNothingReplica {
         external_api
             .setup(
                 self.api_addr,
-                self.config.batch_interval,
+                Duration::from_micros(self.config.batch_interval),
                 self.config.api_chan_cap,
                 self.config.api_chan_cap,
             )
@@ -188,15 +207,15 @@ impl GenericReplica for RepNothingReplica {
 }
 
 /// Configuration parameters struct.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct RepNothingClientConfig {
     /// Which server to pick.
-    server_id: ReplicaId,
+    server_id: Option<ReplicaId>,
 }
 
 impl Default for RepNothingClientConfig {
     fn default() -> Self {
-        RepNothingClientConfig { server_id: 0 }
+        RepNothingClientConfig { server_id: Some(0) }
     }
 }
 
@@ -223,6 +242,14 @@ impl GenericClient for RepNothingClient {
         if servers.len() == 0 {
             return logged_err!(id, "empty servers list");
         }
+
+        let mut config: RepNothingClientConfig = Default::default();
+        if let Some(s) = config_str {
+            let input_config = toml::from_str(s)?;
+            if let Some(val) = input_config.server_id {
+                config.server_id = Some(val);
+            }
+        }
         if !servers.contains_key(&config.server_id) {
             return logged_err!(
                 id,
@@ -241,6 +268,10 @@ impl GenericClient for RepNothingClient {
     async fn connect(
         &mut self,
     ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
-        Self::connect_server(self.id, self.servers[self.config.server_id]).await
+        Self::connect_server(
+            self.id,
+            self.servers[self.config.server_id.unwrap()],
+        )
+        .await
     }
 }

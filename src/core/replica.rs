@@ -1,6 +1,7 @@
 //! Summerset generic replica trait to be implemented by all protocol-specific
 //! server replica structs.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use crate::core::utils::SummersetError;
@@ -20,12 +21,21 @@ pub trait GenericReplica {
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
         config_str: Option<&str>, // protocol-specific config in TOML format
-    ) -> Result<Self, SummersetError>;
+    ) -> Result<Self, SummersetError>
+    where
+        Self: Sized;
 
     /// Sets up required functionality modules according to protocol-specific
     /// logic.
-    async fn setup(&mut self) -> Result<(), SummersetError>;
+    async fn setup(
+        &mut self,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+    ) -> Result<(), SummersetError>
+    where
+        Self: Sized;
 
     /// Main event loop logic of running this replica.
-    async fn run(&mut self) -> Result<(), SummersetError>;
+    async fn run(&mut self) -> Result<(), SummersetError>
+    where
+        Self: Sized;
 }

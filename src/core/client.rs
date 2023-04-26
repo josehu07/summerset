@@ -27,14 +27,18 @@ pub trait GenericClient {
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>, // protocol-specific config in TOML format
-    ) -> Result<Self, SummersetError>;
+    ) -> Result<Self, SummersetError>
+    where
+        Self: Sized;
 
     /// Establishes connection to the service according to protocol-specific
     /// logic, returning two owned TCP connection halves (for possibly
     /// open-loop clients).
     async fn connect(
         &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>;
+    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>
+    where
+        Self: Sized;
 
     /// Procedure to connect to the given server address and splitting the
     /// result TCP stream into read/write halves. Default implementation is
@@ -43,7 +47,10 @@ pub trait GenericClient {
     async fn connect_server(
         id: ClientId,
         addr: SocketAddr,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>
+    where
+        Self: Sized,
+    {
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u64(id).await?; // send my client ID
 

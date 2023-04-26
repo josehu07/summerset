@@ -6,8 +6,16 @@ mod core;
 
 mod protocols;
 
-// Things exposed to users of this crate:
+// Things (other than exported macros) exposed to users of this crate:
+
 #[doc(inline)]
-pub use crate::core::utils::SummersetError;
+pub use crate::core::utils::{SummersetError, ReplicaMap};
+
+#[doc(inline)]
+pub use crate::core::replica::{GenericReplica, ReplicaId};
+
+#[doc(inline)]
+pub use crate::core::client::{GenericClient, ClientId};
+
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;
