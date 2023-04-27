@@ -55,7 +55,6 @@ impl Default for RepNothingReplicaConfig {
 }
 
 /// RepNothing server replica module.
-#[derive(Debug)]
 pub struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -202,7 +201,6 @@ impl Default for RepNothingClientConfig {
 }
 
 /// RepNothing client-side module.
-#[derive(Debug)]
 pub struct RepNothingClient {
     /// Client ID.
     id: ClientId,

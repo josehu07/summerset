@@ -1,7 +1,5 @@
 //! Summerset server node executable.
 
-#![allow(clippy::uninlined_format_args)]
-
 use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::sync::Arc;

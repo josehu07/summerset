@@ -37,7 +37,6 @@ pub enum CommandResult {
 type State = HashMap<String, String>;
 
 /// The local volatile state machine, which is simply an in-memory HashMap.
-#[derive(Debug)]
 pub struct StateMachine {
     /// My replica ID.
     me: ReplicaId,
@@ -109,12 +108,15 @@ impl StateMachine {
         cmd: Command,
     ) -> Result<(), SummersetError> {
         if let None = self.executor_handle {
-            return logged_err!(self.me, "submit_cmd called before setup");
+            return logged_err!(self.me; "submit_cmd called before setup");
         }
 
         match self.tx_exec {
-            Some(ref tx_exec) => Ok(tx_exec.send((id, cmd)).await?),
-            None => logged_err!(self.me, "tx_exec not created yet"),
+            Some(ref tx_exec) => Ok(tx_exec
+                .send((id, cmd))
+                .await
+                .map_err(|e| SummersetError(e.to_string()))?),
+            None => logged_err!(self.me; "tx_exec not created yet"),
         }
     }
 
@@ -123,15 +125,15 @@ impl StateMachine {
         &mut self,
     ) -> Result<(CommandId, CommandResult), SummersetError> {
         if let None = self.executor_handle {
-            return logged_err!(self.me, "get_result called before setup");
+            return logged_err!(self.me; "get_result called before setup");
         }
 
         match self.rx_ack {
             Some(ref mut rx_ack) => match rx_ack.recv().await {
                 Some((id, result)) => Ok((id, result)),
-                None => logged_err!(self.me, "ack channel has been closed"),
+                None => logged_err!(self.me; "ack channel has been closed"),
             },
-            None => logged_err!(self.me, "rx_ack not created yet"),
+            None => logged_err!(self.me; "rx_ack not created yet"),
         }
     }
 }

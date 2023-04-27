@@ -11,20 +11,20 @@ use crate::client::{GenericClient, ClientId};
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};
 
-/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
-/// protocol-specific struct creations.
-#[allow(unused_macros)]
-macro_rules! box_if_ok {
-    ($r:expr) => {
-        $r.map(|o| Box::new(o) as _) // explicitly coerce to unsized Box<dyn ..>
-    };
-}
-
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     RepNothing,
     // SimplePush,
+}
+
+/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
+/// protocol-specific struct creations.
+macro_rules! box_if_ok {
+    ($thing:expr) => {
+        // explicitly coerce to unsized `Box<dyn ..>`
+        $thing.map(|o| Box::new(o) as _)
+    };
 }
 
 impl SMRProtocol {

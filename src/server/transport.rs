@@ -13,12 +13,12 @@ use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
 /// Server internal TCP transport module.
-#[derive(Debug)]
 pub struct TransportHub<Msg> {
     /// My replica ID.
     me: ReplicaId,

@@ -1,7 +1,5 @@
 //! Summerset client side library.
 
-#![allow(clippy::uninlined_format_args)]
-
 use std::collections::HashSet;
 
 use log::debug;

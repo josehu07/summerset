@@ -1,7 +1,5 @@
 //! Summerset client benchmarking executable.
 
-#![allow(clippy::uninlined_format_args)]
-
 use std::collections::HashSet;
 
 use clap::Parser;

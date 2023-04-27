@@ -8,8 +8,6 @@ use crate::utils::SummersetError;
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
-use flashmap;
-
 use serde::{Serialize, Deserialize};
 
 use rmp_serde::encode::to_vec as encode_to_vec;
@@ -17,6 +15,7 @@ use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, OnceCell, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
@@ -48,7 +47,6 @@ pub struct ApiReply {
 }
 
 /// The external client-facing API module.
-#[derive(Debug)]
 pub struct ExternalApi {
     /// My replica ID.
     me: ReplicaId,
@@ -125,11 +123,11 @@ impl ExternalApi {
                 chan_reply_cap
             );
         }
-        if batch_interval < Duration::as_micros(1) {
+        if batch_interval < Duration::from_micros(1) {
             return logged_err!(
                 self.me;
-                "batch_interval '{}' too small",
-                batch_interval
+                "batch_interval {} us too small",
+                batch_interval.as_micros()
             );
         }
 
@@ -145,7 +143,7 @@ impl ExternalApi {
 
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
-        self.client_acceptor_handle = Some(client_servant_handles_read);
+        self.client_servant_handles = Some(client_servant_handles_read);
 
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
@@ -183,13 +181,13 @@ impl ExternalApi {
 
         match self.rx_req {
             Some(ref mut rx_req) => loop {
-                match self.rx_req.try_recv() {
+                match rx_req.try_recv() {
                     Ok((client, req)) => batch.push_back((client, req)),
                     Err(TryRecvError::Empty) => break,
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(SummersetError::from(e)),
                 }
             },
-            None => logged_err!(self.me; "rx_req not created yet"),
+            None => return logged_err!(self.me; "rx_req not created yet"),
         }
 
         Ok(batch)
@@ -201,10 +199,17 @@ impl ExternalApi {
         reply: ApiReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        let tx_replies_guard = self.tx_replies.guard();
+        if let None = self.client_acceptor_handle {
+            return logged_err!(self.me; "send_reply called before setup");
+        }
+
+        let tx_replies_guard = self.tx_replies.unwrap().guard();
         match tx_replies_guard.get(&client) {
             Some(tx_reply) => {
-                tx_reply.send(reply).await?;
+                tx_reply
+                    .send(reply)
+                    .await
+                    .map_err(|e| SummersetError(e.to_string()))?;
                 Ok(())
             }
             None => {
@@ -226,18 +231,21 @@ impl ExternalApi {
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
         chan_reply_cap: usize,
         client_listener: Arc<OnceCell<TcpListener>>,
-        tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
-        client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+        mut tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
+        mut client_servant_handles: flashmap::WriteHandle<
+            ClientId,
+            JoinHandle<()>,
+        >,
     ) {
         pf_debug!(me; "client_acceptor thread spawned");
 
         loop {
-            let mut stream = client_listener.get().unwrap().accept().await;
+            let stream = client_listener.get().unwrap().accept().await;
             if let Err(e) = stream {
                 pf_warn!(me; "error accepting client connection: {}", e);
                 continue;
             }
-            let mut stream = stream.unwrap();
+            let (mut stream, addr) = stream.unwrap();
 
             let id = stream.read_u64().await; // receive client ID
             if let Err(e) = id {
@@ -253,13 +261,14 @@ impl ExternalApi {
             }
             pf_info!(me; "accepted new client {}", id);
 
-            let (tx_reply, mut rx_reply) = mpsc::channel(chan_reply_cap);
+            let (tx_reply, rx_reply) = mpsc::channel(chan_reply_cap);
             tx_replies_guard.insert(id, tx_reply);
 
             let client_servant_handle =
                 tokio::spawn(Self::client_servant_thread(
                     me,
                     id,
+                    addr,
                     stream,
                     tx_req.clone(),
                     rx_reply,
@@ -283,7 +292,7 @@ impl ExternalApi {
         conn_read: &mut ReadHalf<'_>,
     ) -> Result<ApiRequest, SummersetError> {
         let req_len = conn_read.read_u64().await?; // receive length first
-        let req_buf: Vec<u8> = vec![0; req_len];
+        let mut req_buf: Vec<u8> = vec![0; req_len as usize];
         conn_read.read_exact(&mut req_buf[..]).await?;
         let req = decode_from_slice(&req_buf)?;
         Ok(req)
@@ -295,7 +304,7 @@ impl ExternalApi {
         conn_write: &mut WriteHalf<'_>,
     ) -> Result<(), SummersetError> {
         let reply_bytes = encode_to_vec(reply)?;
-        conn_write.write_u64(reply_bytes.len()).await?; // send length first
+        conn_write.write_u64(reply_bytes.len() as u64).await?; // send length first
         conn_write.write_all(&reply_bytes[..]).await?;
         Ok(())
     }
@@ -304,13 +313,14 @@ impl ExternalApi {
     async fn client_servant_thread(
         me: ReplicaId,
         id: ClientId,
-        conn: TcpStream,
+        addr: SocketAddr,
+        mut conn: TcpStream,
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
-        rx_reply: mpsc::Receiver<ApiReply>,
+        mut rx_reply: mpsc::Receiver<ApiReply>,
     ) {
         pf_debug!(me; "client_servant thread for {} spawned", id);
 
-        let (conn_read, conn_write) = conn.split();
+        let (mut conn_read, mut conn_write) = conn.split();
 
         loop {
             tokio::select! {
@@ -377,46 +387,32 @@ impl ExternalApi {
 mod external_tests {
     use super::*;
     use std::collections::VecDeque;
-    use std::time::SystemTime;
     use crate::server::{Command, CommandResult};
-    use crate::client::{ClientId, ClientApiStub, ClientSendStub, ClientRecvStub};
+    use crate::client::{ClientId, ClientApiStub};
     use rand::Rng;
     use tokio::sync::Barrier;
-    use tokio::time::{self, Duration};
-
-    #[test]
-    fn interval_tick() {
-        let mut interval = time::interval(Duration::from_micros(100));
-        let threshold = Duration::from_micros(10);
-        let mut now = SystemTime::now();
-        for _ in 0..3 {
-            tokio_test::block_on(interval.tick());
-            let new_now = SystemTime::now();
-            assert!(new_now - now > threshold);
-            now = new_now;
-        }
-    }
+    use tokio::time::Duration;
 
     #[test]
     fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
         assert!(tokio_test::block_on(api.setup(
-            "127.0.0.1:52700",
-            Duration::as_millis(1),
+            "127.0.0.1:52700".parse()?,
+            Duration::from_millis(1),
             0,
             0
         ))
         .is_err());
         assert!(tokio_test::block_on(api.setup(
-            "127.0.0.1:52700",
-            Duration::as_nanos(10),
+            "127.0.0.1:52700".parse()?,
+            Duration::from_nanos(10),
             100,
             100,
         ))
         .is_err());
         tokio_test::block_on(api.setup(
-            "127.0.0.1:52700",
-            Duration::as_millis(1),
+            "127.0.0.1:52700".parse()?,
+            Duration::from_millis(1),
             100,
             100,
         ))?;
@@ -434,10 +430,15 @@ mod external_tests {
         tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new(0);
-            api.setup("127.0.0.1:53700", Duration::from_millis(1), 5, 5)
-                .await?;
+            api.setup(
+                "127.0.0.1:53700".parse()?,
+                Duration::from_millis(1),
+                5,
+                5,
+            )
+            .await?;
             barrier2.wait().await;
-            let reqs: VecDeque<(ClientId, ApiRequest)> = vec![];
+            let reqs: VecDeque<(ClientId, ApiRequest)> = VecDeque::new();
             while reqs.len() < 2 {
                 let req_batch = api.get_req_batch().await?;
                 reqs.append(&mut req_batch);
@@ -472,19 +473,20 @@ mod external_tests {
                 ApiReply {
                     id: 1,
                     result: CommandResult::GetResult {
-                        value: "123".into(),
+                        value: Some("123".into()),
                     },
                 },
                 client,
             )
             .await?;
+            Ok::<(), SummersetError>(())
         });
         // client-side
         let client: ClientId = rand::thread_rng().gen();
         tokio_test::block_on(barrier.wait());
         let api_stub = ClientApiStub::new(client);
         let (mut send_stub, mut recv_stub) =
-            tokio_test::block_on(api_stub.connect("127.0.0.1:53700"))?;
+            tokio_test::block_on(api_stub.connect("127.0.0.1:53700".parse()?))?;
         tokio_test::block_on(send_stub.send_req(ApiRequest {
             id: 0,
             cmd: Command::Put {
@@ -508,7 +510,7 @@ mod external_tests {
             ApiReply {
                 id: 1,
                 result: CommandResult::GetResult {
-                    value: "123".into()
+                    value: Some("123".into())
                 }
             }
         );

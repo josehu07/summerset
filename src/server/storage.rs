@@ -1,5 +1,6 @@
 //! Summerset server durable storage logging module implementation.
 
+use std::fmt;
 use std::path::Path;
 use std::io::SeekFrom;
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::fs::{self, File, OpenOptions};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
 use tokio::sync::{mpsc, OnceCell};
 use tokio::task::JoinHandle;
 
@@ -48,7 +50,6 @@ pub enum LogResult<Ent> {
 }
 
 /// Durable storage logging module.
-#[derive(Debug)]
 pub struct StorageHub<Ent> {
     /// My replica ID.
     me: ReplicaId,
@@ -69,7 +70,7 @@ pub struct StorageHub<Ent> {
 // StorageHub public API implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+    Ent: fmt::Debug + PartialEq + Eq + Clone + Serialize + DeserializeOwned,
 {
     /// Creates a new durable storage logging hub.
     pub fn new(me: ReplicaId) -> Self {
@@ -92,18 +93,18 @@ where
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
         if let Some(_) = self.logger_handle {
-            return logged_err!(self.me, "setup already done");
+            return logged_err!(self.me; "setup already done");
         }
         if chan_log_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_log_cap {}",
                 chan_log_cap
             );
         }
         if chan_ack_cap == 0 {
             return logged_err!(
-                self.me,
+                self.me;
                 "invalid chan_ack_cap {}",
                 chan_ack_cap
             );
@@ -112,9 +113,9 @@ where
         // prepare backing file
         if !fs::try_exists(path).await? {
             File::create(path).await?;
-            pf_info!(self.me; "created backer file '{}'", path);
+            pf_info!(self.me; "created backer file '{}'", path.display());
         } else {
-            pf_info!(self.me; "backer file '{}' already exists", path);
+            pf_info!(self.me; "backer file '{}' already exists", path.display());
         }
         let mut file =
             OpenOptions::new().read(true).write(true).open(path).await?;
@@ -148,7 +149,10 @@ where
         }
 
         match self.tx_log {
-            Some(ref tx_log) => Ok(tx_log.send((id, action)).await?),
+            Some(ref tx_log) => Ok(tx_log
+                .send((id, action))
+                .await
+                .map_err(|e| SummersetError(e.to_string()))?),
             None => logged_err!(self.me; "tx_log not created yet"),
         }
     }
@@ -156,7 +160,7 @@ where
     /// Waits for the next logging result by receiving from the ack channel.
     pub async fn get_result(
         &mut self,
-    ) -> Result<LogResult<Ent>, SummersetError> {
+    ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
         if let None = self.logger_handle {
             return logged_err!(self.me; "get_result called before setup");
         }
@@ -174,7 +178,7 @@ where
 // StorageHub logger thread implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+    Ent: fmt::Debug + PartialEq + Eq + Clone + Serialize + DeserializeOwned,
 {
     /// Read out entry at given offset.
     /// TODO: better management of file cursor.
@@ -184,7 +188,7 @@ where
         backer: &mut File,
         offset: usize,
     ) -> Result<Option<Ent>, SummersetError> {
-        let file_len = backer.metadata().await?.len();
+        let file_len: usize = backer.metadata().await?.len() as usize;
         if offset + 8 > file_len {
             pf_warn!(
                 me;
@@ -196,8 +200,8 @@ where
         }
 
         // read entry length header
-        backer.seek(SeekFrom::Start(offset)).await?;
-        let entry_len = backer.read_u64().await?;
+        backer.seek(SeekFrom::Start(offset as u64)).await?;
+        let entry_len: usize = backer.read_u64().await? as usize;
         let offset_e = offset + 8 + entry_len;
         if offset_e > file_len {
             pf_warn!(me; "read entry invalid length {}", entry_len);
@@ -206,7 +210,7 @@ where
         }
 
         // read entry content
-        let entry_buf: Vec<u8> = vec![0; entry_len];
+        let mut entry_buf: Vec<u8> = vec![0; entry_len];
         backer.read_exact(&mut entry_buf[..]).await?;
         let entry = decode_from_slice(&entry_buf)?;
         backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
@@ -220,7 +224,7 @@ where
         entry: &Ent,
         offset: usize,
     ) -> Result<(bool, usize), SummersetError> {
-        let file_len = backer.metadata().await?.len();
+        let file_len: usize = backer.metadata().await?.len() as usize;
         if offset != file_len {
             pf_warn!(
                 me;
@@ -232,8 +236,8 @@ where
         } else {
             let entry_bytes = encode_to_vec(entry)?;
             // write entry length header first
-            let entry_len: u64 = entry_bytes.len();
-            backer.write_u64(entry_len).await?;
+            let entry_len = entry_bytes.len();
+            backer.write_u64(entry_len as u64).await?;
             // then entry content
             backer.write_all(&entry_bytes[..]).await?;
             Ok((true, offset + 8 + entry_len))
@@ -246,7 +250,7 @@ where
         backer: &mut File,
         offset: usize,
     ) -> Result<(bool, usize), SummersetError> {
-        let file_len = backer.metadata().await?.len();
+        let file_len: usize = backer.metadata().await?.len() as usize;
         if offset > file_len {
             pf_warn!(
                 me;
@@ -256,7 +260,7 @@ where
             );
             Ok((false, file_len))
         } else {
-            backer.set_len(offset).await?;
+            backer.set_len(offset as u64).await?;
             Ok((true, offset))
         }
     }
@@ -281,7 +285,7 @@ where
             }
             LogAction::Truncate { offset } => {
                 Self::truncate_log(me, backer, offset).await.map(
-                    |ok, now_offset| LogResult::TruncateResult {
+                    |(ok, now_offset)| LogResult::TruncateResult {
                         ok,
                         offset: now_offset,
                     },
@@ -331,9 +335,12 @@ mod storage_tests {
     use super::*;
     use rmp_serde::encode::to_vec as encode_to_vec;
 
+    #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+    struct TestEntry(String);
+
     #[test]
     fn hub_setup() -> Result<(), SummersetError> {
-        let mut hub = StorageHub::new(0);
+        let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-0.log");
         assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
         tokio_test::block_on(hub.setup(&path, 100, 100))?;
@@ -344,9 +351,6 @@ mod storage_tests {
         Ok(())
     }
 
-    #[derive(PartialEq, Eq, Clone, Serialize, Deserialize)]
-    struct TestEntry(String);
-
     #[test]
     fn append_entries() -> Result<(), SummersetError> {
         let mut hub = StorageHub::new(0);
@@ -355,28 +359,28 @@ mod storage_tests {
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             now_offset,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             now_offset + 10,
         ))?;
         assert!(!ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             0,
         ))?;
@@ -392,14 +396,14 @@ mod storage_tests {
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            hub.backer.get_mut().unwrap(),
             &entry,
             now_offset,
         ))?;
@@ -407,7 +411,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                hub.backer.get_mut(),
+                hub.backer.get_mut().unwrap(),
                 0
             ))?,
             Some(TestEntry("test-entry-dummy-string".into()))
@@ -415,7 +419,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                hub.backer.get_mut(),
+                hub.backer.get_mut().unwrap(),
                 now_offset + 10
             ))?,
             None
@@ -423,7 +427,7 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                hub.backer.get_mut(),
+                hub.backer.get_mut().unwrap(),
                 now_offset - 4
             ))?,
             None
