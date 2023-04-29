@@ -62,7 +62,7 @@ mod config_tests {
             TestConfig {
                 abc: 7,
                 hij: "Jose".into(),
-                lmn: 3.14,
+                lmn: 6.18,
             }
         }
     }
@@ -82,7 +82,7 @@ mod config_tests {
         let ref_config = TestConfig {
             abc: 7,
             hij: "Nice".into(),
-            lmn: 3.14,
+            lmn: 6.18,
         };
         assert_eq!(config, ref_config);
         Ok(())

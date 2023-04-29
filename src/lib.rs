@@ -15,10 +15,14 @@ mod protocols;
 pub use crate::utils::{SummersetError, ReplicaMap};
 
 #[doc(inline)]
-pub use crate::server::ReplicaId;
+pub use crate::server::{GenericReplica, ReplicaId};
 
 #[doc(inline)]
-pub use crate::client::ClientId;
+pub use crate::client::{GenericClient, ClientId};
 
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;
+
+// below are config structs exposed for users to know how to write TOML-format
+// config strings
+pub use crate::protocols::{RepNothingReplicaConfig, RepNothingClientConfig};

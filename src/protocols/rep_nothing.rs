@@ -43,6 +43,7 @@ pub struct RepNothingReplicaConfig {
     api_chan_cap: usize,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for RepNothingReplicaConfig {
     fn default() -> Self {
         RepNothingReplicaConfig {
@@ -60,10 +61,10 @@ pub struct RepNothingReplica {
     id: ReplicaId,
 
     /// Cluster size (number of replicas).
-    population: u8,
+    _population: u8,
 
     /// Address string for peer-to-peer connections.
-    smr_addr: SocketAddr,
+    _smr_addr: SocketAddr,
 
     /// Address string for client requests API.
     api_addr: SocketAddr,
@@ -136,8 +137,8 @@ impl GenericReplica for RepNothingReplica {
 
         Ok(RepNothingReplica {
             id,
-            population,
-            smr_addr,
+            _population: population,
+            _smr_addr: smr_addr,
             api_addr,
             config,
             external_api: None,
@@ -148,25 +149,25 @@ impl GenericReplica for RepNothingReplica {
 
     async fn setup(
         &mut self,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        _peer_addrs: HashMap<ReplicaId, SocketAddr>,
     ) -> Result<(), SummersetError> {
-        let state_machine = StateMachine::new(self.id);
+        let mut state_machine = StateMachine::new(self.id);
         state_machine
             .setup(self.config.base_chan_cap, self.config.base_chan_cap)
             .await?;
         self.state_machine = Some(state_machine);
 
-        let storage_hub = StorageHub::new(self.id);
+        let mut storage_hub = StorageHub::new(self.id);
         storage_hub
             .setup(
-                &Path::new(&self.config.backer_path),
+                Path::new(&self.config.backer_path),
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
         self.storage_hub = Some(storage_hub);
 
-        let external_api = ExternalApi::new(self.id);
+        let mut external_api = ExternalApi::new(self.id);
         external_api
             .setup(
                 self.api_addr,
@@ -180,9 +181,42 @@ impl GenericReplica for RepNothingReplica {
         Ok(())
     }
 
-    async fn run(&mut self) -> Result<(), SummersetError> {
+    async fn run(&mut self) {
         loop {
-            todo!();
+            tokio::select! {
+                // client request batch
+                req_batch = self.external_api.as_mut().unwrap().get_req_batch() => {
+                    if let Err(e) = req_batch {
+                        pf_error!(self.id; "error getting req batch: {}", e);
+                        continue;
+                    }
+                    let req_batch = req_batch.unwrap();
+
+                    todo!();
+                },
+
+                // state machine execution result
+                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
+                    if let Err(e) = cmd_result {
+                        pf_error!(self.id; "error getting cmd result: {}", e);
+                        continue;
+                    }
+                    let (cmd_id, cmd_result) = cmd_result.unwrap();
+
+                    todo!();
+                },
+
+                // durable logging result
+                log_result = self.storage_hub.as_mut().unwrap().get_result() => {
+                    if let Err(e) = log_result {
+                        pf_error!(self.id; "error getting log result: {}", e);
+                        continue;
+                    }
+                    let (action_id, log_result) = log_result.unwrap();
+
+                    todo!();
+                }
+            }
         }
     }
 }
@@ -194,6 +228,7 @@ pub struct RepNothingClientConfig {
     server_id: ReplicaId,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for RepNothingClientConfig {
     fn default() -> Self {
         RepNothingClientConfig { server_id: 0 }
@@ -219,7 +254,7 @@ impl GenericClient for RepNothingClient {
         servers: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if servers.len() == 0 {
+        if servers.is_empty() {
             return logged_err!(id; "empty servers list");
         }
 

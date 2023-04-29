@@ -8,25 +8,16 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use tonic::transport;
-
-use tokio::task::JoinHandle;
-
 use log::info;
 
 use env_logger::Env;
 
-use summerset::{
-    SummersetServerNode, SummersetApiService, InternalCommService, SMRProtocol,
-    InitError,
-};
+use summerset::{SMRProtocol, GenericReplica, ReplicaId, SummersetError};
 
 /// Server side structure wrapper.
-#[derive(Debug)]
 struct SummersetServer {
-    /// Internal server node struct. This Arc will be cloned by both tonic
-    /// services.
-    node: Arc<SummersetServerNode>,
+    /// Internal server node trait object.
+    node: Box<dyn GenericReplica>,
 
     /// State flags.
     api_spawned: bool,
@@ -48,48 +39,6 @@ impl SummersetServer {
             smr_spawned: false,
             peers_connected: false,
         })
-    }
-
-    /// Start the client key-value API service on `main_runtime`.
-    fn spawn_api_service(
-        &mut self,
-        api_addr: SocketAddr,
-    ) -> Result<JoinHandle<Result<(), transport::Error>>, InitError> {
-        // Tonic service holder struct maintains an Arc reference to `node`.
-        let api_service = SummersetApiService::new(self.node.clone())?;
-
-        // TODO: tweak tonic Server configurations
-        let router = api_service.build_tonic_router();
-
-        let join_handle = tokio::spawn(router.serve(api_addr));
-        self.api_spawned = true;
-        Ok(join_handle)
-    }
-
-    /// Start the server internal communication service on `main_runtime`, if
-    /// the protocol in use has internal communication protos. Returns
-    /// `Ok(None)` if the protocol has no internal communication service.
-    fn spawn_smr_service(
-        &mut self,
-        protocol: SMRProtocol,
-        smr_addr: SocketAddr,
-    ) -> Result<Option<JoinHandle<Result<(), transport::Error>>>, InitError>
-    {
-        // Tonic service holder struct maintains an Arc reference to `node`.
-        let smr_service =
-            InternalCommService::new(protocol, self.node.clone())?;
-
-        // TODO: tweak tonic Server configurations
-        let router = smr_service.build_tonic_router();
-
-        // spawn if has internal communication protos
-        if let Some(router) = router {
-            let join_handle = tokio::spawn(router.serve(smr_addr));
-            self.smr_spawned = true;
-            Ok(Some(join_handle))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Establish connections to peers.
@@ -114,6 +63,10 @@ impl SummersetServer {
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CLIArgs {
+    /// Name of SMR protocol to use.
+    #[arg(short, long, default_value_t = String::from("RepNothing"))]
+    protocol: String,
+
     /// Key-value API port open to clients.
     #[arg(short, long, default_value_t = 52700)]
     api_port: u16,
@@ -122,41 +75,65 @@ struct CLIArgs {
     #[arg(short, long, default_value_t = 52800)]
     smr_port: u16,
 
-    /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("DoNothing"))]
-    protocol: String,
-
-    /// List of peer server nodes (e.g., '-n host1:smr_port -n host2:smr_port').
+    /// List of peer server nodes, the order of which maps to replica IDs.
+    /// Example: '-n host1:smr_port1 -n host2:smr_port2 -n host3:smr_port3'.
     #[arg(short, long)]
-    node_peers: Vec<String>,
+    replicas: Vec<SocketAddr>,
+
+    /// Replica ID of myself.
+    #[arg(short, long)]
+    id: ReplicaId,
 }
 
 impl CLIArgs {
     /// Sanitize command line arguments, return `Ok(protocol)` on success
-    /// or `Err(InitError)` on any error.
-    fn sanitize(&self) -> Result<SMRProtocol, InitError> {
-        if self.api_port <= 1024 {
-            Err(InitError(format!("api_port {} is invalid", self.api_port)))
-        } else if self.smr_port <= 1024 {
-            Err(InitError(format!("smr_port {} is invalid", self.smr_port)))
-        } else if self.api_port == self.smr_port {
-            Err(InitError(format!("api_port == smr_port {}", self.api_port)))
-        } else {
-            // check for duplicate peers
-            let mut peer_set = HashSet::new();
-            for s in self.node_peers.iter() {
-                if peer_set.contains(s) {
-                    return Err(InitError(format!(
-                        "duplicate peer address {} given",
-                        s
-                    )));
-                }
-                peer_set.insert(s.clone());
+    /// or `Err(SummersetError)` on any error.
+    fn sanitize(&self) -> Result<SMRProtocol, SummersetError> {
+        // check for duplicate peers
+        let mut replicas_set = HashSet::new();
+        for addr in self.replicas.iter() {
+            if replicas_set.contains(addr) {
+                return Err(SummersetError(format!(
+                    "duplicate replica address {} given",
+                    addr
+                )));
             }
+            replicas_set.insert(addr.clone());
+        }
 
+        if (self.id as usize) >= self.replicas.len() {
+            return Err(SummersetError(format!(
+                "invalid replica ID {} / {}",
+                self.id,
+                self.replicas.len()
+            )));
+        }
+        let my_addr = self.replicas[self.id as usize];
+
+        if self.api_port <= 1024 {
+            Err(SummersetError(format!(
+                "invalid api_port {}",
+                self.api_port
+            )))
+        } else if self.smr_port <= 1024 {
+            Err(SummersetError(format!(
+                "invalid smr_port {}",
+                self.smr_port
+            )))
+        } else if self.api_port == self.smr_port {
+            Err(SummersetError(format!(
+                "api_port == smr_port {}",
+                self.api_port
+            )))
+        } else if self.smr_port != my_addr.port() {
+            Err(SummersetError(format!(
+                "smr_port {} does not match replica addr '{}'",
+                self.smr_port, my_addr
+            )))
+        } else {
             SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
-                InitError(format!(
-                    "protocol name {} unrecognized",
+                SummersetError(format!(
+                    "protocol name '{}' unrecognized",
                     self.protocol
                 ))
             })
@@ -166,8 +143,7 @@ impl CLIArgs {
 
 // Server node executable main entrance.
 // TODO: tweak tokio runtime configurations
-#[tokio::main]
-async fn main() -> Result<(), InitError> {
+fn main() -> Result<(), SummersetError> {
     // initialize env_logger
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp(None)
@@ -254,90 +230,115 @@ async fn main() -> Result<(), InitError> {
 
 #[cfg(test)]
 mod server_args_tests {
-    use super::{CLIArgs, SMRProtocol, InitError};
+    use super::*;
 
     #[test]
-    fn sanitize_valid() {
+    fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CLIArgs {
-            api_port: 50077,
-            smr_port: 50078,
-            protocol: "DoNothing".into(),
-            node_peers: vec!["hostA:50078".into(), "hostB:50078".into()],
+            api_port: 52700,
+            smr_port: 52800,
+            protocol: "RepNothing".into(),
+            replicas: vec!["localhost:52800".parse()?, "hostB:52801".parse()?],
+            id: 1,
         };
-        assert_eq!(args.sanitize(), Ok(SMRProtocol::DoNothing));
+        assert_eq!(args.sanitize(), Ok(SMRProtocol::RepNothing));
+        Ok(())
     }
 
     #[test]
-    fn sanitize_invalid_api_port() {
+    fn sanitize_invalid_api_port() -> Result<(), SummersetError> {
         let args = CLIArgs {
             api_port: 1023,
-            smr_port: 50078,
-            protocol: "DoNothing".into(),
-            node_peers: vec![],
+            smr_port: 52800,
+            protocol: "RepNothing".into(),
+            replicas: vec!["localhost:52800".parse()?],
+            id: 0,
         };
-        assert_eq!(
-            args.sanitize(),
-            Err(InitError("api_port 1023 is invalid".into()))
-        );
+        assert!(args.sanitize().is_err());
+        Ok(())
     }
 
     #[test]
-    fn sanitize_invalid_smr_port() {
+    fn sanitize_invalid_smr_port() -> Result<(), SummersetError> {
         let args = CLIArgs {
-            api_port: 50077,
+            api_port: 52700,
             smr_port: 1023,
-            protocol: "DoNothing".into(),
-            node_peers: vec![],
+            protocol: "RepNothing".into(),
+            replicas: vec!["localhost:52800".parse()?],
+            id: 0,
         };
-        assert_eq!(
-            args.sanitize(),
-            Err(InitError("smr_port 1023 is invalid".into()))
-        );
+        assert!(args.sanitize().is_err());
+        Ok(())
     }
 
     #[test]
-    fn sanitize_same_api_smr_port() {
+    fn sanitize_same_api_smr_port() -> Result<(), SummersetError> {
         let args = CLIArgs {
-            api_port: 50077,
-            smr_port: 50077,
-            protocol: "DoNothing".into(),
-            node_peers: vec![],
+            api_port: 52800,
+            smr_port: 52800,
+            protocol: "RepNothing".into(),
+            replicas: vec!["localhost:52800".parse()?],
+            id: 0,
         };
-        assert_eq!(
-            args.sanitize(),
-            Err(InitError("api_port == smr_port 50077".into()))
-        );
+        assert!(args.sanitize().is_err());
+        Ok(())
     }
 
     #[test]
-    fn sanitize_invalid_protocol() {
+    fn sanitize_smr_port_mismatch() -> Result<(), SummersetError> {
         let args = CLIArgs {
-            api_port: 40077,
-            smr_port: 50078,
+            api_port: 52700,
+            smr_port: 52900,
+            protocol: "RepNothing".into(),
+            replicas: vec!["localhost:52800".parse()?],
+            id: 0,
+        };
+        assert!(args.sanitize().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
+        let args = CLIArgs {
+            api_port: 52700,
+            smr_port: 52800,
             protocol: "InvalidProtocol".into(),
-            node_peers: vec![],
+            replicas: vec!["localhost:52800".parse()?],
+            id: 0,
         };
-        assert_eq!(
-            args.sanitize(),
-            Err(InitError(
-                "protocol name InvalidProtocol unrecognized".into()
-            ))
-        );
+        assert!(args.sanitize().is_err());
+        Ok(())
     }
 
     #[test]
-    fn sanitize_duplicate_peer() {
+    fn sanitize_duplicate_replica() -> Result<(), SummersetError> {
         let args = CLIArgs {
-            api_port: 50077,
-            smr_port: 50078,
-            protocol: "DoNothing".into(),
-            node_peers: vec!["somehost:50078".into(), "somehost:50078".into()],
+            api_port: 52700,
+            smr_port: 52800,
+            protocol: "RepNothing".into(),
+            replicas: vec![
+                "localhost:52800".parse()?,
+                "localhost:52800".parse()?,
+            ],
+            id: 0,
         };
-        assert_eq!(
-            args.sanitize(),
-            Err(InitError(
-                "duplicate peer address somehost:50078 given".into()
-            ))
-        );
+        assert!(args.sanitize().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_invalid_id() -> Result<(), SummersetError> {
+        let args = CLIArgs {
+            api_port: 52700,
+            smr_port: 52802,
+            protocol: "RepNothing".into(),
+            replicas: vec![
+                "localhost:52800".parse()?,
+                "localhost:52801".parse()?,
+            ],
+            id: 2,
+        };
+        assert!(args.sanitize().is_err());
+        Ok(())
     }
 }

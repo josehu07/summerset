@@ -50,7 +50,13 @@ pub struct TransportHub<Msg> {
 // TransportHub public API implementation
 impl<Msg> TransportHub<Msg>
 where
-    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+    Msg: fmt::Debug
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
 {
     /// Creates a new server internal TCP transport hub.
     pub fn new(me: ReplicaId, population: u8) -> Self {
@@ -307,7 +313,13 @@ where
 // TransportHub peer_messenger thread implementation
 impl<Msg> TransportHub<Msg>
 where
-    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+    Msg: fmt::Debug
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
 {
     /// Writes a message through given TcpStream.
     async fn write_msg(
@@ -340,7 +352,7 @@ where
         mut rx_send: mpsc::Receiver<Msg>,
         tx_recv: mpsc::Sender<(ReplicaId, Msg)>,
     ) {
-        pf_debug!(me; "peer_messenger thread for {} spawned", id);
+        pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
 
         let (mut conn_read, mut conn_write) = conn.split();
 
@@ -387,7 +399,7 @@ where
             }
         }
 
-        pf_debug!(me; "peer_messenger thread for {} exitted", id);
+        pf_debug!(me; "peer_messenger thread for {} ({}) exitted", id, addr);
     }
 }
 
@@ -422,7 +434,7 @@ mod transport_tests {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
             hub.setup("127.0.0.1:53801".parse()?, 1, 1).await?;
-            while let Err(e) =
+            while let Err(_) =
                 hub.connect_peer(0, "127.0.0.1:53800".parse()?).await
             {
                 sleep(Duration::from_millis(1)).await;
@@ -433,7 +445,7 @@ mod transport_tests {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
             hub.setup("127.0.0.1:53802".parse()?, 1, 1).await?;
-            while let Err(e) =
+            while let Err(_) =
                 hub.connect_peer(0, "127.0.0.1:53800".parse()?).await
             {
                 sleep(Duration::from_millis(1)).await;
@@ -443,7 +455,7 @@ mod transport_tests {
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
         tokio_test::block_on(hub.setup("127.0.0.1:53800".parse()?, 1, 1))?;
-        let peers = HashSet::new();
+        let mut peers = HashSet::new();
         peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
         peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
         let ref_peers = HashSet::from([1, 2]);

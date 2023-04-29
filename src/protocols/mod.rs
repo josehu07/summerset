@@ -10,6 +10,7 @@ use crate::client::{GenericClient, ClientId};
 
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};
+pub use rep_nothing::{RepNothingReplicaConfig, RepNothingClientConfig};
 
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

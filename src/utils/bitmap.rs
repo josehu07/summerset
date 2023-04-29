@@ -35,7 +35,7 @@ impl ReplicaMap {
         if idx as usize >= self.0.len() {
             return Err(SummersetError(format!("index {} out of bound", idx)));
         }
-        self.0[idx as usize] = flag;
+        self.0.set(idx as usize, flag);
         Ok(())
     }
 
@@ -48,7 +48,7 @@ impl ReplicaMap {
     }
 
     /// Returns the size of the bitmap.
-    pub fn len(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.0.len()
     }
 
@@ -70,7 +70,7 @@ impl Iterator for ReplicaMapIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let id: ReplicaId = self.idx as ReplicaId;
-        if (id as usize) < self.map.len() {
+        if (id as usize) < self.map.size() {
             self.idx += 1;
             Some((id, self.map.get(id).unwrap()))
         } else {

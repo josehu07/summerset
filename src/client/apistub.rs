@@ -66,6 +66,8 @@ impl ClientSendStub {
         let req_len = req_bytes.len();
         self.conn_write.write_u64(req_len as u64).await?; // send length first
         self.conn_write.write_all(&req_bytes[..]).await?;
+
+        pf_trace!(self.id; "send req {:?}", req);
         Ok(())
     }
 }
@@ -91,6 +93,8 @@ impl ClientRecvStub {
         let mut reply_buf: Vec<u8> = vec![0; reply_len as usize];
         self.conn_read.read_exact(&mut reply_buf[..]).await?;
         let reply = decode_from_slice(&reply_buf)?;
+
+        pf_trace!(self.id; "recv reply {:?}", reply);
         Ok(reply)
     }
 }

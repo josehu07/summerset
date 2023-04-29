@@ -66,7 +66,13 @@ pub struct StorageHub<Ent> {
 // StorageHub public API implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+    Ent: fmt::Debug
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
 {
     /// Creates a new durable storage logging hub.
     pub fn new(me: ReplicaId) -> Self {
@@ -172,7 +178,13 @@ where
 // StorageHub logger thread implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+    Ent: fmt::Debug
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Send
+        + Sync
+        + 'static,
 {
     /// Read out entry at given offset.
     /// TODO: better management of file cursor.
@@ -360,14 +372,14 @@ mod storage_tests {
             now_offset,
         ))?;
         assert!(ok);
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
+        let (ok, _) = tokio_test::block_on(StorageHub::append_entry(
             0,
             &mut backer_file,
             &entry,
             now_offset + 10,
         ))?;
         assert!(!ok);
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
+        let (ok, _) = tokio_test::block_on(StorageHub::append_entry(
             0,
             &mut backer_file,
             &entry,

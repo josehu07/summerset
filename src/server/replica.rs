@@ -33,5 +33,5 @@ pub trait GenericReplica {
     ) -> Result<(), SummersetError>;
 
     /// Main event loop logic of running this replica.
-    async fn run(&mut self) -> Result<(), SummersetError>;
+    async fn run(&mut self);
 }

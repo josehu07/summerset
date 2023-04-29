@@ -101,7 +101,7 @@ impl ExternalApi {
         chan_req_cap: usize,
         chan_reply_cap: usize,
     ) -> Result<(), SummersetError> {
-        if let Some(_) = self.client_acceptor_handle {
+        if self.client_acceptor_handle.is_some() {
             return logged_err!(self.me; "setup already done");
         }
         if chan_req_cap == 0 {
@@ -312,7 +312,7 @@ impl ExternalApi {
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
         mut rx_reply: mpsc::Receiver<ApiReply>,
     ) {
-        pf_debug!(me; "client_servant thread for {} spawned", id);
+        pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
 
         let (mut conn_read, mut conn_write) = conn.split();
 
@@ -355,7 +355,7 @@ impl ExternalApi {
             }
         }
 
-        pf_debug!(me; "client_servant thread for {} exitted", id);
+        pf_debug!(me; "client_servant thread for {} ({}) exitted", id, addr);
     }
 }
 
@@ -431,9 +431,9 @@ mod external_tests {
             )
             .await?;
             barrier2.wait().await;
-            let reqs: VecDeque<(ClientId, ApiRequest)> = VecDeque::new();
+            let mut reqs: VecDeque<(ClientId, ApiRequest)> = VecDeque::new();
             while reqs.len() < 2 {
-                let req_batch = api.get_req_batch().await?;
+                let mut req_batch = api.get_req_batch().await?;
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
