@@ -137,7 +137,7 @@ where
             addr,
             stream,
             rx_send,
-            self.tx_recv.unwrap().clone(),
+            self.tx_recv.as_ref().unwrap().clone(),
         ));
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
@@ -154,7 +154,8 @@ where
             return logged_err!(self.me; "wait_on_peer called before setup");
         }
 
-        let (mut stream, addr) = self.peer_listener.unwrap().accept().await?;
+        let (mut stream, addr) =
+            self.peer_listener.as_ref().unwrap().accept().await?;
         let id = stream.read_u8().await?; // receive connecting peer's ID
 
         if id == self.me || id >= self.population {
@@ -177,7 +178,7 @@ where
             addr,
             stream,
             rx_send,
-            self.tx_recv.unwrap().clone(),
+            self.tx_recv.as_ref().unwrap().clone(),
         ));
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
