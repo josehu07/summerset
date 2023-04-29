@@ -2,62 +2,14 @@
 
 use std::net::SocketAddr;
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use clap::Parser;
 
-use log::info;
-
 use env_logger::Env;
 
-use summerset::{SMRProtocol, GenericReplica, ReplicaId, SummersetError};
+use tokio::runtime::Builder;
 
-/// Server side structure wrapper.
-struct SummersetServer {
-    /// Internal server node trait object.
-    node: Box<dyn GenericReplica>,
-
-    /// State flags.
-    api_spawned: bool,
-    smr_spawned: bool,
-    peers_connected: bool,
-}
-
-impl SummersetServer {
-    /// Create a new Summerset server structure.
-    fn new(
-        protocol: SMRProtocol,
-        peers: Vec<String>,
-    ) -> Result<Self, InitError> {
-        let node = Arc::new(SummersetServerNode::new(protocol, peers)?);
-
-        Ok(SummersetServer {
-            node,
-            api_spawned: false,
-            smr_spawned: false,
-            peers_connected: false,
-        })
-    }
-
-    /// Establish connections to peers.
-    async fn connect_peers(&mut self) -> Result<(), InitError> {
-        if !self.smr_spawned {
-            Err(InitError(
-                "error connecting to peers: smr_service not spawned yet".into(),
-            ))
-        } else if self.peers_connected {
-            Err(InitError(
-                "error connecting to peers: peers already connected".into(),
-            ))
-        } else {
-            self.node.connect_peers().await?;
-            self.peers_connected = true;
-            Ok(())
-        }
-    }
-}
+use summerset::{SMRProtocol, ReplicaId, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -98,7 +50,7 @@ impl CLIArgs {
                     addr
                 )));
             }
-            replicas_set.insert(addr.clone());
+            replicas_set.insert(addr);
         }
 
         if (self.id as usize) >= self.replicas.len() {
@@ -142,7 +94,6 @@ impl CLIArgs {
 }
 
 // Server node executable main entrance.
-// TODO: tweak tokio runtime configurations
 fn main() -> Result<(), SummersetError> {
     // initialize env_logger
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
@@ -156,74 +107,45 @@ fn main() -> Result<(), SummersetError> {
     let protocol = args.sanitize()?;
 
     // parse internal communication port
-    let smr_addr = format!("[::1]:{}", args.smr_port).parse().map_err(|e| {
-        InitError(format!(
-            "failed to parse server internal communication addr: port {}: {}",
+    let smr_addr: SocketAddr = format!("localhost:{}", args.smr_port)
+        .parse()
+        .map_err(|e| {
+        SummersetError(format!(
+            "failed to parse smr_addr: port {}: {}",
             args.smr_port, e
         ))
     })?;
 
     // parse key-value API port
-    let api_addr = format!("[::1]:{}", args.api_port).parse().map_err(|e| {
-        InitError(format!(
-            "failed to parse key-value API serving addr: port {}: {}",
+    let api_addr: SocketAddr = format!("localhost:{}", args.api_port)
+        .parse()
+        .map_err(|e| {
+        SummersetError(format!(
+            "failed to parse api_addr: port {}: {}",
             args.api_port, e
         ))
     })?;
 
-    // create server node with given peers list
-    let mut server = SummersetServer::new(protocol, args.node_peers)?;
+    // create server node with given configuration
+    // TODO: protocol-specific configuration string
+    let node = protocol.new_server_node(
+        args.id,
+        args.replicas.len() as u8,
+        smr_addr,
+        api_addr,
+        None,
+    )?;
 
-    // add and start the server internal communication tonic service
-    let smr_join_handle = server.spawn_smr_service(protocol, smr_addr)?;
-    if smr_join_handle.is_some() {
-        info!("Starting internal communication service on {}...", smr_addr);
+    // create tokio multi-threaded runtime
+    // TODO: tweak number of threads
+    let runtime = Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .thread_name(format!("tokio-worker-replica{}", args.id))
+        .build()?;
 
-        // retry until connected to server peers
-        // TODO: better peers initialization logic
-        info!("Connecting to server peers...");
-        let mut retry_cnt = 0;
-        while server.connect_peers().await.is_err() {
-            thread::sleep(Duration::from_secs(1));
-            retry_cnt += 1;
-            info!("  retry attempt {}", retry_cnt);
-        }
-    } else {
-        info!("No internal communication service required by protocol...");
-    }
-
-    // add and start the client key-value API tonic service
-    let api_join_handle = server.spawn_api_service(api_addr)?;
-    info!("Starting client key-value API service on {}...", api_addr);
-
-    // both services should never return in normal execution
-    if let Some(smr_join_handle) = smr_join_handle {
-        let jres = tokio::try_join!(smr_join_handle, api_join_handle).map_err(
-            |e| InitError(format!("join error from tonic service: {}", e)),
-        )?;
-        jres.0.map_err(|e| {
-            InitError(format!(
-                "internal communication service failed with transport error: {}",
-                e
-            ))
-        })?;
-        jres.1.map_err(|e| {
-            InitError(format!(
-                "client key-value API service failed with transport error: {}",
-                e
-            ))
-        })?;
-    } else {
-        let jres = tokio::try_join!(api_join_handle).map_err(|e| {
-            InitError(format!("join error from tonic service: {}", e))
-        })?;
-        jres.0.map_err(|e| {
-            InitError(format!(
-                "client key-value API service failed with transport error: {}",
-                e
-            ))
-        })?;
-    }
+    // TODO: setup.await and run.await
+    runtime.block_on(async move {});
 
     Ok(())
 }
