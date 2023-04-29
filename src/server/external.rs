@@ -16,7 +16,7 @@ use rmp_serde::decode::from_slice as decode_from_slice;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, OnceCell, Notify};
+use tokio::sync::{mpsc, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
@@ -58,10 +58,6 @@ pub struct ExternalApi {
     /// the client acceptor thread.
     tx_replies: Option<flashmap::ReadHandle<ClientId, mpsc::Sender<ApiReply>>>,
 
-    /// TCP listener for client connections, shared with the client acceptor
-    /// thread.
-    client_listener: Arc<OnceCell<TcpListener>>,
-
     /// Notify used as batch dumping signal, shared with the batch ticker
     /// thread.
     batch_notify: Arc<Notify>,
@@ -86,7 +82,6 @@ impl ExternalApi {
             me,
             rx_req: None,
             tx_replies: None,
-            client_listener: Arc::new(OnceCell::new()),
             batch_notify: Arc::new(Notify::new()),
             client_acceptor_handle: None,
             client_servant_handles: None,
@@ -131,7 +126,7 @@ impl ExternalApi {
             );
         }
 
-        let (tx_req, mut rx_req) = mpsc::channel(chan_req_cap);
+        let (tx_req, rx_req) = mpsc::channel(chan_req_cap);
         self.rx_req = Some(rx_req);
 
         let (tx_replies_write, tx_replies_read) =
@@ -139,7 +134,6 @@ impl ExternalApi {
         self.tx_replies = Some(tx_replies_read);
 
         let client_listener = TcpListener::bind(api_addr).await?;
-        self.client_listener.set(client_listener)?;
 
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
@@ -150,7 +144,7 @@ impl ExternalApi {
                 self.me,
                 tx_req,
                 chan_reply_cap,
-                self.client_listener.clone(),
+                client_listener,
                 tx_replies_write,
                 client_servant_handles_write,
             ));
@@ -230,7 +224,7 @@ impl ExternalApi {
         me: ReplicaId,
         tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
         chan_reply_cap: usize,
-        client_listener: Arc<OnceCell<TcpListener>>,
+        client_listener: TcpListener,
         mut tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
         mut client_servant_handles: flashmap::WriteHandle<
             ClientId,
@@ -240,12 +234,12 @@ impl ExternalApi {
         pf_debug!(me; "client_acceptor thread spawned");
 
         loop {
-            let stream = client_listener.get().unwrap().accept().await;
-            if let Err(e) = stream {
+            let accepted = client_listener.accept().await;
+            if let Err(e) = accepted {
                 pf_warn!(me; "error accepting client connection: {}", e);
                 continue;
             }
-            let (mut stream, addr) = stream.unwrap();
+            let (mut stream, addr) = accepted.unwrap();
 
             let id = stream.read_u64().await; // receive client ID
             if let Err(e) = id {
@@ -281,7 +275,7 @@ impl ExternalApi {
             tx_replies_guard.publish();
         }
 
-        pf_debug!(me; "client_acceptor thread exitted");
+        // pf_debug!(me; "client_acceptor thread exitted");
     }
 }
 
@@ -417,7 +411,6 @@ mod external_tests {
             100,
         ))?;
         assert!(api.rx_req.is_some());
-        assert!(api.client_listener.initialized());
         assert!(api.client_acceptor_handle.is_some());
         assert!(api.batch_ticker_handle.is_some());
         Ok(())

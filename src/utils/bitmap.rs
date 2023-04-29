@@ -3,13 +3,11 @@
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
 
-use bitvec::prelude as bitv;
+use fixedbitset::FixedBitSet;
 
-use serde::{Serialize, Deserialize};
-
-/// Compact bitmap for replica ID -> bool mapping, suited for transport.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReplicaMap(pub bitv::BitVec<ReplicaId>);
+/// Compact bitmap for replica ID -> bool mapping.
+#[derive(Debug, Clone)]
+pub struct ReplicaMap(FixedBitSet);
 
 impl ReplicaMap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
@@ -21,9 +19,11 @@ impl ReplicaMap {
                 size
             )));
         }
-        let flag = if ones { 1 } else { 0 };
-        let bv = bitv::bitvec![flag; size];
-        Ok(ReplicaMap(bv))
+        let mut bitset = FixedBitSet::with_capacity(size as usize);
+        if ones {
+            bitset.set_range(.., true);
+        }
+        Ok(ReplicaMap(bitset))
     }
 
     /// Sets bit at index to given flag.
@@ -32,24 +32,50 @@ impl ReplicaMap {
         idx: ReplicaId,
         flag: bool,
     ) -> Result<(), SummersetError> {
-        if idx >= self.0.len() {
+        if idx as usize >= self.0.len() {
             return Err(SummersetError(format!("index {} out of bound", idx)));
         }
-        self.0[idx] = flag;
+        self.0[idx as usize] = flag;
         Ok(())
     }
 
     /// Gets the bit flag at index.
     pub fn get(&self, idx: ReplicaId) -> Result<bool, SummersetError> {
-        if idx >= self.0.len() {
+        if idx as usize >= self.0.len() {
             return Err(SummersetError(format!("index {} out of bound", idx)));
         }
-        Ok(self.0[idx])
+        Ok(self.0[idx as usize])
     }
 
-    /// Allows `for _ in map.iter()`.
-    pub fn iter(&self) -> impl Iterator<Item = bool> {
-        self.0.iter().by_vals()
+    /// Returns the size of the bitmap.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Allows `for (id, bit) in map.iter()`.
+    pub fn iter(&self) -> ReplicaMapIter {
+        ReplicaMapIter { map: self, idx: 0 }
+    }
+}
+
+/// Iterator over `ReplicaMap`, yielding `(id, bit)` pairs.
+#[derive(Debug, Clone)]
+pub struct ReplicaMapIter<'m> {
+    map: &'m ReplicaMap,
+    idx: usize,
+}
+
+impl Iterator for ReplicaMapIter<'_> {
+    type Item = (ReplicaId, bool);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id: ReplicaId = self.idx as ReplicaId;
+        if (id as usize) < self.map.len() {
+            self.idx += 1;
+            Some((id, self.map.get(id).unwrap()))
+        } else {
+            None
+        }
     }
 }
 
@@ -86,8 +112,8 @@ mod bitmap_tests {
         let ref_map = vec![true, true, false, true, true];
         let mut map = ReplicaMap::new(5, true).unwrap();
         assert!(map.set(2, false).is_ok());
-        for (id, flag) in map.iter().enumerate() {
-            assert_eq!(ref_map[id], flag);
+        for (id, flag) in map.iter() {
+            assert_eq!(ref_map[id as usize], flag);
         }
     }
 }

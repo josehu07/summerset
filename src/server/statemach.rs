@@ -89,8 +89,8 @@ impl StateMachine {
             );
         }
 
-        let (tx_exec, mut rx_exec) = mpsc::channel(chan_exec_cap);
-        let (tx_ack, mut rx_ack) = mpsc::channel(chan_ack_cap);
+        let (tx_exec, rx_exec) = mpsc::channel(chan_exec_cap);
+        let (tx_ack, rx_ack) = mpsc::channel(chan_ack_cap);
         self.tx_exec = Some(tx_exec);
         self.rx_ack = Some(rx_ack);
 

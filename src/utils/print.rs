@@ -96,14 +96,14 @@ macro_rules! pf_error {
 macro_rules! logged_err {
     ($prefix:expr; $fmt_str:literal) => {
         {
-            pf_error!($prefix, $fmt_str);
+            pf_error!($prefix; $fmt_str);
             Err(SummersetError($fmt_str.into()))
         }
     };
 
     ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
         {
-            pf_error!($prefix, $fmt_str, $($fmt_arg)*);
+            pf_error!($prefix; $fmt_str, $($fmt_arg)*);
             Err(SummersetError(format!($fmt_str, $($fmt_arg)*)))
         }
     };
@@ -117,11 +117,15 @@ mod print_tests {
     fn error_no_args() {
         assert_eq!(
             logged_err!(0; "interesting message"),
-            Err(SummersetError("(0) interesting message".into()))
+            Err::<(), SummersetError>(SummersetError(
+                "(0) interesting message".into()
+            ))
         );
         assert_eq!(
             logged_err!("jose"; "interesting message"),
-            Err(SummersetError("(jose) interesting message".into()))
+            Err::<(), SummersetError>(SummersetError(
+                "(jose) interesting message".into()
+            ))
         );
     }
 
@@ -129,7 +133,9 @@ mod print_tests {
     fn error_with_args() {
         assert_eq!(
             logged_err!(0; "got {} to print", 777),
-            Err(SummersetError("(0) got 777 to print".into()))
+            Err::<(), SummersetError>(SummersetError(
+                "(0) got 777 to print".into()
+            ))
         );
     }
 }

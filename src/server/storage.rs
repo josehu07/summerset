@@ -3,7 +3,6 @@
 use std::fmt;
 use std::path::Path;
 use std::io::SeekFrom;
-use std::sync::Arc;
 
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
@@ -15,14 +14,14 @@ use rmp_serde::decode::from_slice as decode_from_slice;
 
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
-use tokio::sync::{mpsc, OnceCell};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Log action ID type.
 pub type LogActionId = u64;
 
 /// Action command to the logger.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
@@ -35,7 +34,7 @@ pub enum LogAction<Ent> {
 }
 
 /// Action result returned by the logger.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
     ReadResult { entry: Option<Ent> },
@@ -54,9 +53,6 @@ pub struct StorageHub<Ent> {
     /// My replica ID.
     me: ReplicaId,
 
-    /// Backing file for durability.
-    backer: Arc<OnceCell<File>>,
-
     /// Sender side of the log channel.
     tx_log: Option<mpsc::Sender<(LogActionId, LogAction<Ent>)>>,
 
@@ -70,13 +66,12 @@ pub struct StorageHub<Ent> {
 // StorageHub public API implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+    Ent: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Creates a new durable storage logging hub.
     pub fn new(me: ReplicaId) -> Self {
         StorageHub {
             me,
-            backer: Arc::new(OnceCell::new()),
             tx_log: None,
             rx_ack: None,
             logger_handle: None,
@@ -117,19 +112,18 @@ where
         } else {
             pf_info!(self.me; "backer file '{}' already exists", path.display());
         }
-        let mut file =
+        let mut backer_file =
             OpenOptions::new().read(true).write(true).open(path).await?;
-        file.seek(SeekFrom::End(0)).await?; // seek to EOF
-        self.backer.set(file);
+        backer_file.seek(SeekFrom::End(0)).await?; // seek to EOF
 
-        let (tx_log, mut rx_log) = mpsc::channel(chan_log_cap);
-        let (tx_ack, mut rx_ack) = mpsc::channel(chan_ack_cap);
+        let (tx_log, rx_log) = mpsc::channel(chan_log_cap);
+        let (tx_ack, rx_ack) = mpsc::channel(chan_ack_cap);
         self.tx_log = Some(tx_log);
         self.rx_ack = Some(rx_ack);
 
         let logger_handle = tokio::spawn(Self::logger_thread(
             self.me,
-            self.backer.clone(),
+            backer_file,
             rx_log,
             tx_ack,
         ));
@@ -178,7 +172,7 @@ where
 // StorageHub logger thread implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + PartialEq + Eq + Clone + Serialize + DeserializeOwned,
+    Ent: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Read out entry at given offset.
     /// TODO: better management of file cursor.
@@ -299,7 +293,7 @@ where
     /// Logger thread function.
     async fn logger_thread(
         me: ReplicaId,
-        backer: Arc<OnceCell<File>>,
+        mut backer: File,
         mut rx_log: mpsc::Receiver<(LogActionId, LogAction<Ent>)>,
         tx_ack: mpsc::Sender<(LogActionId, LogResult<Ent>)>,
     ) {
@@ -309,9 +303,7 @@ where
             match rx_log.recv().await {
                 Some((id, action)) => {
                     pf_trace!(me; "log action {:?}", action);
-                    let res =
-                        Self::do_action(me, backer.get_mut().unwrap(), action)
-                            .await;
+                    let res = Self::do_action(me, &mut backer, action).await;
                     if let Err(e) = res {
                         pf_error!(me; "error during logging: {}", e);
                         continue;
@@ -335,52 +327,49 @@ mod storage_tests {
     use super::*;
     use rmp_serde::encode::to_vec as encode_to_vec;
 
-    #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
     struct TestEntry(String);
 
-    #[test]
-    fn hub_setup() -> Result<(), SummersetError> {
-        let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-0.log");
-        assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
-        tokio_test::block_on(hub.setup(&path, 100, 100))?;
-        assert!(hub.backer.initialized());
-        assert!(hub.tx_log.is_some());
-        assert!(hub.rx_ack.is_some());
-        assert!(hub.logger_handle.is_some());
-        Ok(())
+    async fn prepare_test_file(path: &str) -> Result<File, SummersetError> {
+        if !fs::try_exists(path).await? {
+            File::create(path).await?;
+        } else {
+            let file = OpenOptions::new().write(true).open(path).await?;
+            file.set_len(0).await?;
+        }
+        let file = OpenOptions::new().read(true).write(true).open(path).await?;
+        Ok(file)
     }
 
     #[test]
     fn append_entries() -> Result<(), SummersetError> {
-        let mut hub = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-1.log");
-        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_file =
+            tokio_test::block_on(prepare_test_file("/tmp/test-backer-0.log"))?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             now_offset,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             now_offset + 10,
         ))?;
         assert!(!ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             0,
         ))?;
@@ -390,20 +379,19 @@ mod storage_tests {
 
     #[test]
     fn read_entries() -> Result<(), SummersetError> {
-        let mut hub = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-2.log");
-        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_file =
+            tokio_test::block_on(prepare_test_file("/tmp/test-backer-1.log"))?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut().unwrap(),
+            &mut backer_file,
             &entry,
             now_offset,
         ))?;
@@ -411,23 +399,23 @@ mod storage_tests {
         assert_eq!(
             tokio_test::block_on(StorageHub::read_entry(
                 0,
-                hub.backer.get_mut().unwrap(),
+                &mut backer_file,
                 0
             ))?,
             Some(TestEntry("test-entry-dummy-string".into()))
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::read_entry(
+            tokio_test::block_on(StorageHub::<TestEntry>::read_entry(
                 0,
-                hub.backer.get_mut().unwrap(),
+                &mut backer_file,
                 now_offset + 10
             ))?,
             None
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::read_entry(
+            tokio_test::block_on(StorageHub::<TestEntry>::read_entry(
                 0,
-                hub.backer.get_mut().unwrap(),
+                &mut backer_file,
                 now_offset - 4
             ))?,
             None
@@ -437,48 +425,59 @@ mod storage_tests {
 
     #[test]
     fn truncate_log() -> Result<(), SummersetError> {
-        let mut hub = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-3.log");
-        tokio_test::block_on(hub.setup(&path, 1, 1))?;
+        let mut backer_file =
+            tokio_test::block_on(prepare_test_file("/tmp/test-backer-2.log"))?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let (ok, mid_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            &mut backer_file,
             &entry,
             0,
         ))?;
         assert!(ok);
         let (ok, end_offset) = tokio_test::block_on(StorageHub::append_entry(
             0,
-            hub.backer.get_mut(),
+            &mut backer_file,
             &entry,
             mid_offset,
         ))?;
         assert!(ok);
         assert_eq!(
-            tokio_test::block_on(StorageHub::truncate_log(
+            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
                 0,
-                hub.backer.get_mut(),
+                &mut backer_file,
                 mid_offset
             ))?,
             (true, mid_offset)
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::truncate_log(
+            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
                 0,
-                hub.backer.get_mut(),
+                &mut backer_file,
                 end_offset
             ))?,
             (false, mid_offset)
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::truncate_log(
+            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
                 0,
-                hub.backer.get_mut(),
+                &mut backer_file,
                 0
             ))?,
             (true, 0)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn hub_setup() -> Result<(), SummersetError> {
+        let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
+        let path = Path::new("/tmp/test-backer-3.log");
+        assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
+        tokio_test::block_on(hub.setup(&path, 100, 100))?;
+        assert!(hub.tx_log.is_some());
+        assert!(hub.rx_ack.is_some());
+        assert!(hub.logger_handle.is_some());
         Ok(())
     }
 
