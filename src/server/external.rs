@@ -171,7 +171,7 @@ impl ExternalApi {
         }
 
         self.batch_notify.notified().await;
-        let batch = VecDeque::new();
+        let mut batch = VecDeque::new();
 
         match self.rx_req {
             Some(ref mut rx_req) => loop {
@@ -197,7 +197,7 @@ impl ExternalApi {
             return logged_err!(self.me; "send_reply called before setup");
         }
 
-        let tx_replies_guard = self.tx_replies.unwrap().guard();
+        let tx_replies_guard = self.tx_replies.as_ref().unwrap().guard();
         match tx_replies_guard.get(&client) {
             Some(tx_reply) => {
                 tx_reply

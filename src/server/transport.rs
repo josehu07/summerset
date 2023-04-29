@@ -50,7 +50,7 @@ pub struct TransportHub<Msg> {
 // TransportHub public API implementation
 impl<Msg> TransportHub<Msg>
 where
-    Msg: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
+    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Creates a new server internal TCP transport hub.
     pub fn new(me: ReplicaId, population: u8) -> Self {
@@ -128,7 +128,7 @@ where
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u8(self.me).await?; // send my ID
 
-        let (tx_send, mut rx_send) = mpsc::channel(self.chan_send_cap);
+        let (tx_send, rx_send) = mpsc::channel(self.chan_send_cap);
         self.tx_sends.insert(id, tx_send);
 
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
@@ -168,7 +168,7 @@ where
             );
         }
 
-        let (tx_send, mut rx_send) = mpsc::channel(self.chan_send_cap);
+        let (tx_send, rx_send) = mpsc::channel(self.chan_send_cap);
         self.tx_sends.insert(id, tx_send);
 
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
@@ -209,7 +209,7 @@ where
         }
 
         let mid_idx = peer_ids.partition_point(|&id| id < self.me);
-        let connected: HashSet<ReplicaId> = HashSet::new();
+        let mut connected: HashSet<ReplicaId> = HashSet::new();
 
         // for peers with ID smaller than me, connect to them actively
         for &id in &peer_ids[..mid_idx] {
@@ -267,7 +267,7 @@ where
             match self.tx_sends.get(&(peer as u8)) {
                 Some(tx_send) => {
                     tx_send
-                        .send(msg)
+                        .send(msg.clone())
                         .await
                         .map_err(|e| SummersetError(e.to_string()))?;
                 }
@@ -306,7 +306,7 @@ where
 // TransportHub peer_messenger thread implementation
 impl<Msg> TransportHub<Msg>
 where
-    Msg: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
+    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Writes a message through given TcpStream.
     async fn write_msg(
@@ -396,7 +396,7 @@ mod transport_tests {
     use std::collections::HashSet;
     use serde::{Serialize, Deserialize};
 
-    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct TestMsg(String);
 
     #[test]

@@ -66,7 +66,7 @@ pub struct StorageHub<Ent> {
 // StorageHub public API implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
+    Ent: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Creates a new durable storage logging hub.
     pub fn new(me: ReplicaId) -> Self {
@@ -172,7 +172,7 @@ where
 // StorageHub logger thread implementation
 impl<Ent> StorageHub<Ent>
 where
-    Ent: fmt::Debug + Serialize + DeserializeOwned + Send + Sync,
+    Ent: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
     /// Read out entry at given offset.
     /// TODO: better management of file cursor.
@@ -327,7 +327,7 @@ mod storage_tests {
     use super::*;
     use rmp_serde::encode::to_vec as encode_to_vec;
 
-    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct TestEntry(String);
 
     async fn prepare_test_file(path: &str) -> Result<File, SummersetError> {
