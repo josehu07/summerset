@@ -35,6 +35,10 @@ struct CLIArgs {
     /// Replica ID of myself.
     #[arg(short, long)]
     id: ReplicaId,
+
+    /// Number of tokio worker threads.
+    #[arg(long, default_value_t = 2)]
+    threads: Option<usize>,
 }
 
 impl CLIArgs {
