@@ -37,15 +37,15 @@ pub enum LogAction<Ent> {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
-    ReadResult { entry: Option<Ent> },
+    Read { entry: Option<Ent> },
 
     /// `ok` is true if append successful, else false. `offset` is the offset
     /// of the file cursor after this.
-    AppendResult { ok: bool, offset: usize },
+    Append { ok: bool, offset: usize },
 
     /// `ok` is true if truncate successful, else false. `offset` is the
     /// offset of the file cursor after this.
-    TruncateResult { ok: bool, offset: usize },
+    Truncate { ok: bool, offset: usize },
 }
 
 /// Durable storage logging module.
@@ -93,7 +93,7 @@ where
         chan_log_cap: usize,
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
-        if let Some(_) = self.logger_handle {
+        if self.logger_handle.is_some() {
             return logged_err!(self.me; "setup already done");
         }
         if chan_log_cap == 0 {
@@ -144,7 +144,7 @@ where
         id: LogActionId,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
-        if let None = self.logger_handle {
+        if self.logger_handle.is_none() {
             return logged_err!(self.me; "submit_action called before setup");
         }
 
@@ -161,7 +161,7 @@ where
     pub async fn get_result(
         &mut self,
     ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
-        if let None = self.logger_handle {
+        if self.logger_handle.is_none() {
             return logged_err!(self.me; "get_result called before setup");
         }
 
@@ -277,13 +277,13 @@ where
         backer: &mut File,
         action: LogAction<Ent>,
     ) -> Result<LogResult<Ent>, SummersetError> {
-        let result = match action {
+        match action {
             LogAction::Read { offset } => Self::read_entry(me, backer, offset)
                 .await
-                .map(|entry| LogResult::ReadResult { entry }),
+                .map(|entry| LogResult::Read { entry }),
             LogAction::Append { entry, offset } => {
                 Self::append_entry(me, backer, &entry, offset).await.map(
-                    |(ok, now_offset)| LogResult::AppendResult {
+                    |(ok, now_offset)| LogResult::Append {
                         ok,
                         offset: now_offset,
                     },
@@ -291,15 +291,13 @@ where
             }
             LogAction::Truncate { offset } => {
                 Self::truncate_log(me, backer, offset).await.map(
-                    |(ok, now_offset)| LogResult::TruncateResult {
+                    |(ok, now_offset)| LogResult::Truncate {
                         ok,
                         offset: now_offset,
                     },
                 )
             }
-        };
-
-        result
+        }
     }
 
     /// Logger thread function.
@@ -311,25 +309,20 @@ where
     ) {
         pf_debug!(me; "logger thread spawned");
 
-        loop {
-            match rx_log.recv().await {
-                Some((id, action)) => {
-                    pf_trace!(me; "log action {:?}", action);
-                    let res = Self::do_action(me, &mut backer, action).await;
-                    if let Err(e) = res {
-                        pf_error!(me; "error during logging: {}", e);
-                        continue;
-                    }
+        while let Some((id, action)) = rx_log.recv().await {
+            pf_trace!(me; "log action {:?}", action);
+            let res = Self::do_action(me, &mut backer, action).await;
+            if let Err(e) = res {
+                pf_error!(me; "error during logging: {}", e);
+                continue;
+            }
 
-                    if let Err(e) = tx_ack.send((id, res.unwrap())).await {
-                        pf_error!(me; "error sending to tx_ack: {}", e);
-                    }
-                }
-
-                None => break, // channel gets closed and no messages remain
+            if let Err(e) = tx_ack.send((id, res.unwrap())).await {
+                pf_error!(me; "error sending to tx_ack: {}", e);
             }
         }
 
+        // channel gets closed and no messages remain
         pf_debug!(me; "logger thread exitted");
     }
 }
@@ -353,186 +346,155 @@ mod storage_tests {
         Ok(file)
     }
 
-    #[test]
-    fn append_entries() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn append_entries() -> Result<(), SummersetError> {
         let mut backer_file =
-            tokio_test::block_on(prepare_test_file("/tmp/test-backer-0.log"))?;
+            prepare_test_file("/tmp/test-backer-0.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            0,
-        ))?;
+        let (ok, now_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
         assert!(ok);
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            now_offset,
-        ))?;
+        let (ok, now_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, now_offset)
+                .await?;
         assert!(ok);
-        let (ok, _) = tokio_test::block_on(StorageHub::append_entry(
+        let (ok, _) = StorageHub::append_entry(
             0,
             &mut backer_file,
             &entry,
             now_offset + 10,
-        ))?;
+        )
+        .await?;
         assert!(!ok);
-        let (ok, _) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            0,
-        ))?;
+        let (ok, _) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
         assert!(!ok);
         Ok(())
     }
 
-    #[test]
-    fn read_entries() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn read_entries() -> Result<(), SummersetError> {
         let mut backer_file =
-            tokio_test::block_on(prepare_test_file("/tmp/test-backer-1.log"))?;
+            prepare_test_file("/tmp/test-backer-1.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            0,
-        ))?;
+        let (ok, now_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
         assert!(ok);
-        let (ok, now_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            now_offset,
-        ))?;
+        let (ok, now_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, now_offset)
+                .await?;
         assert!(ok);
         assert_eq!(
-            tokio_test::block_on(StorageHub::read_entry(
-                0,
-                &mut backer_file,
-                0
-            ))?,
+            StorageHub::read_entry(0, &mut backer_file, 0).await?,
             Some(TestEntry("test-entry-dummy-string".into()))
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::<TestEntry>::read_entry(
+            StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
                 now_offset + 10
-            ))?,
+            )
+            .await?,
             None
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::<TestEntry>::read_entry(
+            StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
                 now_offset - 4
-            ))?,
+            )
+            .await?,
             None
         );
         Ok(())
     }
 
-    #[test]
-    fn truncate_log() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn truncate_log() -> Result<(), SummersetError> {
         let mut backer_file =
-            tokio_test::block_on(prepare_test_file("/tmp/test-backer-2.log"))?;
+            prepare_test_file("/tmp/test-backer-2.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, mid_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            0,
-        ))?;
+        let (ok, mid_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
         assert!(ok);
-        let (ok, end_offset) = tokio_test::block_on(StorageHub::append_entry(
-            0,
-            &mut backer_file,
-            &entry,
-            mid_offset,
-        ))?;
+        let (ok, end_offset) =
+            StorageHub::append_entry(0, &mut backer_file, &entry, mid_offset)
+                .await?;
         assert!(ok);
         assert_eq!(
-            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
+            StorageHub::<TestEntry>::truncate_log(
                 0,
                 &mut backer_file,
                 mid_offset
-            ))?,
+            )
+            .await?,
             (true, mid_offset)
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
+            StorageHub::<TestEntry>::truncate_log(
                 0,
                 &mut backer_file,
                 end_offset
-            ))?,
+            )
+            .await?,
             (false, mid_offset)
         );
         assert_eq!(
-            tokio_test::block_on(StorageHub::<TestEntry>::truncate_log(
-                0,
-                &mut backer_file,
-                0
-            ))?,
+            StorageHub::<TestEntry>::truncate_log(0, &mut backer_file, 0)
+                .await?,
             (true, 0)
         );
         Ok(())
     }
 
-    #[test]
-    fn hub_setup() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn hub_setup() -> Result<(), SummersetError> {
         let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-3.log");
-        assert!(tokio_test::block_on(hub.setup(&path, 0, 0)).is_err());
-        tokio_test::block_on(hub.setup(&path, 100, 100))?;
+        assert!(hub.setup(path, 0, 0).await.is_err());
+        hub.setup(path, 100, 100).await?;
         assert!(hub.tx_log.is_some());
         assert!(hub.rx_ack.is_some());
         assert!(hub.logger_handle.is_some());
         Ok(())
     }
 
-    #[test]
-    fn log_ack_api() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn log_ack_api() -> Result<(), SummersetError> {
         let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-4.log");
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = encode_to_vec(&entry)?;
-        tokio_test::block_on(hub.setup(&path, 3, 3))?;
-        tokio_test::block_on(
-            hub.submit_action(0, LogAction::Append { entry, offset: 0 }),
-        )?;
-        tokio_test::block_on(
-            hub.submit_action(1, LogAction::Read { offset: 0 }),
-        )?;
-        tokio_test::block_on(
-            hub.submit_action(2, LogAction::Truncate { offset: 0 }),
-        )?;
+        hub.setup(path, 3, 3).await?;
+        hub.submit_action(0, LogAction::Append { entry, offset: 0 })
+            .await?;
+        hub.submit_action(1, LogAction::Read { offset: 0 }).await?;
+        hub.submit_action(2, LogAction::Truncate { offset: 0 })
+            .await?;
         assert_eq!(
-            tokio_test::block_on(hub.get_result())?,
+            hub.get_result().await?,
             (
                 0,
-                LogResult::AppendResult {
+                LogResult::Append {
                     ok: true,
                     offset: 8 + entry_bytes.len()
                 }
             )
         );
         assert_eq!(
-            tokio_test::block_on(hub.get_result())?,
+            hub.get_result().await?,
             (
                 1,
-                LogResult::ReadResult {
+                LogResult::Read {
                     entry: Some(TestEntry("abcdefgh".into()))
                 }
             )
         );
         assert_eq!(
-            tokio_test::block_on(hub.get_result())?,
+            hub.get_result().await?,
             (
                 2,
-                LogResult::TruncateResult {
+                LogResult::Truncate {
                     ok: true,
                     offset: 0
                 }

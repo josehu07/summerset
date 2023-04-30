@@ -7,15 +7,6 @@
 
 Summerset is a distributed key-value store incorporating a wide range of state machine replication (SMR) protocols for research purposes.
 
-## Code Structure
-
-This codebase comprises the following pieces:
-
-* `src/`: the core Summerset library, linked by both `_server` and `_client`
-* `summerset_server`: the server-side standalone executable
-* `summerset_client`: the client-side library, linked by all client executables
-* `summerset_bench`: a client executable for benchmarking purposes
-
 ## Build
 
 Build everything in debug or release (`-r`) mode:
@@ -48,18 +39,20 @@ RUST_LOG=debug cargo run ...
 
 ### Run Clients
 
-Run the benchmarking client:
+Run the client executable:
 
 ```bash
-cargo run [-r] -p summerset_bench -- -h
+cargo run [-r] -p summerset_client -- -h
 ```
 
 ## TODO List
 
 * [*] event-based programming structure
-* [ ] implementation of class protocols
+* [ ] implementation of classic protocols
+* [ ] open-loop client, tests, & benchmarks
 * [ ] differentiate read/non-read commands
 * [ ] membership discovery & view changes
+* [ ] snapshotting & garbage collection
 * [ ] better README
 
 ---

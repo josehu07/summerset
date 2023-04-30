@@ -45,12 +45,13 @@ impl SMRProtocol {
         population: u8,
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
             Self::RepNothing => {
                 box_if_ok!(RepNothingReplica::new(
-                    id, population, smr_addr, api_addr, config_str
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
                 ))
             }
         }

@@ -27,10 +27,10 @@ pub enum Command {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CommandResult {
     /// `Some(value)` if key is found in state machine, else `None`.
-    GetResult { value: Option<String> },
+    Get { value: Option<String> },
 
     /// `Some(old_value)` if key was in state machine, else `None`.
-    PutResult { old_value: Option<String> },
+    Put { old_value: Option<String> },
 }
 
 /// State is simply a `HashMap` from `String` key -> `String` value.
@@ -71,7 +71,7 @@ impl StateMachine {
         chan_exec_cap: usize,
         chan_ack_cap: usize,
     ) -> Result<(), SummersetError> {
-        if let Some(_) = self.executor_handle {
+        if self.executor_handle.is_some() {
             return logged_err!(self.me; "setup already done");
         }
         if chan_exec_cap == 0 {
@@ -107,7 +107,7 @@ impl StateMachine {
         id: CommandId,
         cmd: Command,
     ) -> Result<(), SummersetError> {
-        if let None = self.executor_handle {
+        if self.executor_handle.is_none() {
             return logged_err!(self.me; "submit_cmd called before setup");
         }
 
@@ -124,7 +124,7 @@ impl StateMachine {
     pub async fn get_result(
         &mut self,
     ) -> Result<(CommandId, CommandResult), SummersetError> {
-        if let None = self.executor_handle {
+        if self.executor_handle.is_none() {
             return logged_err!(self.me; "get_result called before setup");
         }
 
@@ -143,10 +143,10 @@ impl StateMachine {
     /// Executes given command on the state machine state.
     fn execute(state: &mut State, cmd: &Command) -> CommandResult {
         let result = match cmd {
-            Command::Get { key } => CommandResult::GetResult {
+            Command::Get { key } => CommandResult::Get {
                 value: state.get(key).cloned(),
             },
-            Command::Put { key, value } => CommandResult::PutResult {
+            Command::Put { key, value } => CommandResult::Put {
                 old_value: state.insert(key.clone(), value.clone()),
             },
         };
@@ -165,21 +165,16 @@ impl StateMachine {
         // create the state HashMap
         let mut state = State::new();
 
-        loop {
-            match rx_exec.recv().await {
-                Some((id, cmd)) => {
-                    let res = Self::execute(&mut state, &cmd);
-                    pf_trace!(me; "executed {:?}", cmd);
+        while let Some((id, cmd)) = rx_exec.recv().await {
+            let res = Self::execute(&mut state, &cmd);
+            pf_trace!(me; "executed {:?}", cmd);
 
-                    if let Err(e) = tx_ack.send((id, res)).await {
-                        pf_error!(me; "error sending to tx_ack: {}", e);
-                    }
-                }
-
-                None => break, // channel gets closed and no messages remain
+            if let Err(e) = tx_ack.send((id, res)).await {
+                pf_error!(me; "error sending to tx_ack: {}", e);
             }
         }
 
+        // channel gets closed and no messages remain
         pf_debug!(me; "executor thread exitted");
     }
 }
@@ -197,7 +192,7 @@ mod statemach_tests {
                 &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
-            CommandResult::GetResult { value: None }
+            CommandResult::Get { value: None }
         );
     }
 
@@ -212,14 +207,14 @@ mod statemach_tests {
                     value: "180".into(),
                 }
             ),
-            CommandResult::PutResult { old_value: None }
+            CommandResult::Put { old_value: None }
         );
         assert_eq!(
             StateMachine::execute(
                 &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
-            CommandResult::GetResult {
+            CommandResult::Get {
                 value: Some("180".into())
             }
         );
@@ -236,7 +231,7 @@ mod statemach_tests {
                     value: "180".into()
                 }
             ),
-            CommandResult::PutResult { old_value: None }
+            CommandResult::Put { old_value: None }
         );
         assert_eq!(
             StateMachine::execute(
@@ -246,7 +241,7 @@ mod statemach_tests {
                     value: "185".into()
                 }
             ),
-            CommandResult::PutResult {
+            CommandResult::Put {
                 old_value: Some("180".into())
             }
         );
@@ -275,7 +270,7 @@ mod statemach_tests {
                         value: value.clone()
                     }
                 ),
-                CommandResult::PutResult {
+                CommandResult::Put {
                     old_value: ref_state.insert(key, value)
                 }
             );
@@ -292,51 +287,53 @@ mod statemach_tests {
                     &mut state,
                     &Command::Get { key: key.clone() }
                 ),
-                CommandResult::GetResult {
+                CommandResult::Get {
                     value: ref_state.get(&key).cloned()
                 }
             );
         }
     }
 
-    #[test]
-    fn sm_setup() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn sm_setup() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new(0);
-        assert!(tokio_test::block_on(sm.setup(0, 0)).is_err());
-        tokio_test::block_on(sm.setup(100, 100))?;
+        assert!(sm.setup(0, 0).await.is_err());
+        sm.setup(100, 100).await?;
         assert!(sm.tx_exec.is_some());
         assert!(sm.rx_ack.is_some());
         assert!(sm.executor_handle.is_some());
         Ok(())
     }
 
-    #[test]
-    fn exec_ack_api() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn exec_ack_api() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new(0);
-        tokio_test::block_on(sm.setup(2, 2))?;
-        tokio_test::block_on(sm.submit_cmd(
+        sm.setup(2, 2).await?;
+        sm.submit_cmd(
             0,
             Command::Put {
                 key: "Jose".into(),
                 value: "179".into(),
             },
-        ))?;
-        tokio_test::block_on(sm.submit_cmd(
+        )
+        .await?;
+        sm.submit_cmd(
             1,
             Command::Put {
                 key: "Jose".into(),
                 value: "180".into(),
             },
-        ))?;
+        )
+        .await?;
         assert_eq!(
-            tokio_test::block_on(sm.get_result())?,
-            (0, CommandResult::PutResult { old_value: None })
+            sm.get_result().await?,
+            (0, CommandResult::Put { old_value: None })
         );
         assert_eq!(
-            tokio_test::block_on(sm.get_result())?,
+            sm.get_result().await?,
             (
                 1,
-                CommandResult::PutResult {
+                CommandResult::Put {
                     old_value: Some("179".into())
                 }
             )

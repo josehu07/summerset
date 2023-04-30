@@ -20,6 +20,7 @@ pub trait GenericReplica {
         population: u8,
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>, // protocol-specific config in TOML format
     ) -> Result<Self, SummersetError>
     where
@@ -27,10 +28,7 @@ pub trait GenericReplica {
 
     /// Sets up required functionality modules according to protocol-specific
     /// logic.
-    async fn setup(
-        &mut self,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
-    ) -> Result<(), SummersetError>;
+    async fn setup(&mut self) -> Result<(), SummersetError>;
 
     /// Main event loop logic of running this replica.
     async fn run(&mut self);

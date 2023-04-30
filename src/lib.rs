@@ -15,10 +15,13 @@ mod protocols;
 pub use crate::utils::{SummersetError, ReplicaMap};
 
 #[doc(inline)]
-pub use crate::server::{GenericReplica, ReplicaId};
+pub use crate::server::{
+    GenericReplica, ReplicaId, ApiRequest, ApiReply, Command, CommandResult,
+    CommandId,
+};
 
 #[doc(inline)]
-pub use crate::client::{GenericClient, ClientId};
+pub use crate::client::{GenericClient, ClientId, ClientSendStub, ClientRecvStub};
 
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;

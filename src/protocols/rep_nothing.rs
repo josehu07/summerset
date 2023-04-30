@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
 use crate::server::{
-    GenericReplica, ReplicaId, StateMachine, Command, ExternalApi, StorageHub,
+    GenericReplica, ReplicaId, StateMachine, CommandResult, CommandId,
+    ExternalApi, ApiRequest, ApiReply, StorageHub, LogAction, LogResult,
+    LogActionId,
 };
 use crate::client::{
     GenericClient, ClientId, ClientApiStub, ClientSendStub, ClientRecvStub,
@@ -20,12 +22,6 @@ use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
-
-/// Log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-enum LogEntry {
-    Cmd { cmd: Command },
-}
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
@@ -55,7 +51,21 @@ impl Default for RepNothingReplicaConfig {
     }
 }
 
+/// Log entry type.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+struct LogEntry {
+    reqs: Vec<(ClientId, ApiRequest)>,
+}
+
+/// In-memory instance containing a commands batch.
+struct Instance {
+    reqs: Vec<(ClientId, ApiRequest)>,
+    execed: Vec<bool>,
+    durable: bool,
+}
+
 /// RepNothing server replica module.
+// TransportHub module not needed here.
 pub struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -72,6 +82,9 @@ pub struct RepNothingReplica {
     /// Configuraiton parameters struct.
     config: RepNothingReplicaConfig,
 
+    /// Map from peer replica ID -> address.
+    _peer_addrs: HashMap<ReplicaId, SocketAddr>,
+
     /// ExternalApi module.
     external_api: Option<ExternalApi>,
 
@@ -80,7 +93,140 @@ pub struct RepNothingReplica {
 
     /// StorageHub module.
     storage_hub: Option<StorageHub<LogEntry>>,
-    // TransportHub module not needed here.
+
+    /// In-memory log of instances.
+    insts: Vec<Instance>,
+
+    /// Current durable log file offset.
+    log_offset: usize,
+}
+
+impl RepNothingReplica {
+    /// Compose CommandId from instance index & command index within.
+    fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
+        assert!(inst_idx <= (u32::MAX as usize));
+        assert!(cmd_idx <= (u32::MAX as usize));
+        (inst_idx << 32 | cmd_idx) as CommandId
+    }
+
+    /// Decompose CommandId into instance index & command index within.
+    fn split_command_id(command_id: CommandId) -> (usize, usize) {
+        let inst_idx = (command_id >> 32) as usize;
+        let cmd_idx = (command_id & 0x0000000011111111) as usize;
+        (inst_idx, cmd_idx)
+    }
+
+    /// Handler of client request batch chan recv.
+    async fn handle_req_batch(
+        &mut self,
+        req_batch: Vec<(ClientId, ApiRequest)>,
+    ) -> Result<(), SummersetError> {
+        let batch_size = req_batch.len();
+
+        let inst = Instance {
+            reqs: req_batch.clone(),
+            execed: vec![false; batch_size],
+            durable: false,
+        };
+        let inst_idx = self.insts.len();
+        self.insts.push(inst);
+
+        // submit log action to make this instance durable
+        let log_entry = LogEntry { reqs: req_batch };
+        self.storage_hub
+            .as_mut()
+            .unwrap()
+            .submit_action(
+                inst_idx as u64,
+                LogAction::Append {
+                    entry: log_entry,
+                    offset: self.log_offset,
+                },
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Handler of durable logging result chan recv.
+    async fn handle_log_result(
+        &mut self,
+        action_id: LogActionId,
+        log_result: LogResult<LogEntry>,
+    ) -> Result<(), SummersetError> {
+        let inst_idx = action_id as usize;
+        if inst_idx >= self.insts.len() {
+            return logged_err!(self.id; "invalid log action ID {} seen", inst_idx);
+        }
+
+        match log_result {
+            LogResult::Append { ok, offset } => {
+                if !ok {
+                    return logged_err!(self.id; "log action Append for {} failed: {}", inst_idx, offset);
+                }
+                assert!(offset >= self.log_offset);
+                self.log_offset = offset;
+            }
+            _ => {
+                return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
+            }
+        }
+
+        let inst = &mut self.insts[inst_idx];
+        if inst.durable {
+            return logged_err!(self.id; "duplicate log action ID {} seen", inst_idx);
+        }
+        inst.durable = true;
+
+        // submit execution commands in order
+        for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
+            self.state_machine
+                .as_mut()
+                .unwrap()
+                .submit_cmd(
+                    Self::make_command_id(inst_idx, cmd_idx),
+                    req.cmd.clone(),
+                )
+                .await?
+        }
+
+        Ok(())
+    }
+
+    /// Handler of state machine exec result chan recv.
+    async fn handle_cmd_result(
+        &mut self,
+        cmd_id: CommandId,
+        cmd_result: CommandResult,
+    ) -> Result<(), SummersetError> {
+        let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
+        if inst_idx >= self.insts.len() {
+            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+        }
+
+        let inst = &mut self.insts[inst_idx];
+        if cmd_idx >= inst.reqs.len() {
+            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+        }
+        if inst.execed[cmd_idx] {
+            return logged_err!(self.id; "duplicate command index {} seen in instance {}", cmd_idx, inst_idx);
+        }
+
+        // reply to the corresponding client of this request
+        self.external_api
+            .as_mut()
+            .unwrap()
+            .send_reply(
+                ApiReply {
+                    id: inst.reqs[inst_idx].1.id,
+                    result: cmd_result,
+                },
+                inst.reqs[inst_idx].0,
+            )
+            .await?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -90,6 +236,7 @@ impl GenericReplica for RepNothingReplica {
         population: u8,
         smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         if population == 0 {
@@ -141,19 +288,19 @@ impl GenericReplica for RepNothingReplica {
             _smr_addr: smr_addr,
             api_addr,
             config,
+            _peer_addrs: peer_addrs,
             external_api: None,
             state_machine: None,
             storage_hub: None,
+            insts: vec![],
+            log_offset: 0,
         })
     }
 
-    async fn setup(
-        &mut self,
-        _peer_addrs: HashMap<ReplicaId, SocketAddr>,
-    ) -> Result<(), SummersetError> {
+    async fn setup(&mut self) -> Result<(), SummersetError> {
         let mut state_machine = StateMachine::new(self.id);
         state_machine
-            .setup(self.config.base_chan_cap, self.config.base_chan_cap)
+            .setup(self.config.api_chan_cap, self.config.api_chan_cap)
             .await?;
         self.state_machine = Some(state_machine);
 
@@ -191,19 +338,9 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-
-                    todo!();
-                },
-
-                // state machine execution result
-                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
-                    if let Err(e) = cmd_result {
-                        pf_error!(self.id; "error getting cmd result: {}", e);
-                        continue;
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
+                        pf_error!(self.id; "error handling req batch: {}", e);
                     }
-                    let (cmd_id, cmd_result) = cmd_result.unwrap();
-
-                    todo!();
                 },
 
                 // durable logging result
@@ -213,9 +350,22 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
+                        pf_error!(self.id; "error handling log result {}: {}", action_id, e);
+                    }
+                },
 
-                    todo!();
-                }
+                // state machine execution result
+                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
+                    if let Err(e) = cmd_result {
+                        pf_error!(self.id; "error getting cmd result: {}", e);
+                        continue;
+                    }
+                    let (cmd_id, cmd_result) = cmd_result.unwrap();
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
+                        pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
+                    }
+                },
             }
         }
     }

@@ -81,7 +81,7 @@ where
         chan_send_cap: usize,
         chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
-        if let Some(_) = self.peer_listener {
+        if self.peer_listener.is_some() {
             return logged_err!(self.me; "setup already done");
         }
         if chan_send_cap == 0 {
@@ -117,7 +117,7 @@ where
         id: ReplicaId,
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        if let None = self.peer_listener {
+        if self.peer_listener.is_none() {
             return logged_err!(self.me; "connect_peer called before setup");
         }
         if id == self.me || id >= self.population {
@@ -156,7 +156,7 @@ where
     /// corresponding message recver thread. Should be called after `setup`.
     /// Returns the connecting peer's ID if successful.
     pub async fn wait_on_peer(&mut self) -> Result<ReplicaId, SummersetError> {
-        if let None = self.peer_listener {
+        if self.peer_listener.is_none() {
             return logged_err!(self.me; "wait_on_peer called before setup");
         }
 
@@ -207,7 +207,7 @@ where
             .cloned()
             .collect::<Vec<ReplicaId>>();
         peer_ids.sort();
-        if peer_ids.len() == 0 {
+        if peer_ids.is_empty() {
             return logged_err!(
                 self.me;
                 "invalid peer_addrs keys '{:?}'",
@@ -221,7 +221,7 @@ where
         // for peers with ID smaller than me, connect to them actively
         for &id in &peer_ids[..mid_idx] {
             let addr = peer_addrs[&id];
-            while let Err(_) = self.connect_peer(id, addr).await {
+            while self.connect_peer(id, addr).await.is_err() {
                 // retry until connected
                 sleep(Duration::from_millis(1)).await;
             }
@@ -262,7 +262,7 @@ where
         msg: Msg,
         target: ReplicaMap,
     ) -> Result<(), SummersetError> {
-        if let None = self.peer_listener {
+        if self.peer_listener.is_none() {
             return logged_err!(self.me; "send_msg called before setup");
         }
 
@@ -271,7 +271,7 @@ where
                 continue;
             }
 
-            match self.tx_sends.get(&(peer as u8)) {
+            match self.tx_sends.get(&peer) {
                 Some(tx_send) => {
                     tx_send
                         .send(msg.clone())
@@ -412,30 +412,27 @@ mod transport_tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct TestMsg(String);
 
-    #[test]
-    fn hub_setup() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn hub_setup() -> Result<(), SummersetError> {
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        assert!(tokio_test::block_on(hub.setup(
-            "127.0.0.1:52800".parse()?,
-            0,
-            0
-        ))
-        .is_err());
-        tokio_test::block_on(hub.setup("127.0.0.1:52800".parse()?, 100, 100))?;
+        assert!(hub.setup("127.0.0.1:52800".parse()?, 0, 0).await.is_err());
+        hub.setup("127.0.0.1:52800".parse()?, 100, 100).await?;
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
         assert!(hub.peer_listener.is_some());
         Ok(())
     }
 
-    #[test]
-    fn manual_connect() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manual_connect() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
             hub.setup("127.0.0.1:53801".parse()?, 1, 1).await?;
-            while let Err(_) =
-                hub.connect_peer(0, "127.0.0.1:53800".parse()?).await
+            while hub
+                .connect_peer(0, "127.0.0.1:53800".parse()?)
+                .await
+                .is_err()
             {
                 sleep(Duration::from_millis(1)).await;
             }
@@ -445,8 +442,10 @@ mod transport_tests {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
             hub.setup("127.0.0.1:53802".parse()?, 1, 1).await?;
-            while let Err(_) =
-                hub.connect_peer(0, "127.0.0.1:53800".parse()?).await
+            while hub
+                .connect_peer(0, "127.0.0.1:53800".parse()?)
+                .await
+                .is_err()
             {
                 sleep(Duration::from_millis(1)).await;
             }
@@ -454,17 +453,17 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        tokio_test::block_on(hub.setup("127.0.0.1:53800".parse()?, 1, 1))?;
+        hub.setup("127.0.0.1:53800".parse()?, 1, 1).await?;
         let mut peers = HashSet::new();
-        peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
-        peers.insert(tokio_test::block_on(hub.wait_on_peer())?);
+        peers.insert(hub.wait_on_peer().await?);
+        peers.insert(hub.wait_on_peer().await?);
         let ref_peers = HashSet::from([1, 2]);
         assert_eq!(peers, ref_peers);
         Ok(())
     }
 
-    #[test]
-    fn group_connect() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn group_connect() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
@@ -489,18 +488,19 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        tokio_test::block_on(hub.setup("127.0.0.1:54800".parse()?, 1, 1))?;
-        let connected =
-            tokio_test::block_on(hub.group_connect(HashMap::from([
+        hub.setup("127.0.0.1:54800".parse()?, 1, 1).await?;
+        let connected = hub
+            .group_connect(HashMap::from([
                 (1, "127.0.0.1:54801".parse()?),
                 (2, "127.0.0.1:54802".parse()?),
-            ])))?;
+            ]))
+            .await?;
         assert_eq!(connected, HashSet::from([1, 2]));
         Ok(())
     }
 
-    #[test]
-    fn send_recv_api() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_recv_api() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
@@ -561,40 +561,35 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        tokio_test::block_on(hub.setup("127.0.0.1:55800".parse()?, 1, 1))?;
-        tokio_test::block_on(hub.group_connect(HashMap::from([
+        hub.setup("127.0.0.1:55800".parse()?, 1, 1).await?;
+        hub.group_connect(HashMap::from([
             (1, "127.0.0.1:55801".parse()?),
             (2, "127.0.0.1:55802".parse()?),
-        ])))?;
+        ]))
+        .await?;
         // send a message to 1 and 2
-        tokio_test::block_on(
-            hub.send_msg(TestMsg("hello".into()), ReplicaMap::new(3, true)?),
-        )?;
+        hub.send_msg(TestMsg("hello".into()), ReplicaMap::new(3, true)?)
+            .await?;
         // recv a message from both 1 and 2
-        let (id, msg) = tokio_test::block_on(hub.recv_msg())?;
+        let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
-        let (id, msg) = tokio_test::block_on(hub.recv_msg())?;
+        let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
         // send another message to 1 and 2
-        tokio_test::block_on(
-            hub.send_msg(TestMsg("nice".into()), ReplicaMap::new(3, true)?),
-        )?;
+        hub.send_msg(TestMsg("nice".into()), ReplicaMap::new(3, true)?)
+            .await?;
         // recv another message from both 1 and 2
-        let (id, msg) = tokio_test::block_on(hub.recv_msg())?;
+        let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("job!".into()));
-        let (id, msg) = tokio_test::block_on(hub.recv_msg())?;
+        let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("job!".into()));
         // send termination message to 1 and 2
-        tokio_test::block_on(
-            hub.send_msg(
-                TestMsg("terminate".into()),
-                ReplicaMap::new(3, true)?,
-            ),
-        )?;
+        hub.send_msg(TestMsg("terminate".into()), ReplicaMap::new(3, true)?)
+            .await?;
         Ok(())
     }
 }

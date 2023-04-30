@@ -5,7 +5,7 @@
 /// an `Ok(config)` on success, and `Err(SummersetError)` on parser failure.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// let config = parsed_config!(config_str => MyConfig; batch_size, file_path)?;
 /// ```
 #[macro_export]

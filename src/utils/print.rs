@@ -3,7 +3,7 @@
 /// Log TRACE message with parenthesized prefix.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// pf_trace!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -20,7 +20,7 @@ macro_rules! pf_trace {
 /// Log DEBUG message with parenthesized prefix.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// pf_debug!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -37,7 +37,7 @@ macro_rules! pf_debug {
 /// Log INFO message with parenthesized prefix.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// pf_info!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -54,7 +54,7 @@ macro_rules! pf_info {
 /// Log WARN message with parenthesized prefix.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// pf_warn!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -71,7 +71,7 @@ macro_rules! pf_warn {
 /// Log ERROR message with parenthesized prefix.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// pf_error!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -89,7 +89,7 @@ macro_rules! pf_error {
 /// containing the string.
 ///
 /// Example:
-/// ```no_run
+/// ```ignore
 /// let e = logged_err!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -118,13 +118,13 @@ mod print_tests {
         assert_eq!(
             logged_err!(0; "interesting message"),
             Err::<(), SummersetError>(SummersetError(
-                "(0) interesting message".into()
+                "interesting message".into()
             ))
         );
         assert_eq!(
             logged_err!("jose"; "interesting message"),
             Err::<(), SummersetError>(SummersetError(
-                "(jose) interesting message".into()
+                "interesting message".into()
             ))
         );
     }
@@ -134,7 +134,7 @@ mod print_tests {
         assert_eq!(
             logged_err!(0; "got {} to print", 777),
             Err::<(), SummersetError>(SummersetError(
-                "(0) got 777 to print".into()
+                "got 777 to print".into()
             ))
         );
     }

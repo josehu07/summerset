@@ -1,6 +1,5 @@
 //! Summerset server external API module implementation.
 
-use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -29,10 +28,10 @@ pub type RequestId = u64;
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct ApiRequest {
     /// Request ID.
-    id: RequestId,
+    pub id: RequestId,
 
     /// Command to the state machine.
-    cmd: Command,
+    pub cmd: Command,
 }
 
 /// Reply back to client.
@@ -40,10 +39,10 @@ pub struct ApiRequest {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct ApiReply {
     /// Request Id corresponding to this reply.
-    id: RequestId,
+    pub id: RequestId,
 
     /// Command execution result returned by the state machine.
-    result: CommandResult,
+    pub result: CommandResult,
 }
 
 /// The external client-facing API module.
@@ -165,18 +164,18 @@ impl ExternalApi {
     /// success.
     pub async fn get_req_batch(
         &mut self,
-    ) -> Result<VecDeque<(ClientId, ApiRequest)>, SummersetError> {
-        if let None = self.client_acceptor_handle {
+    ) -> Result<Vec<(ClientId, ApiRequest)>, SummersetError> {
+        if self.client_acceptor_handle.is_none() {
             return logged_err!(self.me; "get_req_batch called before setup");
         }
 
         self.batch_notify.notified().await;
-        let mut batch = VecDeque::new();
+        let mut batch = Vec::new();
 
         match self.rx_req {
             Some(ref mut rx_req) => loop {
                 match rx_req.try_recv() {
-                    Ok((client, req)) => batch.push_back((client, req)),
+                    Ok((client, req)) => batch.push((client, req)),
                     Err(TryRecvError::Empty) => break,
                     Err(e) => return Err(SummersetError::from(e)),
                 }
@@ -193,7 +192,7 @@ impl ExternalApi {
         reply: ApiReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        if let None = self.client_acceptor_handle {
+        if self.client_acceptor_handle.is_none() {
             return logged_err!(self.me; "send_reply called before setup");
         }
 
@@ -380,44 +379,42 @@ impl ExternalApi {
 #[cfg(test)]
 mod external_tests {
     use super::*;
-    use std::collections::VecDeque;
     use crate::server::{Command, CommandResult};
     use crate::client::{ClientId, ClientApiStub};
     use rand::Rng;
     use tokio::sync::Barrier;
-    use tokio::time::Duration;
 
-    #[test]
-    fn api_setup() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
-        assert!(tokio_test::block_on(api.setup(
+        assert!(api
+            .setup("127.0.0.1:52700".parse()?, Duration::from_millis(1), 0, 0)
+            .await
+            .is_err());
+        assert!(api
+            .setup(
+                "127.0.0.1:52700".parse()?,
+                Duration::from_nanos(10),
+                100,
+                100,
+            )
+            .await
+            .is_err());
+        api.setup(
             "127.0.0.1:52700".parse()?,
             Duration::from_millis(1),
-            0,
-            0
-        ))
-        .is_err());
-        assert!(tokio_test::block_on(api.setup(
-            "127.0.0.1:52700".parse()?,
-            Duration::from_nanos(10),
             100,
             100,
-        ))
-        .is_err());
-        tokio_test::block_on(api.setup(
-            "127.0.0.1:52700".parse()?,
-            Duration::from_millis(1),
-            100,
-            100,
-        ))?;
+        )
+        .await?;
         assert!(api.rx_req.is_some());
         assert!(api.client_acceptor_handle.is_some());
         assert!(api.batch_ticker_handle.is_some());
         Ok(())
     }
 
-    #[test]
-    fn req_reply_api() -> Result<(), SummersetError> {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn req_reply_api() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
@@ -431,14 +428,14 @@ mod external_tests {
             )
             .await?;
             barrier2.wait().await;
-            let mut reqs: VecDeque<(ClientId, ApiRequest)> = VecDeque::new();
+            let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.len() < 2 {
                 let mut req_batch = api.get_req_batch().await?;
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
             assert_eq!(
-                reqs.pop_front().unwrap().1,
+                reqs[0].1,
                 ApiRequest {
                     id: 0,
                     cmd: Command::Put {
@@ -448,7 +445,7 @@ mod external_tests {
                 }
             );
             assert_eq!(
-                reqs.pop_front().unwrap().1,
+                reqs[1].1,
                 ApiRequest {
                     id: 1,
                     cmd: Command::Get { key: "Jose".into() },
@@ -457,7 +454,7 @@ mod external_tests {
             api.send_reply(
                 ApiReply {
                     id: 0,
-                    result: CommandResult::PutResult { old_value: None },
+                    result: CommandResult::Put { old_value: None },
                 },
                 client,
             )
@@ -465,7 +462,7 @@ mod external_tests {
             api.send_reply(
                 ApiReply {
                     id: 1,
-                    result: CommandResult::GetResult {
+                    result: CommandResult::Get {
                         value: Some("123".into()),
                     },
                 },
@@ -476,33 +473,37 @@ mod external_tests {
         });
         // client-side
         let client: ClientId = rand::thread_rng().gen();
-        tokio_test::block_on(barrier.wait());
+        barrier.wait().await;
         let api_stub = ClientApiStub::new(client);
         let (mut send_stub, mut recv_stub) =
-            tokio_test::block_on(api_stub.connect("127.0.0.1:53700".parse()?))?;
-        tokio_test::block_on(send_stub.send_req(ApiRequest {
-            id: 0,
-            cmd: Command::Put {
-                key: "Jose".into(),
-                value: "123".into(),
-            },
-        }))?;
-        tokio_test::block_on(send_stub.send_req(ApiRequest {
-            id: 1,
-            cmd: Command::Get { key: "Jose".into() },
-        }))?;
+            api_stub.connect("127.0.0.1:53700".parse()?).await?;
+        send_stub
+            .send_req(ApiRequest {
+                id: 0,
+                cmd: Command::Put {
+                    key: "Jose".into(),
+                    value: "123".into(),
+                },
+            })
+            .await?;
+        send_stub
+            .send_req(ApiRequest {
+                id: 1,
+                cmd: Command::Get { key: "Jose".into() },
+            })
+            .await?;
         assert_eq!(
-            tokio_test::block_on(recv_stub.recv_reply())?,
+            recv_stub.recv_reply().await?,
             ApiReply {
                 id: 0,
-                result: CommandResult::PutResult { old_value: None }
+                result: CommandResult::Put { old_value: None }
             }
         );
         assert_eq!(
-            tokio_test::block_on(recv_stub.recv_reply())?,
+            recv_stub.recv_reply().await?,
             ApiReply {
                 id: 1,
-                result: CommandResult::GetResult {
+                result: CommandResult::Get {
                     value: Some("123".into())
                 }
             }
