@@ -460,7 +460,7 @@ mod storage_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn log_ack_api() -> Result<(), SummersetError> {
+    async fn api_log_ack() -> Result<(), SummersetError> {
         let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-4.log");
         let entry = TestEntry("abcdefgh".into());

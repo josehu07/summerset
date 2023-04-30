@@ -3,7 +3,7 @@
 /// Log TRACE message with parenthesized prefix.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// pf_trace!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -20,7 +20,7 @@ macro_rules! pf_trace {
 /// Log DEBUG message with parenthesized prefix.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// pf_debug!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -37,7 +37,7 @@ macro_rules! pf_debug {
 /// Log INFO message with parenthesized prefix.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// pf_info!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -54,7 +54,7 @@ macro_rules! pf_info {
 /// Log WARN message with parenthesized prefix.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// pf_warn!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -71,7 +71,7 @@ macro_rules! pf_warn {
 /// Log ERROR message with parenthesized prefix.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// pf_error!(id; "got {} to print", msg);
 /// ```
 #[macro_export]
@@ -89,7 +89,7 @@ macro_rules! pf_error {
 /// containing the string.
 ///
 /// Example:
-/// ```ignore
+/// ```no_compile
 /// let e = logged_err!(id; "got {} to print", msg);
 /// ```
 #[macro_export]

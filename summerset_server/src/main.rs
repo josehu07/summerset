@@ -9,7 +9,7 @@ use env_logger::Env;
 
 use tokio::runtime::Builder;
 
-use summerset::{SMRProtocol, ReplicaId, SummersetError};
+use summerset::{SMRProtocol, ReplicaId, SummersetError, pf_error};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -103,14 +103,7 @@ impl CliArgs {
 }
 
 // Server node executable main entrance.
-fn main() -> Result<(), SummersetError> {
-    // initialize env_logger
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
-        .format_target(false)
-        .init();
-
+fn server_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let args = CliArgs::parse();
     let protocol = args.sanitize()?;
@@ -169,6 +162,18 @@ fn main() -> Result<(), SummersetError> {
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
+}
+
+fn main() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .format_module_path(true)
+        .format_target(false)
+        .init();
+
+    if let Err(e) = server_main() {
+        pf_error!("server"; "server_main exitted: {}", e);
+    }
 }
 
 #[cfg(test)]

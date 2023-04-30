@@ -1,5 +1,5 @@
 [package]
-name = "summerset_bench"
+name = "summerset_client"
 description = "Summerset client side executable"
 version = "0.1.0"
 edition = "2021"

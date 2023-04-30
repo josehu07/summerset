@@ -26,23 +26,26 @@ pub type RequestId = u64;
 /// Request received from client.
 // TODO: add information fields such as read-only flag...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub struct ApiRequest {
-    /// Request ID.
-    pub id: RequestId,
+pub enum ApiRequest {
+    /// Regular request.
+    Req { id: RequestId, cmd: Command },
 
-    /// Command to the state machine.
-    pub cmd: Command,
+    /// Client leave notification.
+    Leave,
 }
 
 /// Reply back to client.
 // TODO: add information fields such as success status...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub struct ApiReply {
-    /// Request Id corresponding to this reply.
-    pub id: RequestId,
+pub enum ApiReply {
+    /// Reply to regular request.
+    Reply {
+        id: RequestId,
+        result: CommandResult,
+    },
 
-    /// Command execution result returned by the state machine.
-    pub result: CommandResult,
+    /// Reply to client leave notification.
+    Leave,
 }
 
 /// The external client-facing API module.
@@ -232,6 +235,9 @@ impl ExternalApi {
     ) {
         pf_debug!(me; "client_acceptor thread spawned");
 
+        let local_addr = client_listener.local_addr().unwrap();
+        pf_info!(me; "accepting clients on '{}'", local_addr);
+
         loop {
             let accepted = client_listener.accept().await;
             if let Err(e) = accepted {
@@ -248,9 +254,17 @@ impl ExternalApi {
             let id = id.unwrap();
 
             let mut tx_replies_guard = tx_replies.guard();
-            if tx_replies_guard.contains_key(&id) {
-                pf_error!(me; "duplicate client ID listened: {}", id);
-                continue;
+            if let Some(sender) = tx_replies_guard.get(&id) {
+                if sender.is_closed() {
+                    // if this client ID has left before, garbage collect it now
+                    let mut client_servant_handles_guard =
+                        client_servant_handles.guard();
+                    client_servant_handles_guard.remove(id);
+                    tx_replies_guard.remove(id);
+                } else {
+                    pf_error!(me; "duplicate client ID listened: {}", id);
+                    continue;
+                }
             }
             pf_info!(me; "accepted new client {}", id);
 
@@ -338,6 +352,17 @@ impl ExternalApi {
                 // receives client request
                 req = Self::read_req(&mut conn_read) => {
                     match req {
+                        // client leaving, send dummy reply and break
+                        Ok(ApiRequest::Leave) => {
+                            let reply = ApiReply::Leave;
+                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
+                                pf_error!(me; "error replying to {}: {}", id, e);
+                            } else {
+                                pf_info!(me; "client {} has left", id);
+                            }
+                            break;
+                        },
+
                         Ok(req) => {
                             pf_trace!(me; "request from {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)).await {
@@ -346,8 +371,10 @@ impl ExternalApi {
                                 );
                             }
                         },
+
                         Err(e) => {
                             pf_error!(me; "error reading request from {}: {}", id, e);
+                            break; // probably the client exitted without `leave()`
                         }
                     }
                 },
@@ -362,7 +389,7 @@ impl ExternalApi {
 impl ExternalApi {
     /// Batch ticker thread function.
     async fn batch_ticker_thread(
-        me: ReplicaId,
+        _me: ReplicaId,
         batch_interval: Duration,
         batch_notify: Arc<Notify>,
     ) {
@@ -371,7 +398,7 @@ impl ExternalApi {
         loop {
             interval.tick().await;
             batch_notify.notify_one();
-            pf_debug!(me; "batch interval ticked");
+            // pf_trace!(me; "batch interval ticked");
         }
     }
 }
@@ -383,6 +410,7 @@ mod external_tests {
     use crate::client::{ClientId, ClientApiStub};
     use rand::Rng;
     use tokio::sync::Barrier;
+    use tokio::time::{self, Duration};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_setup() -> Result<(), SummersetError> {
@@ -414,7 +442,7 @@ mod external_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn req_reply_api() -> Result<(), SummersetError> {
+    async fn api_req_reply() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
@@ -436,7 +464,7 @@ mod external_tests {
             let client = reqs[0].0;
             assert_eq!(
                 reqs[0].1,
-                ApiRequest {
+                ApiRequest::Req {
                     id: 0,
                     cmd: Command::Put {
                         key: "Jose".into(),
@@ -446,13 +474,13 @@ mod external_tests {
             );
             assert_eq!(
                 reqs[1].1,
-                ApiRequest {
+                ApiRequest::Req {
                     id: 1,
                     cmd: Command::Get { key: "Jose".into() },
                 }
             );
             api.send_reply(
-                ApiReply {
+                ApiReply::Reply {
                     id: 0,
                     result: CommandResult::Put { old_value: None },
                 },
@@ -460,7 +488,7 @@ mod external_tests {
             )
             .await?;
             api.send_reply(
-                ApiReply {
+                ApiReply::Reply {
                     id: 1,
                     result: CommandResult::Get {
                         value: Some("123".into()),
@@ -478,7 +506,7 @@ mod external_tests {
         let (mut send_stub, mut recv_stub) =
             api_stub.connect("127.0.0.1:53700".parse()?).await?;
         send_stub
-            .send_req(ApiRequest {
+            .send_req(ApiRequest::Req {
                 id: 0,
                 cmd: Command::Put {
                     key: "Jose".into(),
@@ -487,24 +515,139 @@ mod external_tests {
             })
             .await?;
         send_stub
-            .send_req(ApiRequest {
+            .send_req(ApiRequest::Req {
                 id: 1,
                 cmd: Command::Get { key: "Jose".into() },
             })
             .await?;
         assert_eq!(
             recv_stub.recv_reply().await?,
-            ApiReply {
+            ApiReply::Reply {
                 id: 0,
                 result: CommandResult::Put { old_value: None }
             }
         );
         assert_eq!(
             recv_stub.recv_reply().await?,
-            ApiReply {
+            ApiReply::Reply {
                 id: 1,
                 result: CommandResult::Get {
                     value: Some("123".into())
+                }
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_client_leave() -> Result<(), SummersetError> {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        tokio::spawn(async move {
+            // server-side
+            let mut api = ExternalApi::new(0);
+            api.setup(
+                "127.0.0.1:54700".parse()?,
+                Duration::from_millis(1),
+                5,
+                5,
+            )
+            .await?;
+            barrier2.wait().await;
+            let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
+            while reqs.is_empty() {
+                let mut req_batch = api.get_req_batch().await?;
+                reqs.append(&mut req_batch);
+            }
+            let client = reqs[0].0;
+            assert_eq!(
+                reqs[0].1,
+                ApiRequest::Req {
+                    id: 0,
+                    cmd: Command::Put {
+                        key: "Jose".into(),
+                        value: "123".into(),
+                    },
+                }
+            );
+            api.send_reply(
+                ApiReply::Reply {
+                    id: 0,
+                    result: CommandResult::Put { old_value: None },
+                },
+                client,
+            )
+            .await?;
+            reqs.clear();
+            while reqs.is_empty() {
+                let mut req_batch = api.get_req_batch().await?;
+                reqs.append(&mut req_batch);
+            }
+            let client = reqs[0].0;
+            assert_eq!(
+                reqs[0].1,
+                ApiRequest::Req {
+                    id: 0,
+                    cmd: Command::Put {
+                        key: "Jose".into(),
+                        value: "456".into(),
+                    },
+                }
+            );
+            api.send_reply(
+                ApiReply::Reply {
+                    id: 0,
+                    result: CommandResult::Put {
+                        old_value: Some("123".into()),
+                    },
+                },
+                client,
+            )
+            .await?;
+            Ok::<(), SummersetError>(())
+        });
+        // client-side
+        let client: ClientId = rand::thread_rng().gen();
+        barrier.wait().await;
+        let api_stub = ClientApiStub::new(client);
+        let (mut send_stub, mut recv_stub) =
+            api_stub.connect("127.0.0.1:54700".parse()?).await?;
+        send_stub
+            .send_req(ApiRequest::Req {
+                id: 0,
+                cmd: Command::Put {
+                    key: "Jose".into(),
+                    value: "123".into(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            recv_stub.recv_reply().await?,
+            ApiReply::Reply {
+                id: 0,
+                result: CommandResult::Put { old_value: None }
+            }
+        );
+        send_stub.send_req(ApiRequest::Leave).await?;
+        assert_eq!(recv_stub.recv_reply().await?, ApiReply::Leave);
+        time::sleep(Duration::from_micros(100)).await;
+        let (mut send_stub, mut recv_stub) =
+            api_stub.connect("127.0.0.1:54700".parse()?).await?;
+        send_stub
+            .send_req(ApiRequest::Req {
+                id: 0,
+                cmd: Command::Put {
+                    key: "Jose".into(),
+                    value: "456".into(),
+                },
+            })
+            .await?;
+        assert_eq!(
+            recv_stub.recv_reply().await?,
+            ApiReply::Reply {
+                id: 0,
+                result: CommandResult::Put {
+                    old_value: Some("123".into())
                 }
             }
         );

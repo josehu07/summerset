@@ -675,7 +675,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "summerset_bench"
+name = "summerset_client"
 version = "0.1.0"
 dependencies = [
  "clap",

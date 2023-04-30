@@ -131,6 +131,7 @@ where
             );
         }
 
+        pf_debug!(self.me; "connecting to peer '{}'...", addr);
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u8(self.me).await?; // send my ID
 
@@ -160,6 +161,7 @@ where
             return logged_err!(self.me; "wait_on_peer called before setup");
         }
 
+        pf_debug!(self.me; "waiting on peer connection...");
         let (mut stream, addr) =
             self.peer_listener.as_ref().unwrap().accept().await?;
         let id = stream.read_u8().await?; // receive connecting peer's ID
@@ -391,8 +393,10 @@ where
                                 );
                             }
                         },
+
                         Err(e) => {
                             pf_error!(me; "error receiving msg from {}: {}", id, e);
+                            break; // probably the peer exitted ungracefully
                         }
                     }
                 },
@@ -500,7 +504,7 @@ mod transport_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn send_recv_api() -> Result<(), SummersetError> {
+    async fn api_send_recv() -> Result<(), SummersetError> {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);

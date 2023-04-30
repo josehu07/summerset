@@ -306,7 +306,7 @@ mod statemach_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn exec_ack_api() -> Result<(), SummersetError> {
+    async fn api_exec_ack() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new(0);
         sm.setup(2, 2).await?;
         sm.submit_cmd(

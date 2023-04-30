@@ -2,7 +2,7 @@
 
 use summerset::{
     ClientId, ClientSendStub, ClientRecvStub, Command, CommandResult,
-    ApiRequest, SummersetError, pf_error, logged_err,
+    ApiRequest, ApiReply, SummersetError, pf_info, pf_error, logged_err,
 };
 
 /// Closed-loop client struct.
@@ -44,22 +44,30 @@ impl ClientClosedLoop {
         self.next_req += 1;
 
         self.send_stub
-            .send_req(ApiRequest {
+            .send_req(ApiRequest::Req {
                 id: req_id,
                 cmd: Command::Get { key: key.into() },
             })
             .await?;
 
         let reply = self.recv_stub.recv_reply().await?;
-        if reply.id != req_id {
-            logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply.id)
-        } else {
-            match reply.result {
-                CommandResult::Get { value } => Ok(value),
-                _ => {
-                    logged_err!(self.id; "command type mismatch: expected Get")
+        match reply {
+            ApiReply::Reply {
+                id: reply_id,
+                result: cmd_result,
+            } => {
+                if reply_id != req_id {
+                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
+                } else {
+                    match cmd_result {
+                        CommandResult::Get { value } => Ok(value),
+                        _ => {
+                            logged_err!(self.id; "command type mismatch: expected Get")
+                        }
+                    }
                 }
             }
+            _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 
@@ -73,7 +81,7 @@ impl ClientClosedLoop {
         self.next_req += 1;
 
         self.send_stub
-            .send_req(ApiRequest {
+            .send_req(ApiRequest::Req {
                 id: req_id,
                 cmd: Command::Put {
                     key: key.into(),
@@ -83,15 +91,37 @@ impl ClientClosedLoop {
             .await?;
 
         let reply = self.recv_stub.recv_reply().await?;
-        if reply.id != req_id {
-            logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply.id)
-        } else {
-            match reply.result {
-                CommandResult::Put { old_value } => Ok(old_value),
-                _ => {
-                    logged_err!(self.id; "command type mismatch: expected Put")
+        match reply {
+            ApiReply::Reply {
+                id: reply_id,
+                result: cmd_result,
+            } => {
+                if reply_id != req_id {
+                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
+                } else {
+                    match cmd_result {
+                        CommandResult::Put { old_value } => Ok(old_value),
+                        _ => {
+                            logged_err!(self.id; "command type mismatch: expected Put")
+                        }
+                    }
                 }
             }
+            _ => logged_err!(self.id; "unexpected reply type received"),
+        }
+    }
+
+    /// Send leave notification.
+    pub async fn leave(&mut self) -> Result<(), SummersetError> {
+        self.send_stub.send_req(ApiRequest::Leave).await?;
+
+        let reply = self.recv_stub.recv_reply().await?;
+        match reply {
+            ApiReply::Leave => {
+                pf_info!(self.id; "left current server connection");
+                Ok(())
+            }
+            _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 }

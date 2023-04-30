@@ -7,11 +7,11 @@ use clap::Parser;
 
 use env_logger::Env;
 
-use rand::Rng;
-
 use tokio::runtime::Builder;
 
-use summerset::{SMRProtocol, ClientId, ReplicaId, SummersetError, pf_info};
+use summerset::{
+    SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error, pf_info,
+};
 
 mod client_cl;
 use client_cl::ClientClosedLoop;
@@ -29,7 +29,7 @@ struct CliArgs {
     threads: usize,
 
     /// Client ID.
-    #[arg(short, long, default_value_t = rand::thread_rng().gen())]
+    #[arg(short, long, default_value_t = 2857)]
     id: ClientId,
 
     /// List of server replica nodes, the order of which maps to replica IDs.
@@ -74,15 +74,8 @@ impl CliArgs {
     }
 }
 
-// Client benchmarking executable main entrance.
-fn main() -> Result<(), SummersetError> {
-    // initialize env_logger
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
-        .format_target(false)
-        .init();
-
+// Client side executable main entrance.
+fn client_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let args = CliArgs::parse();
     let protocol = args.sanitize()?;
@@ -112,9 +105,22 @@ fn main() -> Result<(), SummersetError> {
         pf_info!(args.id; "{:?}", client.get("Jose").await?);
         pf_info!(args.id; "{:?}", client.put("Jose", "456").await?);
         pf_info!(args.id; "{:?}", client.get("Jose").await?);
+        client.leave().await?;
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
+}
+
+fn main() {
+    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .format_module_path(true)
+        .format_target(false)
+        .init();
+
+    if let Err(e) = client_main() {
+        pf_error!("client"; "client_main exitted: {}", e);
+    }
 }
 
 #[cfg(test)]

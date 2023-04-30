@@ -31,6 +31,7 @@ impl ClientApiStub {
         &self,
         addr: SocketAddr,
     ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+        pf_info!(self.id; "connecting to server '{}'...", addr);
         let mut stream = TcpStream::connect(addr).await?;
         stream.write_u64(self.id).await?; // send my client ID
 

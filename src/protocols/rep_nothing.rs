@@ -112,7 +112,7 @@ impl RepNothingReplica {
     /// Decompose CommandId into instance index & command index within.
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let inst_idx = (command_id >> 32) as usize;
-        let cmd_idx = (command_id & 0x0000000011111111) as usize;
+        let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
     }
 
@@ -122,6 +122,9 @@ impl RepNothingReplica {
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
+        if batch_size == 0 {
+            return Ok(());
+        }
 
         let inst = Instance {
             reqs: req_batch.clone(),
@@ -129,7 +132,7 @@ impl RepNothingReplica {
             durable: false,
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst);
+        self.insts.push(inst); // TODO: snapshotting & garbage collection
 
         // submit log action to make this instance durable
         let log_entry = LogEntry { reqs: req_batch };
@@ -180,14 +183,19 @@ impl RepNothingReplica {
 
         // submit execution commands in order
         for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-            self.state_machine
-                .as_mut()
-                .unwrap()
-                .submit_cmd(
-                    Self::make_command_id(inst_idx, cmd_idx),
-                    req.cmd.clone(),
-                )
-                .await?
+            match req {
+                ApiRequest::Req { cmd, .. } => {
+                    self.state_machine
+                        .as_mut()
+                        .unwrap()
+                        .submit_cmd(
+                            Self::make_command_id(inst_idx, cmd_idx),
+                            cmd.clone(),
+                        )
+                        .await?
+                }
+                _ => continue, // ignore other types of requests
+            }
         }
 
         Ok(())
@@ -209,21 +217,33 @@ impl RepNothingReplica {
             return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
         }
         if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {} seen in instance {}", cmd_idx, inst_idx);
+            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
         }
+        if !inst.durable {
+            return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
+        }
+        inst.execed[cmd_idx] = true;
 
         // reply to the corresponding client of this request
-        self.external_api
-            .as_mut()
-            .unwrap()
-            .send_reply(
-                ApiReply {
-                    id: inst.reqs[inst_idx].1.id,
-                    result: cmd_result,
-                },
-                inst.reqs[inst_idx].0,
-            )
-            .await?;
+        let (client, req) = &inst.reqs[cmd_idx];
+        match req {
+            ApiRequest::Req { id: req_id, .. } => {
+                self.external_api
+                    .as_mut()
+                    .unwrap()
+                    .send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: cmd_result,
+                        },
+                        *client,
+                    )
+                    .await?;
+            }
+            _ => {
+                return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
+            }
+        }
 
         Ok(())
     }
