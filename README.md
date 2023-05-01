@@ -53,13 +53,13 @@ cargo run [-r] -p summerset_client -- -h
 
 ## TODO List
 
-* [*] event-based programming structure
-* [ ] open-loop client, tests, & benchmarks
-* [ ] implementation of classic protocols
-* [ ] differentiate read/non-read commands
-* [ ] membership discovery & view changes
-* [ ] snapshotting & garbage collection
-* [ ] better README
+- [*] event-based programming structure
+- [ ] open-loop client, tests, & benchmarks
+- [ ] implementation of classic protocols
+- [ ] differentiate read/non-read commands
+- [ ] membership discovery & view changes
+- [ ] snapshotting & garbage collection
+- [ ] better README
 
 ---
 
