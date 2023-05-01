@@ -16,16 +16,17 @@ pub use crate::utils::{SummersetError, ReplicaMap};
 
 #[doc(inline)]
 pub use crate::server::{
-    GenericReplica, ReplicaId, ApiRequest, ApiReply, Command, CommandResult,
-    CommandId,
+    ReplicaId, RequestId, ApiRequest, ApiReply, Command, CommandResult,
+    GenericReplica,
 };
 
 #[doc(inline)]
-pub use crate::client::{GenericClient, ClientId, ClientSendStub, ClientRecvStub};
+pub use crate::client::{ClientId, ClientSendStub, ClientRecvStub, GenericClient};
 
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;
 
 // below are config structs exposed for users to know how to write TOML-format
 // config strings
-pub use crate::protocols::{RepNothingReplicaConfig, RepNothingClientConfig};
+pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
+pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};

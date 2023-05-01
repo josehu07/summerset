@@ -27,10 +27,6 @@ struct CliArgs {
     #[arg(short, long, default_value_t = 52800)]
     smr_port: u16,
 
-    /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 2)]
-    threads: usize,
-
     /// Replica ID of myself.
     #[arg(short, long)]
     id: ReplicaId,
@@ -39,6 +35,15 @@ struct CliArgs {
     /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
     #[arg(short, long)]
     replicas: Vec<SocketAddr>,
+
+    /// Protocol-specific server configuration TOML string.
+    /// Every '+' is treated as newline.
+    #[arg(long, default_value_t = String::from(""))]
+    config: String,
+
+    /// Number of tokio worker threads.
+    #[arg(long, default_value_t = 2)]
+    threads: usize,
 }
 
 impl CliArgs {
@@ -105,7 +110,7 @@ impl CliArgs {
 // Server node executable main entrance.
 fn server_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
-    let args = CliArgs::parse();
+    let mut args = CliArgs::parse();
     let protocol = args.sanitize()?;
     let mut peer_addrs = HashMap::new();
     for (id, &addr) in args.replicas.iter().enumerate() {
@@ -135,15 +140,22 @@ fn server_main() -> Result<(), SummersetError> {
         ))
     })?;
 
+    // parse optional config string if given
+    let config_str = if args.config.is_empty() {
+        None
+    } else {
+        args.config = args.config.replace('+', "\n");
+        Some(&args.config[..])
+    };
+
     // create server node with given configuration
-    // TODO: protocol-specific configuration string
     let mut node = protocol.new_server_node(
         args.id,
         args.replicas.len() as u8,
         smr_addr,
         api_addr,
         peer_addrs,
-        None,
+        config_str,
     )?;
 
     // create tokio multi-threaded runtime
@@ -183,15 +195,16 @@ mod server_args_tests {
     #[test]
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52701,
             smr_port: 52801,
-            protocol: "RepNothing".into(),
+            id: 1,
             replicas: vec![
                 "127.0.0.1:52800".parse()?,
                 "127.0.0.1:52801".parse()?,
             ],
-            id: 1,
             threads: 2,
+            config: "".into(),
         };
         assert_eq!(args.sanitize(), Ok(SMRProtocol::RepNothing));
         Ok(())
@@ -200,12 +213,13 @@ mod server_args_tests {
     #[test]
     fn sanitize_invalid_api_port() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 1023,
             smr_port: 52800,
-            protocol: "RepNothing".into(),
-            replicas: vec!["127.0.0.1:52800".parse()?],
             id: 0,
+            replicas: vec!["127.0.0.1:52800".parse()?],
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -214,12 +228,13 @@ mod server_args_tests {
     #[test]
     fn sanitize_invalid_smr_port() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52700,
             smr_port: 1023,
-            protocol: "RepNothing".into(),
-            replicas: vec!["127.0.0.1:52800".parse()?],
             id: 0,
+            replicas: vec!["127.0.0.1:52800".parse()?],
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -228,12 +243,13 @@ mod server_args_tests {
     #[test]
     fn sanitize_same_api_smr_port() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52800,
             smr_port: 52800,
-            protocol: "RepNothing".into(),
-            replicas: vec!["127.0.0.1:52800".parse()?],
             id: 0,
+            replicas: vec!["127.0.0.1:52800".parse()?],
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -242,12 +258,13 @@ mod server_args_tests {
     #[test]
     fn sanitize_smr_port_mismatch() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52700,
             smr_port: 52900,
-            protocol: "RepNothing".into(),
-            replicas: vec!["127.0.0.1:52800".parse()?],
             id: 0,
+            replicas: vec!["127.0.0.1:52800".parse()?],
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -256,12 +273,13 @@ mod server_args_tests {
     #[test]
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "InvalidProtocol".into(),
             api_port: 52700,
             smr_port: 52800,
-            protocol: "InvalidProtocol".into(),
-            replicas: vec!["127.0.0.1:52800".parse()?],
             id: 0,
+            replicas: vec!["127.0.0.1:52800".parse()?],
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -270,15 +288,16 @@ mod server_args_tests {
     #[test]
     fn sanitize_duplicate_replica() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52700,
             smr_port: 52800,
-            protocol: "RepNothing".into(),
+            id: 0,
             replicas: vec![
                 "127.0.0.1:52800".parse()?,
                 "127.0.0.1:52800".parse()?,
             ],
-            id: 0,
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -287,15 +306,16 @@ mod server_args_tests {
     #[test]
     fn sanitize_invalid_id() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52700,
             smr_port: 52802,
-            protocol: "RepNothing".into(),
+            id: 2,
             replicas: vec![
                 "127.0.0.1:52800".parse()?,
                 "127.0.0.1:52801".parse()?,
             ],
-            id: 2,
             threads: 2,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -304,15 +324,16 @@ mod server_args_tests {
     #[test]
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
+            protocol: "RepNothing".into(),
             api_port: 52700,
             smr_port: 52800,
-            protocol: "RepNothing".into(),
+            id: 1,
             replicas: vec![
                 "127.0.0.1:52800".parse()?,
                 "127.0.0.1:52801".parse()?,
             ],
-            id: 1,
             threads: 1,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())

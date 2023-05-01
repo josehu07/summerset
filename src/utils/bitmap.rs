@@ -52,6 +52,11 @@ impl ReplicaMap {
         self.0.len()
     }
 
+    /// Returns the number of trues in the bitmap.
+    pub fn count(&self) -> usize {
+        self.0.count_ones(..)
+    }
+
     /// Allows `for (id, bit) in map.iter()`.
     pub fn iter(&self) -> ReplicaMapIter {
         ReplicaMapIter { map: self, idx: 0 }
@@ -105,6 +110,16 @@ mod bitmap_tests {
         assert_eq!(map.get(2), Ok(true));
         assert_eq!(map.get(3), Ok(false));
         assert!(map.get(7).is_err());
+    }
+
+    #[test]
+    fn bitmap_count() {
+        let mut map = ReplicaMap::new(7, false).unwrap();
+        assert_eq!(map.count(), 0);
+        assert!(map.set(0, true).is_ok());
+        assert!(map.set(2, true).is_ok());
+        assert!(map.set(3, true).is_ok());
+        assert_eq!(map.count(), 3);
     }
 
     #[test]

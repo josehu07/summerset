@@ -10,13 +10,17 @@ use crate::client::{GenericClient, ClientId};
 
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};
-pub use rep_nothing::{RepNothingReplicaConfig, RepNothingClientConfig};
+pub use rep_nothing::{ReplicaConfigRepNothing, ClientConfigRepNothing};
+
+mod simple_push;
+use simple_push::{SimplePushReplica, SimplePushClient};
+pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     RepNothing,
-    // SimplePush,
+    SimplePush,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -33,7 +37,7 @@ impl SMRProtocol {
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
             "RepNothing" => Some(Self::RepNothing),
-            // "SimplePush" => Some(Self::SimplePush),
+            "SimplePush" => Some(Self::SimplePush),
             _ => None,
         }
     }
@@ -54,6 +58,11 @@ impl SMRProtocol {
                     id, population, smr_addr, api_addr, peer_addrs, config_str
                 ))
             }
+            Self::SimplePush => {
+                box_if_ok!(SimplePushReplica::new(
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                ))
+            }
         }
     }
 
@@ -67,6 +76,9 @@ impl SMRProtocol {
         match self {
             Self::RepNothing => {
                 box_if_ok!(RepNothingClient::new(id, servers, config_str))
+            }
+            Self::SimplePush => {
+                box_if_ok!(SimplePushClient::new(id, servers, config_str))
             }
         }
     }
@@ -94,7 +106,7 @@ mod protocols_name_tests {
     #[test]
     fn parse_valid_names() {
         valid_name_test!(RepNothing);
-        // valid_name_test!(SimplePush);
+        valid_name_test!(SimplePush);
     }
 
     #[test]

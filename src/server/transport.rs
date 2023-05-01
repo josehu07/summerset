@@ -200,7 +200,7 @@ where
     /// IDs connected if successful.
     pub async fn group_connect(
         &mut self,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        peer_addrs: &HashMap<ReplicaId, SocketAddr>,
     ) -> Result<HashSet<ReplicaId>, SummersetError> {
         // sort peers ID list
         let mut peer_ids: Vec<ReplicaId> = peer_addrs
@@ -298,7 +298,7 @@ where
     pub async fn recv_msg(
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
-        if let None = self.peer_listener {
+        if self.peer_listener.is_none() {
             return logged_err!(self.me; "recv_msg called before setup");
         }
 
@@ -472,7 +472,7 @@ mod transport_tests {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
             hub.setup("127.0.0.1:54801".parse()?, 1, 1).await?;
-            hub.group_connect(HashMap::from([
+            hub.group_connect(&HashMap::from([
                 (0, "127.0.0.1:54800".parse()?),
                 (2, "127.0.0.1:54802".parse()?),
             ]))
@@ -483,7 +483,7 @@ mod transport_tests {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
             hub.setup("127.0.0.1:54802".parse()?, 1, 1).await?;
-            hub.group_connect(HashMap::from([
+            hub.group_connect(&HashMap::from([
                 (0, "127.0.0.1:54800".parse()?),
                 (1, "127.0.0.1:54801".parse()?),
             ]))
@@ -494,7 +494,7 @@ mod transport_tests {
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
         hub.setup("127.0.0.1:54800".parse()?, 1, 1).await?;
         let connected = hub
-            .group_connect(HashMap::from([
+            .group_connect(&HashMap::from([
                 (1, "127.0.0.1:54801".parse()?),
                 (2, "127.0.0.1:54802".parse()?),
             ]))
@@ -509,7 +509,7 @@ mod transport_tests {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
             hub.setup("127.0.0.1:55801".parse()?, 1, 1).await?;
-            hub.group_connect(HashMap::from([
+            hub.group_connect(&HashMap::from([
                 (0, "127.0.0.1:55800".parse()?),
                 (2, "127.0.0.1:55802".parse()?),
             ]))
@@ -538,7 +538,7 @@ mod transport_tests {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
             hub.setup("127.0.0.1:55802".parse()?, 1, 1).await?;
-            hub.group_connect(HashMap::from([
+            hub.group_connect(&HashMap::from([
                 (0, "127.0.0.1:55800".parse()?),
                 (1, "127.0.0.1:55801".parse()?),
             ]))
@@ -566,7 +566,7 @@ mod transport_tests {
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
         hub.setup("127.0.0.1:55800".parse()?, 1, 1).await?;
-        hub.group_connect(HashMap::from([
+        hub.group_connect(&HashMap::from([
             (1, "127.0.0.1:55801".parse()?),
             (2, "127.0.0.1:55802".parse()?),
         ]))

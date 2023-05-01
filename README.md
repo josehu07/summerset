@@ -21,6 +21,12 @@ Run all unit tests:
 cargo test [-r] --workspace
 ```
 
+Generate & open documentation for the core library in browser:
+
+```bash
+cargo doc --open
+```
+
 ## Usage
 
 ### Run Servers
@@ -39,7 +45,7 @@ RUST_LOG=debug cargo run ...
 
 ### Run Clients
 
-Run the client executable:
+Run a client executable:
 
 ```bash
 cargo run [-r] -p summerset_client -- -h
@@ -48,8 +54,8 @@ cargo run [-r] -p summerset_client -- -h
 ## TODO List
 
 * [*] event-based programming structure
-* [ ] implementation of classic protocols
 * [ ] open-loop client, tests, & benchmarks
+* [ ] implementation of classic protocols
 * [ ] differentiate read/non-read commands
 * [ ] membership discovery & view changes
 * [ ] snapshotting & garbage collection

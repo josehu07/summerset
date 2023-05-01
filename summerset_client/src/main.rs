@@ -24,10 +24,6 @@ struct CliArgs {
     #[arg(short, long, default_value_t = String::from("RepNothing"))]
     protocol: String,
 
-    /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 1)]
-    threads: usize,
-
     /// Client ID.
     #[arg(short, long, default_value_t = 2857)]
     id: ClientId,
@@ -36,6 +32,15 @@ struct CliArgs {
     /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
     #[arg(short, long)]
     replicas: Vec<SocketAddr>,
+
+    /// Protocol-specific client configuration TOML string.
+    /// Every '+' is treated as newline.
+    #[arg(long, default_value_t = String::from(""))]
+    config: String,
+
+    /// Number of tokio worker threads.
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
 }
 
 impl CliArgs {
@@ -77,16 +82,23 @@ impl CliArgs {
 // Client side executable main entrance.
 fn client_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
-    let args = CliArgs::parse();
+    let mut args = CliArgs::parse();
     let protocol = args.sanitize()?;
     let mut servers = HashMap::new();
     for (id, &addr) in args.replicas.iter().enumerate() {
         servers.insert(id as ReplicaId, addr);
     }
 
+    // parse optional config string if given
+    let config_str = if args.config.is_empty() {
+        None
+    } else {
+        args.config = args.config.replace('+', "\n");
+        Some(&args.config[..])
+    };
+
     // create client struct with given servers list
-    // TODO: protocol-specific configuration string
-    let mut stub = protocol.new_client_stub(args.id, servers, None)?;
+    let mut stub = protocol.new_client_stub(args.id, servers, config_str)?;
 
     // create tokio multi-threaded runtime
     let runtime = Builder::new_multi_thread()
@@ -131,13 +143,14 @@ mod client_args_tests {
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            threads: 1,
             id: 7456,
             replicas: vec![
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            threads: 1,
+            config: "".into(),
         };
         assert_eq!(args.sanitize(), Ok(SMRProtocol::RepNothing));
         Ok(())
@@ -147,13 +160,14 @@ mod client_args_tests {
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
-            threads: 1,
             id: 7456,
             replicas: vec![
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            threads: 1,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -163,9 +177,10 @@ mod client_args_tests {
     fn sanitize_empty_servers() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            threads: 1,
             id: 7456,
             replicas: vec![],
+            threads: 1,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -175,12 +190,13 @@ mod client_args_tests {
     fn sanitize_duplicate_server() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            threads: 1,
             id: 7456,
             replicas: vec![
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52700".parse()?,
             ],
+            threads: 1,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -190,13 +206,14 @@ mod client_args_tests {
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            threads: 0,
             id: 7456,
             replicas: vec![
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            threads: 0,
+            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
