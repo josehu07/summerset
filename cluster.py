@@ -1,33 +1,32 @@
-import sys
 import os
 import argparse
 import subprocess
-import atexit
-
-SPAWNED_PROCS = []
-
-
-def kill_spawned_procs():
-    for proc in SPAWNED_PROCS:
-        proc.kill()
+from pathlib import Path
 
 
 def run_process(cmd):
     print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd)
     return proc
 
 
-def launch_servers(protocol, num_replicas):
-    api_ports = list(range(50700, 50700 + num_replicas))
-    comm_ports = list(range(50800, 50800 + num_replicas))
-    assert len(comm_ports) == len(api_ports)
+PROTOCOL_CONFIGS = {
+    "RepNothing": lambda r, _: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
+}
 
-    for api_port, comm_port in zip(api_ports, comm_ports):
-        peers = []
-        for peer_port in comm_ports:
-            if peer_port != comm_port:
-                peers += ["-n", f"localhost:{peer_port}"]
+
+def launch_servers(protocol, num_replicas):
+    api_ports = list(range(52700, 52700 + num_replicas))
+    smr_ports = list(range(52800, 52800 + num_replicas))
+    replica_list = []
+    for replica in range(num_replicas):
+        replica_list += ["-r", f"127.0.0.1:{smr_ports[replica]}"]
+
+    server_procs = []
+    for replica in range(num_replicas):
+        api_port = api_ports[replica]
+        smr_port = smr_ports[replica]
 
         cmd = [
             "cargo",
@@ -40,35 +39,16 @@ def launch_servers(protocol, num_replicas):
             "-a",
             str(api_port),
             "-s",
-            str(comm_port),
+            str(smr_port),
+            "-i",
+            str(replica),
         ]
-        cmd += peers
-        SPAWNED_PROCS.append(run_process(cmd))
+        cmd += replica_list
+        cmd += ["--config", PROTOCOL_CONFIGS[protocol](replica, num_replicas)]
 
-    atexit.register(kill_spawned_procs)
+        server_procs.append(run_process(cmd))
 
-
-def parse_ports_list(s):
-    s = s.strip()
-    if len(s) == 0:
-        return []
-
-    ports = []
-    l = s.split(",")
-
-    for port_str in l:
-        port = None
-        try:
-            port = int(port_str)
-        except:
-            raise Exception(f"{port_str} is not a valid integer")
-
-        if port <= 1024 or port >= 65536:
-            raise Exception(f"{port} is not in the range of valid ports")
-
-        ports.append(port)
-
-    return ports
+    return server_procs
 
 
 if __name__ == "__main__":
@@ -81,23 +61,19 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # api_ports = parse_ports_list(args.api_ports)
-    # comm_ports = parse_ports_list(args.comm_ports)
-    # if len(comm_ports) != len(api_ports):
-    #     raise ValueError("length of `comm_ports` does not match `api_ports`")
+    if args.protocol not in PROTOCOL_CONFIGS:
+        raise ValueError(f"unknown protocol name '{args.protocol}'")
     if args.num_replicas <= 0 or args.num_replicas > 9:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
     # kill all existing server processes
-    print("NOTE: Killing all existing server processes...")
     os.system("pkill summerset_server")
 
-    print("NOTE: Type 'exit' to terminate all servers...")
-    launch_servers(args.protocol, args.num_replicas)
+    # remove all existing wal files
+    for path in Path("/tmp").glob("summerset.*.wal"):
+        path.unlink()
 
-    while True:
-        word = input()
-        if word == "exit":
-            break
+    server_procs = launch_servers(args.protocol, args.num_replicas)
 
-    sys.exit()  # triggers atexit handler
+    for proc in server_procs:
+        proc.wait()

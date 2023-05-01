@@ -1,43 +1,42 @@
 //! Summerset's collection of replication protocols.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::net::SocketAddr;
 
-use crate::smr_server::SummersetServerNode;
-use crate::replicator::{
-    ReplicatorServerNode, ReplicatorCommService, ReplicatorClientStub,
-};
-use crate::utils::InitError;
+use crate::utils::SummersetError;
+use crate::server::{GenericReplica, ReplicaId};
+use crate::client::{GenericClient, ClientId};
 
-mod do_nothing;
-use do_nothing::{DoNothingServerNode, DoNothingCommService, DoNothingClientStub};
+mod rep_nothing;
+use rep_nothing::{RepNothingReplica, RepNothingClient};
+pub use rep_nothing::{ReplicaConfigRepNothing, ClientConfigRepNothing};
 
 mod simple_push;
-use simple_push::{
-    SimplePushServerNode, SimplePushCommService, SimplePushClientStub,
-};
-
-/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
-/// protocol-specific struct creations.
-#[allow(unused_macros)]
-macro_rules! box_if_ok {
-    ($r:expr) => {
-        $r.map(|o| Box::new(o) as _) // explicitly coerce to unsized Box<dyn ..>
-    };
-}
+use simple_push::{SimplePushReplica, SimplePushClient};
+pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
-    DoNothing,
+    RepNothing,
     SimplePush,
+}
+
+/// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
+/// protocol-specific struct creations.
+macro_rules! box_if_ok {
+    ($thing:expr) => {
+        // explicitly coerce to unsized `Box<dyn ..>`
+        $thing.map(|o| Box::new(o) as _)
+    };
 }
 
 impl SMRProtocol {
     /// Parse command line string into SMRProtocol enum.
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
-            "DoNothing" => Some(Self::DoNothing),
+            "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
             _ => None,
         }
@@ -46,29 +45,23 @@ impl SMRProtocol {
     /// Create a server replicator module instance of this protocol on heap.
     pub fn new_server_node(
         &self,
-        peers: Vec<String>,
-    ) -> Result<Box<dyn ReplicatorServerNode>, InitError> {
+        id: ReplicaId,
+        population: u8,
+        smr_addr: SocketAddr,
+        api_addr: SocketAddr,
+        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        config_str: Option<&str>,
+    ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingServerNode::new(peers))
+            Self::RepNothing => {
+                box_if_ok!(RepNothingReplica::new(
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                ))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushServerNode::new(peers))
-            }
-        }
-    }
-
-    /// Create a server internal communication tonic service holder struct.
-    pub fn new_comm_service(
-        &self,
-        node: Arc<SummersetServerNode>,
-    ) -> Result<Box<dyn ReplicatorCommService>, InitError> {
-        match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingCommService::new(node))
-            }
-            Self::SimplePush => {
-                box_if_ok!(SimplePushCommService::new(node))
+                box_if_ok!(SimplePushReplica::new(
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                ))
             }
         }
     }
@@ -76,14 +69,16 @@ impl SMRProtocol {
     /// Create a client replicator stub instance of this protocol on heap.
     pub fn new_client_stub(
         &self,
-        servers: Vec<String>,
-    ) -> Result<Box<dyn ReplicatorClientStub>, InitError> {
+        id: ClientId,
+        servers: HashMap<ReplicaId, SocketAddr>,
+        config_str: Option<&str>,
+    ) -> Result<Box<dyn GenericClient>, SummersetError> {
         match self {
-            Self::DoNothing => {
-                box_if_ok!(DoNothingClientStub::new(servers))
+            Self::RepNothing => {
+                box_if_ok!(RepNothingClient::new(id, servers, config_str))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushClientStub::new(servers))
+                box_if_ok!(SimplePushClient::new(id, servers, config_str))
             }
         }
     }
@@ -97,20 +92,20 @@ impl fmt::Display for SMRProtocol {
 
 #[cfg(test)]
 mod protocols_name_tests {
-    use super::SMRProtocol;
+    use super::*;
 
     macro_rules! valid_name_test {
-        ($p:ident) => {
+        ($protocol:ident) => {
             assert_eq!(
-                SMRProtocol::parse_name(stringify!($p)),
-                Some(SMRProtocol::$p)
+                SMRProtocol::parse_name(stringify!($protocol)),
+                Some(SMRProtocol::$protocol)
             );
         };
     }
 
     #[test]
     fn parse_valid_names() {
-        valid_name_test!(DoNothing);
+        valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
     }
 

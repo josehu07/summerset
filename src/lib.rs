@@ -1,24 +1,32 @@
 //! Public interface to the Summerset core library, linked by both server
 //! executable and client library.
 
-#![allow(clippy::uninlined_format_args)]
-
-mod smr_client;
-mod smr_server;
-mod statemach;
-mod replicator;
-mod rpc_sender;
-mod protocols;
+#[macro_use]
 mod utils;
 
-pub use smr_client::SummersetClientStub;
-pub use smr_server::{
-    SummersetServerNode, SummersetApiService, InternalCommService,
-};
-pub use statemach::{Command, CommandResult};
-pub use protocols::SMRProtocol;
-pub use utils::{SummersetError, InitError};
+mod server;
+mod client;
 
-pub mod external_api_proto {
-    tonic::include_proto!("external_api");
-}
+mod protocols;
+
+// Things (other than exported macros) exposed to users of this crate:
+
+#[doc(inline)]
+pub use crate::utils::{SummersetError, ReplicaMap};
+
+#[doc(inline)]
+pub use crate::server::{
+    ReplicaId, RequestId, ApiRequest, ApiReply, Command, CommandResult,
+    GenericReplica,
+};
+
+#[doc(inline)]
+pub use crate::client::{ClientId, ClientSendStub, ClientRecvStub, GenericClient};
+
+#[doc(inline)]
+pub use crate::protocols::SMRProtocol;
+
+// below are config structs exposed for users to know how to write TOML-format
+// config strings
+pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
+pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};

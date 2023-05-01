@@ -7,16 +7,6 @@
 
 Summerset is a distributed key-value store incorporating a wide range of state machine replication (SMR) protocols for research purposes.
 
-## Code Structure
-
-This codebase comprises the following pieces:
-
-* `proto/`: protobuf definitions for various APIs and replication protocols
-* `src/`: the core Summerset library, linked by both `_server` and `_client`
-* `summerset_server`: the server-side standalone executable
-* `summerset_client`: the client-side library, linked by all client executables
-* `summerset_bench`: a client executable for benchmarking purposes
-
 ## Build
 
 Build everything in debug or release (`-r`) mode:
@@ -29,6 +19,12 @@ Run all unit tests:
 
 ```bash
 cargo test [-r] --workspace
+```
+
+Generate & open documentation for the core library in browser:
+
+```bash
+cargo doc --open
 ```
 
 ## Usage
@@ -49,23 +45,22 @@ RUST_LOG=debug cargo run ...
 
 ### Run Clients
 
-Run the benchmarking client:
+Run a client executable:
 
 ```bash
-cargo run [-r] -p summerset_bench -- -h
+cargo run [-r] -p summerset_client -- -h
 ```
 
 ## TODO List
 
-* [ ] transport layer abstraction
-* [ ] user-friendly swarm run scripts
-* [ ] Tonic RPC timeout handling
-* [ ] differentiate between read/non-read commands
-* [ ] finer-grained state machine locking
-* [ ] more protocols, comprehensive tests & CI
-* [ ] true benchmarking client
-* [ ] better usage README
+* [*] event-based programming structure
+* [ ] open-loop client, tests, & benchmarks
+* [ ] implementation of classic protocols
+* [ ] differentiate read/non-read commands
+* [ ] membership discovery & view changes
+* [ ] snapshotting & garbage collection
+* [ ] better README
 
 ---
 
-**Lore**: [Summerset](https://en.uesp.net/wiki/Online:Summerset) Isles is the name of an elvish archipelagic province in the Elder Scrolls series.
+**Lore**: [Summerset Isles](https://en.uesp.net/wiki/Online:Summerset) is the name of an elvish archipelagic province in the Elder Scrolls series.
