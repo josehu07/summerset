@@ -1,3 +1,5 @@
+#! /bin/env python3
+
 import sys
 import signal
 
@@ -15,6 +17,7 @@ def _signal_handler(sig, _from):
 
 
 class Cluster:
+    ''' For setting up a test server cluster '''
     
     def __init__(self, buildtype, num_replicas = 3, protocol = "RepNothing", 
                  config = "", num_threads = 2) -> None:
