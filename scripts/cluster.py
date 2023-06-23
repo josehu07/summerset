@@ -43,7 +43,6 @@ class Cluster:
             for pos in range(num_replicas):
                 cmd += [f"--replicas=127.0.0.1:{52800+pos}"]
 
-            print(cmd)
             replica = Popen(cmd)
             self.replicas.append(replica)
 
