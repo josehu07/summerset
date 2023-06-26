@@ -16,11 +16,16 @@ mod simple_push;
 use simple_push::{SimplePushReplica, SimplePushClient};
 pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 
+mod hotstuff;
+use hotstuff::{HotStuffReplica, HotStuffClient};
+pub use hotstuff::{ReplicaConfigHotStuff, ClientConfigHotStuff};
+
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     RepNothing,
     SimplePush,
+    HotStuff,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -38,6 +43,7 @@ impl SMRProtocol {
         match name {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
+            "HotStuff"   => Some(Self::HotStuff),
             _ => None,
         }
     }
@@ -63,6 +69,9 @@ impl SMRProtocol {
                     id, population, smr_addr, api_addr, peer_addrs, config_str
                 ))
             }
+            Self::HotStuff => {
+                todo!();
+            }
         }
     }
 
@@ -79,6 +88,9 @@ impl SMRProtocol {
             }
             Self::SimplePush => {
                 box_if_ok!(SimplePushClient::new(id, servers, config_str))
+            }
+            Self::HotStuff => {
+                box_if_ok!(HotStuffClient::new(id, servers, config_str))
             }
         }
     }

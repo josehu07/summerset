@@ -2,6 +2,7 @@
 
 import sys
 import signal
+import argparse
 
 from subprocess import Popen
 
@@ -15,12 +16,16 @@ def _signal_handler(sig, _from):
         _CLUSTER.stop()
     sys.exit(0)
 
+PROTOCOL_CONFIGS = {
+    "RepNothing": lambda r, _: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
+}
 
 class Cluster:
     ''' For setting up a test server cluster '''
-    
-    def __init__(self, buildtype, num_replicas = 3, protocol = "RepNothing", 
-                 config = "", num_threads = 2) -> None:
+
+    def __init__(self, release = False, num_replicas = 3, 
+                 protocol = "RepNothing", num_threads = 2) -> None:
         global _CLUSTER
         if _CLUSTER is not None:
             raise RuntimeError("Another cluster is running")
@@ -31,15 +36,25 @@ class Cluster:
         signal.signal(signal.SIGTERM, _signal_handler)
         signal.signal(signal.SIGQUIT, _signal_handler)
 
+        if protocol not in PROTOCOL_CONFIGS:
+            raise ValueError(f"unknown protocol name '{protocol}'")
+        if num_replicas <= 0:
+            raise ValueError(f"invalid number of replicas {num_replicas}")
+
         self.replicas: list[Popen] = []
         for id in range(num_replicas):
-            cmd = [
-                f"./target/{buildtype}/summerset_server",
+            cmd = ["cargo", "run", "-p", "summerset_server"]
+
+            if release:
+                cmd += ["-r"]
+
+            cmd += [
+                "--",
                 f"--protocol={protocol}",
                 f"--api-port={52700+id}",
                 f"--smr-port={52800+id}",
                 f"--id={id}",
-                f"--config={config}",
+                f"--config={PROTOCOL_CONFIGS[protocol](id, num_replicas)}",
                 f"--threads={num_threads}",
             ]
 
@@ -66,6 +81,14 @@ class Cluster:
         
 
 if __name__ == '__main__':
-    cluster = Cluster("debug")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-r", "--release", action="store_true")
+    parser.add_argument("-n", "--replicas", type=int, default=3)
+    parser.add_argument("-p", "--protocol", type=str, default="RepNothing")
+    parser.add_argument("--threads", type=int, default=2)
+    args = parser.parse_args()
+
+    cluster = Cluster(release=args.release, num_replicas=args.replicas, 
+                      protocol=args.protocol, num_threads=args.threads)
     cluster.wait()
 
