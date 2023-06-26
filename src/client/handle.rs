@@ -4,9 +4,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
+use crate::{ApiRequest, ApiReply};
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
-use crate::client::{ClientSendStub, ClientRecvStub};
 
 use async_trait::async_trait;
 
@@ -26,9 +26,14 @@ pub trait GenericClient {
         Self: Sized;
 
     /// Establishes connection to the service according to protocol-specific
-    /// logic, returning two owned TCP connection halves (for possibly
-    /// open-loop clients).
-    async fn connect(
+    /// logic.
+    async fn setup(&mut self) -> Result<(), SummersetError>;
+
+    /// Send single request to the service according to protocol-specific logic
+    /// and return its result
+    // TODO: change to open loop by removing &mut
+    async fn request(
         &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError>;
+        req: ApiRequest,
+    ) -> Result<ApiReply, SummersetError>;
 }
