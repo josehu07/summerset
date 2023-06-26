@@ -674,7 +674,6 @@ impl GenericClient for SimplePushClient {
             .await
             .map(|stubs| {
                 self.stubs = Some(stubs);
-                ()
             })
     }
 

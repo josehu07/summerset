@@ -457,7 +457,6 @@ impl GenericClient for RepNothingClient {
             .await
             .map(|stubs| {
                 self.stubs = Some(stubs);
-                ()
             })
     }
 
