@@ -1,8 +1,8 @@
 //! Closed-loop client implementation.
 
 use summerset::{
-    ClientId, ClientSendStub, ClientRecvStub, Command, CommandResult,
-    ApiRequest, ApiReply, SummersetError, pf_info, pf_error, logged_err,
+    ClientId, Command, CommandResult, ApiRequest, ApiReply, SummersetError,
+    pf_info, pf_error, logged_err, GenericClient,
 };
 
 /// Closed-loop client struct.
@@ -11,10 +11,7 @@ pub struct ClientClosedLoop {
     id: ClientId,
 
     /// ApiRequest send stub.
-    send_stub: ClientSendStub,
-
-    /// ApiReply receive stub.
-    recv_stub: ClientRecvStub,
+    stub: Box<dyn GenericClient>,
 
     /// Next request ID, monitonically increasing.
     next_req: u64,
@@ -22,15 +19,10 @@ pub struct ClientClosedLoop {
 
 impl ClientClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(
-        id: ClientId,
-        send_stub: ClientSendStub,
-        recv_stub: ClientRecvStub,
-    ) -> Self {
+    pub fn new(id: ClientId, stub: Box<dyn GenericClient>) -> Self {
         ClientClosedLoop {
             id,
-            send_stub,
-            recv_stub,
+            stub,
             next_req: 0,
         }
     }
@@ -43,14 +35,14 @@ impl ClientClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.send_stub
-            .send_req(ApiRequest::Req {
+        let reply = self
+            .stub
+            .request(ApiRequest::Req {
                 id: req_id,
                 cmd: Command::Get { key: key.into() },
             })
             .await?;
 
-        let reply = self.recv_stub.recv_reply().await?;
         match reply {
             ApiReply::Reply {
                 id: reply_id,
@@ -80,8 +72,9 @@ impl ClientClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.send_stub
-            .send_req(ApiRequest::Req {
+        let reply = self
+            .stub
+            .request(ApiRequest::Req {
                 id: req_id,
                 cmd: Command::Put {
                     key: key.into(),
@@ -90,7 +83,6 @@ impl ClientClosedLoop {
             })
             .await?;
 
-        let reply = self.recv_stub.recv_reply().await?;
         match reply {
             ApiReply::Reply {
                 id: reply_id,
@@ -113,9 +105,8 @@ impl ClientClosedLoop {
 
     /// Send leave notification.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        self.send_stub.send_req(ApiRequest::Leave).await?;
+        let reply = self.stub.request(ApiRequest::Leave).await?;
 
-        let reply = self.recv_stub.recv_reply().await?;
         match reply {
             ApiReply::Leave => {
                 pf_info!(self.id; "left current server connection");

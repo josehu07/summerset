@@ -416,6 +416,9 @@ pub struct RepNothingClient {
 
     /// Configuration parameters struct.
     config: ClientConfigRepNothing,
+
+    /// Stubs for communicating with the service.
+    stubs: Option<(ClientSendStub, ClientRecvStub)>,
 }
 
 #[async_trait]
@@ -443,13 +446,30 @@ impl GenericClient for RepNothingClient {
             id,
             servers,
             config,
+            stubs: None,
         })
     }
 
-    async fn connect(
-        &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+    async fn setup(&mut self) -> Result<(), SummersetError> {
         let api_stub = ClientApiStub::new(self.id);
-        api_stub.connect(self.servers[&self.config.server_id]).await
+        api_stub
+            .connect(self.servers[&self.config.server_id])
+            .await
+            .map(|stubs| {
+                self.stubs = Some(stubs);
+            })
+    }
+
+    async fn request(
+        &mut self,
+        req: ApiRequest,
+    ) -> Result<ApiReply, SummersetError> {
+        match &mut self.stubs {
+            Some((ref mut send_stub, ref mut recv_stub)) => {
+                send_stub.send_req(req).await?;
+                recv_stub.recv_reply().await
+            }
+            None => logged_err!(self.id; "RepNothing client is not set up."),
+        }
     }
 }
