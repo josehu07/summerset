@@ -174,9 +174,9 @@ impl GenericClient for HotStuffClient {
         })
     }
 
-    async fn connect(
+    async fn setup(
         &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+    ) -> Result<(), SummersetError> {
 
         // TODO: make this concurrent
         // for (id, addr) in self.servers.iter() {
@@ -185,5 +185,12 @@ impl GenericClient for HotStuffClient {
         todo!();
         // let api_stub = ClientApiStub::new(self.id);
         // api_stub.connect(self.servers[&self.config.server_id]).await
+    }
+
+    async fn request(
+        &mut self,
+        req: ApiRequest,
+    ) -> Result<ApiReply, SummersetError> {
+        todo!();
     }
 }
