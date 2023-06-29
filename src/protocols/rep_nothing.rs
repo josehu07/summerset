@@ -137,7 +137,7 @@ impl RepNothingReplica {
             .as_mut()
             .unwrap()
             .submit_action(
-                inst_idx as u64,
+                inst_idx as LogActionId,
                 LogAction::Append {
                     entry: log_entry,
                     offset: self.log_offset,

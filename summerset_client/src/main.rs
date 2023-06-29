@@ -16,6 +16,9 @@ use summerset::{
 mod client_cl;
 use client_cl::ClientClosedLoop;
 
+mod client_ol;
+use client_ol::ClientOpenLoop;
+
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -32,6 +35,12 @@ struct CliArgs {
     /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
     #[arg(short, long)]
     replicas: Vec<SocketAddr>,
+
+    /// Number of open-loop requests to maintain. If `0`, uses the closed-loop
+    /// client implementation.
+    // TODO: actually use this arg
+    #[arg(long, default_value_t = 0)]
+    open_cnt: u64,
 
     /// Protocol-specific client configuration TOML string.
     /// Every '+' is treated as newline.
@@ -111,13 +120,29 @@ fn client_main() -> Result<(), SummersetError> {
     runtime.block_on(async move {
         stub.setup().await?;
 
-        let mut client = ClientClosedLoop::new(args.id, stub);
-        pf_info!(args.id; "{:?}", client.get("Jose").await?);
-        pf_info!(args.id; "{:?}", client.put("Jose", "123").await?);
-        pf_info!(args.id; "{:?}", client.get("Jose").await?);
-        pf_info!(args.id; "{:?}", client.put("Jose", "456").await?);
-        pf_info!(args.id; "{:?}", client.get("Jose").await?);
-        client.leave().await?;
+        if args.open_cnt == 0 {
+            let mut client = ClientClosedLoop::new(args.id, stub);
+            pf_info!(args.id; "{:?}", client.get("Jose").await?);
+            pf_info!(args.id; "{:?}", client.put("Jose", "123").await?);
+            pf_info!(args.id; "{:?}", client.get("Jose").await?);
+            pf_info!(args.id; "{:?}", client.put("Jose", "456").await?);
+            pf_info!(args.id; "{:?}", client.get("Jose").await?);
+            client.leave().await?;
+        } else {
+            // may go out-of-order
+            let mut client = ClientOpenLoop::new(args.id, stub);
+            client.issue_get("Jose").await?;
+            client.issue_put("Jose", "123").await?;
+            client.issue_get("Jose").await?;
+            client.issue_put("Jose", "456").await?;
+            client.issue_get("Jose").await?;
+            pf_info!(args.id; "{:?}", client.wait_reply().await?);
+            pf_info!(args.id; "{:?}", client.wait_reply().await?);
+            pf_info!(args.id; "{:?}", client.wait_reply().await?);
+            pf_info!(args.id; "{:?}", client.wait_reply().await?);
+            pf_info!(args.id; "{:?}", client.wait_reply().await?);
+            client.leave().await?;
+        }
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
@@ -149,6 +174,7 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            open_cnt: 0,
             threads: 1,
             config: "".into(),
         };
@@ -166,6 +192,7 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            open_cnt: 0,
             threads: 1,
             config: "".into(),
         };
@@ -179,6 +206,7 @@ mod client_args_tests {
             protocol: "RepNothing".into(),
             id: 7456,
             replicas: vec![],
+            open_cnt: 0,
             threads: 1,
             config: "".into(),
         };
@@ -195,6 +223,7 @@ mod client_args_tests {
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52700".parse()?,
             ],
+            open_cnt: 0,
             threads: 1,
             config: "".into(),
         };
@@ -212,6 +241,7 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
+            open_cnt: 0,
             threads: 0,
             config: "".into(),
         };

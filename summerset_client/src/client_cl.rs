@@ -2,7 +2,7 @@
 
 use summerset::{
     GenericClient, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    SummersetError, pf_info, pf_error, logged_err,
+    RequestId, SummersetError, pf_info, pf_error, logged_err,
 };
 
 /// Closed-loop client struct.
@@ -14,7 +14,7 @@ pub struct ClientClosedLoop {
     stub: Box<dyn GenericClient>,
 
     /// Next request ID, monotonically increasing.
-    next_req: u64,
+    next_req: RequestId,
 }
 
 impl ClientClosedLoop {
