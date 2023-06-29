@@ -121,9 +121,7 @@ impl RepNothingReplica {
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        if batch_size == 0 {
-            return Ok(());
-        }
+        assert!(batch_size > 0);
 
         let inst = Instance {
             reqs: req_batch.clone(),
