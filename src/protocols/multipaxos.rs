@@ -148,9 +148,7 @@ impl MultiPaxosReplica {
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        if batch_size == 0 {
-            return Ok(());
-        }
+        assert!(batch_size > 0);
 
         // target peers to push to
         let mut target = ReplicaMap::new(self.population, false)?;
