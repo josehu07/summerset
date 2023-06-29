@@ -109,9 +109,9 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        let (send_stub, recv_stub) = stub.connect().await?;
+        stub.setup().await?;
 
-        let mut client = ClientClosedLoop::new(args.id, send_stub, recv_stub);
+        let mut client = ClientClosedLoop::new(args.id, stub);
         pf_info!(args.id; "{:?}", client.get("Jose").await?);
         pf_info!(args.id; "{:?}", client.put("Jose", "123").await?);
         pf_info!(args.id; "{:?}", client.get("Jose").await?);

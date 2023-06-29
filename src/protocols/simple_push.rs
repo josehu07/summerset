@@ -633,6 +633,9 @@ pub struct SimplePushClient {
 
     /// Configuration parameters struct.
     config: ClientConfigSimplePush,
+
+    /// Stubs for communicating with the service.
+    stubs: Option<(ClientSendStub, ClientRecvStub)>,
 }
 
 #[async_trait]
@@ -660,13 +663,37 @@ impl GenericClient for SimplePushClient {
             id,
             servers,
             config,
+            stubs: None,
         })
     }
 
-    async fn connect(
-        &mut self,
-    ) -> Result<(ClientSendStub, ClientRecvStub), SummersetError> {
+    async fn setup(&mut self) -> Result<(), SummersetError> {
         let api_stub = ClientApiStub::new(self.id);
-        api_stub.connect(self.servers[&self.config.server_id]).await
+        api_stub
+            .connect(self.servers[&self.config.server_id])
+            .await
+            .map(|stubs| {
+                self.stubs = Some(stubs);
+            })
+    }
+
+    async fn send_req(
+        &mut self,
+        req: ApiRequest,
+    ) -> Result<(), SummersetError> {
+        match self.stubs {
+            Some((ref mut send_stub, _)) => {
+                send_stub.send_req(req).await?;
+                Ok(())
+            }
+            None => logged_err!(self.id; "client is not set up"),
+        }
+    }
+
+    async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+        match self.stubs {
+            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
+            None => logged_err!(self.id; "client is not set up"),
+        }
     }
 }
