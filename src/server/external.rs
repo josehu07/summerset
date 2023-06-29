@@ -416,12 +416,12 @@ mod external_tests {
     async fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
         assert!(api
-            .setup("127.0.0.1:52700".parse()?, Duration::from_millis(1), 0, 0)
+            .setup("127.0.0.1:51700".parse()?, Duration::from_millis(1), 0, 0)
             .await
             .is_err());
         assert!(api
             .setup(
-                "127.0.0.1:52700".parse()?,
+                "127.0.0.1:51701".parse()?,
                 Duration::from_nanos(10),
                 100,
                 100,
@@ -429,7 +429,7 @@ mod external_tests {
             .await
             .is_err());
         api.setup(
-            "127.0.0.1:52700".parse()?,
+            "127.0.0.1:51702".parse()?,
             Duration::from_millis(1),
             100,
             100,

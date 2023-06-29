@@ -13,7 +13,7 @@ pub struct ClientClosedLoop {
     /// Protocol-specific client stub.
     stub: Box<dyn GenericClient>,
 
-    /// Next request ID, monitonically increasing.
+    /// Next request ID, monotonically increasing.
     next_req: u64,
 }
 
