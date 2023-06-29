@@ -419,8 +419,8 @@ mod transport_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn hub_setup() -> Result<(), SummersetError> {
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        assert!(hub.setup("127.0.0.1:52800".parse()?, 0, 0).await.is_err());
-        hub.setup("127.0.0.1:52800".parse()?, 100, 100).await?;
+        assert!(hub.setup("127.0.0.1:51800".parse()?, 0, 0).await.is_err());
+        hub.setup("127.0.0.1:51801".parse()?, 100, 100).await?;
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
         assert!(hub.peer_listener.is_some());

@@ -16,7 +16,7 @@ pub struct ClientClosedLoop {
     /// ApiReply receive stub.
     recv_stub: ClientRecvStub,
 
-    /// Next request ID, monitonically increasing.
+    /// Next request ID, monotonically increasing.
     next_req: u64,
 }
 
