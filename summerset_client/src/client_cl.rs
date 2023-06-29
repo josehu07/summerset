@@ -10,7 +10,7 @@ pub struct ClientClosedLoop {
     /// Client ID.
     id: ClientId,
 
-    /// ApiRequest send stub.
+    /// Protocol-specific client stub.
     stub: Box<dyn GenericClient>,
 
     /// Next request ID, monitonically increasing.

@@ -464,12 +464,12 @@ impl GenericClient for RepNothingClient {
         &mut self,
         req: ApiRequest,
     ) -> Result<ApiReply, SummersetError> {
-        match &mut self.stubs {
+        match self.stubs {
             Some((ref mut send_stub, ref mut recv_stub)) => {
                 send_stub.send_req(req).await?;
                 recv_stub.recv_reply().await
             }
-            None => logged_err!(self.id; "RepNothing client is not set up."),
+            None => logged_err!(self.id; "client is not set up"),
         }
     }
 }
