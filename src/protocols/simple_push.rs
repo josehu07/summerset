@@ -677,15 +677,22 @@ impl GenericClient for SimplePushClient {
             })
     }
 
-    async fn request(
+    async fn send_req(
         &mut self,
         req: ApiRequest,
-    ) -> Result<ApiReply, SummersetError> {
+    ) -> Result<(), SummersetError> {
         match self.stubs {
-            Some((ref mut send_stub, ref mut recv_stub)) => {
+            Some((ref mut send_stub, _)) => {
                 send_stub.send_req(req).await?;
-                recv_stub.recv_reply().await
+                Ok(())
             }
+            None => logged_err!(self.id; "client is not set up"),
+        }
+    }
+
+    async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+        match self.stubs {
+            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
             None => logged_err!(self.id; "client is not set up"),
         }
     }

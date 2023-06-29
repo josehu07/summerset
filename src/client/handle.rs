@@ -28,11 +28,10 @@ pub trait GenericClient {
     /// logic.
     async fn setup(&mut self) -> Result<(), SummersetError>;
 
-    /// Sends a single request to the service according to protocol-specific
-    /// logic and returns its result.
-    // TODO: change to open loop by removing &mut
-    async fn request(
-        &mut self,
-        req: ApiRequest,
-    ) -> Result<ApiReply, SummersetError>;
+    /// Sends a request to the service according to protocol-specific logic.
+    async fn send_req(&mut self, req: ApiRequest)
+        -> Result<(), SummersetError>;
+
+    /// Receives a reply from the service according to protocol-specific logic.
+    async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError>;
 }
