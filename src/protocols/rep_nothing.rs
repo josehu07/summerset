@@ -121,9 +121,7 @@ impl RepNothingReplica {
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        if batch_size == 0 {
-            return Ok(());
-        }
+        assert!(batch_size > 0);
 
         let inst = Instance {
             reqs: req_batch.clone(),
@@ -139,7 +137,7 @@ impl RepNothingReplica {
             .as_mut()
             .unwrap()
             .submit_action(
-                inst_idx as u64,
+                inst_idx as LogActionId,
                 LogAction::Append {
                     entry: log_entry,
                     offset: self.log_offset,
@@ -460,16 +458,23 @@ impl GenericClient for RepNothingClient {
             })
     }
 
-    async fn request(
+    async fn send_req(
         &mut self,
         req: ApiRequest,
-    ) -> Result<ApiReply, SummersetError> {
-        match &mut self.stubs {
-            Some((ref mut send_stub, ref mut recv_stub)) => {
+    ) -> Result<(), SummersetError> {
+        match self.stubs {
+            Some((ref mut send_stub, _)) => {
                 send_stub.send_req(req).await?;
-                recv_stub.recv_reply().await
+                Ok(())
             }
-            None => logged_err!(self.id; "RepNothing client is not set up."),
+            None => logged_err!(self.id; "client is not set up"),
+        }
+    }
+
+    async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+        match self.stubs {
+            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
+            None => logged_err!(self.id; "client is not set up"),
         }
     }
 }

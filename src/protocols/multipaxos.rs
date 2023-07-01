@@ -1,8 +1,6 @@
-//! Replication protocol: simple push.
+//! Replication protocol: MultiPaxos.
 //!
-//! Immediately logs given command and pushes the command to some other peer
-//! replicas. Upon receiving acknowledgement from all peers, executes the
-//! command on the state machine and replies.
+//! TODO: explanation.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,7 +24,7 @@ use tokio::time::Duration;
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ReplicaConfigSimplePush {
+pub struct ReplicaConfigMultiPaxos {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
@@ -44,11 +42,11 @@ pub struct ReplicaConfigSimplePush {
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ReplicaConfigSimplePush {
+impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
-        ReplicaConfigSimplePush {
+        ReplicaConfigMultiPaxos {
             batch_interval_us: 1000,
-            backer_path: "/tmp/summerset.simple_push.wal".into(),
+            backer_path: "/tmp/summerset.multipaxos.wal".into(),
             rep_degree: 2,
             base_chan_cap: 1000,
             api_chan_cap: 10000,
@@ -90,8 +88,8 @@ struct Instance {
     from_peer: Option<(ReplicaId, usize)>, // peer ID, peer inst_idx
 }
 
-/// SimplePush server replica module.
-pub struct SimplePushReplica {
+/// MultiPaxos server replica module.
+pub struct MultiPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -105,7 +103,7 @@ pub struct SimplePushReplica {
     api_addr: SocketAddr,
 
     /// Configuraiton parameters struct.
-    config: ReplicaConfigSimplePush,
+    config: ReplicaConfigMultiPaxos,
 
     /// Map from peer replica ID -> address.
     peer_addrs: HashMap<ReplicaId, SocketAddr>,
@@ -129,7 +127,7 @@ pub struct SimplePushReplica {
     log_offset: usize,
 }
 
-impl SimplePushReplica {
+impl MultiPaxosReplica {
     /// Compose CommandId from instance index & command index within.
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
@@ -421,7 +419,7 @@ impl SimplePushReplica {
 }
 
 #[async_trait]
-impl GenericReplica for SimplePushReplica {
+impl GenericReplica for MultiPaxosReplica {
     fn new(
         id: ReplicaId,
         population: u8,
@@ -450,7 +448,7 @@ impl GenericReplica for SimplePushReplica {
             );
         }
 
-        let config = parsed_config!(config_str => ReplicaConfigSimplePush;
+        let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, backer_path, rep_degree,
                                     base_chan_cap, api_chan_cap)?;
         if config.batch_interval_us == 0 {
@@ -482,7 +480,7 @@ impl GenericReplica for SimplePushReplica {
             );
         }
 
-        Ok(SimplePushReplica {
+        Ok(MultiPaxosReplica {
             id,
             population,
             smr_addr,
@@ -609,20 +607,20 @@ impl GenericReplica for SimplePushReplica {
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ClientConfigSimplePush {
+pub struct ClientConfigMultiPaxos {
     /// Which server to pick.
     pub server_id: ReplicaId,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ClientConfigSimplePush {
+impl Default for ClientConfigMultiPaxos {
     fn default() -> Self {
-        ClientConfigSimplePush { server_id: 0 }
+        ClientConfigMultiPaxos { server_id: 0 }
     }
 }
 
-/// SimplePush client-side module.
-pub struct SimplePushClient {
+/// MultiPaxos client-side module.
+pub struct MultiPaxosClient {
     /// Client ID.
     id: ClientId,
 
@@ -630,14 +628,14 @@ pub struct SimplePushClient {
     servers: HashMap<ReplicaId, SocketAddr>,
 
     /// Configuration parameters struct.
-    config: ClientConfigSimplePush,
+    config: ClientConfigMultiPaxos,
 
     /// Stubs for communicating with the service.
     stubs: Option<(ClientSendStub, ClientRecvStub)>,
 }
 
 #[async_trait]
-impl GenericClient for SimplePushClient {
+impl GenericClient for MultiPaxosClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
@@ -647,7 +645,7 @@ impl GenericClient for SimplePushClient {
             return logged_err!(id; "empty servers list");
         }
 
-        let config = parsed_config!(config_str => ClientConfigSimplePush;
+        let config = parsed_config!(config_str => ClientConfigMultiPaxos;
                                     server_id)?;
         if !servers.contains_key(&config.server_id) {
             return logged_err!(
@@ -657,7 +655,7 @@ impl GenericClient for SimplePushClient {
             );
         }
 
-        Ok(SimplePushClient {
+        Ok(MultiPaxosClient {
             id,
             servers,
             config,

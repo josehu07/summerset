@@ -54,8 +54,8 @@ cargo run [-r] -p summerset_client -- -h
 ## TODO List
 
 - [x] event-based programming structure
-- [ ] open-loop client, tests, & benchmarks
 - [ ] implementation of classic protocols
+- [ ] complete client, tests, & benchmarks
 - [ ] differentiate read/non-read commands
 - [ ] membership discovery & view changes
 - [ ] snapshotting & garbage collection

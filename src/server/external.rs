@@ -163,8 +163,8 @@ impl ExternalApi {
     }
 
     /// Waits for the next batch dumping signal and collects all requests
-    /// currently in the req channel. Returns a `VecDeque` of requests on
-    /// success.
+    /// currently in the req channel. Returns a non-empty `VecDeque` of
+    /// requests on success.
     pub async fn get_req_batch(
         &mut self,
     ) -> Result<Vec<(ClientId, ApiRequest)>, SummersetError> {
@@ -172,20 +172,24 @@ impl ExternalApi {
             return logged_err!(self.me; "get_req_batch called before setup");
         }
 
-        self.batch_notify.notified().await;
+        // ignore ticks with an empty batch
         let mut batch = Vec::new();
+        while batch.is_empty() {
+            self.batch_notify.notified().await;
 
-        match self.rx_req {
-            Some(ref mut rx_req) => loop {
-                match rx_req.try_recv() {
-                    Ok((client, req)) => batch.push((client, req)),
-                    Err(TryRecvError::Empty) => break,
-                    Err(e) => return Err(SummersetError::from(e)),
-                }
-            },
-            None => return logged_err!(self.me; "rx_req not created yet"),
+            match self.rx_req {
+                Some(ref mut rx_req) => loop {
+                    match rx_req.try_recv() {
+                        Ok((client, req)) => batch.push((client, req)),
+                        Err(TryRecvError::Empty) => break,
+                        Err(e) => return Err(SummersetError::from(e)),
+                    }
+                },
+                None => return logged_err!(self.me; "rx_req not created yet"),
+            }
         }
 
+        assert!(!batch.is_empty());
         Ok(batch)
     }
 
@@ -416,12 +420,12 @@ mod external_tests {
     async fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
         assert!(api
-            .setup("127.0.0.1:52700".parse()?, Duration::from_millis(1), 0, 0)
+            .setup("127.0.0.1:51700".parse()?, Duration::from_millis(1), 0, 0)
             .await
             .is_err());
         assert!(api
             .setup(
-                "127.0.0.1:52700".parse()?,
+                "127.0.0.1:51701".parse()?,
                 Duration::from_nanos(10),
                 100,
                 100,
@@ -429,7 +433,7 @@ mod external_tests {
             .await
             .is_err());
         api.setup(
-            "127.0.0.1:52700".parse()?,
+            "127.0.0.1:51702".parse()?,
             Duration::from_millis(1),
             100,
             100,
