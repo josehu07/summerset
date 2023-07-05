@@ -43,6 +43,14 @@ The default logging level is set as >= `info`. To display debugging or even trac
 RUST_LOG=debug cargo run ...
 ```
 
+A helper script, `cluster.py`, for running a set of server nodes as local processes is also provided:
+
+```bash
+python3 cluster.py -h
+```
+
+Complete cluster management and benchmarking scripts are available in another repo, [Wayrest](https://github.com/josehu07/wayrest), which is a Python module for managing replication protocol clusters and running distributed experiments.
+
 ### Run Clients
 
 Run a client executable:
