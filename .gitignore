@@ -4,4 +4,7 @@
 **/*.rs.bk
 *.pdb
 
-.vscode/
+/.vscode/
+
+/tla+/**/states/
+/tla+/**/*.out
