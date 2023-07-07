@@ -1,5 +1,6 @@
 ---- MODULE Paxos_MC ----
-EXTENDS Paxos
+\* EXTENDS PaxosByHand
+EXTENDS PaxosPlusCal
 
 PermAcceptors == Permutations(Acceptors)
 

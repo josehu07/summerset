@@ -77,7 +77,7 @@ their values in the new state.
 variable chosen = {};
 
 macro Choose() begin
-    when chosen = {};
+    await chosen = {};
     with v \in Values do
         chosen := {v};
     end with;

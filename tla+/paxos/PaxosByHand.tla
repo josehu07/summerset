@@ -1,12 +1,12 @@
 (**********************************************************************)
-(* Single-decree Paxos. Leader election is omitted and the leader is  *)
-(* assumed fixed.                                                     *)
+(* Single-decree Paxos specified by hand. Leader election is omitted  *)
+(* and the leader is assumed fixed.                                   *)
 (*                                                                    *)
 (* Adapted from:                                                      *)
 (*   https://github.com/tlaplus/DrTLAPlus/blob/master/Paxos/Paxos.tla *)
 (**********************************************************************)
 
----- MODULE Paxos ----
+---- MODULE PaxosByHand ----
 EXTENDS Integers, FiniteSets, TLC
 
 CONSTANT Acceptors, Quorums, Values, NullValue, Ballots
