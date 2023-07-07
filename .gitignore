@@ -8,3 +8,4 @@
 
 /tla+/**/states/
 /tla+/**/*.out
+/tla+/**/*.old
