@@ -43,7 +43,7 @@ impl SMRProtocol {
         match name {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
-            "HotStuff"   => Some(Self::HotStuff),
+            "HotStuff" => Some(Self::HotStuff),
             _ => None,
         }
     }
@@ -70,7 +70,9 @@ impl SMRProtocol {
                 ))
             }
             Self::HotStuff => {
-                todo!();
+                box_if_ok!(HotStuffReplica::new(
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                ))
             }
         }
     }
