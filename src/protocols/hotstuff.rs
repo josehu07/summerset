@@ -9,14 +9,15 @@ use crate::{RequestId, ReplicaMap, Command};
 use crate::utils::SummersetError;
 use crate::server::{
     ReplicaId, StateMachine, CommandResult, CommandId, ExternalApi, ApiRequest,
-    ApiReply, /*StorageHub, LogAction,*/ LogResult, LogActionId, GenericReplica,
-    TransportHub,
+    ApiReply, /*StorageHub, LogAction,*/ LogResult, LogActionId,
+    GenericReplica, TransportHub,
 };
 use crate::client::{
     ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
 };
 
 use async_trait::async_trait;
+use async_recursion::async_recursion;
 
 use serde::{Serialize, Deserialize};
 
@@ -72,7 +73,7 @@ struct QuorumCert {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PartQuorumCert {
-    hash: String, 
+    hash: String,
     sign: SignatureShare,
 }
 
@@ -112,8 +113,6 @@ enum QuorumMsg {
 struct Instance {
     view: ViewId,
     reqs: Node,
-    height: u64,
-    votes: BTreeMap<ReplicaId, SignatureShare>,
     sign: Option<Signature>,
     parent: Option<String>,
     // durable: bool,
@@ -160,11 +159,23 @@ pub struct HotStuffReplica {
     /// Requests to be processed
     pending_req: HashSet<(ClientId, RequestId)>,
 
+    /// Requests that have been executed
+    executed_req: HashSet<(ClientId, RequestId)>,
+
     /// Keeping track of requst bodies
     req_pool: HashMap<(ClientId, RequestId), Command>,
 
     /// In-memory log of instances.
     insts: HashMap<String, Instance>,
+
+    /// List of pending proposals for future views
+    pending_prop: HashMap<
+        ViewId,
+        (ReplicaId, Vec<(ClientId, RequestId)>, Option<QuorumCert>),
+    >,
+
+    /// List of pending votes if the votes arrived before the proposal
+    pending_votes: HashMap<(ViewId, String), Vec<(ReplicaId, SignatureShare)>>,
 
     /// Log of insts
     log: Vec<String>,
@@ -172,8 +183,14 @@ pub struct HotStuffReplica {
     /// Current durable log file offset.
     log_offset: usize,
 
+    /// The next request to be executed
+    exec_offset: (usize, usize),
+
     /// Public key
     pub_key: Option<PublicKey>,
+
+    /// Public key set for combining signatures
+    pub_key_set: Option<PublicKeySet>,
 
     /// Pub key share for verifying individual digests
     pub_key_shares: Option<HashMap<ReplicaId, PublicKeyShare>>,
@@ -202,48 +219,51 @@ impl HotStuffReplica {
         (inst_idx, cmd_idx)
     }
 
-    async fn handle_req_batch(
-        &mut self,
-        req_batch: Vec<(ClientId, ApiRequest)>,
-    ) -> Result<(), SummersetError> {
-        for (client, req) in req_batch {
-            match req {
-                ApiRequest::Req { id, cmd } => {
-                    self.pending_req.insert((client, id));
-                    self.req_pool.insert((client, id), cmd);
+    /// Tries to continue executing commands in the log
+    async fn continue_exec(&mut self) -> Result<(), SummersetError> {
+        let (log_offset, mut req_offset) = self.exec_offset;
+        for log_idx in log_offset..self.log.len() {
+            let blk = match self.insts.get(&self.log[log_idx]) {
+                Some(blk) => blk,
+                None => {
+                    self.exec_offset = (log_idx, 0);
+                    return Ok(());
                 }
-                ApiRequest::Leave => {
-                    pf_error!(self.id; "unexpecte client request")
+            };
+            for req_idx in req_offset..blk.reqs.len() {
+                let (client, req) = blk.reqs[req_idx];
+                if !self.executed_req.contains(&(client, req)) {
+                    match self.req_pool.get(&(client, req)) {
+                        Some(cmd) => {
+                            self.state_machine
+                                .as_mut()
+                                .unwrap()
+                                .submit_cmd(
+                                    Self::make_command_id(log_idx, req_idx),
+                                    cmd.clone(),
+                                )
+                                .await?;
+                        }
+                        None => {
+                            self.exec_offset = (log_idx, req_idx);
+                            return Ok(());
+                        }
+                    }
                 }
             }
+            req_offset = 0;
         }
+        self.exec_offset = (self.log.len(), 0);
         Ok(())
     }
 
-    // async fn handle_log_result(
-    //     &mut self,
-    //     action_id: LogActionId,
-    //     log_result: LogResult<LogEntry>,
-    // ) -> Result<(), SummersetError> {
-    //     todo!();
-    // }
-
-    async fn handle_propose_msg(
+    /// Check if it is safe to vote for the proposal
+    async fn verify_proposal(
         &mut self,
         peer: ReplicaId,
         view: ViewId,
-        proposal: Vec<(ClientId, RequestId)>,
-        justify: Option<QuorumCert>,
+        justify: &Option<QuorumCert>,
     ) -> Result<(), SummersetError> {
-        assert!(view % self.population as ViewId == peer as ViewId);
-
-        if view < self.cur_view {
-            return logged_err!(self.id; "got replica {}'s proposal from previous view {}; current view is {}", peer, view, self.cur_view);
-        }
-
-        let parent_blk_hash = justify.as_ref().map(|qc| &qc.hash);
-        let parent_blk = parent_blk_hash.and_then(|hash| self.insts.get(hash));
-
         match self.locked_qc.as_ref() {
             Some(locked) => {
                 if justify.is_none() {
@@ -255,9 +275,14 @@ impl HotStuffReplica {
                     return logged_err!(self.id; "the quorum certificate does not match block {}. ", &qc.hash);
                 }
 
-                let parent_blk = match parent_blk {
+                let parent_blk = match justify
+                    .as_ref()
+                    .map(|qc| &qc.hash)
+                    .and_then(|hash| self.insts.get(hash))
+                {
                     Some(blk) => blk,
                     None => {
+                        // TODO: fetch the parent block from other replicas
                         return logged_err!(self.id; "cannot verify qc since we do not have its parent block {}. ", qc.hash);
                     }
                 };
@@ -274,7 +299,7 @@ impl HotStuffReplica {
                             break;
                         }
                         let parent = self.insts.get(hash).unwrap();
-                        if parent.height > locked_blk.height
+                        if parent.view <= locked_blk.view
                             || parent.parent.is_none()
                         {
                             // this block does not extend from locked qc
@@ -293,89 +318,268 @@ impl HotStuffReplica {
             }
         }
 
-        // placed here to avoid extra look up for parent_blk after insert
-        let grand_parent_blk_hash =
-            parent_blk.and_then(|blk| blk.parent.as_ref()).cloned();
+        Ok(())
+    }
 
-        // vote for this message
-        let blk_hash =
-            sha256::digest(serde_json::to_string(&proposal).unwrap());
-        let sign = self.sec_key_share.as_ref().unwrap().sign(&blk_hash);
-        let part_qc = PartQuorumCert { hash: blk_hash.clone(), sign };
+    /// Stores the proposal message, including its justify and request batch
+    /// blk_hash is passed here to avoid expensive repeated computation
+    async fn store_proposal(
+        &mut self,
+        view: ViewId,
+        blk_hash: &String,
+        proposal: Vec<(ClientId, RequestId)>,
+        justify: &Option<QuorumCert>,
+    ) -> Result<(), SummersetError> {
+        // store the signature for new view
+        let parent_blk_hash = justify.as_ref().map(|qc| &qc.hash);
+        let parent_blk =
+            parent_blk_hash.and_then(|hash| self.insts.get_mut(hash));
+        if let Some(parent) = parent_blk {
+            assert!(parent.sign.is_none());
+            parent.sign = justify.as_ref().map(|qc| qc.sign.clone());
+        }
 
+        // store the proposal
         self.insts.insert(
-            blk_hash,
+            blk_hash.clone(),
             Instance {
                 view,
                 execed: vec![false; proposal.len()],
                 reqs: proposal,
-                height: parent_blk.map_or_else(|| 0, |blk| blk.height + 1),
-                votes: BTreeMap::new(),
                 sign: None,
                 parent: parent_blk_hash.cloned(),
             },
         );
 
+        Ok(())
+    }
+
+    /// Record locally the given vote
+    /// If we have received enough votes, do the next round of proposal
+    async fn store_vote(
+        &mut self,
+        peer: ReplicaId,
+        view: ViewId,
+        part_qc: PartQuorumCert,
+    ) -> Result<(), SummersetError> {
+        let votes = self
+            .pending_votes
+            .entry((view, part_qc.hash.clone()))
+            .or_insert(vec![]);
+        votes.push((peer, part_qc.sign));
+
+        if view > self.cur_view {
+            pf_debug!(self.id; "got replica {}'s vote for future view {}; current view is {}", peer, view, self.cur_view);
+            return Ok(());
+        }
+
+        if self.insts.get(&part_qc.hash).is_none() {
+            pf_debug!(self.id; "got vote before proposal for block {}", part_qc.hash);
+            return Ok(());
+        }
+
+        if votes.len() > 2 * self.faulty as usize {
+            let combined_sign = self
+                .pub_key_set
+                .as_ref()
+                .unwrap()
+                .combine_signatures(
+                    votes.iter().map(|(peer, sign)| (*peer as u64, sign)),
+                )
+                .unwrap();
+            let qc = QuorumCert {
+                hash: part_qc.hash.clone(),
+                sign: combined_sign,
+            };
+            self.pending_votes.remove(&(view, part_qc.hash.clone()));
+            let blk_hash = self.do_propose(Some(qc)).await?;
+            self.do_vote(view, &blk_hash, Some(part_qc.hash)).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Send vote message AND update generic and locked qc, as well as commit
+    /// the great grand parent block
+    #[async_recursion]
+    async fn do_vote(
+        &mut self,
+        view: ViewId,
+        blk_hash: &String,
+        parent_blk_hash: Option<String>,
+    ) -> Result<(), SummersetError> {
+        assert!(view == self.cur_view);
+
+        let grand_parent_blk_hash = parent_blk_hash
+            .as_ref()
+            .and_then(|hash| self.insts.get(hash))
+            .and_then(|blk| blk.parent.clone());
         let great_grand_parent_blk_hash = grand_parent_blk_hash
             .as_ref()
             .and_then(|hash| self.insts.get(hash))
-            .and_then(|blk| blk.parent.as_ref());
-        let great_grand_parent_blk =
-            great_grand_parent_blk_hash.and_then(|hash| self.insts.get(hash));
+            .and_then(|blk| blk.parent.clone());
+
+        // Send vote message to the next leader
+        let sign = self.sec_key_share.as_ref().unwrap().sign(&blk_hash);
+        let part_qc = PartQuorumCert {
+            hash: blk_hash.clone(),
+            sign,
+        };
 
         self.cur_view += 1;
-        let mut target = ReplicaMap::new(self.population, false)?;
-        target.set((self.cur_view % self.population as u64) as u8, true)?;
+        let next_leader = (self.cur_view % self.population as u64) as u8;
+        if next_leader == self.id {
+            self.store_vote(self.id, self.cur_view, part_qc).await?;
+        } else {
+            let mut target = ReplicaMap::new(self.population, false)?;
+            target.set(next_leader, true)?;
+            self.transport_hub
+                .as_mut()
+                .unwrap()
+                .send_msg(
+                    QuorumMsg::Vote {
+                        view: self.cur_view,
+                        part_qc,
+                    },
+                    target,
+                )
+                .await?;
+        }
+
+        // generic_qc <- parent block
+        // locked_qc <- grand parent block
+        // commit great grand parent block
+
+        // this could happen e.g. if this proposal is from a new view
+        if parent_blk_hash == self.generic_qc {
+            return Ok(());
+        }
+
+        // update generic qc and lock qc
+        self.generic_qc = parent_blk_hash;
+        self.locked_qc = grand_parent_blk_hash;
+
+        // execute great grand parent
+        if let Some(hash) = great_grand_parent_blk_hash {
+            self.log.insert(
+                self.log_offset,
+                hash.clone(),
+            );
+            self.continue_exec().await?;
+        }
+
+        // We are in the new view. If the proposal for the current view has been received, vote for it.
+        if let Some((peer, prop, justify)) =
+            self.pending_prop.remove(&self.cur_view)
+        {
+            self.handle_propose_msg(peer, self.cur_view, prop, justify)
+                .await?
+        }
+
+        Ok(())
+    }
+
+    async fn do_propose(
+        &mut self,
+        justify: Option<QuorumCert>,
+    ) -> Result<String, SummersetError> {
+        let proposal: Vec<(ClientId, RequestId)> =
+            self.pending_req.drain().collect();
+        let blk_hash = sha256::digest(
+            serde_json::to_string(&(self.cur_view, &proposal)).unwrap(),
+        );
+
+        pf_info!(self.id; "proposing new block {}", blk_hash);
+
+        self.store_proposal(
+            self.cur_view,
+            &blk_hash,
+            proposal.clone(),
+            &justify,
+        )
+        .await?;
+
+        // broadcast to others
+        let mut target = ReplicaMap::new(self.population, true)?;
+        target.set(self.id, false)?;
         self.transport_hub
             .as_mut()
             .unwrap()
             .send_msg(
-                QuorumMsg::Vote {
+                QuorumMsg::Propose {
                     view: self.cur_view,
-                    part_qc,
+                    proposal,
+                    justify,
                 },
                 target,
             )
             .await?;
 
-        // update generic qc and lock qc
-        self.generic_qc = parent_blk_hash.cloned();
-        self.locked_qc = grand_parent_blk_hash;
+        Ok(blk_hash)
+    }
 
-        // execute great grand parent
-        if let Some(exec_blk) = great_grand_parent_blk {
-            self.log.insert(
-                self.log_offset,
-                great_grand_parent_blk_hash.unwrap().clone(),
-            );
-            for (idx, (client_id, req_id)) in exec_blk.reqs.iter().enumerate() {
-                let id = (*client_id, *req_id);
-                // dedup
-                if self.pending_req.remove(&id) {
-                    match self.req_pool.remove(&(*client_id, *req_id)) {
-                        Some(cmd) => {
-                            self.state_machine
-                                .as_mut()
-                                .unwrap()
-                                .submit_cmd(
-                                    Self::make_command_id(self.log_offset, idx),
-                                    cmd.clone(),
-                                )
-                                .await?
-                        }
-                        // TODO: fetch request from others
-                        None => {
-                            pf_error!(self.id; "unrecognized request ({}, {}), skipping...", client_id, req_id)
-                        }
+    async fn handle_req_batch(
+        &mut self,
+        req_batch: Vec<(ClientId, ApiRequest)>,
+    ) -> Result<(), SummersetError> {
+        for (client, req) in req_batch {
+            match req {
+                ApiRequest::Req { id, cmd } => {
+                    if !self.executed_req.contains(&(client, id)) {
+                        self.pending_req.insert((client, id));
                     }
+                    self.req_pool.insert((client, id), cmd);
+                }
+                ApiRequest::Leave => {
+                    pf_error!(self.id; "unexpecte client request");
                 }
             }
-        } else {
-            if great_grand_parent_blk.is_some() {
-                // TODO: fetch block from others
-                pf_error!(self.id; "missing block {:?}", great_grand_parent_blk_hash);
-            }
         }
+        self.continue_exec().await?;
+        Ok(())
+    }
+
+    // async fn handle_log_result(
+    //     &mut self,
+    //     action_id: LogActionId,
+    //     log_result: LogResult<LogEntry>,
+    // ) -> Result<(), SummersetError> {
+    //     todo!();
+    // }
+
+    async fn handle_propose_msg(
+        &mut self,
+        peer: ReplicaId,
+        view: ViewId,
+        proposal: Vec<(ClientId, RequestId)>,
+        justify: Option<QuorumCert>,
+    ) -> Result<(), SummersetError> {
+        if view % self.population as ViewId != peer as ViewId {
+            return logged_err!(self.id; "got proposal from non leader {}, current view is {}", peer, view);
+        }
+
+        if view < self.cur_view {
+            return logged_err!(self.id; "got replica {}'s proposal from previous view {}; current view is {}", peer, view, self.cur_view);
+        } else if view > self.cur_view {
+            pf_debug!(self.id; "got replica {}'s proposal for future view {}; current view is {}", peer, view, self.cur_view);
+            self.pending_prop.insert(view, (peer, proposal, justify));
+            return Ok(());
+        }
+
+        let validity = self.verify_proposal(peer, view, &justify).await;
+        if validity.is_err() {
+            return validity;
+        }
+
+        let blk_hash =
+            sha256::digest(serde_json::to_string(&(view, &proposal)).unwrap());
+
+        let parent_blk_hash = justify.as_ref().map(|qc| qc.hash.clone());
+
+        self.store_proposal(view, &blk_hash, proposal, &justify)
+            .await?;
+
+        self.do_vote(view, &blk_hash, parent_blk_hash).await?;
 
         Ok(())
     }
@@ -386,8 +590,36 @@ impl HotStuffReplica {
         view: ViewId,
         part_qc: PartQuorumCert,
     ) -> Result<(), SummersetError> {
-        
-        todo!();
+        if view % self.population as ViewId != self.id as ViewId {
+            return logged_err!(self.id; "got vote for another leader from replica {}, the view is {}", peer, view);
+        }
+
+        if view < self.cur_view {
+            pf_debug!(self.id; "got replica {}'s vote from previous view {}; current view is {}", peer, view, self.cur_view);
+            return Ok(());
+        }
+
+        if let Some(blk) = self.insts.get(&part_qc.hash) {
+            if blk.sign.is_some() {
+                // we already have enough signatures, skipping
+                return Ok(());
+            }
+        }
+
+        if !self
+            .pub_key_shares
+            .as_ref()
+            .unwrap()
+            .get(&peer)
+            .unwrap()
+            .verify(&part_qc.sign, &part_qc.hash)
+        {
+            return logged_err!(self.id; "got invalid vote for block {} from replica {}", part_qc.hash, peer);
+        }
+
+        self.store_vote(peer, view, part_qc).await?;
+
+        Ok(())
     }
 
     async fn handle_fetch_block(&self) -> Result<(), SummersetError> {
@@ -509,11 +741,16 @@ impl GenericReplica for HotStuffReplica {
             transport_hub: None,
             cur_view: 0,
             pending_req: HashSet::new(),
+            executed_req: HashSet::new(),
             req_pool: HashMap::new(),
             insts: HashMap::new(),
+            pending_prop: HashMap::new(),
+            pending_votes: HashMap::new(),
             log: vec![],
             log_offset: 0,
+            exec_offset: (0, 0),
             pub_key: None,
+            pub_key_set: None,
             pub_key_shares: None,
             sec_key_share: None,
             generic_qc: None,
@@ -604,6 +841,7 @@ impl GenericReplica for HotStuffReplica {
 
         self.transport_hub = Some(transport_hub);
         self.pub_key = Some(pk.public_key());
+        self.pub_key_set = Some(pk);
         self.pub_key_shares = Some(pk_shares);
         self.sec_key_share = Some(sk);
 
@@ -623,6 +861,20 @@ impl GenericReplica for HotStuffReplica {
     }
 
     async fn run(&mut self) {
+
+        if self.id == 0 {
+            match self.do_propose(None).await {
+                Ok(blk_hash) => {
+                    if let Err(e) = self.do_vote(self.cur_view, &blk_hash, None).await {
+                        pf_error!(self.id; "error voting: {}", e);
+                    }
+                },
+                Err(e) => {
+                    pf_error!(self.id; "error proposing: {}", e);
+                }
+            }
+        }
+
         loop {
             tokio::select! {
                 // client request batch

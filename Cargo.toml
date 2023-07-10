@@ -24,3 +24,4 @@ toml = { version = "0.7", features = ["parse"] }
 log = "0.4"
 sha256 = "1.1.4"
 threshold_crypto = "0.4.0"
+async-recursion = "1.0.4"
