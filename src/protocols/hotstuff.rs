@@ -13,15 +13,15 @@ use crate::server::{
     ApiReply, /*StorageHub, LogAction, LogResult, LogActionId,*/
     GenericReplica, TransportHub,
 };
-use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
-};
+use crate::client::{ClientId, ClientApiStub, GenericClient};
 
 use async_trait::async_trait;
 use async_recursion::async_recursion;
 
 use serde::{Serialize, Deserialize};
 
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use threshold_crypto::{
@@ -128,7 +128,7 @@ pub struct HotStuffReplica {
     population: u8,
 
     /// Maximum number of faulty nodes
-    faulty: u8,
+    nfaulty: u8,
 
     /// Address string for peer-to-peer connections.
     smr_addr: SocketAddr,
@@ -240,6 +240,7 @@ impl HotStuffReplica {
                                     cmd.clone(),
                                 )
                                 .await?;
+                            self.executed_req.insert((client, req));
                         }
                         None => {
                             self.exec_offset = (log_idx, req_idx);
@@ -375,7 +376,7 @@ impl HotStuffReplica {
             return Ok(());
         }
 
-        if votes.len() > 2 * self.faulty as usize {
+        if votes.len() > 2 * self.nfaulty as usize {
             let combined_sign = self
                 .pub_key_set
                 .as_ref()
@@ -459,6 +460,12 @@ impl HotStuffReplica {
         // execute great grand parent
         if let Some(hash) = great_grand_parent_blk_hash {
             self.log.push(hash.clone());
+            // requests will be committed, remove them from pending queue
+            if let Some(blk) = self.insts.get(&hash) {
+                for req in blk.reqs.iter() {
+                    self.pending_req.remove(req);
+                }
+            }
             self.continue_exec().await?;
         }
 
@@ -629,26 +636,26 @@ impl HotStuffReplica {
         cmd_id: CommandId,
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
-        let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+        let (log_idx, cmd_idx) = Self::split_command_id(cmd_id);
+        if log_idx >= self.insts.len() {
+            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, log_idx, cmd_idx);
         }
 
-        let inst_hash = &self.log[inst_idx];
+        let inst_hash = &self.log[log_idx];
         let inst = self.insts.get_mut(inst_hash).unwrap();
         if cmd_idx >= inst.reqs.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, log_idx, cmd_idx);
         }
         if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
+            return logged_err!(self.id; "duplicate command index {}|{}", log_idx, cmd_idx);
         }
         // if !inst.durable {
         //     return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
         // }
         inst.execed[cmd_idx] = true;
 
-        let req_key = &inst.reqs[cmd_idx];
-        let (client, req_id) = req_key;
+        let (client, req_id) = &inst.reqs[cmd_idx]; 
+        pf_info!(self.id; "Sending reply for {}-{}: {:?}", client, req_id, cmd_result);
         self.external_api
             .as_mut()
             .unwrap()
@@ -724,7 +731,7 @@ impl GenericReplica for HotStuffReplica {
         Ok(HotStuffReplica {
             id,
             population,
-            faulty: (population - 1) / 3,
+            nfaulty: (population - 1) / 3,
             smr_addr,
             api_addr,
             config,
@@ -784,7 +791,7 @@ impl GenericReplica for HotStuffReplica {
         let (pk, sk) = if self.id == 0 {
             let sk_set = {
                 let mut rng = rand::thread_rng();
-                SecretKeySet::random(2 * self.faulty as usize, &mut rng)
+                SecretKeySet::random(2 * self.nfaulty as usize, &mut rng)
             };
             let pk_set = sk_set.public_keys();
 
@@ -948,12 +955,14 @@ impl GenericReplica for HotStuffReplica {
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ClientConfigHotStuff {}
+pub struct ClientConfigHotStuff {
+    pub chan_cap: usize,
+}
 
 #[allow(clippy::derivable_impls)]
 impl Default for ClientConfigHotStuff {
     fn default() -> Self {
-        ClientConfigHotStuff {}
+        ClientConfigHotStuff { chan_cap: 10000 }
     }
 }
 
@@ -962,14 +971,26 @@ pub struct HotStuffClient {
     /// Client ID.
     id: ClientId,
 
+    /// Number of faulty nodes the cluster it can tolerate
+    nfaulty: usize,
+
     /// Server addresses of the service.
     servers: HashMap<ReplicaId, SocketAddr>,
 
     /// Configuration parameters struct.
     config: ClientConfigHotStuff,
 
-    /// Stubs for communicating with servers.
-    stubs: HashMap<ReplicaId, (ClientSendStub, ClientRecvStub)>,
+    /// Send stubs for communicating with servers
+    tx_sends: HashMap<ReplicaId, mpsc::Sender<ApiRequest>>,
+
+    /// Receiver side of the receive channel
+    rx_recv: Option<mpsc::Receiver<(ReplicaId, ApiReply)>>,
+
+    /// Server listening threads
+    server_messager_handles: HashMap<ReplicaId, JoinHandle<()>>,
+
+    /// Reply pool
+    reply_pool: HashMap<RequestId, HashMap<String, usize>>,
 }
 
 #[async_trait]
@@ -983,36 +1004,158 @@ impl GenericClient for HotStuffClient {
             return logged_err!(id; "empty servers list");
         }
 
-        // let config = parsed_config!(config_str => ClientConfigHotStuff; )?;
-        // TODO:
-        let config = ClientConfigHotStuff {};
+        // TODO: add configurations as needed
+        let config = parsed_config!(config_str => ClientConfigHotStuff;
+            chan_cap)?;
 
         Ok(HotStuffClient {
             id,
+            nfaulty: (servers.len() - 1) / 3,
             servers,
             config,
-            stubs: HashMap::new(),
+            tx_sends: HashMap::new(),
+            rx_recv: None,
+            server_messager_handles: HashMap::new(),
+            reply_pool: HashMap::new(),
         })
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        // TODO: make this concurrent
-        // for (id, addr) in self.servers.iter() {
+        let (tx_recv, rx_recv) = mpsc::channel(self.config.chan_cap);
+        self.rx_recv = Some(rx_recv);
 
-        // }
-        todo!();
-        // let api_stub = ClientApiStub::new(self.id);
-        // api_stub.connect(self.servers[&self.config.server_id]).await
+        for (server, addr) in self.servers.iter() {
+            let (tx_send, rx_send) = mpsc::channel(self.config.chan_cap);
+            let messager_handle = tokio::spawn(Self::server_messager(
+                self.id,
+                *server,
+                *addr,
+                rx_send,
+                tx_recv.clone(),
+            ));
+            self.tx_sends.insert(*server, tx_send);
+            self.server_messager_handles
+                .insert(*server, messager_handle);
+        }
+
+        Ok(())
     }
 
     async fn send_req(
         &mut self,
         req: ApiRequest,
     ) -> Result<(), SummersetError> {
-        todo!();
+        if let ApiRequest::Req { id, cmd: _cmd } = &req {
+            if self.reply_pool.contains_key(&id) {
+                return logged_err!(self.id; "another request with the id {} already exists", id);
+            }
+            self.reply_pool.insert(*id, HashMap::new());
+        }
+
+        for (server, tx_send) in self.tx_sends.iter() {
+            if let Err(e) = tx_send.send(req.clone()).await {
+                return logged_err!(self.id; "failed to send request to sever message thread {}: {}", server, e);
+            }
+        }
+        Ok(())
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        todo!();
+        loop {
+            match self.rx_recv.as_mut().unwrap().recv().await {
+                Some((server, reply)) => match &reply {
+                    ApiReply::Reply { id, result } => {
+                        match self.reply_pool.get_mut(&id) {
+                            Some(replies) => {
+                                let hash = sha256::digest(
+                                    serde_json::to_string(result).unwrap(),
+                                );
+                                let votes = replies.entry(hash).or_insert(0);
+                                *votes += 1;
+                                if *votes > 2 * self.nfaulty {
+                                    // We have got enough votes
+                                    self.reply_pool.remove(id);
+                                    return Ok(reply);
+                                }
+                            }
+                            None => {
+                                pf_debug!(self.id; "got reply for request that has returned");
+                            }
+                        }
+                    }
+                    ApiReply::Leave => {
+                        match self.tx_sends.remove(&server).and_then(|_| {
+                            self.server_messager_handles.remove(&server)
+                        }) {
+                            Some(join_handle) => {
+                                if let Err(e) = join_handle.await {
+                                    return logged_err!(self.id; "failed to wait for server messager thread {} to complete: {}", server, e);
+                                }
+                                if self.tx_sends.is_empty() {
+                                    // We have disconnected from all servers
+                                    return Ok(reply);
+                                }
+                            }
+                            None => {
+                                return logged_err!(self.id; "unexpected leave message from disconnected server {}", server);
+                            }
+                        }
+                    }
+                },
+                None => {
+                    return logged_err!(self.id; "receive channel closed unexpectedly");
+                }
+            }
+        }
+    }
+}
+
+/// Server communication thread
+impl HotStuffClient {
+    async fn server_messager(
+        me: ClientId,
+        server: ReplicaId,
+        addr: SocketAddr,
+        mut rx_send: mpsc::Receiver<ApiRequest>,
+        tx_recv: mpsc::Sender<(ReplicaId, ApiReply)>,
+    ) {
+        let api_stub = ClientApiStub::new(me);
+        let (mut send_stub, mut recv_stub) = match api_stub.connect(addr).await
+        {
+            Ok(stubs) => stubs,
+            Err(e) => {
+                pf_error!(me; "failed to connec to server {} at {}: {}", server, addr, e);
+                return;
+            }
+        };
+
+        loop {
+            tokio::select! {
+                msg = rx_send.recv() => {
+                    match msg {
+                        Some(req) => {
+                            if let Err(e) = send_stub.send_req(req).await {
+                                pf_error!(me; "error sending request to server {}: {}", server, e);
+                            }
+                        },
+                        None => break,
+                    }
+                },
+
+                msg = recv_stub.recv_reply() => {
+                    match msg {
+                        Ok(reply) => {
+                            if let Err(e) = tx_recv.send((server, reply)).await {
+                                pf_error!(me; "error sending reply back to main thread: {}", e);
+                            }
+                        },
+                        Err(e) => {
+                            pf_error!(me; "error receiving reply from server {}: {}", server, e);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
