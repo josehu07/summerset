@@ -392,7 +392,7 @@ impl HotStuffReplica {
             let blk_hash = self.do_propose(Some(qc)).await?;
             self.do_vote(view, &blk_hash, Some(part_qc.hash)).await?;
         }
-        
+
         Ok(())
     }
 
@@ -854,14 +854,15 @@ impl GenericReplica for HotStuffReplica {
     }
 
     async fn run(&mut self) {
-
         if self.id == 0 {
             match self.do_propose(None).await {
                 Ok(blk_hash) => {
-                    if let Err(e) = self.do_vote(self.cur_view, &blk_hash, None).await {
+                    if let Err(e) =
+                        self.do_vote(self.cur_view, &blk_hash, None).await
+                    {
                         pf_error!(self.id; "error voting: {}", e);
                     }
-                },
+                }
                 Err(e) => {
                     pf_error!(self.id; "error proposing: {}", e);
                 }
