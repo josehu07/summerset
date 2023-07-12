@@ -1,15 +1,16 @@
 //! Replication protocol: HotStuff
+//! TODO: add pacemaker for liveness
+//! TODO: add storage hub back for persistence
 
-use std::collections::{HashMap, BTreeMap, HashSet};
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+// use std::path::Path;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use crate::{RequestId, ReplicaMap, Command};
 use crate::utils::SummersetError;
 use crate::server::{
     ReplicaId, StateMachine, CommandResult, CommandId, ExternalApi, ApiRequest,
-    ApiReply, /*StorageHub, LogAction,*/ LogResult, LogActionId,
+    ApiReply, /*StorageHub, LogAction, LogResult, LogActionId,*/
     GenericReplica, TransportHub,
 };
 use crate::client::{
@@ -109,7 +110,6 @@ enum QuorumMsg {
 }
 
 /// In-memory instance containing a commands batch.
-// TODO: add encryption
 struct Instance {
     view: ViewId,
     reqs: Node,
@@ -179,9 +179,6 @@ pub struct HotStuffReplica {
 
     /// Log of insts
     log: Vec<String>,
-
-    /// Current durable log file offset.
-    log_offset: usize,
 
     /// The next request to be executed
     exec_offset: (usize, usize),
@@ -461,10 +458,7 @@ impl HotStuffReplica {
 
         // execute great grand parent
         if let Some(hash) = great_grand_parent_blk_hash {
-            self.log.insert(
-                self.log_offset,
-                hash.clone(),
-            );
+            self.log.push(hash.clone());
             self.continue_exec().await?;
         }
 
@@ -747,7 +741,6 @@ impl GenericReplica for HotStuffReplica {
             pending_prop: HashMap::new(),
             pending_votes: HashMap::new(),
             log: vec![],
-            log_offset: 0,
             exec_offset: (0, 0),
             pub_key: None,
             pub_key_set: None,
