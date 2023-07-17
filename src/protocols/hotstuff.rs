@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 // use std::path::Path;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::{RequestId, ReplicaMap, Command};
 use crate::utils::SummersetError;
@@ -20,9 +21,9 @@ use async_recursion::async_recursion;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
-use tokio::time::Duration;
+use tokio::time::{Duration, self};
 
 use threshold_crypto::{
     SecretKeySet, PublicKeyShare, SecretKeyShare, serde_impl, PublicKeySet,
@@ -46,6 +47,9 @@ pub struct ReplicaConfigHotStuff {
 
     /// Capacity for req/reply channels.
     pub api_chan_cap: usize,
+
+    /// Initial timeout in seconds.
+    pub base_timeout: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -56,6 +60,7 @@ impl Default for ReplicaConfigHotStuff {
             backer_path: "/tmp/summerset.hotstuff.wal".into(),
             base_chan_cap: 1000,
             api_chan_cap: 10000,
+            base_timeout: 10,
         }
     }
 }
@@ -68,6 +73,7 @@ struct LogEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct QuorumCert {
+    view: ViewId,
     hash: String,
     sign: Signature,
 }
@@ -113,8 +119,7 @@ enum QuorumMsg {
 struct Instance {
     view: ViewId,
     reqs: Node,
-    sign: Option<Signature>,
-    parent: Option<String>,
+    justify: Option<QuorumCert>,
     // durable: bool,
     execed: Vec<bool>,
 }
@@ -175,7 +180,11 @@ pub struct HotStuffReplica {
     >,
 
     /// List of pending votes if the votes arrived before the proposal
-    pending_votes: HashMap<(ViewId, String), Vec<(ReplicaId, SignatureShare)>>,
+    pending_votes:
+        HashMap<ViewId, HashMap<String, Vec<(ReplicaId, SignatureShare)>>>,
+
+    /// List of new view messages received
+    pending_new_view: HashMap<ViewId, Vec<Option<QuorumCert>>>,
 
     /// Log of insts
     log: Vec<String>,
@@ -196,10 +205,16 @@ pub struct HotStuffReplica {
     sec_key_share: Option<SecretKeyShare>,
 
     /// Generic QC
-    generic_qc: Option<String>,
+    generic_qc: Option<QuorumCert>,
 
     /// Locked QC
-    locked_qc: Option<String>,
+    locked_qc: Option<QuorumCert>,
+
+    /// To notify that a new block has been created
+    new_blk_notif: Arc<Notify>,
+
+    /// To notify that a timeout has happened
+    timeout_notif: Arc<Notify>,
 }
 
 impl HotStuffReplica {
@@ -214,6 +229,13 @@ impl HotStuffReplica {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
+    }
+
+    fn advance_view(&mut self) {
+        self.pending_prop.remove(&self.cur_view);
+        self.pending_votes.remove(&self.cur_view);
+        self.pending_new_view.remove(&self.cur_view);
+        self.cur_view += 1;
     }
 
     /// Tries to continue executing commands in the log
@@ -273,37 +295,31 @@ impl HotStuffReplica {
                     return logged_err!(self.id; "the quorum certificate does not match block {}. ", &qc.hash);
                 }
 
-                let parent_blk = match justify
-                    .as_ref()
-                    .map(|qc| &qc.hash)
-                    .and_then(|hash| self.insts.get(hash))
-                {
-                    Some(blk) => blk,
-                    None => {
-                        // TODO: fetch the parent block from other replicas
-                        return logged_err!(self.id; "cannot verify qc since we do not have its parent block {}. ", qc.hash);
-                    }
-                };
-
-                let locked_blk = self.insts.get(locked).unwrap();
-                if parent_blk.view > locked_blk.view {
+                // let locked_blk = self.insts.get(locked).unwrap();
+                if qc.view > locked.view {
                     // liveness condition
                 } else {
                     // safety condition
                     let mut hash = &qc.hash;
                     loop {
-                        if hash == locked {
+                        if hash == &locked.hash {
                             // this block extends from locked qc
                             break;
                         }
-                        let parent = self.insts.get(hash).unwrap();
-                        if parent.view <= locked_blk.view
-                            || parent.parent.is_none()
+                        let parent = if let Some(blk) = self.insts.get(hash) {
+                            blk
+                        } else {
+                            return logged_err!(self.id; "replica {}'s proposed block is not safe to commit. ", peer);
+                        };
+
+                        if parent.view <= locked.view
+                            || parent.justify.is_none()
                         {
                             // this block does not extend from locked qc
                             return logged_err!(self.id; "replica {}'s proposed block is not safe to commit. ", peer);
                         }
-                        hash = parent.parent.as_ref().unwrap();
+                        hash =
+                            parent.justify.as_ref().map(|qc| &qc.hash).unwrap();
                     }
                 }
             }
@@ -326,16 +342,10 @@ impl HotStuffReplica {
         view: ViewId,
         blk_hash: &String,
         proposal: Vec<(ClientId, RequestId)>,
-        justify: &Option<QuorumCert>,
+        justify: Option<QuorumCert>,
     ) -> Result<(), SummersetError> {
-        // store the signature for new view
-        let parent_blk_hash = justify.as_ref().map(|qc| &qc.hash);
-        let parent_blk =
-            parent_blk_hash.and_then(|hash| self.insts.get_mut(hash));
-        if let Some(parent) = parent_blk {
-            assert!(parent.sign.is_none());
-            parent.sign = justify.as_ref().map(|qc| qc.sign.clone());
-        }
+        // a valid new proposal is received, reset timer
+        self.new_blk_notif.notify_waiters();
 
         // store the proposal
         self.insts.insert(
@@ -344,8 +354,7 @@ impl HotStuffReplica {
                 view,
                 execed: vec![false; proposal.len()],
                 reqs: proposal,
-                sign: None,
-                parent: parent_blk_hash.cloned(),
+                justify,
             },
         );
 
@@ -362,7 +371,9 @@ impl HotStuffReplica {
     ) -> Result<(), SummersetError> {
         let votes = self
             .pending_votes
-            .entry((view, part_qc.hash.clone()))
+            .entry(view)
+            .or_insert(HashMap::new())
+            .entry(part_qc.hash.clone())
             .or_insert(vec![]);
         votes.push((peer, part_qc.sign));
 
@@ -386,12 +397,12 @@ impl HotStuffReplica {
                 )
                 .unwrap();
             let qc = QuorumCert {
+                view: self.cur_view,
                 hash: part_qc.hash.clone(),
                 sign: combined_sign,
             };
-            self.pending_votes.remove(&(view, part_qc.hash.clone()));
-            let blk_hash = self.do_propose(Some(qc)).await?;
-            self.do_vote(view, &blk_hash, Some(part_qc.hash)).await?;
+            let blk_hash = self.do_propose(Some(qc.clone())).await?;
+            self.do_vote(view, &blk_hash, Some(qc)).await?;
         }
 
         Ok(())
@@ -404,18 +415,20 @@ impl HotStuffReplica {
         &mut self,
         view: ViewId,
         blk_hash: &String,
-        parent_blk_hash: Option<String>,
+        justify: Option<QuorumCert>,
     ) -> Result<(), SummersetError> {
         assert!(view == self.cur_view);
 
-        let grand_parent_blk_hash = parent_blk_hash
+        let parent_justify = justify
             .as_ref()
+            .map(|qc| &qc.hash)
             .and_then(|hash| self.insts.get(hash))
-            .and_then(|blk| blk.parent.clone());
-        let great_grand_parent_blk_hash = grand_parent_blk_hash
+            .and_then(|blk| blk.justify.clone());
+        let grand_parent_justify = parent_justify
             .as_ref()
+            .map(|qc| &qc.hash)
             .and_then(|hash| self.insts.get(hash))
-            .and_then(|blk| blk.parent.clone());
+            .and_then(|blk| blk.justify.clone());
 
         // Send vote message to the next leader
         let sign = self.sec_key_share.as_ref().unwrap().sign(&blk_hash);
@@ -424,7 +437,9 @@ impl HotStuffReplica {
             sign,
         };
 
-        self.cur_view += 1;
+        //Advance to the next view
+        self.advance_view();
+
         let next_leader = (self.cur_view % self.population as u64) as u8;
         if next_leader == self.id {
             self.store_vote(self.id, self.cur_view, part_qc).await?;
@@ -449,16 +464,25 @@ impl HotStuffReplica {
         // commit great grand parent block
 
         // this could happen e.g. if this proposal is from a new view
-        if parent_blk_hash == self.generic_qc {
+        if justify.as_ref().map(|qc| &qc.hash)
+            == self.generic_qc.as_ref().map(|qc| &qc.hash)
+        {
             return Ok(());
         }
 
         // update generic qc and lock qc
-        self.generic_qc = parent_blk_hash;
-        self.locked_qc = grand_parent_blk_hash;
+        // TODO: handle the case where the hash is none because the block is not received
+        if justify.is_some() {
+            self.generic_qc = justify;
+        }
+
+        if parent_justify.is_some() {
+            self.locked_qc = parent_justify;
+        }
 
         // execute great grand parent
-        if let Some(hash) = great_grand_parent_blk_hash {
+        if let Some(qc) = grand_parent_justify {
+            let hash = qc.hash;
             self.log.push(hash.clone());
             // requests will be committed, remove them from pending queue
             if let Some(blk) = self.insts.get(&hash) {
@@ -496,7 +520,7 @@ impl HotStuffReplica {
             self.cur_view,
             &blk_hash,
             proposal.clone(),
-            &justify,
+            justify.clone(),
         )
         .await?;
 
@@ -517,6 +541,47 @@ impl HotStuffReplica {
             .await?;
 
         Ok(blk_hash)
+    }
+
+    async fn store_new_view(
+        &mut self,
+        view: ViewId,
+        generic_qc: Option<QuorumCert>,
+    ) -> Result<(), SummersetError> {
+        let new_views = self.pending_new_view.entry(view).or_insert(vec![]);
+        new_views.push(generic_qc);
+
+        if new_views.len() > (self.population - self.nfaulty) as usize {
+            let mut high_qc: &Option<QuorumCert> = &None;
+            for new_view in new_views {
+                let view_num = new_view.as_ref().map_or(0, |qc| qc.view);
+                if high_qc.as_ref().map_or(true, |qc| qc.view < view_num) {
+                    high_qc = new_view;
+                }
+            }
+
+            let generic_qc_blk = self
+                .generic_qc
+                .as_ref()
+                .and_then(|qc| self.insts.get(&qc.hash));
+            // set generic_qc to high_qc if high_qc.view > generic_qc.view or if generic_qc is none
+            if generic_qc_blk
+                .map(|blk| high_qc.as_ref().map_or(0, |qc| qc.view) > blk.view)
+                .unwrap_or(true)
+            {
+                self.generic_qc = high_qc.clone();
+            }
+
+            for _ in self.cur_view..view {
+                self.advance_view();
+            }
+
+            let blk_hash = self.do_propose(self.generic_qc.clone()).await?;
+            self.do_vote(self.cur_view, &blk_hash, self.generic_qc.clone())
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn handle_req_batch(
@@ -575,12 +640,10 @@ impl HotStuffReplica {
         let blk_hash =
             sha256::digest(serde_json::to_string(&(view, &proposal)).unwrap());
 
-        let parent_blk_hash = justify.as_ref().map(|qc| qc.hash.clone());
-
-        self.store_proposal(view, &blk_hash, proposal, &justify)
+        self.store_proposal(view, &blk_hash, proposal, justify.clone())
             .await?;
 
-        self.do_vote(view, &blk_hash, parent_blk_hash).await?;
+        self.do_vote(view, &blk_hash, justify).await?;
 
         Ok(())
     }
@@ -596,15 +659,8 @@ impl HotStuffReplica {
         }
 
         if view < self.cur_view {
-            pf_debug!(self.id; "got replica {}'s vote from previous view {}; current view is {}", peer, view, self.cur_view);
+            pf_debug!(self.id; "got replica {}'s vote from previous view {}; current view is {} - this is possibly because we got enough votes", peer, view, self.cur_view);
             return Ok(());
-        }
-
-        if let Some(blk) = self.insts.get(&part_qc.hash) {
-            if blk.sign.is_some() {
-                // we already have enough signatures, skipping
-                return Ok(());
-            }
         }
 
         if !self
@@ -619,6 +675,27 @@ impl HotStuffReplica {
         }
 
         self.store_vote(peer, view, part_qc).await?;
+
+        Ok(())
+    }
+
+    async fn handle_new_view_msg(
+        &mut self,
+        peer: ReplicaId,
+        view: ViewId,
+        generic_qc: Option<QuorumCert>,
+    ) -> Result<(), SummersetError> {
+        // let generic_qc_ref = generic_qc.as_ref();
+        if view % self.population as ViewId != self.id as ViewId {
+            return logged_err!(self.id; "got new view message for another leader from replica {}, the view is {}", peer, view);
+        }
+
+        if view < self.cur_view {
+            pf_debug!(self.id; "got replica {}'s new view message from previous view {}; current view is {} - this is possibly because we have got enough new views", peer, view, self.cur_view);
+            return Ok(());
+        }
+
+        self.store_new_view(view, generic_qc).await?;
 
         Ok(())
     }
@@ -654,8 +731,8 @@ impl HotStuffReplica {
         // }
         inst.execed[cmd_idx] = true;
 
-        let (client, req_id) = &inst.reqs[cmd_idx]; 
-        pf_info!(self.id; "Sending reply for {}-{}: {:?}", client, req_id, cmd_result);
+        let (client, req_id) = &inst.reqs[cmd_idx];
+        // This may return error if the client disconnected because it has received enough replies
         self.external_api
             .as_mut()
             .unwrap()
@@ -669,6 +746,68 @@ impl HotStuffReplica {
             .await?;
 
         Ok(())
+    }
+
+    async fn handle_timeout(&mut self) -> Result<(), SummersetError> {
+        // advance view
+        self.advance_view();
+
+        let next_leader = ((self.cur_view) % self.population as u64) as u8;
+        if next_leader == self.id {
+            self.store_new_view(self.cur_view, self.generic_qc.clone())
+                .await?;
+        } else {
+            // create a new view message
+            let new_view_msg = QuorumMsg::NewView {
+                view: self.cur_view,
+                generic_qc: self.generic_qc.clone(),
+            };
+
+            // send new view message to the next leader
+            let mut target = ReplicaMap::new(self.population, false)?;
+            target.set(next_leader, true)?;
+            self.transport_hub
+                .as_mut()
+                .unwrap()
+                .send_msg(new_view_msg, target)
+                .await?;
+        }
+
+        Ok(())
+    }
+}
+
+// implementation for pacemaker thread
+impl HotStuffReplica {
+    async fn pacemaker(
+        population: u8,
+        nfaulty: u8,
+        init_timeout: Duration,
+        new_blk_notif: Arc<Notify>,
+        timeout_notif: Arc<Notify>,
+    ) {
+        let mut timeout = init_timeout;
+        let mut cur_leader = 0;
+        let mut replicas = ReplicaMap::new(population, false).unwrap();
+        loop {
+            tokio::select! {
+                _notif = new_blk_notif.notified() => {
+                    // reset timeout
+                    replicas.set(cur_leader, false).unwrap();
+                    cur_leader = (cur_leader + 1) % population;
+                },
+                _notif = time::sleep(timeout) => {
+                    // inform the main thread about timeout
+                    timeout_notif.notify_waiters();
+                    // exponential backoff
+                    replicas.set(cur_leader, true).unwrap();
+                    if replicas.count() > nfaulty as usize {
+                        timeout = timeout * 2;
+                    }
+                    cur_leader = (cur_leader + 1) % population;
+                }
+            }
+        }
     }
 }
 
@@ -747,6 +886,7 @@ impl GenericReplica for HotStuffReplica {
             insts: HashMap::new(),
             pending_prop: HashMap::new(),
             pending_votes: HashMap::new(),
+            pending_new_view: HashMap::new(),
             log: vec![],
             exec_offset: (0, 0),
             pub_key: None,
@@ -755,6 +895,8 @@ impl GenericReplica for HotStuffReplica {
             sec_key_share: None,
             generic_qc: None,
             locked_qc: None,
+            new_blk_notif: Arc::new(Notify::new()),
+            timeout_notif: Arc::new(Notify::new()),
         })
     }
 
@@ -861,6 +1003,15 @@ impl GenericReplica for HotStuffReplica {
     }
 
     async fn run(&mut self) {
+        // start pacemaker
+        tokio::spawn(Self::pacemaker(
+            self.population,
+            self.nfaulty,
+            Duration::from_secs(self.config.base_timeout),
+            self.new_blk_notif.clone(),
+            self.timeout_notif.clone(),
+        ));
+
         if self.id == 0 {
             match self.do_propose(None).await {
                 Ok(blk_hash) => {
@@ -920,6 +1071,11 @@ impl GenericReplica for HotStuffReplica {
                                 pf_error!(self.id; "error handling peer vote: {}", e);
                             }
                         },
+                        QuorumMsg::NewView { view, generic_qc } => {
+                            if let Err(e) = self.handle_new_view_msg(peer, view, generic_qc).await {
+                                pf_error!(self.id; "error handling new view: {}", e);
+                            }
+                        }
                         QuorumMsg::FetchRequest {..} => {
                             if let Err(e) = self.handle_fetch_block().await {
                                 pf_error!(self.id; "error handling peer fetch block: {}", e);
@@ -948,6 +1104,12 @@ impl GenericReplica for HotStuffReplica {
                         pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
+
+                _timeout = self.timeout_notif.notified() => {
+                    if let Err(e) = self.handle_timeout().await {
+                        pf_error!(self.id; "error handling timeout: {}", e);
+                    }
+                }
             }
         }
     }
@@ -1004,7 +1166,6 @@ impl GenericClient for HotStuffClient {
             return logged_err!(id; "empty servers list");
         }
 
-        // TODO: add configurations as needed
         let config = parsed_config!(config_str => ClientConfigHotStuff;
             chan_cap)?;
 
