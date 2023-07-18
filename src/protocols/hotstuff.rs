@@ -1,5 +1,4 @@
 //! Replication protocol: HotStuff
-//! TODO: add pacemaker for liveness
 //! TODO: add storage hub back for persistence
 
 use std::collections::{HashMap, HashSet};
