@@ -162,7 +162,7 @@ pub struct HotStuffReplica {
     cur_view: ViewId,
 
     /// Requests to be processed
-    pending_req: HashSet<(ClientId, RequestId)>,
+    pending_req: Vec<(ClientId, RequestId)>,
 
     /// Requests that have been executed
     executed_req: HashSet<(ClientId, RequestId)>,
@@ -487,7 +487,7 @@ impl HotStuffReplica {
             // requests will be committed, remove them from pending queue
             if let Some(blk) = self.insts.get(&hash) {
                 for req in blk.reqs.iter() {
-                    self.pending_req.remove(req);
+                    self.pending_req.retain(|pending| pending != req);
                 }
             }
             self.continue_exec().await?;
@@ -509,7 +509,7 @@ impl HotStuffReplica {
         justify: Option<QuorumCert>,
     ) -> Result<String, SummersetError> {
         let proposal: Vec<(ClientId, RequestId)> =
-            self.pending_req.drain().collect();
+            self.pending_req.drain(0..self.pending_req.len()).collect();
         let blk_hash = sha256::digest(
             serde_json::to_string(&(self.cur_view, &proposal)).unwrap(),
         );
@@ -592,7 +592,7 @@ impl HotStuffReplica {
             match req {
                 ApiRequest::Req { id, cmd } => {
                     if !self.executed_req.contains(&(client, id)) {
-                        self.pending_req.insert((client, id));
+                        self.pending_req.push((client, id));
                     }
                     self.req_pool.insert((client, id), cmd);
                 }
@@ -880,7 +880,7 @@ impl GenericReplica for HotStuffReplica {
             // storage_hub: None,
             transport_hub: None,
             cur_view: 0,
-            pending_req: HashSet::new(),
+            pending_req: vec![],
             executed_req: HashSet::new(),
             req_pool: HashMap::new(),
             insts: HashMap::new(),
