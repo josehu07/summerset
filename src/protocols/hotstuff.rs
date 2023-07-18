@@ -32,6 +32,22 @@ use threshold_crypto::{
 pub type ViewId = u64;
 pub type Node = Vec<(ClientId, RequestId)>;
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum FaultyType {
+    Correct,
+    Benign,
+    Malicious,
+}
+
+pub fn get_faulty_type(ftype: &str) -> Option<FaultyType> {
+    match ftype {
+        "correct" => Some(FaultyType::Correct),
+        "benign" => Some(FaultyType::Benign),
+        "malicious" => Some(FaultyType::Malicious),
+        _ => None,
+    }
+}
+
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ReplicaConfigHotStuff {
@@ -49,6 +65,9 @@ pub struct ReplicaConfigHotStuff {
 
     /// Initial timeout in seconds.
     pub base_timeout: u64,
+
+    /// Faulty type
+    pub faulty_type: String,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -60,6 +79,7 @@ impl Default for ReplicaConfigHotStuff {
             base_chan_cap: 1000,
             api_chan_cap: 10000,
             base_timeout: 10,
+            faulty_type: "correct".into(),
         }
     }
 }
@@ -133,6 +153,9 @@ pub struct HotStuffReplica {
 
     /// Maximum number of faulty nodes
     nfaulty: u8,
+
+    /// The faulty type of this replica
+    ftype: FaultyType,
 
     /// Address string for peer-to-peer connections.
     smr_addr: SocketAddr,
@@ -550,7 +573,7 @@ impl HotStuffReplica {
         let new_views = self.pending_new_view.entry(view).or_insert(vec![]);
         new_views.push(generic_qc);
 
-        if new_views.len() > (self.population - self.nfaulty) as usize {
+        if new_views.len() >= (self.population - self.nfaulty) as usize {
             let mut high_qc: &Option<QuorumCert> = &None;
             for new_view in new_views {
                 let view_num = new_view.as_ref().map_or(0, |qc| qc.view);
@@ -779,6 +802,7 @@ impl HotStuffReplica {
 // implementation for pacemaker thread
 impl HotStuffReplica {
     async fn pacemaker(
+        id: u8,
         population: u8,
         nfaulty: u8,
         init_timeout: Duration,
@@ -797,6 +821,7 @@ impl HotStuffReplica {
                 },
                 _notif = time::sleep(timeout) => {
                     // inform the main thread about timeout
+                    pf_error!(id; "timeout waiting for the new block");
                     timeout_notif.notify_waiters();
                     // exponential backoff
                     replicas.set(cur_leader, true).unwrap();
@@ -842,7 +867,7 @@ impl GenericReplica for HotStuffReplica {
 
         let config = parsed_config!(config_str => ReplicaConfigHotStuff;
             batch_interval_us, backer_path,
-            base_chan_cap, api_chan_cap)?;
+            base_chan_cap, api_chan_cap, faulty_type)?;
 
         if config.batch_interval_us == 0 {
             return logged_err!(
@@ -866,10 +891,25 @@ impl GenericReplica for HotStuffReplica {
             );
         }
 
+        let faulty_type = match get_faulty_type(&config.faulty_type) {
+            Some(ftype) => ftype,
+            None => {
+                return logged_err!(id; "invalid config.faulty_type {}", config.faulty_type)
+            }
+        };
+
+        let nfaulty = (population - 1) / 3;
+        let ftype = if id < population - nfaulty {
+            FaultyType::Correct
+        } else {
+            faulty_type
+        };
+
         Ok(HotStuffReplica {
             id,
             population,
-            nfaulty: (population - 1) / 3,
+            nfaulty,
+            ftype,
             smr_addr,
             api_addr,
             config,
@@ -1003,13 +1043,16 @@ impl GenericReplica for HotStuffReplica {
 
     async fn run(&mut self) {
         // start pacemaker
-        tokio::spawn(Self::pacemaker(
-            self.population,
-            self.nfaulty,
-            Duration::from_secs(self.config.base_timeout),
-            self.new_blk_notif.clone(),
-            self.timeout_notif.clone(),
-        ));
+        if self.ftype == FaultyType::Correct {
+            tokio::spawn(Self::pacemaker(
+                self.id,
+                self.population,
+                self.nfaulty,
+                Duration::from_secs(self.config.base_timeout),
+                self.new_blk_notif.clone(),
+                self.timeout_notif.clone(),
+            ));
+        }
 
         if self.id == 0 {
             match self.do_propose(None).await {
@@ -1054,42 +1097,52 @@ impl GenericReplica for HotStuffReplica {
 
                 // message from peer
                 msg = self.transport_hub.as_mut().unwrap().recv_msg() => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
-                        continue;
+                    match self.ftype {
+                        FaultyType::Correct => {
+                            if let Err(e) = msg {
+                                pf_error!(self.id; "error receiving peer msg: {}", e);
+                                continue;
+                            }
+                            let (peer, msg) = msg.unwrap();
+                            match msg {
+                                QuorumMsg::Propose { view, proposal, justify } => {
+                                    if let Err(e) = self.handle_propose_msg(peer, view, proposal, justify).await {
+                                        pf_error!(self.id; "error handling peer proposal: {}", e);
+                                    }
+                                },
+                                QuorumMsg::Vote { view, part_qc } => {
+                                    if let Err(e) = self.handle_vote_msg(peer, view, part_qc).await {
+                                        pf_error!(self.id; "error handling peer vote: {}", e);
+                                    }
+                                },
+                                QuorumMsg::NewView { view, generic_qc } => {
+                                    if let Err(e) = self.handle_new_view_msg(peer, view, generic_qc).await {
+                                        pf_error!(self.id; "error handling new view: {}", e);
+                                    }
+                                }
+                                QuorumMsg::FetchRequest {..} => {
+                                    if let Err(e) = self.handle_fetch_block().await {
+                                        pf_error!(self.id; "error handling peer fetch block: {}", e);
+                                    }
+                                },
+                                QuorumMsg::DeliverRequest {..} => {
+                                    if let Err(e) = self.handle_deliver_block().await {
+                                        pf_error!(self.id; "error handling peer deliver block: {}", e);
+                                    }
+                                }
+                                _ => {
+                                    pf_error!(self.id; "got unexpected message: {:?}", msg);
+                                }
+                            }
+                        },
+                        FaultyType::Benign => {
+                            // Do nothing
+                            continue;
+                        },
+                        FaultyType::Malicious => {
+                            todo!();
+                        }
                     }
-                    let (peer, msg) = msg.unwrap();
-                    match msg {
-                        QuorumMsg::Propose { view, proposal, justify } => {
-                            if let Err(e) = self.handle_propose_msg(peer, view, proposal, justify).await {
-                                pf_error!(self.id; "error handling peer proposal: {}", e);
-                            }
-                        },
-                        QuorumMsg::Vote { view, part_qc } => {
-                            if let Err(e) = self.handle_vote_msg(peer, view, part_qc).await {
-                                pf_error!(self.id; "error handling peer vote: {}", e);
-                            }
-                        },
-                        QuorumMsg::NewView { view, generic_qc } => {
-                            if let Err(e) = self.handle_new_view_msg(peer, view, generic_qc).await {
-                                pf_error!(self.id; "error handling new view: {}", e);
-                            }
-                        }
-                        QuorumMsg::FetchRequest {..} => {
-                            if let Err(e) = self.handle_fetch_block().await {
-                                pf_error!(self.id; "error handling peer fetch block: {}", e);
-                            }
-                        },
-                        QuorumMsg::DeliverRequest {..} => {
-                            if let Err(e) = self.handle_deliver_block().await {
-                                pf_error!(self.id; "error handling peer deliver block: {}", e);
-                            }
-                        }
-                        _ => {
-                            pf_error!(self.id; "got unexpected message: {:?}", msg);
-                        }
-                    }
-
                 }
 
                 // state machine execution result

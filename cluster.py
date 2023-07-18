@@ -13,7 +13,7 @@ def run_process(cmd):
 PROTOCOL_CONFIGS = {
     "RepNothing": lambda r, _: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
-    "HotStuff"  : lambda r, _: f"backer_path='/tmp/summerset.hotstuff.{r}.wal'"
+    "HotStuff"  : lambda r, _: f"backer_path='/tmp/summerset.hotstuff.{r}.wal'+faulty_type='benign'"
 }
 
 
