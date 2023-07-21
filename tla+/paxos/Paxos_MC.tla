@@ -2,7 +2,8 @@
 \* EXTENDS PaxosByHand
 EXTENDS PaxosPlusCal
 
-PermAcceptors == Permutations(Acceptors)
+SymmetricPerms ==      Permutations(Acceptors)
+                  \cup Permutations(Values)
 
 BoundedBallots == 0..2
 
@@ -88,7 +89,7 @@ ConsistencyInv ==
 (******************************)
 chosenValues == {v \in Values: Chosen(v)}
 
-ConsensusModule == INSTANCE Consensus WITH chosen <- chosenValues
+ConsensusModule == INSTANCE ConsensusSingle WITH chosen <- chosenValues
 ConsensusProperty == ConsensusModule!Spec
 
 ====
