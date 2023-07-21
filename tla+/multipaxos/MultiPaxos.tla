@@ -1,7 +1,7 @@
 ---- MODULE MultiPaxos ----
 EXTENDS FiniteSets, Integers, TLC
 
-CONSTANT Proposers, Acceptors, Quorums, Values, NullValue, Ballots, Slots
+CONSTANT Proposers, Acceptors, Quorums, Values, NullValue, Slots, Ballots
 
 ProposersAssumption == IsFiniteSet(Proposers)
 
@@ -15,18 +15,19 @@ ValuesAssumption == /\ IsFiniteSet(Values)
                     /\ Cardinality(Values) >= 2
                     /\ NullValue \notin Values
 
-BallotsAssumption == /\ IsFiniteSet(Ballots)
-                     /\ Ballots \subseteq Nat
-
 SlotsAssumption == /\ IsFiniteSet(Slots)
-                   /\ Slots \subseteq Nat
+                   /\ Slots # {}
+
+BallotsAssumption == /\ IsFiniteSet(Ballots)
+                     /\ Ballots # {}
+                     /\ Ballots \subseteq Nat
 
 ASSUME /\ ProposersAssumption
        /\ AcceptorsAssumption
        /\ QuorumsAssumption
        /\ ValuesAssumption
-       /\ BallotsAssumption
        /\ SlotsAssumption
+       /\ BallotsAssumption
 
 (*--algorithm MultiPaxos
 variable msgs = {},  \* set of all messages that have been sent

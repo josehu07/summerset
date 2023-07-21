@@ -73,7 +73,7 @@ the next-state relation; it describes the possible state changes
 represent their values in the old state and primed variables represent
 their values in the new state.
 *****************************************************************************)
-(*--algorithm Consensus
+(*--algorithm ConsensusSingle
 variable chosen = {};
 
 macro Choose() begin
@@ -89,7 +89,7 @@ begin
     end while;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "27e8df09" /\ chksum(tla) = "4f621891")
+\* BEGIN TRANSLATION (chksum(pcal) = "4d3ad571" /\ chksum(tla) = "4f621891")
 VARIABLE chosen
 
 vars == << chosen >>

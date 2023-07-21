@@ -4,18 +4,21 @@ EXTENDS MultiPaxos
 SymmetricPerms ==      Permutations(Proposers)
                   \cup Permutations(Acceptors)
                   \cup Permutations(Values)
+                  \cup Permutations(Slots)
 
-BoundedBallots == 0..2
-BoundedSlots == 0..1
+ConstBallots == 0..2
+
+----------
 
 (***********************)
 (* Helper definitions. *)
 (***********************)
-ProposedIn(p, v, s, b) == \E m \in msgs: /\ m.type = "2a"
-                                         /\ m.from = p
-                                         /\ m.slot = s
-                                         /\ m.bal = b
-                                         /\ m.val = v
+ProposedIn(v, s, b) == \E m \in msgs: /\ m.type = "2a"
+                                      /\ m.slot = s
+                                      /\ m.bal = b
+                                      /\ m.val = v
+
+Proposed(v, s) == \E b \in Ballots: ProposedIn(v, s, b)
 
 VotedForIn(a, v, s, b) == \E m \in msgs: /\ m.type = "2b"
                                          /\ m.from = a
@@ -30,9 +33,11 @@ ChosenIn(v, s, b) == \E Q \in Quorums: \A a \in Q: VotedForIn(a, v, s, b)
 
 Chosen(v, s) == \E b \in Ballots: ChosenIn(v, s, b)
 
-(***************************)
-(* TypeOK check invariant. *)
-(***************************)
+----------
+
+(*************************)
+(* Type check invariant. *)
+(*************************)
 SlotVotes == [Slots -> [bal: Ballots \cup {-1},
                         val: Values \cup {NullValue}]]
 
@@ -55,57 +60,40 @@ TypeOK == /\ msgs \in SUBSET Messages
           /\ aBallot \in [Acceptors -> Ballots \cup {-1}]
           /\ aVoted \in [Acceptors -> SlotVotes]
 
-(*******************************)
-(* Message validity invariant. *)
-(*******************************)
-SafeAt(v, s, b) ==
-    \A c \in 0..(b-1):
-        \E Q \in Quorums:
-            \A a \in Q: VotedForIn(a, v, s, c) \/ WontVoteIn(a, s, c)
+----------
 
-MessageInv ==
-    \A m \in msgs:
-        /\ (m.type = "1b") => /\ m.bal =< aBallot[m.from]
-                              /\ \A s \in Slots:
-                                    /\ \/ /\ m.voted[s] \in [bal: Ballots, val: Values]
-                                          /\ VotedForIn(m.from, m.voted[s].val, s, m.voted[s].bal)
-                                       \/ m.voted[s] = [bal |-> -1, val |-> NullValue]
-                                    /\ \A c \in (m.voted[s].bal+1)..(m.bal-1):
-                                            ~\E v \in Values: VotedForIn(m.from, v, s, c)
-        /\ (m.type = "2a") => /\ SafeAt(m.val, m.slot, m.bal)
-                              /\ \A ma \in msgs:
-                                    (ma.type = "2a") /\ (ma.slot = m.slot) /\ (ma.bal = m.bal) => (ma.val = m.val)
-        /\ (m.type = "2b") => /\ \E ma \in msgs: /\ ma.type = "2a"
-                                                 /\ ma.slot = m.slot
-                                                 /\ ma.bal = m.bal
-                                                 /\ ma.val = m.val
-                              /\ m.bal =< aVoted[m.from][m.slot].bal
+(*****************************************************************************)
+(* Check that it implements the ConsensusMulti spec. This transitively means *)
+(* that it satisfies the following three properties:                         *)
+(*   - Nontriviality                                                         *)
+(*   - Stability                                                             *)
+(*   - Consistency                                                           *)
+(*                                                                           *)
+(* Only check this property on very small model constants inputs, otherwise  *)
+(* it would take a prohibitively long time due to state bloating.            *)
+(*****************************************************************************)
+proposedValues == [s \in Slots |-> {v \in Values: Proposed(v, s)}]
+proposedSet == UNION {proposedValues[s]: s \in Slots}
 
-(********************************)
-(* Acceptor validity invariant. *)
-(********************************)
-AcceptorInv ==
-    \A a \in Acceptors:
-        \A s \in Slots:
-            /\ (aVoted[a][s].bal = -1) <=> (aVoted[a][s].val = NullValue)
-            /\ aBallot[a] >= aVoted[a][s].bal
-            /\ (aVoted[a][s].bal >= 0) => VotedForIn(a, aVoted[a][s].val, s, aVoted[a][s].bal)
-            /\ \A c \in {b \in Ballots: b > aVoted[a][s].bal}:
-                    ~\E v \in Values: VotedForIn(a, v, s, c)
-
-(************************************)
-(* Consistency condition invariant. *)
-(************************************)
-ConsistencyInv ==
-    \A s \in Slots:
-        \A v1, v2 \in Values: Chosen(v1, s) /\ Chosen(v2, s) => (v1 = v2)
-
-(******************************)
-(* Implements Consensus spec. *)
-(******************************)
 chosenValues == [s \in Slots |-> {v \in Values: Chosen(v, s)}]
 
-ConsensusModule == INSTANCE ConsensusMulti WITH chosen <- chosenValues
-ConsensusProperty == ConsensusModule!Spec
+ConsensusModule == INSTANCE ConsensusMulti WITH proposed <- proposedSet,
+                                                chosen <- chosenValues
+ConsensusSpec == ConsensusModule!Spec
+
+----------
+
+(********************************************************************************)
+(* The non-triviality and consistency properties stated in invariant flavor.    *)
+(*                                                                              *)
+(* Checking invariants takes significantly less time than checking more complex *)
+(* temporal properties. Hence, first check these as invariants on larger        *)
+(* constants inputs, then check the ConsensusSpec property on small inputs.     *)
+(********************************************************************************)
+NontrivialityInv ==
+    \A s \in Slots: \A v \in chosenValues[s]: v \in proposedSet
+
+ConsistencyInv ==
+    \A s \in Slots: Cardinality(chosenValues[s]) <= 1
 
 ====
