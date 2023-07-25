@@ -1,7 +1,16 @@
+(*********************************************************************************)
+(* Multi-decree Paxos with aggregated prepare phase. This spec explicitly models *)
+(* proposers and learners.                                                       *)
+(*                                                                               *)
+(* Useful links:                                                                 *)
+(*   https://arxiv.org/pdf/1606.01387.pdf                                        *)
+(*   https://github.com/tlaplus/Examples/tree/master/specifications/MultiPaxos   *)
+(*********************************************************************************)
+
 ---- MODULE MultiPaxos ----
 EXTENDS FiniteSets, Integers, TLC
 
-CONSTANT Proposers, Acceptors, Quorums, Values, NullValue, Slots, Ballots
+CONSTANT Proposers, Acceptors, Quorums, Learners, Values, NullValue, Slots, Ballots
 
 ProposersAssumption == IsFiniteSet(Proposers)
 
@@ -10,6 +19,8 @@ AcceptorsAssumption == /\ IsFiniteSet(Acceptors)
 
 QuorumsAssumption == /\ Quorums \subseteq SUBSET Acceptors
                      /\ \A Q1, Q2 \in Quorums: Q1 \cap Q2 # {}
+
+LearnersAssumption == IsFiniteSet(Learners)
 
 ValuesAssumption == /\ IsFiniteSet(Values)
                     /\ Cardinality(Values) >= 2
@@ -25,6 +36,7 @@ BallotsAssumption == /\ IsFiniteSet(Ballots)
 ASSUME /\ ProposersAssumption
        /\ AcceptorsAssumption
        /\ QuorumsAssumption
+       /\ LearnersAssumption
        /\ ValuesAssumption
        /\ SlotsAssumption
        /\ BallotsAssumption
@@ -33,9 +45,11 @@ ASSUME /\ ProposersAssumption
 variable msgs = {},  \* set of all messages that have been sent
          pBallot = [p \in Proposers |-> -1],  \* current ballot number of proposer
          aBallot = [a \in Acceptors |-> -1],  \* highest ballot number seen by acceptor
-         aVoted =  [a \in Acceptors |->       \* highest ballot accepted, along with the accepted value, by acceptor at slot
+         aVoted  = [a \in Acceptors |->       \* highest ballot accepted, along with the accepted value, by acceptor at slot
                         [s \in Slots |->
-                            [bal |-> -1, val |-> NullValue]]];
+                            [bal |-> -1, val |-> NullValue]]],
+         proposed = [s \in Slots |-> {}],  \* proposed values for each slot, for model checking purpose
+         learned  = [s \in Slots |-> {}];  \* learned values for each slot, for model checking purpose
 
 \* Send message helper.
 macro Send(m) begin
@@ -81,6 +95,7 @@ macro Phase2a(p) begin
                   slot |-> s,
                   bal |-> pBallot[p],
                   val |-> v]);
+            proposed[s] := proposed[s] \cup {v};
         end with;
     end with;
 end macro;
@@ -96,6 +111,22 @@ macro Phase2b(a) begin
               val |-> m.val]);
         aBallot[a] := m.bal;
         aVoted[a][m.slot] := [bal |-> m.bal, val |-> m.val];
+    end with;
+end macro;
+
+\* Learn a chosen value:
+macro Learn() begin
+    with s \in Slots do
+        await learned[s] = NullValue;
+        with v \in Values do
+            await \E Q \in Quorums:
+                    \A a \in Q:
+                        \E m \in msgs: /\ m.type = "2b"
+                                       /\ m.from = a
+                                       /\ m.slot = s
+                                       /\ m.val = v;
+            learned[s] := learned[s] \cup {v};
+        end with;
     end with;
 end macro;
 
@@ -119,15 +150,22 @@ begin
             Phase2b(self);
         end either;
     end while;
-end process;    
+end process;
+
+process Learner \in Learners
+begin
+    lbl_l: while TRUE do
+        Learn();
+    end while;
+end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "7fbf2417" /\ chksum(tla) = "42333510")
-VARIABLES msgs, pBallot, aBallot, aVoted
+\* BEGIN TRANSLATION (chksum(pcal) = "af798808" /\ chksum(tla) = "672c11c7")
+VARIABLES msgs, pBallot, aBallot, aVoted, proposed, learned
 
-vars == << msgs, pBallot, aBallot, aVoted >>
+vars == << msgs, pBallot, aBallot, aVoted, proposed, learned >>
 
-ProcSet == (Proposers) \cup (Acceptors)
+ProcSet == (Proposers) \cup (Acceptors) \cup (Learners)
 
 Init == (* Global variables *)
         /\ msgs = {}
@@ -136,11 +174,14 @@ Init == (* Global variables *)
         /\ aVoted = [a \in Acceptors |->
                          [s \in Slots |->
                              [bal |-> -1, val |-> NullValue]]]
+        /\ proposed = [s \in Slots |-> {}]
+        /\ learned = [s \in Slots |-> {}]
 
 Proposer(self) == /\ \/ /\ \E b \in Ballots:
                              /\ b > pBallot[self] /\ ~\E m \in msgs: (m.type = "1a") /\ (m.bal = b)
                              /\ msgs' = (msgs \cup {([type |-> "1a", from |-> self, bal |-> b])})
                              /\ pBallot' = [pBallot EXCEPT ![self] = b]
+                        /\ UNCHANGED proposed
                      \/ /\ \E s \in Slots:
                              /\ ~\E m \in msgs: (m.type = "2a") /\ (m.slot = s) /\ (m.bal = pBallot[self])
                              /\ \E v \in Values:
@@ -157,8 +198,9 @@ Proposer(self) == /\ \/ /\ \E b \in Ballots:
                                                            slot |-> s,
                                                            bal |-> pBallot[self],
                                                            val |-> v])})
+                                  /\ proposed' = [proposed EXCEPT ![s] = proposed[s] \cup {v}]
                         /\ UNCHANGED pBallot
-                  /\ UNCHANGED << aBallot, aVoted >>
+                  /\ UNCHANGED << aBallot, aVoted, learned >>
 
 Acceptor(self) == /\ \/ /\ \E m \in msgs:
                              /\ (m.type = "1a") /\ (m.bal > aBallot[self])
@@ -177,10 +219,23 @@ Acceptor(self) == /\ \/ /\ \E m \in msgs:
                                                       val |-> m.val])})
                              /\ aBallot' = [aBallot EXCEPT ![self] = m.bal]
                              /\ aVoted' = [aVoted EXCEPT ![self][m.slot] = [bal |-> m.bal, val |-> m.val]]
-                  /\ UNCHANGED pBallot
+                  /\ UNCHANGED << pBallot, proposed, learned >>
+
+Learner(self) == /\ \E s \in Slots:
+                      /\ learned[s] = NullValue
+                      /\ \E v \in Values:
+                           /\ \E Q \in Quorums:
+                                \A a \in Q:
+                                    \E m \in msgs: /\ m.type = "2b"
+                                                   /\ m.from = a
+                                                   /\ m.slot = s
+                                                   /\ m.val = v
+                           /\ learned' = [learned EXCEPT ![s] = learned[s] \cup {v}]
+                 /\ UNCHANGED << msgs, pBallot, aBallot, aVoted, proposed >>
 
 Next == (\E self \in Proposers: Proposer(self))
            \/ (\E self \in Acceptors: Acceptor(self))
+           \/ (\E self \in Learners: Learner(self))
 
 Spec == Init /\ [][Next]_vars
 

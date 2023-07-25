@@ -119,9 +119,9 @@ Spec == Init /\ [][Next]_vars
 TypeOK == /\ chosen \subseteq Values
           /\ IsFiniteSet(chosen) 
 
-Inv == /\ TypeOK
-       /\ Cardinality(chosen) \leq 1
-\* provable: Spec => []Inv
+ConsistencyInv == Cardinality(chosen) =< 1
+
+THEOREM Spec => [](TypeOK /\ ConsistencyInv)
 
 ----------
 
@@ -136,6 +136,7 @@ Inv == /\ TypeOK
 LiveSpec == Spec /\ WF_vars(Next)
 
 Success == <>(chosen # {})
-\* provable: LiveSpec => Success
+
+THEOREM LiveSpec => Success
 
 ====

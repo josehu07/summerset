@@ -6,7 +6,7 @@ SymmetricPerms ==      Permutations(Proposers)
                   \cup Permutations(Values)
                   \cup Permutations(Slots)
 
-ConstBallots == 0..2
+ConstBallots == 0..1
 
 ----------
 
@@ -32,6 +32,14 @@ WontVoteIn(a, s, b) == /\ \A v \in Values: ~VotedForIn(a, v, s, b)
 ChosenIn(v, s, b) == \E Q \in Quorums: \A a \in Q: VotedForIn(a, v, s, b)
 
 Chosen(v, s) == \E b \in Ballots: ChosenIn(v, s, b)
+
+proposedValues == [s \in Slots |-> {v \in Values: Proposed(v, s)}]
+proposedSet == UNION {proposedValues[s]: s \in Slots}
+
+chosenValues == [s \in Slots |-> {v \in Values: Chosen(v, s)}]
+
+THEOREM Spec => [](/\ proposed = proposedValues
+                   /\ \A s \in Slots: learned[s] \subseteq chosenValues[s])
 
 ----------
 
@@ -59,6 +67,10 @@ TypeOK == /\ msgs \in SUBSET Messages
           /\ pBallot \in [Proposers -> Ballots \cup {-1}]
           /\ aBallot \in [Acceptors -> Ballots \cup {-1}]
           /\ aVoted \in [Acceptors -> SlotVotes]
+          /\ proposed \in [Slots -> SUBSET Values]
+          /\ learned \in [Slots -> SUBSET Values]
+
+THEOREM Spec => []TypeOK
 
 ----------
 
@@ -72,28 +84,28 @@ TypeOK == /\ msgs \in SUBSET Messages
 (* Only check this property on very small model constants inputs, otherwise  *)
 (* it would take a prohibitively long time due to state bloating.            *)
 (*****************************************************************************)
-proposedValues == [s \in Slots |-> {v \in Values: Proposed(v, s)}]
-proposedSet == UNION {proposedValues[s]: s \in Slots}
-
-chosenValues == [s \in Slots |-> {v \in Values: Chosen(v, s)}]
-
 ConsensusModule == INSTANCE ConsensusMulti WITH proposed <- proposedSet,
-                                                chosen <- chosenValues
+                                                chosen <- learned
 ConsensusSpec == ConsensusModule!Spec
+
+THEOREM Spec => ConsensusSpec
 
 ----------
 
 (********************************************************************************)
 (* The non-triviality and consistency properties stated in invariant flavor.    *)
+(* The stability property cannot be stated as an invariant.                     *)
 (*                                                                              *)
 (* Checking invariants takes significantly less time than checking more complex *)
 (* temporal properties. Hence, first check these as invariants on larger        *)
 (* constants inputs, then check the ConsensusSpec property on small inputs.     *)
 (********************************************************************************)
 NontrivialityInv ==
-    \A s \in Slots: \A v \in chosenValues[s]: v \in proposedSet
+    \A s \in Slots: \A v \in learned[s]: v \in proposed[s]
 
 ConsistencyInv ==
-    \A s \in Slots: Cardinality(chosenValues[s]) <= 1
+    \A s \in Slots: Cardinality(learned[s]) =< 1
+
+THEOREM Spec => [](NontrivialityInv /\ ConsistencyInv)
 
 ====
