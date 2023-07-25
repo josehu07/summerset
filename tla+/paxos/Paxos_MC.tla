@@ -28,7 +28,7 @@ Chosen(v) == \E b \in Ballots : ChosenIn(v, b)
 Messages ==      [type: {"1a"}, bal: Ballots]
             \cup [type: {"1b"}, bal: Ballots,
                                 maxAccepted: Ballots \cup {-1},
-                                valAccepted: Values \cup {NullValue},
+                                valAccepted: Values \cup {0},
                                 acceptor: Acceptors]
             \cup [type: {"2a"}, bal: Ballots,
                                 val: Values]
@@ -39,7 +39,7 @@ Messages ==      [type: {"1a"}, bal: Ballots]
 TypeOK == /\ msgs \in SUBSET Messages
           /\ maxPrepared \in [Acceptors -> Ballots \cup {-1}]
           /\ maxAccepted \in [Acceptors -> Ballots \cup {-1}]
-          /\ valAccepted \in [Acceptors -> Values \cup {NullValue}]
+          /\ valAccepted \in [Acceptors -> Values \cup {0}]
 
 (*******************************)
 (* Message validity invariant. *)
@@ -56,7 +56,7 @@ MessageInv ==
                                     /\ m.valAccepted \in Values
                                     /\ VotedForIn(m.acceptor, m.valAccepted, m.maxAccepted)
                                  \/ /\ m.maxAccepted = -1
-                                    /\ m.valAccepted = NullValue
+                                    /\ m.valAccepted = 0
                               /\ \A c \in (m.maxAccepted+1)..(m.bal-1):
                                     ~\E v \in Values: VotedForIn(m.acceptor, v, c)
         /\ (m.type = "2a") => /\ SafeAt(m.val, m.bal)
@@ -72,7 +72,7 @@ MessageInv ==
 (********************************)
 AcceptorInv ==
     \A a \in Acceptors:
-        /\ (maxAccepted[a] = -1) <=> (valAccepted[a] = NullValue)
+        /\ (maxAccepted[a] = -1) <=> (valAccepted[a] = 0)
         /\ maxPrepared[a] >= maxAccepted[a]
         /\ (maxAccepted[a] >= 0) => VotedForIn(a, valAccepted[a], maxAccepted[a])
         /\ \A c \in {b \in Ballots: b > maxAccepted[a]}:

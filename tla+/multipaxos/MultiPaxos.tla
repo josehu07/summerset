@@ -10,7 +10,7 @@
 ---- MODULE MultiPaxos ----
 EXTENDS FiniteSets, Integers, TLC
 
-CONSTANT Proposers, Acceptors, Quorums, Learners, Values, NullValue, Slots, Ballots
+CONSTANT Proposers, Acceptors, Quorums, Learners, Values, Slots, Ballots
 
 ProposersAssumption == IsFiniteSet(Proposers)
 
@@ -24,7 +24,7 @@ LearnersAssumption == IsFiniteSet(Learners)
 
 ValuesAssumption == /\ IsFiniteSet(Values)
                     /\ Cardinality(Values) >= 2
-                    /\ NullValue \notin Values
+                    /\ 0 \notin Values
 
 SlotsAssumption == /\ IsFiniteSet(Slots)
                    /\ Slots # {}
@@ -47,7 +47,7 @@ variable msgs = {},  \* set of all messages that have been sent
          aBallot = [a \in Acceptors |-> -1],  \* highest ballot number seen by acceptor
          aVoted  = [a \in Acceptors |->       \* highest ballot accepted, along with the accepted value, by acceptor at slot
                         [s \in Slots |->
-                            [bal |-> -1, val |-> NullValue]]],
+                            [bal |-> -1, val |-> 0]]],
          proposed = [s \in Slots |-> {}],  \* proposed values for each slot, for model checking purpose
          learned  = [s \in Slots |-> {}];  \* learned values for each slot, for model checking purpose
 
@@ -78,25 +78,23 @@ macro Phase1b(a) begin
 end macro;
 
 \* Phase 2a:
-macro Phase2a(p) begin
-    with s \in Slots do
-        await ~\E m \in msgs: (m.type = "2a") /\ (m.slot = s) /\ (m.bal = pBallot[p]);
-        with v \in Values do
-            await \E Q \in Quorums:
-                    \E MS \in SUBSET {m \in msgs: (m.type = "1b") /\ (m.bal = pBallot[p])}:
-                        /\ \A a \in Q:
-                            \E m \in MS: m.from = a
-                        /\ \/ \A m \in MS: m.voted[s].bal = -1
-                           \/ \E c \in 0..(pBallot[p]-1):
-                                /\ \A m \in MS: m.voted[s].bal =< c
-                                /\ \E m \in MS: m.voted[s] = [bal |-> c, val |-> v];
-            Send([type |-> "2a",
-                  from |-> p,
-                  slot |-> s,
-                  bal |-> pBallot[p],
-                  val |-> v]);
-            proposed[s] := proposed[s] \cup {v};
-        end with;
+macro Phase2a(p, s) begin
+    await ~\E m \in msgs: (m.type = "2a") /\ (m.slot = s) /\ (m.bal = pBallot[p]);
+    with v \in Values do
+        await \E Q \in Quorums:
+                \E MS \in SUBSET {m \in msgs: (m.type = "1b") /\ (m.bal = pBallot[p])}:
+                    /\ \A a \in Q:
+                        \E m \in MS: m.from = a
+                    /\ \/ \A m \in MS: m.voted[s].bal = -1
+                       \/ \E c \in 0..(pBallot[p]-1):
+                            /\ \A m \in MS: m.voted[s].bal =< c
+                            /\ \E m \in MS: m.voted[s] = [bal |-> c, val |-> v];
+        Send([type |-> "2a",
+              from |-> p,
+              slot |-> s,
+              bal |-> pBallot[p],
+              val |-> v]);
+        proposed[s] := proposed[s] \cup {v};
     end with;
 end macro;
 
@@ -117,7 +115,7 @@ end macro;
 \* Learn a chosen value:
 macro Learn() begin
     with s \in Slots do
-        await learned[s] = NullValue;
+        await learned[s] = {};
         with v \in Values do
             await \E Q \in Quorums:
                     \A a \in Q:
@@ -136,7 +134,9 @@ begin
         either
             Phase1a(self);
         or
-            Phase2a(self);
+            with s \in Slots do
+                Phase2a(self, s);
+            end with;
         end either;
     end while;
 end process;
@@ -160,7 +160,7 @@ begin
 end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "af798808" /\ chksum(tla) = "672c11c7")
+\* BEGIN TRANSLATION (chksum(pcal) = "d4513032" /\ chksum(tla) = "28008c19")
 VARIABLES msgs, pBallot, aBallot, aVoted, proposed, learned
 
 vars == << msgs, pBallot, aBallot, aVoted, proposed, learned >>
@@ -173,7 +173,7 @@ Init == (* Global variables *)
         /\ aBallot = [a \in Acceptors |-> -1]
         /\ aVoted = [a \in Acceptors |->
                          [s \in Slots |->
-                             [bal |-> -1, val |-> NullValue]]]
+                             [bal |-> -1, val |-> 0]]]
         /\ proposed = [s \in Slots |-> {}]
         /\ learned = [s \in Slots |-> {}]
 
@@ -222,7 +222,7 @@ Acceptor(self) == /\ \/ /\ \E m \in msgs:
                   /\ UNCHANGED << pBallot, proposed, learned >>
 
 Learner(self) == /\ \E s \in Slots:
-                      /\ learned[s] = NullValue
+                      /\ learned[s] = {}
                       /\ \E v \in Values:
                            /\ \E Q \in Quorums:
                                 \A a \in Q:

@@ -9,7 +9,7 @@
 ---- MODULE PaxosPlusCal ----
 EXTENDS Integers, FiniteSets, TLC
 
-CONSTANT Acceptors, Quorums, Values, NullValue, Ballots
+CONSTANT Acceptors, Quorums, Values, Ballots
 
 AcceptorsAssumption == /\ IsFiniteSet(Acceptors)
                        /\ Cardinality(Acceptors) >= 3
@@ -19,7 +19,7 @@ QuorumsAssumption == /\ Quorums \subseteq SUBSET Acceptors
 
 ValuesAssumption == /\ IsFiniteSet(Values)
                     /\ Cardinality(Values) >= 2
-                    /\ NullValue \notin Values
+                    /\ 0 \notin Values
 
 BallotsAssumption == /\ IsFiniteSet(Ballots)
                      /\ Ballots \subseteq Nat
@@ -33,7 +33,7 @@ ASSUME /\ AcceptorsAssumption
 variable msgs = {},
          maxPrepared = [a \in Acceptors |-> -1],
          maxAccepted = [a \in Acceptors |-> -1],
-         valAccepted = [a \in Acceptors |-> NullValue];
+         valAccepted = [a \in Acceptors |-> 0];
 
 \* Send message helper.
 macro Send(m) begin
@@ -119,7 +119,7 @@ begin
 end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "e0e9ea61" /\ chksum(tla) = "427badc4")
+\* BEGIN TRANSLATION (chksum(pcal) = "137571c1" /\ chksum(tla) = "58a0c612")
 VARIABLES msgs, maxPrepared, maxAccepted, valAccepted
 
 vars == << msgs, maxPrepared, maxAccepted, valAccepted >>
@@ -130,7 +130,7 @@ Init == (* Global variables *)
         /\ msgs = {}
         /\ maxPrepared = [a \in Acceptors |-> -1]
         /\ maxAccepted = [a \in Acceptors |-> -1]
-        /\ valAccepted = [a \in Acceptors |-> NullValue]
+        /\ valAccepted = [a \in Acceptors |-> 0]
 
 Proposer == /\ \/ /\ \E b \in Ballots:
                        /\ ~\E m \in msgs: (m.type = "1a") /\ (m.bal = b)

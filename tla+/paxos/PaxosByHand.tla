@@ -9,7 +9,7 @@
 ---- MODULE PaxosByHand ----
 EXTENDS Integers, FiniteSets, TLC
 
-CONSTANT Acceptors, Quorums, Values, NullValue, Ballots
+CONSTANT Acceptors, Quorums, Values, Ballots
 
 AcceptorsAssumption == /\ IsFiniteSet(Acceptors)
                        /\ Cardinality(Acceptors) >= 3
@@ -19,7 +19,7 @@ QuorumsAssumption == /\ Quorums \subseteq SUBSET Acceptors
 
 ValuesAssumption == /\ IsFiniteSet(Values)
                     /\ Cardinality(Values) >= 2
-                    /\ NullValue \notin Values
+                    /\ 0 \notin Values
 
 BallotsAssumption == /\ IsFiniteSet(Ballots)
                      /\ Ballots \subseteq Nat
@@ -47,7 +47,7 @@ Send(m) == msgs' = msgs \cup {m}
 Init == /\ msgs = {}
         /\ maxPrepared = [a \in Acceptors |-> -1]
         /\ maxAccepted = [a \in Acceptors |-> -1]
-        /\ valAccepted = [a \in Acceptors |-> NullValue]
+        /\ valAccepted = [a \in Acceptors |-> 0]
 
 (************************************************************************)
 (* Phase 1a: A leader selects a ballot number b and sends a 1a message  *)

@@ -3,6 +3,7 @@ EXTENDS MultiPaxos
 
 SymmetricPerms ==      Permutations(Proposers)
                   \cup Permutations(Acceptors)
+                  \cup Permutations(Learners)
                   \cup Permutations(Values)
                   \cup Permutations(Slots)
 
@@ -47,7 +48,7 @@ THEOREM Spec => [](/\ proposed = proposedValues
 (* Type check invariant. *)
 (*************************)
 SlotVotes == [Slots -> [bal: Ballots \cup {-1},
-                        val: Values \cup {NullValue}]]
+                        val: Values \cup {0}]]
 
 Messages ==      [type: {"1a"}, from: Proposers,
                                 bal: Ballots]
