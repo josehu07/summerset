@@ -4,8 +4,11 @@ EXTENDS Crossword
 SymmetricPerms ==      Permutations(Replicas)
                   \cup Permutations(Values)
                   \cup Permutations(Slots)
+                  \cup Permutations(Shards)
 
-ConstBallots == 0..2
+ConstBallots == 0..1
+ConstNumDataShards == 2
+ConstMaxFaults == 1
 
 ----------
 
@@ -16,7 +19,7 @@ StatusSet == {"", "Preparing", "Accepting", "Learned"}
 
 SlotVotes == [Slots -> [bal: Ballots \cup {-1},
                         val: Values \cup {0},
-                        shards: {{}}]]
+                        shards: SUBSET Shards]]
 
 Messages ==      [type: {"Prepare"}, from: Replicas,
                                      bal: Ballots]
@@ -28,12 +31,12 @@ Messages ==      [type: {"Prepare"}, from: Replicas,
                                     slot: Slots,
                                     bal: Ballots,
                                     val: Values,
-                                    shards: {{}}]
+                                    shards: SUBSET Shards]
             \cup [type: {"AcceptReply"}, from: Replicas,
                                          slot: Slots,
                                          bal: Ballots,
                                          val: Values,
-                                         shards: {{}}]
+                                         shards: SUBSET Shards]
 
 TypeOK == /\ msgs \in SUBSET Messages
           /\ lBallot \in [Replicas -> Ballots \cup {-1}]

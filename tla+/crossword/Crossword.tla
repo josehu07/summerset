@@ -5,7 +5,9 @@
 ---- MODULE Crossword ----
 EXTENDS FiniteSets, Integers, TLC
 
-CONSTANT Replicas, Values, Slots, Ballots
+CONSTANT Replicas, Values, Slots, Ballots, Shards, NumDataShards, MaxFaults
+
+MajorityNum == (Cardinality(Replicas) \div 2) + 1
 
 ReplicasAssumption == /\ IsFiniteSet(Replicas)
                       /\ Cardinality(Replicas) >= 3
@@ -21,10 +23,22 @@ BallotsAssumption == /\ IsFiniteSet(Ballots)
                      /\ Ballots # {}
                      /\ Ballots \subseteq Nat
 
+ShardsAssumption == /\ IsFiniteSet(Shards)
+                    /\ Shards # {}
+
+NumDataShardsAssumption == /\ NumDataShards > 0
+                           /\ NumDataShards =< Cardinality(Shards)
+
+MaxFaultsAssumption == /\ MaxFaults >= 0
+                       /\ MaxFaults =< (Cardinality(Replicas) - MajorityNum)
+
 ASSUME /\ ReplicasAssumption
        /\ ValuesAssumption
        /\ SlotsAssumption
        /\ BallotsAssumption
+       /\ ShardsAssumption
+       /\ NumDataShardsAssumption
+       /\ MaxFaultsAssumption
 
 (*--algorithm Crossword
 variable msgs = {},
@@ -39,22 +53,33 @@ variable msgs = {},
          learned = [s \in Slots |-> {}];
 
 define
-    \* Majority quorum size.
-    MajorityNum == (Cardinality(Replicas) \div 2) + 1
-
-    \* The set of all valid shard assignments.
-    ValidAssignments == {[r \in Replicas |-> {}]}
+    \* Set of all valid shard assignments.
+    Assignments ==
+        {assign \in [Replicas -> SUBSET Shards]:
+            \A group \in {g \in SUBSET Replicas:
+                            Cardinality(g) >= Cardinality(Replicas) - MaxFaults}:
+                LET CoverageSet == {assign[r]: r \in group}
+                IN Cardinality(UNION CoverageSet) >= NumDataShards}
 
     \* Is v a safely prepared value given the prepare reply pattern and ballot?
     IsPreparedIn(v, prPat, pBal) ==
-        /\ Cardinality(prPat) = MajorityNum
-        /\ \/ \A pr \in prPat: pr.vBal = -1
-           \/ \E c \in 0..(pBal-1):
+        \/ /\ Cardinality(prPat) >= MajorityNum
+           /\ \A pr \in prPat: pr.vBal = -1
+        \/ /\ Cardinality(prPat) >= MajorityNum
+           /\ \E c \in 0..(pBal-1):
                 /\ \A pr \in prPat: pr.vBal =< c
                 /\ \E pr \in prPat: pr.vBal = c /\ pr.vVal = v
+                /\ LET CoverageSet == {pr.vShards: pr \in {pra \in prPat: pra.vVal = v}}
+                   IN Cardinality(UNION CoverageSet) >= NumDataShards
+        \/ Cardinality(prPat) >= Cardinality(Replicas) - MaxFaults
 
     \* Does the given accept reply pattern decide a value to be chosen?
-    DecidesChosen(arPat) == Cardinality(arPat) = MajorityNum
+    DecidesChosen(arPat) ==
+        /\ Cardinality(arPat) >= MajorityNum
+        /\ \A group \in {g \in SUBSET arPat:
+                            Cardinality(g) >= Cardinality(arPat) - MaxFaults}:
+                LET CoverageSet == {ar.aShards: ar \in group}
+                IN Cardinality(UNION CoverageSet) >= NumDataShards
 end define;
 
 \* Send message helpers.
@@ -108,7 +133,7 @@ macro Accept(r, s) begin
                                vVal |-> m.voted[s].val,
                                vShards |-> m.voted[s].shards]: m \in MS} IN 
                     IsPreparedIn(v, prPat, lBallot[r]);
-        with assign \in ValidAssignments do
+        with assign \in Assignments do
             SendAll({[type |-> "Accept",
                       from |-> r,
                       to |-> rt,
@@ -182,25 +207,36 @@ begin
 end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "fdb7081d" /\ chksum(tla) = "92789b6b")
+\* BEGIN TRANSLATION (chksum(pcal) = "cd5345bf" /\ chksum(tla) = "d5ffbd5a")
 VARIABLES msgs, lBallot, lStatus, rBallot, rVoted, proposed, learned
 
 (* define statement *)
-MajorityNum == (Cardinality(Replicas) \div 2) + 1
-
-
-ValidAssignments == {[r \in Replicas |-> {}]}
+Assignments ==
+    {assign \in [Replicas -> SUBSET Shards]:
+        \A group \in {g \in SUBSET Replicas:
+                        Cardinality(g) >= Cardinality(Replicas) - MaxFaults}:
+            LET CoverageSet == {assign[r]: r \in group}
+            IN Cardinality(UNION CoverageSet) >= NumDataShards}
 
 
 IsPreparedIn(v, prPat, pBal) ==
-    /\ Cardinality(prPat) = MajorityNum
-    /\ \/ \A pr \in prPat: pr.vBal = -1
-       \/ \E c \in 0..(pBal-1):
+    \/ /\ Cardinality(prPat) >= MajorityNum
+       /\ \A pr \in prPat: pr.vBal = -1
+    \/ /\ Cardinality(prPat) >= MajorityNum
+       /\ \E c \in 0..(pBal-1):
             /\ \A pr \in prPat: pr.vBal =< c
             /\ \E pr \in prPat: pr.vBal = c /\ pr.vVal = v
+            /\ LET CoverageSet == {pr.vShards: pr \in {pra \in prPat: pra.vVal = v}}
+               IN Cardinality(UNION CoverageSet) >= NumDataShards
+    \/ Cardinality(prPat) >= Cardinality(Replicas) - MaxFaults
 
 
-DecidesChosen(arPat) == Cardinality(arPat) = MajorityNum
+DecidesChosen(arPat) ==
+    /\ Cardinality(arPat) >= MajorityNum
+    /\ \A group \in {g \in SUBSET arPat:
+                        Cardinality(g) >= Cardinality(arPat) - MaxFaults}:
+            LET CoverageSet == {ar.aShards: ar \in group}
+            IN Cardinality(UNION CoverageSet) >= NumDataShards
 
 
 vars == << msgs, lBallot, lStatus, rBallot, rVoted, proposed, learned >>
@@ -246,7 +282,7 @@ Replica(self) == \/ /\ \E b \in Ballots:
                                                   vVal |-> m.voted[s].val,
                                                   vShards |-> m.voted[s].shards]: m \in MS} IN
                                        IsPreparedIn(v, prPat, lBallot[self])
-                              /\ \E assign \in ValidAssignments:
+                              /\ \E assign \in Assignments:
                                    msgs' = (msgs \cup ({[type |-> "Accept",
                                                          from |-> self,
                                                          to |-> rt,
