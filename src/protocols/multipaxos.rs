@@ -194,7 +194,7 @@ impl MultiPaxosReplica {
         self.transport_hub
             .as_mut()
             .unwrap()
-            .send_msg(
+            .bcast_msg(
                 PushMsg::Push {
                     src_inst_idx: inst_idx,
                     reqs: req_batch,
@@ -258,8 +258,6 @@ impl MultiPaxosReplica {
         // if this instance was pushed from a peer, reply to that peer
         if let Some((peer, src_inst_idx)) = inst.from_peer {
             assert!(inst.pending_peers.count() == 0);
-            let mut target = ReplicaMap::new(self.population, false)?;
-            target.set(peer, true)?;
             self.transport_hub
                 .as_mut()
                 .unwrap()
@@ -268,7 +266,7 @@ impl MultiPaxosReplica {
                         src_inst_idx,
                         num_reqs: inst.reqs.len(),
                     },
-                    target,
+                    peer,
                 )
                 .await?;
         }
