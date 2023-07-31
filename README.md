@@ -63,6 +63,7 @@ cargo run [-r] -p summerset_client -- -h
 
 - [x] event-based programming structure
 - [ ] implementation of MultiPaxos
+  - [ ] separate commit vs. execution responses
   - [ ] state persistence & restart check
   - [ ] automatic leader election, backoffs
   - [ ] snapshotting & garbage collection

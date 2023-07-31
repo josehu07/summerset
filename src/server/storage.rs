@@ -20,17 +20,28 @@ use tokio::task::JoinHandle;
 /// Log action ID type.
 pub type LogActionId = u64;
 
-/// Action command to the logger.
+/// Action command to the logger. File cursor will be positioned at EOF after
+/// every action.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
 
-    /// Append a log entry.
-    Append { entry: Ent, offset: usize },
+    /// Write a log entry to given offset.
+    Write {
+        entry: Ent,
+        offset: usize,
+        sync: bool,
+    },
 
-    /// Truncate the log at and after given index.
+    /// Append a log entry to EOF; this avoids two seeks.
+    Append { entry: Ent, sync: bool },
+
+    /// Truncate the log at given offset, keeping the head part.
     Truncate { offset: usize },
+
+    /// Discard the log before given offset, keeping the tail part.
+    Discard { offset: usize },
 }
 
 /// Action result returned by the logger.
@@ -39,13 +50,20 @@ pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
     Read { entry: Option<Ent> },
 
-    /// `ok` is true if append successful, else false. `offset` is the offset
-    /// of the file cursor after this.
-    Append { ok: bool, offset: usize },
+    /// `ok` is true if offset is valid, else false. `now_size` is the size
+    /// of file after this.
+    Write { offset_ok: bool, now_size: usize },
 
-    /// `ok` is true if truncate successful, else false. `offset` is the
-    /// offset of the file cursor after this.
-    Truncate { ok: bool, offset: usize },
+    /// `now_size` is the size of file after this.
+    Append { now_size: usize },
+
+    /// `ok` is true if truncate successful, else false. `now_size` is the
+    /// size of file after this.
+    Truncate { offset_ok: bool, now_size: usize },
+
+    /// `ok` is true if discard successful, else false. `now_size` is the size
+    /// of file after this.
+    Discard { offset_ok: bool, now_size: usize },
 }
 
 /// Durable storage logging module.
@@ -149,12 +167,16 @@ where
         }
 
         match self.tx_log {
-            Some(ref tx_log) => Ok(tx_log
+            Some(ref tx_log) => tx_log
                 .send((id, action))
                 .await
-                .map_err(|e| SummersetError(e.to_string()))?),
-            None => logged_err!(self.me; "tx_log not created yet"),
+                .map_err(|e| SummersetError(e.to_string()))?,
+            None => {
+                return logged_err!(self.me; "tx_log not created yet");
+            }
         }
+
+        Ok(())
     }
 
     /// Waits for the next logging result by receiving from the ack channel.
@@ -187,20 +209,18 @@ where
         + 'static,
 {
     /// Read out entry at given offset.
-    /// TODO: better management of file cursor.
-    /// TODO: maybe just support scanning.
     async fn read_entry(
         me: ReplicaId,
         backer: &mut File,
+        file_size: usize,
         offset: usize,
     ) -> Result<Option<Ent>, SummersetError> {
-        let file_len: usize = backer.metadata().await?.len() as usize;
-        if offset + 8 > file_len {
+        if offset + 8 > file_size {
             pf_warn!(
                 me;
                 "read header end offset {} out of file bound {}",
                 offset + 8,
-                file_len
+                file_size
             );
             return Ok(None);
         }
@@ -209,7 +229,7 @@ where
         backer.seek(SeekFrom::Start(offset as u64)).await?;
         let entry_len: usize = backer.read_u64().await? as usize;
         let offset_e = offset + 8 + entry_len;
-        if offset_e > file_len {
+        if offset_e > file_size {
             pf_warn!(me; "read entry invalid length {}", entry_len);
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
             return Ok(None);
@@ -223,77 +243,191 @@ where
         Ok(Some(entry))
     }
 
-    /// Append given entry to given offset, which must be current EOF.
-    async fn append_entry(
+    /// Write given entry to given offset.
+    async fn write_entry(
         me: ReplicaId,
         backer: &mut File,
+        file_size: usize,
         entry: &Ent,
         offset: usize,
+        sync: bool,
     ) -> Result<(bool, usize), SummersetError> {
-        let file_len: usize = backer.metadata().await?.len() as usize;
-        if offset != file_len {
+        if offset > file_size {
+            // disallow holes in log file
             pf_warn!(
                 me;
-                "append offset {} not at file end {}",
-                offset,
-                file_len
+                "write offset {} out of file bound {}",
+                offset + 8,
+                file_size
             );
-            Ok((false, file_len))
-        } else {
-            let entry_bytes = encode_to_vec(entry)?;
-            // write entry length header first
-            let entry_len = entry_bytes.len();
-            backer.write_u64(entry_len as u64).await?;
-            // then entry content
-            backer.write_all(&entry_bytes[..]).await?;
-            Ok((true, offset + 8 + entry_len))
+            return Ok((false, file_size));
         }
+
+        let entry_bytes = encode_to_vec(entry)?;
+        let entry_len = entry_bytes.len();
+
+        // write entry length header first
+        backer.seek(SeekFrom::Start(offset as u64)).await?;
+        backer.write_u64(entry_len as u64).await?;
+
+        // then entry content
+        backer.write_all(&entry_bytes[..]).await?;
+        backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
+
+        if sync {
+            backer.sync_data().await?;
+        }
+
+        let entry_end = offset + 8 + entry_len;
+        let now_size = if entry_end > file_size {
+            entry_end
+        } else {
+            file_size
+        };
+        Ok((true, now_size))
     }
 
-    /// Truncate the file to given index.
+    /// Append given entry to EOF.
+    async fn append_entry(
+        _me: ReplicaId,
+        backer: &mut File,
+        file_size: usize,
+        entry: &Ent,
+        sync: bool,
+    ) -> Result<usize, SummersetError> {
+        let entry_bytes = encode_to_vec(entry)?;
+        let entry_len = entry_bytes.len();
+
+        // write entry length header first
+        backer.write_u64(entry_len as u64).await?;
+
+        // then entry content
+        backer.write_all(&entry_bytes[..]).await?;
+
+        if sync {
+            backer.sync_data().await?;
+        }
+
+        Ok(file_size + 8 + entry_len)
+    }
+
+    /// Truncate the file at given index, keeping the head part.
     async fn truncate_log(
         me: ReplicaId,
         backer: &mut File,
+        file_size: usize,
         offset: usize,
     ) -> Result<(bool, usize), SummersetError> {
-        let file_len: usize = backer.metadata().await?.len() as usize;
-        if offset > file_len {
+        if offset > file_size {
             pf_warn!(
                 me;
                 "truncate offset {} exceeds file end {}",
                 offset,
-                file_len
+                file_size
             );
-            Ok((false, file_len))
+            Ok((false, file_size))
         } else {
             backer.set_len(offset as u64).await?;
+            backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
+
+            backer.sync_all().await?;
             Ok((true, offset))
         }
     }
 
-    /// Carry out the given action on logger.
+    /// Discard the file before given index, keeping the tail part.
+    async fn discard_log(
+        me: ReplicaId,
+        backer: &mut File,
+        file_size: usize,
+        offset: usize,
+    ) -> Result<(bool, usize), SummersetError> {
+        if offset > file_size {
+            pf_warn!(
+                me;
+                "discard offset {} exceeds file end {}",
+                offset,
+                file_size
+            );
+            Ok((false, file_size))
+        } else {
+            let tail_size = file_size - offset;
+            if tail_size > 0 {
+                // due to the limited interfaces provided by `tokio::fs`, we
+                // read out the tail part and write it back to offset 0 to
+                // achieve the effect of discarding
+                let mut tail_buf: Vec<u8> = vec![0; tail_size];
+                backer.seek(SeekFrom::Start(offset as u64)).await?;
+                backer.read_exact(&mut tail_buf[..]).await?;
+
+                backer.seek(SeekFrom::Start(0)).await?;
+                backer.write_all(&tail_buf[..]).await?;
+            }
+
+            backer.set_len(tail_size as u64).await?;
+            backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
+
+            backer.sync_all().await?;
+            Ok((true, tail_size))
+        }
+    }
+
+    /// Carry out the given action on logger. Returns a tuple of result and
+    /// file size after the action.
     async fn do_action(
         me: ReplicaId,
         backer: &mut File,
+        file_size: &mut usize,
         action: LogAction<Ent>,
     ) -> Result<LogResult<Ent>, SummersetError> {
         match action {
-            LogAction::Read { offset } => Self::read_entry(me, backer, offset)
-                .await
-                .map(|entry| LogResult::Read { entry }),
-            LogAction::Append { entry, offset } => {
-                Self::append_entry(me, backer, &entry, offset).await.map(
-                    |(ok, now_offset)| LogResult::Append {
-                        ok,
-                        offset: now_offset,
-                    },
-                )
+            LogAction::Read { offset } => {
+                Self::read_entry(me, backer, *file_size, offset)
+                    .await
+                    .map(|entry| LogResult::Read { entry })
+            }
+            LogAction::Write {
+                entry,
+                offset,
+                sync,
+            } => {
+                Self::write_entry(me, backer, *file_size, &entry, offset, sync)
+                    .await
+                    .map(|(offset_ok, now_size)| {
+                        *file_size = now_size;
+                        LogResult::Write {
+                            offset_ok,
+                            now_size,
+                        }
+                    })
+            }
+            LogAction::Append { entry, sync } => {
+                Self::append_entry(me, backer, *file_size, &entry, sync)
+                    .await
+                    .map(|now_size| {
+                        *file_size = now_size;
+                        LogResult::Append { now_size }
+                    })
             }
             LogAction::Truncate { offset } => {
-                Self::truncate_log(me, backer, offset).await.map(
-                    |(ok, now_offset)| LogResult::Truncate {
-                        ok,
-                        offset: now_offset,
+                Self::truncate_log(me, backer, *file_size, offset)
+                    .await
+                    .map(|(offset_ok, now_size)| {
+                        *file_size = now_size;
+                        LogResult::Truncate {
+                            offset_ok,
+                            now_size,
+                        }
+                    })
+            }
+            LogAction::Discard { offset } => {
+                Self::discard_log(me, backer, *file_size, offset).await.map(
+                    |(offset_ok, now_size)| {
+                        *file_size = now_size;
+                        LogResult::Discard {
+                            offset_ok,
+                            now_size,
+                        }
                     },
                 )
             }
@@ -303,15 +437,25 @@ where
     /// Logger thread function.
     async fn logger_thread(
         me: ReplicaId,
-        mut backer: File,
+        mut backer_file: File,
         mut rx_log: mpsc::Receiver<(LogActionId, LogAction<Ent>)>,
         tx_ack: mpsc::Sender<(LogActionId, LogResult<Ent>)>,
     ) {
         pf_debug!(me; "logger thread spawned");
 
+        // maintain file size
+        let metadata = backer_file.metadata().await;
+        if let Err(e) = metadata {
+            pf_error!(me; "error reading backer file metadata: {}, exitting", e);
+            return;
+        }
+        let mut file_size: usize = metadata.unwrap().len() as usize;
+
         while let Some((id, action)) = rx_log.recv().await {
             pf_trace!(me; "log action {:?}", action);
-            let res = Self::do_action(me, &mut backer, action).await;
+            let res =
+                Self::do_action(me, &mut backer_file, &mut file_size, action)
+                    .await;
             if let Err(e) = res {
                 pf_error!(me; "error during logging: {}", e);
                 continue;
@@ -347,52 +491,95 @@ mod storage_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn append_entries() -> Result<(), SummersetError> {
+    async fn write_entries() -> Result<(), SummersetError> {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-0.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, now_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
-        assert!(ok);
-        let (ok, now_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, now_offset)
+        let (offset_ok, now_size) =
+            StorageHub::write_entry(0, &mut backer_file, 0, &entry, 0, false)
                 .await?;
-        assert!(ok);
-        let (ok, _) = StorageHub::append_entry(
+        assert!(offset_ok);
+        let (offset_ok, now_size) = StorageHub::write_entry(
             0,
             &mut backer_file,
+            now_size,
             &entry,
-            now_offset + 10,
+            now_size,
+            false,
         )
         .await?;
-        assert!(!ok);
-        let (ok, _) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
-        assert!(!ok);
+        assert!(offset_ok);
+        let (offset_ok, now_size) = StorageHub::write_entry(
+            0,
+            &mut backer_file,
+            now_size,
+            &entry,
+            0,
+            true,
+        )
+        .await?;
+        assert!(offset_ok);
+        let (offset_ok, _) = StorageHub::write_entry(
+            0,
+            &mut backer_file,
+            now_size,
+            &entry,
+            now_size + 10,
+            false,
+        )
+        .await?;
+        assert!(!offset_ok);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn append_entries() -> Result<(), SummersetError> {
+        let mut backer_file =
+            prepare_test_file("/tmp/test-backer-1.log").await?;
+        let entry = TestEntry("test-entry-dummy-string".into());
+        let entry_bytes = encode_to_vec(&entry)?;
+        let mid_size =
+            StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
+                .await?;
+        assert!(mid_size >= entry_bytes.len());
+        let end_size = StorageHub::append_entry(
+            0,
+            &mut backer_file,
+            mid_size,
+            &entry,
+            true,
+        )
+        .await?;
+        assert!(end_size - mid_size >= entry_bytes.len());
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn read_entries() -> Result<(), SummersetError> {
         let mut backer_file =
-            prepare_test_file("/tmp/test-backer-1.log").await?;
+            prepare_test_file("/tmp/test-backer-2.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, now_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
-        assert!(ok);
-        let (ok, now_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, now_offset)
+        let now_size =
+            StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        assert!(ok);
+        let now_size = StorageHub::append_entry(
+            0,
+            &mut backer_file,
+            now_size,
+            &entry,
+            true,
+        )
+        .await?;
         assert_eq!(
-            StorageHub::read_entry(0, &mut backer_file, 0).await?,
+            StorageHub::read_entry(0, &mut backer_file, now_size, 0).await?,
             Some(TestEntry("test-entry-dummy-string".into()))
         );
         assert_eq!(
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_offset + 10
+                now_size,
+                now_size + 10
             )
             .await?,
             None
@@ -401,7 +588,8 @@ mod storage_tests {
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_offset - 4
+                now_size,
+                now_size - 4
             )
             .await?,
             None
@@ -412,19 +600,24 @@ mod storage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn truncate_log() -> Result<(), SummersetError> {
         let mut backer_file =
-            prepare_test_file("/tmp/test-backer-2.log").await?;
+            prepare_test_file("/tmp/test-backer-3.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (ok, mid_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, 0).await?;
-        assert!(ok);
-        let (ok, end_offset) =
-            StorageHub::append_entry(0, &mut backer_file, &entry, mid_offset)
+        let mid_offset =
+            StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        assert!(ok);
+        let end_offset = StorageHub::append_entry(
+            0,
+            &mut backer_file,
+            mid_offset,
+            &entry,
+            true,
+        )
+        .await?;
         assert_eq!(
             StorageHub::<TestEntry>::truncate_log(
                 0,
                 &mut backer_file,
+                end_offset,
                 mid_offset
             )
             .await?,
@@ -434,14 +627,70 @@ mod storage_tests {
             StorageHub::<TestEntry>::truncate_log(
                 0,
                 &mut backer_file,
+                mid_offset,
                 end_offset
             )
             .await?,
             (false, mid_offset)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::truncate_log(0, &mut backer_file, 0)
-                .await?,
+            StorageHub::<TestEntry>::truncate_log(
+                0,
+                &mut backer_file,
+                mid_offset,
+                0
+            )
+            .await?,
+            (true, 0)
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn discard_log() -> Result<(), SummersetError> {
+        let mut backer_file =
+            prepare_test_file("/tmp/test-backer-4.log").await?;
+        let entry = TestEntry("test-entry-dummy-string".into());
+        let mid_offset =
+            StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
+                .await?;
+        let end_offset = StorageHub::append_entry(
+            0,
+            &mut backer_file,
+            mid_offset,
+            &entry,
+            true,
+        )
+        .await?;
+        let tail_size = end_offset - mid_offset;
+        assert_eq!(
+            StorageHub::<TestEntry>::discard_log(
+                0,
+                &mut backer_file,
+                end_offset,
+                mid_offset
+            )
+            .await?,
+            (true, tail_size)
+        );
+        assert_eq!(
+            StorageHub::<TestEntry>::discard_log(
+                0,
+                &mut backer_file,
+                tail_size,
+                end_offset
+            )
+            .await?,
+            (false, tail_size)
+        );
+        assert_eq!(
+            StorageHub::<TestEntry>::discard_log(
+                0,
+                &mut backer_file,
+                tail_size,
+                tail_size
+            )
+            .await?,
             (true, 0)
         );
         Ok(())
@@ -450,7 +699,7 @@ mod storage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn hub_setup() -> Result<(), SummersetError> {
         let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-3.log");
+        let path = Path::new("/tmp/test-backer-5.log");
         assert!(hub.setup(path, 0, 0).await.is_err());
         hub.setup(path, 100, 100).await?;
         assert!(hub.tx_log.is_some());
@@ -462,11 +711,11 @@ mod storage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_log_ack() -> Result<(), SummersetError> {
         let mut hub = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-4.log");
+        let path = Path::new("/tmp/test-backer-6.log");
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = encode_to_vec(&entry)?;
         hub.setup(path, 3, 3).await?;
-        hub.submit_action(0, LogAction::Append { entry, offset: 0 })
+        hub.submit_action(0, LogAction::Append { entry, sync: true })
             .await?;
         hub.submit_action(1, LogAction::Read { offset: 0 }).await?;
         hub.submit_action(2, LogAction::Truncate { offset: 0 })
@@ -476,8 +725,7 @@ mod storage_tests {
             (
                 0,
                 LogResult::Append {
-                    ok: true,
-                    offset: 8 + entry_bytes.len()
+                    now_size: 8 + entry_bytes.len()
                 }
             )
         );
@@ -495,8 +743,8 @@ mod storage_tests {
             (
                 2,
                 LogResult::Truncate {
-                    ok: true,
-                    offset: 0
+                    offset_ok: true,
+                    now_size: 0
                 }
             )
         );
