@@ -258,35 +258,50 @@ where
         Ok(connected)
     }
 
-    /// Sends a message to specified peers by sending to the send channel.
+    /// Sends a message to a specified peer by sending to the send channel.
     pub async fn send_msg(
         &mut self,
         msg: Msg,
-        target: ReplicaMap,
+        peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         if self.peer_listener.is_none() {
             return logged_err!(self.me; "send_msg called before setup");
         }
 
+        match self.tx_sends.get(&peer) {
+            Some(tx_send) => {
+                tx_send
+                    .send(msg)
+                    .await
+                    .map_err(|e| SummersetError(e.to_string()))?;
+            }
+            None => {
+                pf_warn!(
+                    self.me;
+                    "peer ID {} not found among connected ones",
+                    peer
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Broadcasts message to specified peers by sending to the send channel.
+    pub async fn bcast_msg(
+        &mut self,
+        msg: Msg,
+        target: ReplicaMap,
+    ) -> Result<(), SummersetError> {
+        if self.peer_listener.is_none() {
+            return logged_err!(self.me; "bcast_msg called before setup");
+        }
+
         for (peer, to_send) in target.iter() {
             if !to_send {
                 continue;
-            }
-
-            match self.tx_sends.get(&peer) {
-                Some(tx_send) => {
-                    tx_send
-                        .send(msg.clone())
-                        .await
-                        .map_err(|e| SummersetError(e.to_string()))?;
-                }
-                None => {
-                    pf_warn!(
-                        self.me;
-                        "peer ID {} not found among connected ones",
-                        peer
-                    );
-                }
+            } else {
+                self.send_msg(msg.clone(), peer).await?
             }
         }
 
@@ -519,15 +534,13 @@ mod transport_tests {
             assert!(id == 0);
             assert_eq!(msg, TestMsg("hello".into()));
             // send a message to 0
-            let mut map = ReplicaMap::new(3, false)?;
-            map.set(0, true)?;
-            hub.send_msg(TestMsg("world".into()), map.clone()).await?;
+            hub.send_msg(TestMsg("world".into()), 0).await?;
             // recv another message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
             assert_eq!(msg, TestMsg("nice".into()));
             // send another message to 0
-            hub.send_msg(TestMsg("job!".into()), map.clone()).await?;
+            hub.send_msg(TestMsg("job!".into()), 0).await?;
             // wait for termination message
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
@@ -548,15 +561,13 @@ mod transport_tests {
             assert!(id == 0);
             assert_eq!(msg, TestMsg("hello".into()));
             // send a message to 0
-            let mut map = ReplicaMap::new(3, false)?;
-            map.set(0, true)?;
-            hub.send_msg(TestMsg("world".into()), map.clone()).await?;
+            hub.send_msg(TestMsg("world".into()), 0).await?;
             // recv another message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
             assert_eq!(msg, TestMsg("nice".into()));
             // send another message to 0
-            hub.send_msg(TestMsg("job!".into()), map.clone()).await?;
+            hub.send_msg(TestMsg("job!".into()), 0).await?;
             // wait for termination message
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
@@ -572,8 +583,9 @@ mod transport_tests {
         ]))
         .await?;
         // send a message to 1 and 2
-        hub.send_msg(TestMsg("hello".into()), ReplicaMap::new(3, true)?)
-            .await?;
+        let mut map = ReplicaMap::new(3, true)?;
+        map.set(0, false)?;
+        hub.bcast_msg(TestMsg("hello".into()), map.clone()).await?;
         // recv a message from both 1 and 2
         let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
@@ -582,8 +594,7 @@ mod transport_tests {
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
         // send another message to 1 and 2
-        hub.send_msg(TestMsg("nice".into()), ReplicaMap::new(3, true)?)
-            .await?;
+        hub.bcast_msg(TestMsg("nice".into()), map.clone()).await?;
         // recv another message from both 1 and 2
         let (id, msg) = hub.recv_msg().await?;
         assert!(id == 1 || id == 2);
@@ -592,7 +603,7 @@ mod transport_tests {
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("job!".into()));
         // send termination message to 1 and 2
-        hub.send_msg(TestMsg("terminate".into()), ReplicaMap::new(3, true)?)
+        hub.bcast_msg(TestMsg("terminate".into()), map.clone())
             .await?;
         Ok(())
     }

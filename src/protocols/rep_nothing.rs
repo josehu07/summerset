@@ -140,7 +140,7 @@ impl RepNothingReplica {
                 inst_idx as LogActionId,
                 LogAction::Append {
                     entry: log_entry,
-                    offset: self.log_offset,
+                    sync: true,
                 },
             )
             .await?;
@@ -160,12 +160,9 @@ impl RepNothingReplica {
         }
 
         match log_result {
-            LogResult::Append { ok, offset } => {
-                if !ok {
-                    return logged_err!(self.id; "log action Append for {} failed: {}", inst_idx, offset);
-                }
-                assert!(offset >= self.log_offset);
-                self.log_offset = offset;
+            LogResult::Append { now_size } => {
+                assert!(now_size >= self.log_offset);
+                self.log_offset = now_size;
             }
             _ => {
                 return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);

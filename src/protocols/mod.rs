@@ -16,11 +16,16 @@ mod simple_push;
 use simple_push::{SimplePushReplica, SimplePushClient};
 pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 
+mod multipaxos;
+use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
+pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
+
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SMRProtocol {
     RepNothing,
     SimplePush,
+    MultiPaxos,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -38,6 +43,7 @@ impl SMRProtocol {
         match name {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
+            "MultiPaxos" => Some(Self::MultiPaxos),
             _ => None,
         }
     }
@@ -63,6 +69,11 @@ impl SMRProtocol {
                     id, population, smr_addr, api_addr, peer_addrs, config_str
                 ))
             }
+            Self::MultiPaxos => {
+                box_if_ok!(MultiPaxosReplica::new(
+                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                ))
+            }
         }
     }
 
@@ -79,6 +90,9 @@ impl SMRProtocol {
             }
             Self::SimplePush => {
                 box_if_ok!(SimplePushClient::new(id, servers, config_str))
+            }
+            Self::MultiPaxos => {
+                box_if_ok!(MultiPaxosClient::new(id, servers, config_str))
             }
         }
     }
@@ -107,6 +121,7 @@ mod protocols_name_tests {
     fn parse_valid_names() {
         valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
+        valid_name_test!(MultiPaxos);
     }
 
     #[test]

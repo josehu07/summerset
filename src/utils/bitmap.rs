@@ -84,9 +84,6 @@ impl Iterator for ReplicaMapIter<'_> {
     }
 }
 
-/// Helper function for parsing a RON format configuration struct string into
-/// the given
-
 #[cfg(test)]
 mod bitmap_tests {
     use super::*;

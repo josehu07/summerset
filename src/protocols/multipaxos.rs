@@ -1,6 +1,10 @@
 //! Replication protocol: MultiPaxos.
 //!
-//! TODO: explanation.
+//! Multi-decree Paxos protocol. See:
+//!   - https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf
+//!   - https://dl.acm.org/doi/pdf/10.1145/1281100.1281103
+//!   - https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf
+//!   - https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -185,7 +189,7 @@ impl MultiPaxosReplica {
                 inst_idx as LogActionId,
                 LogAction::Append {
                     entry: log_entry,
-                    offset: self.log_offset,
+                    sync: true,
                 },
             )
             .await?;
@@ -194,7 +198,7 @@ impl MultiPaxosReplica {
         self.transport_hub
             .as_mut()
             .unwrap()
-            .send_msg(
+            .bcast_msg(
                 PushMsg::Push {
                     src_inst_idx: inst_idx,
                     reqs: req_batch,
@@ -218,12 +222,9 @@ impl MultiPaxosReplica {
         }
 
         match log_result {
-            LogResult::Append { ok, offset } => {
-                if !ok {
-                    return logged_err!(self.id; "log action Append for {} failed: {}", inst_idx, offset);
-                }
-                assert!(offset >= self.log_offset);
-                self.log_offset = offset;
+            LogResult::Append { now_size } => {
+                assert!(now_size >= self.log_offset);
+                self.log_offset = now_size;
             }
             _ => {
                 return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
@@ -258,8 +259,6 @@ impl MultiPaxosReplica {
         // if this instance was pushed from a peer, reply to that peer
         if let Some((peer, src_inst_idx)) = inst.from_peer {
             assert!(inst.pending_peers.count() == 0);
-            let mut target = ReplicaMap::new(self.population, false)?;
-            target.set(peer, true)?;
             self.transport_hub
                 .as_mut()
                 .unwrap()
@@ -268,7 +267,7 @@ impl MultiPaxosReplica {
                         src_inst_idx,
                         num_reqs: inst.reqs.len(),
                     },
-                    target,
+                    peer,
                 )
                 .await?;
         }
@@ -305,7 +304,7 @@ impl MultiPaxosReplica {
                 inst_idx as LogActionId,
                 LogAction::Append {
                     entry: log_entry,
-                    offset: self.log_offset,
+                    sync: true,
                 },
             )
             .await?;
