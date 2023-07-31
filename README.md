@@ -62,11 +62,15 @@ cargo run [-r] -p summerset_client -- -h
 ## TODO List
 
 - [x] event-based programming structure
-- [ ] implementation of classic protocols
+- [ ] implementation of MultiPaxos
+  - [ ] state persistence & restart check
+  - [ ] automatic leader election, backoffs
+  - [ ] snapshotting & garbage collection
+  - [ ] specialize read-only commands?
+  - [ ] membership discovery & view changes
+- [ ] implementation of Raft
+- [ ] implementation of Crossword prototype
 - [ ] complete client, tests, & benchmarks
-- [ ] differentiate read/non-read commands
-- [ ] membership discovery & view changes
-- [ ] snapshotting & garbage collection
 - [ ] better README
 
 ---

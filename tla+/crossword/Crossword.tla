@@ -1,6 +1,6 @@
 (*********************************************************************************)
 (* Crossword protocol combining MultiPaxos and erasure code sharding, built upon *)
-(* the pratical version of MultiPaxos spec.                                      *)
+(* the practical version of MultiPaxos spec.                                     *)
 (*                                                                               *)
 (* Leader shards recovery is not explicitly modeled in this spec, but should be  *)
 (* quite straightforward to add.                                                 *)
