@@ -58,38 +58,17 @@ impl Default for ReplicaConfigMultiPaxos {
     }
 }
 
-/// Log entry type.
+/// Stable storage log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-enum LogEntry {
-    FromClient {
-        reqs: Vec<(ClientId, ApiRequest)>,
-    },
-    PeerPushed {
-        peer: ReplicaId,
-        reqs: Vec<(ClientId, ApiRequest)>,
-    },
-}
+enum LogEntry {}
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum PushMsg {
-    Push {
-        src_inst_idx: usize,
-        reqs: Vec<(ClientId, ApiRequest)>,
-    },
-    PushReply {
-        src_inst_idx: usize,
-        num_reqs: usize,
-    },
-}
+enum PeerMsg {}
 
 /// In-memory instance containing a commands batch.
 struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
-    durable: bool,
-    pending_peers: ReplicaMap,
-    execed: Vec<bool>,
-    from_peer: Option<(ReplicaId, usize)>, // peer ID, peer inst_idx
 }
 
 /// MultiPaxos server replica module.
@@ -122,7 +101,10 @@ pub struct MultiPaxosReplica {
     storage_hub: Option<StorageHub<LogEntry>>,
 
     /// TransportHub module.
-    transport_hub: Option<TransportHub<PushMsg>>,
+    transport_hub: Option<TransportHub<PeerMsg>>,
+
+    /// Do I think I am the leader?
+    is_leader: bool,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -146,6 +128,32 @@ impl MultiPaxosReplica {
         (inst_idx, cmd_idx)
     }
 
+    /// Helper for replying back to client for a normal command.
+    async fn reply_to_client(
+        &mut self,
+        client: ClientId,
+        req: ApiRequest,
+        result: Option<CommandResult>,
+        redirect: Option<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        if let ApiRequest::Req { id: req_id, .. } = req {
+            self.external_api
+                .as_mut()
+                .unwrap()
+                .send_reply(
+                    ApiReply::Reply {
+                        id: req_id,
+                        result,
+                        redirect,
+                    },
+                    client,
+                )
+                .await
+        } else {
+            logged_err!(self.id; "not a normal command request to reply to")
+        }
+    }
+
     /// Handler of client request batch chan recv.
     async fn handle_req_batch(
         &mut self,
@@ -154,58 +162,20 @@ impl MultiPaxosReplica {
         let batch_size = req_batch.len();
         assert!(batch_size > 0);
 
-        // target peers to push to
-        let mut target = ReplicaMap::new(self.population, false)?;
-        let mut peer_cnt = 0;
-        for peer in 0..self.population {
-            if peer_cnt == self.config.rep_degree {
-                break;
+        // if I'm not a leader, ignore client requests
+        if !self.is_leader {
+            for (client, req) in req_batch {
+                self.reply_to_client(
+                    client,
+                    req,
+                    None,
+                    // tell the client to try on the next replica
+                    Some((self.id + 1) % self.population),
+                )
+                .await?;
             }
-            if peer == self.id {
-                continue;
-            }
-            target.set(peer, true)?;
-            peer_cnt += 1;
+            return Ok(());
         }
-
-        let inst = Instance {
-            reqs: req_batch.clone(),
-            durable: false,
-            pending_peers: target.clone(),
-            execed: vec![false; batch_size],
-            from_peer: None,
-        };
-        let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
-
-        // submit log action to make this instance durable
-        let log_entry = LogEntry::FromClient {
-            reqs: req_batch.clone(),
-        };
-        self.storage_hub
-            .as_mut()
-            .unwrap()
-            .submit_action(
-                inst_idx as LogActionId,
-                LogAction::Append {
-                    entry: log_entry,
-                    sync: true,
-                },
-            )
-            .await?;
-
-        // send push message to chosen peers
-        self.transport_hub
-            .as_mut()
-            .unwrap()
-            .bcast_msg(
-                PushMsg::Push {
-                    src_inst_idx: inst_idx,
-                    reqs: req_batch,
-                },
-                target,
-            )
-            .await?;
 
         Ok(())
     }
@@ -427,7 +397,7 @@ impl GenericReplica for MultiPaxosReplica {
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if population == 0 {
+        if population < 3 {
             return Err(SummersetError(format!(
                 "invalid population {}",
                 population
@@ -490,6 +460,7 @@ impl GenericReplica for MultiPaxosReplica {
             state_machine: None,
             storage_hub: None,
             transport_hub: None,
+            is_leader: false,
             insts: vec![],
             log_offset: 0,
         })
@@ -540,6 +511,11 @@ impl GenericReplica for MultiPaxosReplica {
     }
 
     async fn run(&mut self) {
+        // TODO: proper leader election
+        if self.id == 0 {
+            self.is_leader = true;
+        }
+
         loop {
             tokio::select! {
                 // client request batch
@@ -607,14 +583,14 @@ impl GenericReplica for MultiPaxosReplica {
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ClientConfigMultiPaxos {
-    /// Which server to pick.
-    pub server_id: ReplicaId,
+    /// Which server to pick initially.
+    pub init_server_id: ReplicaId,
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for ClientConfigMultiPaxos {
     fn default() -> Self {
-        ClientConfigMultiPaxos { server_id: 0 }
+        ClientConfigMultiPaxos { init_server_id: 0 }
     }
 }
 
@@ -629,8 +605,11 @@ pub struct MultiPaxosClient {
     /// Configuration parameters struct.
     config: ClientConfigMultiPaxos,
 
-    /// Stubs for communicating with the service.
-    stubs: Option<(ClientSendStub, ClientRecvStub)>,
+    /// CLient API stub for creating new connections.
+    api_stub: ClientApiStub,
+
+    /// Connection stubs for communicating with the current chosen server.
+    conn_stubs: Option<(ClientSendStub, ClientRecvStub)>,
 }
 
 #[async_trait]
@@ -645,30 +624,32 @@ impl GenericClient for MultiPaxosClient {
         }
 
         let config = parsed_config!(config_str => ClientConfigMultiPaxos;
-                                    server_id)?;
-        if !servers.contains_key(&config.server_id) {
+                                    init_server_id)?;
+        if !servers.contains_key(&config.init_server_id) {
             return logged_err!(
                 id;
-                "server_id {} not found in servers",
-                config.server_id
+                "init_server_id {} not found in servers",
+                config.init_server_id
             );
         }
+
+        let api_stub = ClientApiStub::new(id);
 
         Ok(MultiPaxosClient {
             id,
             servers,
             config,
-            stubs: None,
+            api_stub,
+            conn_stubs: None,
         })
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        let api_stub = ClientApiStub::new(self.id);
-        api_stub
-            .connect(self.servers[&self.config.server_id])
+        self.api_stub
+            .connect(self.servers[&self.config.init_server_id])
             .await
             .map(|stubs| {
-                self.stubs = Some(stubs);
+                self.conn_stubs = Some(stubs);
             })
     }
 
@@ -676,7 +657,7 @@ impl GenericClient for MultiPaxosClient {
         &mut self,
         req: ApiRequest,
     ) -> Result<(), SummersetError> {
-        match self.stubs {
+        match self.conn_stubs {
             Some((ref mut send_stub, _)) => {
                 send_stub.send_req(req).await?;
                 Ok(())
@@ -686,8 +667,30 @@ impl GenericClient for MultiPaxosClient {
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        match self.stubs {
-            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
+        match self.conn_stubs {
+            Some((ref mut send_stub, ref mut recv_stub)) => {
+                let reply = recv_stub.recv_reply().await?;
+
+                if let ApiReply::Reply {
+                    result, redirect, ..
+                } = reply
+                {
+                    // if the current server redirects me to a different server
+                    if result.is_none() && redirect.is_some() {
+                        let redirect_id = redirect.unwrap();
+                        assert!((redirect_id as usize) < self.servers.len());
+                        send_stub.send_req(ApiRequest::Leave).await?;
+                        self.api_stub
+                            .connect(self.servers[&redirect_id])
+                            .await
+                            .map(|stubs| {
+                                self.conn_stubs = Some(stubs);
+                            });
+                    }
+                }
+
+                Ok(reply)
+            }
             None => logged_err!(self.id; "client is not set up"),
         }
     }

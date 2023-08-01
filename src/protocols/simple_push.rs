@@ -399,7 +399,8 @@ impl SimplePushReplica {
                         .send_reply(
                             ApiReply::Reply {
                                 id: *req_id,
-                                result: cmd_result,
+                                result: Some(cmd_result),
+                                redirect: None,
                             },
                             *client,
                         )
