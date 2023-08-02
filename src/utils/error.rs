@@ -36,6 +36,7 @@ impl_from_error!(toml::de::Error);
 impl_from_error!(tokio::sync::SetError<tokio::net::TcpListener>);
 impl_from_error!(tokio::sync::SetError<tokio::fs::File>);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
+impl_from_error!(tokio::sync::watch::error::SendError<tokio::time::Instant>);
 
 #[cfg(test)]
 mod error_tests {

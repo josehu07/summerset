@@ -1,10 +1,14 @@
-//! Timer/timeout utility implemented using `tokio::time::Sleep`.
+//! Timer/timeout utility implemented using `tokio::time::Sleep` on a spawned
+//! task and connecting it with the caller through `tokio::sync::watch` and
+//! `tokio::sync::Notify` channels. This is suitable only for coarse-grained
+//! timeout intervals.
 
-use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::utils::SummersetError;
 
-use tokio::time::{self, Sleep, Duration, Instant};
+use tokio::sync::{watch, Notify};
+use tokio::time::{self, Duration, Instant};
 
 /// Timer utility for signalling after a given timeout. Supports reseting with
 /// a different duration for implementing incremental backoff, etc.
@@ -12,31 +16,51 @@ use tokio::time::{self, Sleep, Duration, Instant};
 /// Must be used within the context of a tokio runtime.
 #[derive(Debug)]
 pub struct Timer {
-    /// Inner `tokio::time::Sleep` future, wrapped in a pinned box to support
-    /// await multiple times.
-    sleep: Pin<Box<Sleep>>,
+    /// Deadline setting channel (caller side sender).
+    deadline_tx: watch::Sender<Instant>,
 
-    /// Timeout duration used by the last kick-off.
-    last_dur: Duration,
+    /// Timeout notification channel (caller side receiver).
+    notify: Arc<Notify>,
 }
 
 impl Timer {
-    /// Creates a new timer utility that immediately times-out after a
-    /// zero-length duration.
+    /// Creates a new timer utility.
     pub fn new() -> Self {
+        let (deadline_tx, mut deadline_rx) = watch::channel(Instant::now());
+        let notify = Arc::new(Notify::new());
+        let notify_ref = notify.clone();
+
+        // spawn the background sleeper task
+        tokio::spawn(async move {
+            let sleep = time::sleep(Duration::ZERO);
+            tokio::pin!(sleep);
+
+            while deadline_rx.changed().await.is_ok() {
+                // received a new deadline
+                let deadline = *deadline_rx.borrow();
+                sleep.as_mut().reset(deadline);
+                (&mut sleep).await;
+
+                // only send notification if deadline has not changed since
+                // last wakeup
+                if let Ok(false) = deadline_rx.has_changed() {
+                    notify_ref.notify_one();
+                }
+            }
+            // sender has been dropped, terminate
+        });
+
         Timer {
-            sleep: Box::pin(time::sleep(Duration::ZERO)),
-            last_dur: Duration::ZERO,
+            deadline_tx,
+            notify,
         }
     }
 
-    /// Get the last timeout duration used.
-    pub fn get_dur(&self) -> Duration {
-        self.last_dur
-    }
-
-    /// Restarts the timer with the given duration.
-    pub fn restart(&mut self, dur: Duration) -> Result<(), SummersetError> {
+    /// Kicks-off the timer with the given duration. Every call to `kickoff()`
+    /// leads to one or zero permits inserted into `notify`; if a new call to
+    /// `kickoff()` is made before the active one finishes, the timer restarts
+    /// and will notify a timeout only at the new deadline.
+    pub fn kickoff(&self, dur: Duration) -> Result<(), SummersetError> {
         if dur.is_zero() {
             return Err(SummersetError(format!(
                 "invalid timeout duration {} ns",
@@ -44,15 +68,14 @@ impl Timer {
             )));
         }
 
-        self.last_dur = dur;
-        self.sleep.as_mut().reset(Instant::now() + dur);
+        self.deadline_tx.send(Instant::now() + dur)?;
         Ok(())
     }
 
-    /// Waits for the timer to timeout. Typically, this should be used as a
+    /// Waits for a timeout notification. Typically, this should be used as a
     /// branch of a `tokio::select!`.
-    pub async fn timeout(&mut self) {
-        self.sleep.as_mut().await
+    pub async fn timeout(&self) {
+        self.notify.notified().await;
     }
 }
 
@@ -61,39 +84,45 @@ mod timer_tests {
     use super::*;
     use tokio::time::{Duration, Instant};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn timer_new() {
-        let timer = Timer::new();
-        assert!(timer.get_dur().is_zero());
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn timer_initial() -> Result<(), SummersetError> {
+    async fn timer_timeout() -> Result<(), SummersetError> {
+        let timer = Arc::new(Timer::new());
+        let timer_ref = timer.clone();
         let start = Instant::now();
-        let mut timer = Timer::new();
-        timer.timeout().await; // should complete immediately
-        let finish = Instant::now();
-        assert!(finish.duration_since(start) < Duration::from_millis(100));
+        tokio::spawn(async move {
+            // setter-side
+            timer_ref.kickoff(Duration::from_millis(100))?;
+            Ok::<(), SummersetError>(())
+        });
+        // looper-side
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(100));
+            }
+        }
         Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timer_restart() -> Result<(), SummersetError> {
-        let mut timer = Timer::new();
-        // round 1 with 200ms timeout
-        let mut start = Instant::now();
-        timer.restart(Duration::from_millis(200))?;
-        timer.timeout().await;
-        let mut finish = Instant::now();
-        assert!(finish.duration_since(start) >= Duration::from_millis(200));
-        assert_eq!(timer.get_dur(), Duration::from_millis(200));
-        // round 2 with 100ms incremental backoff
-        start = Instant::now();
-        timer.restart(timer.get_dur() + Duration::from_millis(100))?;
-        timer.timeout().await;
-        finish = Instant::now();
-        assert!(finish.duration_since(start) >= Duration::from_millis(300));
-        assert_eq!(timer.get_dur(), Duration::from_millis(300));
+        let timer = Arc::new(Timer::new());
+        let timer_ref = timer.clone();
+        let start = Instant::now();
+        tokio::spawn(async move {
+            // setter-side
+            timer_ref.kickoff(Duration::from_millis(100))?;
+            time::sleep(Duration::from_millis(50)).await;
+            timer_ref.kickoff(Duration::from_millis(200))?;
+            Ok::<(), SummersetError>(())
+        });
+        // looper-side
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(250));
+            }
+        }
         Ok(())
     }
 }
