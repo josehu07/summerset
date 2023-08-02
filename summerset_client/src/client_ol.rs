@@ -72,15 +72,19 @@ impl ClientOpenLoop {
         Ok(())
     }
 
-    /// Wait for the next reply.
+    /// Wait for the next reply. Returns:
+    ///   - `Ok(Some(cmd_result))` if request successful
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader
+    ///   - `Err(err)` if any unexpected error occurs
     pub async fn wait_reply(
         &mut self,
-    ) -> Result<CommandResult, SummersetError> {
+    ) -> Result<Option<CommandResult>, SummersetError> {
         let reply = self.stub.recv_reply().await?;
         match reply {
             ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
+                ..
             } => {
                 if !self.pending_reqs.contains(&reply_id) {
                     logged_err!(self.id; "request ID {} not in pending set", reply_id)

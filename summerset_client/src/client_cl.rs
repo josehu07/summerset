@@ -27,11 +27,15 @@ impl ClientClosedLoop {
         }
     }
 
-    /// Send a Get request and wait for its reply.
+    /// Send a Get request and wait for its reply. Returns:
+    ///   - `Ok(Some(Some(value)))` if successful and key exists
+    ///   - `Ok(Some(None))` if successful and key does not exist
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader
+    ///   - `Err(err)` if any unexpected error occurs
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    ) -> Result<Option<Option<String>>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -47,12 +51,14 @@ impl ClientClosedLoop {
             ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
+                ..
             } => {
                 if reply_id != req_id {
                     logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
                 } else {
                     match cmd_result {
-                        CommandResult::Get { value } => Ok(value),
+                        None => Ok(None),
+                        Some(CommandResult::Get { value }) => Ok(Some(value)),
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
                         }
@@ -63,12 +69,16 @@ impl ClientClosedLoop {
         }
     }
 
-    /// Send a Put request and wait for its reply.
+    /// Send a Put request and wait for its reply. Returns:
+    ///   - `Ok(Some(Some(old_value)))` if successful and key exists
+    ///   - `Ok(Some(None))` if successful and key did not exist
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader
+    ///   - `Err(err)` if any unexpected error occurs
     pub async fn put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    ) -> Result<Option<Option<String>>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -87,12 +97,16 @@ impl ClientClosedLoop {
             ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
+                ..
             } => {
                 if reply_id != req_id {
                     logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
                 } else {
                     match cmd_result {
-                        CommandResult::Put { old_value } => Ok(old_value),
+                        None => Ok(None),
+                        Some(CommandResult::Put { old_value }) => {
+                            Ok(Some(old_value))
+                        }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")
                         }
