@@ -85,13 +85,13 @@ pub struct RepNothingReplica {
     _peer_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// ExternalApi module.
-    external_api: Option<ExternalApi>,
+    external_api: ExternalApi,
 
     /// StateMachine module.
-    state_machine: Option<StateMachine>,
+    state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: Option<StorageHub<LogEntry>>,
+    storage_hub: StorageHub<LogEntry>,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -134,8 +134,6 @@ impl RepNothingReplica {
         // submit log action to make this instance durable
         let log_entry = LogEntry { reqs: req_batch };
         self.storage_hub
-            .as_mut()
-            .unwrap()
             .submit_action(
                 inst_idx as LogActionId,
                 LogAction::Append {
@@ -180,8 +178,6 @@ impl RepNothingReplica {
             match req {
                 ApiRequest::Req { cmd, .. } => {
                     self.state_machine
-                        .as_mut()
-                        .unwrap()
                         .submit_cmd(
                             Self::make_command_id(inst_idx, cmd_idx),
                             cmd.clone(),
@@ -223,8 +219,6 @@ impl RepNothingReplica {
         match req {
             ApiRequest::Req { id: req_id, .. } => {
                 self.external_api
-                    .as_mut()
-                    .unwrap()
                     .send_reply(
                         ApiReply::Reply {
                             id: *req_id,
@@ -306,33 +300,28 @@ impl GenericReplica for RepNothingReplica {
             api_addr,
             config,
             _peer_addrs: peer_addrs,
-            external_api: None,
-            state_machine: None,
-            storage_hub: None,
+            external_api: ExternalApi::new(id),
+            state_machine: StateMachine::new(id),
+            storage_hub: StorageHub::new(id),
             insts: vec![],
             log_offset: 0,
         })
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        let mut state_machine = StateMachine::new(self.id);
-        state_machine
+        self.state_machine
             .setup(self.config.api_chan_cap, self.config.api_chan_cap)
             .await?;
-        self.state_machine = Some(state_machine);
 
-        let mut storage_hub = StorageHub::new(self.id);
-        storage_hub
+        self.storage_hub
             .setup(
                 Path::new(&self.config.backer_path),
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
-        self.storage_hub = Some(storage_hub);
 
-        let mut external_api = ExternalApi::new(self.id);
-        external_api
+        self.external_api
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
@@ -340,7 +329,6 @@ impl GenericReplica for RepNothingReplica {
                 self.config.api_chan_cap,
             )
             .await?;
-        self.external_api = Some(external_api);
 
         Ok(())
     }
@@ -349,7 +337,7 @@ impl GenericReplica for RepNothingReplica {
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.as_mut().unwrap().get_req_batch() => {
+                req_batch = self.external_api.get_req_batch() => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -361,7 +349,7 @@ impl GenericReplica for RepNothingReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.as_mut().unwrap().get_result() => {
+                log_result = self.storage_hub.get_result() => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -373,7 +361,7 @@ impl GenericReplica for RepNothingReplica {
                 },
 
                 // state machine execution result
-                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
+                cmd_result = self.state_machine.get_result() => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;

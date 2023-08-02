@@ -92,16 +92,16 @@ pub struct MultiPaxosReplica {
     peer_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// ExternalApi module.
-    external_api: Option<ExternalApi>,
+    external_api: ExternalApi,
 
     /// StateMachine module.
-    state_machine: Option<StateMachine>,
+    state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: Option<StorageHub<LogEntry>>,
+    storage_hub: StorageHub<LogEntry>,
 
     /// TransportHub module.
-    transport_hub: Option<TransportHub<PeerMsg>>,
+    transport_hub: TransportHub<PeerMsg>,
 
     /// Do I think I am the leader?
     is_leader: bool,
@@ -138,8 +138,6 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         if let ApiRequest::Req { id: req_id, .. } = req {
             self.external_api
-                .as_mut()
-                .unwrap()
                 .send_reply(
                     ApiReply::Reply {
                         id: req_id,
@@ -186,62 +184,6 @@ impl MultiPaxosReplica {
         action_id: LogActionId,
         log_result: LogResult<LogEntry>,
     ) -> Result<(), SummersetError> {
-        let inst_idx = action_id as usize;
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid log action ID {} seen", inst_idx);
-        }
-
-        match log_result {
-            LogResult::Append { now_size } => {
-                assert!(now_size >= self.log_offset);
-                self.log_offset = now_size;
-            }
-            _ => {
-                return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
-            }
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if inst.durable {
-            return logged_err!(self.id; "duplicate log action ID {} seen", inst_idx);
-        }
-        inst.durable = true;
-
-        // if pushed peers have all replied, submit execution commands
-        if inst.pending_peers.count() == 0 {
-            for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                match req {
-                    ApiRequest::Req { cmd, .. } => {
-                        self.state_machine
-                            .as_mut()
-                            .unwrap()
-                            .submit_cmd(
-                                Self::make_command_id(inst_idx, cmd_idx),
-                                cmd.clone(),
-                            )
-                            .await?
-                    }
-                    _ => continue, // ignore other types of requests
-                }
-            }
-        }
-
-        // if this instance was pushed from a peer, reply to that peer
-        if let Some((peer, src_inst_idx)) = inst.from_peer {
-            assert!(inst.pending_peers.count() == 0);
-            self.transport_hub
-                .as_mut()
-                .unwrap()
-                .send_msg(
-                    PushMsg::PushReply {
-                        src_inst_idx,
-                        num_reqs: inst.reqs.len(),
-                    },
-                    peer,
-                )
-                .await?;
-        }
-
         Ok(())
     }
 
@@ -252,33 +194,6 @@ impl MultiPaxosReplica {
         src_inst_idx: usize,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
-        let inst = Instance {
-            reqs: req_batch.clone(),
-            durable: false,
-            pending_peers: ReplicaMap::new(self.population, false)?,
-            execed: vec![false; req_batch.len()],
-            from_peer: Some((peer, src_inst_idx)),
-        };
-        let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
-
-        // submit log action to make this instance durable
-        let log_entry = LogEntry::PeerPushed {
-            peer,
-            reqs: req_batch.clone(),
-        };
-        self.storage_hub
-            .as_mut()
-            .unwrap()
-            .submit_action(
-                inst_idx as LogActionId,
-                LogAction::Append {
-                    entry: log_entry,
-                    sync: true,
-                },
-            )
-            .await?;
-
         Ok(())
     }
 
@@ -289,47 +204,6 @@ impl MultiPaxosReplica {
         inst_idx: usize,
         num_reqs: usize,
     ) -> Result<(), SummersetError> {
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid src_inst_idx {} seen", inst_idx);
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if inst.from_peer.is_some() {
-            return logged_err!(self.id; "from_peer should not be set for {}", inst_idx);
-        }
-        if inst.pending_peers.count() == 0 {
-            return logged_err!(self.id; "pending_peers already 0 for {}", inst_idx);
-        }
-        if !inst.pending_peers.get(peer)? {
-            return logged_err!(self.id; "unexpected push reply from peer {} for {}",
-                                        peer, inst_idx);
-        }
-        if num_reqs != inst.reqs.len() {
-            return logged_err!(self.id; "num_reqs mismatch: expected {}, got {}",
-                                        inst.reqs.len(), num_reqs);
-        }
-        inst.pending_peers.set(peer, false)?;
-
-        // if pushed peers have all replied and the logging on myself has
-        // completed as well, submit execution commands
-        if inst.pending_peers.count() == 0 && inst.durable {
-            for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                match req {
-                    ApiRequest::Req { cmd, .. } => {
-                        self.state_machine
-                            .as_mut()
-                            .unwrap()
-                            .submit_cmd(
-                                Self::make_command_id(inst_idx, cmd_idx),
-                                cmd.clone(),
-                            )
-                            .await?
-                    }
-                    _ => continue, // ignore other types of requests
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -339,50 +213,6 @@ impl MultiPaxosReplica {
         cmd_id: CommandId,
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
-        let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if cmd_idx >= inst.reqs.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-        if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
-        }
-        if !inst.durable {
-            return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
-        }
-        if inst.pending_peers.count() > 0 {
-            return logged_err!(self.id; "instance {} has pending peers", inst_idx);
-        }
-        inst.execed[cmd_idx] = true;
-
-        // if this instance was directly from client, reply to the
-        // corresponding client of this request
-        if inst.from_peer.is_none() {
-            let (client, req) = &inst.reqs[cmd_idx];
-            match req {
-                ApiRequest::Req { id: req_id, .. } => {
-                    self.external_api
-                        .as_mut()
-                        .unwrap()
-                        .send_reply(
-                            ApiReply::Reply {
-                                id: *req_id,
-                                result: cmd_result,
-                            },
-                            *client,
-                        )
-                        .await?;
-                }
-                _ => {
-                    return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
-                }
-            }
-        }
-
         Ok(())
     }
 }
@@ -456,10 +286,10 @@ impl GenericReplica for MultiPaxosReplica {
             api_addr,
             config,
             peer_addrs,
-            external_api: None,
-            state_machine: None,
-            storage_hub: None,
-            transport_hub: None,
+            external_api: ExternalApi::new(id),
+            state_machine: StateMachine::new(id),
+            storage_hub: StorageHub::new(id),
+            transport_hub: TransportHub::new(id, population),
             is_leader: false,
             insts: vec![],
             log_offset: 0,
@@ -467,24 +297,19 @@ impl GenericReplica for MultiPaxosReplica {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        let mut state_machine = StateMachine::new(self.id);
-        state_machine
+        self.state_machine
             .setup(self.config.api_chan_cap, self.config.api_chan_cap)
             .await?;
-        self.state_machine = Some(state_machine);
 
-        let mut storage_hub = StorageHub::new(self.id);
-        storage_hub
+        self.storage_hub
             .setup(
                 Path::new(&self.config.backer_path),
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
-        self.storage_hub = Some(storage_hub);
 
-        let mut transport_hub = TransportHub::new(self.id, self.population);
-        transport_hub
+        self.transport_hub
             .setup(
                 self.smr_addr,
                 self.config.base_chan_cap,
@@ -492,12 +317,10 @@ impl GenericReplica for MultiPaxosReplica {
             )
             .await?;
         if !self.peer_addrs.is_empty() {
-            transport_hub.group_connect(&self.peer_addrs).await?;
+            self.transport_hub.group_connect(&self.peer_addrs).await?;
         }
-        self.transport_hub = Some(transport_hub);
 
-        let mut external_api = ExternalApi::new(self.id);
-        external_api
+        self.external_api
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
@@ -505,7 +328,6 @@ impl GenericReplica for MultiPaxosReplica {
                 self.config.api_chan_cap,
             )
             .await?;
-        self.external_api = Some(external_api);
 
         Ok(())
     }
@@ -519,7 +341,7 @@ impl GenericReplica for MultiPaxosReplica {
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.as_mut().unwrap().get_req_batch() => {
+                req_batch = self.external_api.get_req_batch() => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -531,7 +353,7 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.as_mut().unwrap().get_result() => {
+                log_result = self.storage_hub.get_result() => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -543,7 +365,7 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // message from peer
-                msg = self.transport_hub.as_mut().unwrap().recv_msg() => {
+                msg = self.transport_hub.recv_msg() => {
                     if let Err(e) = msg {
                         pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
@@ -561,11 +383,10 @@ impl GenericReplica for MultiPaxosReplica {
                             }
                         },
                     }
-
                 }
 
                 // state machine execution result
-                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
+                cmd_result = self.state_machine.get_result() => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;
