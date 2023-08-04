@@ -36,9 +36,6 @@ pub struct ReplicaConfigMultiPaxos {
     /// Path to backing file.
     pub backer_path: String,
 
-    /// Number of peer servers to push each command to.
-    pub rep_degree: u8,
-
     /// Base capacity for most channels.
     pub base_chan_cap: usize,
 
@@ -52,7 +49,6 @@ impl Default for ReplicaConfigMultiPaxos {
         ReplicaConfigMultiPaxos {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
-            rep_degree: 2,
             base_chan_cap: 1000,
             api_chan_cap: 10000,
         }
@@ -93,7 +89,7 @@ struct LeaderBookkeeping {
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
 struct ReplicaBookkeeping {
-    /// Source leader replica ID.
+    /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 }
 
@@ -212,6 +208,13 @@ pub struct MultiPaxosReplica {
     /// Largest ballot number seen as acceptor.
     bal_max_seen: Ballot,
 
+    /// Index of the first non-committed instance.
+    commit_bar: usize,
+
+    /// Index of the first non-executed instance.
+    /// It is always true that exec_bar <= commit_bar <= insts.len()
+    exec_bar: usize,
+
     /// Current durable log file offset.
     log_offset: usize,
 }
@@ -300,9 +303,10 @@ impl MultiPaxosReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
+        // TODO: maybe use a null_idx variable to better keep track of this
         let mut slot = self.insts.len();
-        // TODO: avoid looping from 0
-        for (s, old_inst) in self.insts.iter_mut().enumerate() {
+        for s in self.commit_bar..self.insts.len() {
+            let old_inst = &mut self.insts[s];
             if old_inst.status == Status::Null {
                 old_inst.reqs = req_batch.clone();
                 old_inst.leader_bk = Some(LeaderBookkeeping {
@@ -423,7 +427,134 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Handler of durable logging result chan recv.
+    /// Handler of PrepareBal logging result chan recv.
+    async fn handle_logged_prepare_bal(
+        &mut self,
+        slot: usize,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
+                                   slot, self.insts[slot].bal);
+        let inst = &self.insts[slot];
+        let voted = if inst.status >= Status::Accepting {
+            Some((inst.bal, inst.reqs.clone()))
+        } else {
+            None
+        };
+
+        if self.is_leader {
+            // on leader, finishing the logging of a PrepareBal entry
+            // is equivalent to receiving a Prepare reply from myself
+            // (as an acceptor role)
+            self.handle_msg_prepare_reply(self.id, slot, inst.bal, voted)
+                .await?;
+        } else {
+            // on follower replica, finishing the logging of a
+            // PrepareBal entry leads to sending back a Prepare reply
+            assert!(inst.replica_bk.is_some());
+            let source = inst.replica_bk.as_ref().unwrap().source;
+            self.transport_hub
+                .send_msg(
+                    PeerMsg::PrepareReply {
+                        slot,
+                        ballot: inst.bal,
+                        voted,
+                    },
+                    source,
+                )
+                .await?;
+            pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
+                                       source, slot, inst.bal);
+        }
+
+        Ok(())
+    }
+
+    /// Handler of AcceptData logging result chan recv.
+    async fn handle_logged_accept_data(
+        &mut self,
+        slot: usize,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "finished AcceptData logging for slot {} bal {}",
+                                   slot, self.insts[slot].bal);
+        let inst = &self.insts[slot];
+
+        if self.is_leader {
+            // on leader, finishing the logging of an AcceptData entry
+            // is equivalent to receiving an Accept reply from myself
+            // (as an acceptor role)
+            self.handle_msg_accept_reply(self.id, slot, inst.bal)
+                .await?;
+        } else {
+            // on follower replica, finishing the logging of an
+            // AcceptData entry leads to sending back an Accept reply
+            assert!(inst.replica_bk.is_some());
+            let source = inst.replica_bk.as_ref().unwrap().source;
+            self.transport_hub
+                .send_msg(
+                    PeerMsg::AcceptReply {
+                        slot,
+                        ballot: inst.bal,
+                    },
+                    source,
+                )
+                .await?;
+            pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
+                                       source, slot, inst.bal);
+        }
+
+        Ok(())
+    }
+
+    /// Handler of CommitSlot logging result chan recv.
+    async fn handle_logged_commit_slot(
+        &mut self,
+        slot: usize,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
+                                   slot, self.insts[slot].bal);
+        assert!(self.insts[slot].status >= Status::Committed);
+
+        // update index of the first non-committed instance
+        if slot == self.commit_bar {
+            while self.commit_bar < self.insts.len() {
+                let inst = &mut self.insts[self.commit_bar];
+                if inst.status < Status::Committed {
+                    break;
+                }
+
+                // submit commands in committed instance to the
+                // state machine for execution
+                if inst.reqs.is_empty() {
+                    inst.status = Status::Executed;
+                } else if inst.status == Status::Committed {
+                    for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
+                        match req {
+                            ApiRequest::Req { cmd, .. } => {
+                                self.state_machine
+                                    .submit_cmd(
+                                        Self::make_command_id(
+                                            self.commit_bar,
+                                            cmd_idx,
+                                        ),
+                                        cmd.clone(),
+                                    )
+                                    .await?;
+                            }
+                            _ => continue, // ignore other types of requests
+                        }
+                    }
+                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                               inst.reqs.len(), self.commit_bar);
+                }
+
+                self.commit_bar += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Synthesized handler of durable logging result chan recv.
     async fn handle_log_result(
         &mut self,
         action_id: LogActionId,
@@ -440,92 +571,17 @@ impl MultiPaxosReplica {
         }
 
         match entry_type {
-            Status::Preparing => {
-                pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
-                                   slot, self.insts[slot].bal);
-                let inst = &self.insts[slot];
-                let voted = if inst.status >= Status::Accepting {
-                    Some((inst.bal, inst.reqs.clone()))
-                } else {
-                    None
-                };
-
-                if self.is_leader {
-                    // on leader, finishing the logging of a PrepareBal entry
-                    // is equivalent to receiving a Prepare reply from myself
-                    // (as an acceptor role)
-                    self.handle_prepare_reply(self.id, slot, inst.bal, voted)
-                        .await?;
-                } else {
-                    // on follower replica, finishing the logging of a
-                    // PrepareBal entry leads to sending back a Prepare reply
-                    assert!(inst.replica_bk.is_some());
-                    let source = inst.replica_bk.as_ref().unwrap().source;
-                    self.transport_hub
-                        .send_msg(
-                            PeerMsg::PrepareReply {
-                                slot,
-                                ballot: inst.bal,
-                                voted,
-                            },
-                            source,
-                        )
-                        .await?;
-                    pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
-                                       source, slot, inst.bal);
-                }
-            }
-
-            Status::Accepting => {
-                pf_trace!(self.id; "finished AcceptData logging for slot {} bal {}",
-                                   slot, self.insts[slot].bal);
-                let inst = &self.insts[slot];
-
-                if self.is_leader {
-                    // on leader, finishing the logging of an AcceptData entry
-                    // is equivalent to receiving an Accept reply from myself
-                    // (as an acceptor role)
-                    self.handle_accept_reply(self.id, slot, inst.bal).await?;
-                } else {
-                    // on follower replica, finishing the logging of an
-                    // AcceptData entry leads to sending back an Accept reply
-                    assert!(inst.replica_bk.is_some());
-                    let source = inst.replica_bk.as_ref().unwrap().source;
-                    self.transport_hub
-                        .send_msg(
-                            PeerMsg::AcceptReply {
-                                slot,
-                                ballot: inst.bal,
-                            },
-                            source,
-                        )
-                        .await?;
-                    pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
-                                       source, slot, inst.bal);
-                }
-            }
-
-            Status::Committed => {
-                pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
-                                   slot, self.insts[slot].bal);
-
-                // mark the slot as committed
-                if self.insts[slot].status < Status::Committed {
-                    self.insts[slot].status = Status::Committed;
-                }
-            }
-
+            Status::Preparing => self.handle_logged_prepare_bal(slot).await,
+            Status::Accepting => self.handle_logged_accept_data(slot).await,
+            Status::Committed => self.handle_logged_commit_slot(slot).await,
             _ => {
-                return logged_err!(self.id; "unexpected log entry type: {:?}",
-                                            entry_type);
+                logged_err!(self.id; "unexpected log entry type: {:?}", entry_type)
             }
         }
-
-        Ok(())
     }
 
     /// Handler of Prepare message from leader.
-    async fn handle_prepare_msg(
+    async fn handle_msg_prepare(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -536,7 +592,7 @@ impl MultiPaxosReplica {
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
-            // locate instance in memory
+            // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
                 self.insts.push(Instance {
                     bal: 0,
@@ -574,7 +630,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
-    async fn handle_prepare_reply(
+    async fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -662,7 +718,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Accept message from leader.
-    async fn handle_accept_msg(
+    async fn handle_msg_accept(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -674,7 +730,7 @@ impl MultiPaxosReplica {
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
-            // locate instance in memory
+            // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
                 self.insts.push(Instance {
                     bal: 0,
@@ -713,7 +769,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Accept reply from replica.
-    async fn handle_accept_reply(
+    async fn handle_msg_accept_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -784,15 +840,84 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Commit message from leader.
-    async fn handle_commit_msg(
+    /// TODO: take care of missing/lost Commit messages
+    async fn handle_msg_commit(
         &mut self,
         peer: ReplicaId,
         slot: usize,
     ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
+
+        // locate instance in memory, filling in null instances if needed
+        while self.insts.len() <= slot {
+            self.insts.push(Instance {
+                bal: 0,
+                status: Status::Null,
+                reqs: Vec::new(),
+                leader_bk: None,
+                replica_bk: None,
+            });
+        }
+        let inst = &mut self.insts[slot];
+
+        // ignore spurious duplications
+        if inst.status != Status::Accepting {
+            return Ok(());
+        }
+
+        // mark this instance as committed
+        inst.status = Status::Committed;
+        pf_debug!(self.id; "committed instance at slot {} bal {}",
+                           slot, inst.bal);
+
+        // record commit event
+        self.storage_hub
+            .submit_action(
+                Self::make_log_action_id(slot, Status::Committed),
+                LogAction::Append {
+                    entry: LogEntry::CommitSlot { slot },
+                    sync: true,
+                },
+            )
+            .await?;
+        pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
+                           slot, inst.bal);
+
         Ok(())
     }
 
+    /// Synthesized handler of receiving message from peer.
+    async fn handle_msg_recv(
+        &mut self,
+        peer: ReplicaId,
+        msg: PeerMsg,
+    ) -> Result<(), SummersetError> {
+        match msg {
+            PeerMsg::Prepare { slot, ballot } => {
+                self.handle_msg_prepare(peer, slot, ballot).await
+            }
+            PeerMsg::PrepareReply {
+                slot,
+                ballot,
+                voted,
+            } => {
+                self.handle_msg_prepare_reply(peer, slot, ballot, voted)
+                    .await
+            }
+            PeerMsg::Accept { slot, ballot, reqs } => {
+                self.handle_msg_accept(peer, slot, ballot, reqs).await
+            }
+            PeerMsg::AcceptReply { slot, ballot } => {
+                self.handle_msg_accept_reply(peer, slot, ballot).await
+            }
+            PeerMsg::Commit { slot } => {
+                self.handle_msg_commit(peer, slot).await
+            }
+        }
+    }
+
     /// Handler of state machine exec result chan recv.
+    /// TODO: reply to client, update Status::Executed and exec_bar properly
     async fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
@@ -833,20 +958,13 @@ impl GenericReplica for MultiPaxosReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
-                                    batch_interval_us, backer_path, rep_degree,
+                                    batch_interval_us, backer_path,
                                     base_chan_cap, api_chan_cap)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
-            );
-        }
-        if config.rep_degree >= population {
-            return logged_err!(
-                id;
-                "invalid config.rep_degree {}",
-                config.rep_degree
             );
         }
         if config.base_chan_cap == 0 {
@@ -881,6 +999,8 @@ impl GenericReplica for MultiPaxosReplica {
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
+            commit_bar: 0,
+            exec_bar: 0,
             log_offset: 0,
         })
     }
@@ -961,37 +1081,8 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
-                    match msg {
-                        PeerMsg::Prepare { slot, ballot } => {
-                            if let Err(e) = self.handle_prepare_msg(peer, slot, ballot).await {
-                                pf_error!(self.id; "error handling Prepare msg from {}: {}",
-                                                   peer, e);
-                            }
-                        },
-                        PeerMsg::PrepareReply { slot, ballot, voted } => {
-                            if let Err(e) = self.handle_prepare_reply(peer, slot, ballot, voted).await {
-                                pf_error!(self.id; "error handling Prepare reply from {}: {}",
-                                                   peer, e);
-                            }
-                        },
-                        PeerMsg::Accept { slot, ballot, reqs } => {
-                            if let Err(e) = self.handle_accept_msg(peer, slot, ballot, reqs).await {
-                                pf_error!(self.id; "error handling Accept msg from {}: {}",
-                                                   peer, e);
-                            }
-                        },
-                        PeerMsg::AcceptReply { slot, ballot } => {
-                            if let Err(e) = self.handle_accept_reply(peer, slot, ballot).await {
-                                pf_error!(self.id; "error handling Accept reply from {}: {}",
-                                                   peer, e);
-                            }
-                        },
-                        PeerMsg::Commit { slot } => {
-                            if let Err(e) = self.handle_commit_msg(peer, slot).await {
-                                pf_error!(self.id; "error handling Commit msg from {}: {}",
-                                                   peer, e);
-                            }
-                        }
+                    if let Err(e) = self.handle_msg_recv(peer, msg).await {
+                        pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
                     }
                 }
 
