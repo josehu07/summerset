@@ -129,7 +129,7 @@ impl RepNothingReplica {
             execed: vec![false; batch_size],
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
+        self.insts.push(inst);
 
         // submit log action to make this instance durable
         let log_entry = LogEntry { reqs: req_batch };

@@ -48,13 +48,13 @@ impl ReplicaMap {
     }
 
     /// Returns the size of the bitmap.
-    pub fn size(&self) -> usize {
-        self.0.len()
+    pub fn size(&self) -> u8 {
+        self.0.len() as u8
     }
 
     /// Returns the number of trues in the bitmap.
-    pub fn count(&self) -> usize {
-        self.0.count_ones(..)
+    pub fn count(&self) -> u8 {
+        self.0.count_ones(..) as u8
     }
 
     /// Allows `for (id, bit) in map.iter()`.
@@ -75,7 +75,7 @@ impl Iterator for ReplicaMapIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let id: ReplicaId = self.idx as ReplicaId;
-        if (id as usize) < self.map.size() {
+        if id < self.map.size() {
             self.idx += 1;
             Some((id, self.map.get(id).unwrap()))
         } else {

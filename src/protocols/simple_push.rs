@@ -134,7 +134,7 @@ impl SimplePushReplica {
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
-        (inst_idx << 32 | cmd_idx) as CommandId
+        ((inst_idx << 32) | cmd_idx) as CommandId
     }
 
     /// Decompose CommandId into instance index & command index within.
@@ -174,7 +174,7 @@ impl SimplePushReplica {
             from_peer: None,
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
+        self.insts.push(inst);
 
         // submit log action to make this instance durable
         let log_entry = LogEntry::FromClient {
@@ -280,7 +280,7 @@ impl SimplePushReplica {
             from_peer: Some((peer, src_inst_idx)),
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
+        self.insts.push(inst);
 
         // submit log action to make this instance durable
         let log_entry = LogEntry::PeerPushed {
