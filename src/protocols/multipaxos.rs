@@ -276,7 +276,7 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         assert!(batch_size > 0);
-        pf_trace!(self.id; "received request batch of size {}", batch_size);
+        pf_trace!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if !self.is_leader {
@@ -528,19 +528,18 @@ impl MultiPaxosReplica {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
                     for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                        match req {
-                            ApiRequest::Req { cmd, .. } => {
-                                self.state_machine
-                                    .submit_cmd(
-                                        Self::make_command_id(
-                                            self.commit_bar,
-                                            cmd_idx,
-                                        ),
-                                        cmd.clone(),
-                                    )
-                                    .await?;
-                            }
-                            _ => continue, // ignore other types of requests
+                        if let ApiRequest::Req { cmd, .. } = req {
+                            self.state_machine
+                                .submit_cmd(
+                                    Self::make_command_id(
+                                        self.commit_bar,
+                                        cmd_idx,
+                                    ),
+                                    cmd.clone(),
+                                )
+                                .await?;
+                        } else {
+                            continue; // ignore other types of requests
                         }
                     }
                     pf_trace!(self.id; "submitted {} exec commands for slot {}",
@@ -923,6 +922,52 @@ impl MultiPaxosReplica {
         cmd_id: CommandId,
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
+        let (slot, cmd_idx) = Self::split_command_id(cmd_id);
+        assert!(slot < self.insts.len());
+        pf_trace!(self.id; "executed cmd in instance at slot {} idx {}",
+                           slot, cmd_idx);
+
+        let inst = &mut self.insts[slot];
+        assert!(cmd_idx < inst.reqs.len());
+        let (client, ref req) = inst.reqs[cmd_idx];
+
+        // reply command result back to client
+        if let ApiRequest::Req { id: req_id, .. } = req {
+            self.external_api
+                .send_reply(
+                    ApiReply::Reply {
+                        id: *req_id,
+                        result: Some(cmd_result),
+                        redirect: None,
+                    },
+                    client,
+                )
+                .await?;
+            pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
+                               client, slot, cmd_idx);
+        } else {
+            return logged_err!(self.id; "unexpected API request type");
+        }
+
+        // if all commands in this instance have been executed, set status to
+        // Executed and update `exec_bar`
+        if cmd_idx == inst.reqs.len() - 1 {
+            inst.status = Status::Executed;
+            pf_debug!(self.id; "executed all cmds in instance at slot {}",
+                               slot);
+
+            // update index of the first non-executed instance
+            if slot == self.exec_bar {
+                while self.exec_bar < self.insts.len() {
+                    let inst = &mut self.insts[self.exec_bar];
+                    if inst.status < Status::Committed {
+                        break;
+                    }
+                    self.exec_bar += 1;
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -1210,6 +1255,8 @@ impl GenericClient for MultiPaxosClient {
                             .await
                         {
                             self.conn_stubs = Some(stubs);
+                            pf_debug!(self.id; "redirected to replica {} '{}'",
+                                               redirect_id, self.servers[&redirect_id]);
                         }
                     }
                 }

@@ -13,6 +13,7 @@ def run_process(cmd):
 PROTOCOL_CONFIGS = {
     "RepNothing": lambda r, _: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
+    "MultiPaxos": lambda r, _: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
 }
 
 
