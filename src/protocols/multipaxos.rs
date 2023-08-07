@@ -1,11 +1,11 @@
 //! Replication protocol: MultiPaxos.
 //!
 //! Multi-decree Paxos protocol. References:
-//!   - https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf
-//!   - https://dl.acm.org/doi/pdf/10.1145/1281100.1281103
-//!   - https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf
-//!   - https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical
-//!   - https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go
+//!   - <https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf>
+//!   - <https://dl.acm.org/doi/pdf/10.1145/1281100.1281103>
+//!   - <https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf>
+//!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
+//!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 
 use std::collections::HashMap;
 use std::path::Path;
