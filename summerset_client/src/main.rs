@@ -129,7 +129,6 @@ fn client_main() -> Result<(), SummersetError> {
             pf_info!(args.id; "{:?}", client.get("Jose").await?);
             client.leave().await?;
         } else {
-            // may go out-of-order
             let mut client = ClientOpenLoop::new(args.id, stub);
             client.issue_get("Jose").await?;
             client.issue_put("Jose", "123").await?;

@@ -33,8 +33,11 @@ impl ClientOpenLoop {
         }
     }
 
-    /// Make a Get request.
-    pub async fn issue_get(&mut self, key: &str) -> Result<(), SummersetError> {
+    /// Make a Get request. Returns request ID for later reference.
+    pub async fn issue_get(
+        &mut self,
+        key: &str,
+    ) -> Result<RequestId, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -46,15 +49,15 @@ impl ClientOpenLoop {
             .await?;
 
         self.pending_reqs.insert(req_id);
-        Ok(())
+        Ok(req_id)
     }
 
-    /// Make a Put request.
+    /// Make a Put request. Returns request ID for later reference.
     pub async fn issue_put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<(), SummersetError> {
+    ) -> Result<RequestId, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -69,16 +72,16 @@ impl ClientOpenLoop {
             .await?;
 
         self.pending_reqs.insert(req_id);
-        Ok(())
+        Ok(req_id)
     }
 
-    /// Wait for the next reply. Returns:
+    /// Wait for the next reply. Returns the request ID and:
     ///   - `Ok(Some(cmd_result))` if request successful
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn wait_reply(
         &mut self,
-    ) -> Result<Option<CommandResult>, SummersetError> {
+    ) -> Result<(RequestId, Option<CommandResult>), SummersetError> {
         let reply = self.stub.recv_reply().await?;
         match reply {
             ApiReply::Reply {
@@ -90,7 +93,7 @@ impl ClientOpenLoop {
                     logged_err!(self.id; "request ID {} not in pending set", reply_id)
                 } else {
                     self.pending_reqs.remove(&reply_id);
-                    Ok(cmd_result)
+                    Ok((reply_id, cmd_result))
                 }
             }
             _ => logged_err!(self.id; "unexpected reply type received"),
