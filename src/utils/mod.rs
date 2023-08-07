@@ -8,6 +8,8 @@ mod config;
 
 mod error;
 mod bitmap;
+mod timer;
 
 pub use error::SummersetError;
 pub use bitmap::ReplicaMap;
+pub use timer::Timer;

@@ -25,23 +25,36 @@ pub type RequestId = u64;
 
 /// Request received from client.
 // TODO: add information fields such as read-only flag...
+// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiRequest {
     /// Regular request.
-    Req { id: RequestId, cmd: Command },
+    Req {
+        /// Client request ID.
+        id: RequestId,
+
+        /// Command to be replicated and executed.
+        cmd: Command,
+    },
 
     /// Client leave notification.
     Leave,
 }
 
 /// Reply back to client.
-// TODO: add information fields such as success status...
+// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiReply {
     /// Reply to regular request.
     Reply {
+        /// ID of the corresponding client request.
         id: RequestId,
-        result: CommandResult,
+
+        /// Command result, or `None` if unsuccessful.
+        result: Option<CommandResult>,
+
+        /// Set if the service wants me to talk to a specific server.
+        redirect: Option<ReplicaId>,
     },
 
     /// Reply to client leave notification.
@@ -461,7 +474,7 @@ mod external_tests {
             .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
-            while reqs.len() < 2 {
+            while reqs.len() < 3 {
                 let mut req_batch = api.get_req_batch().await?;
                 reqs.append(&mut req_batch);
             }
@@ -483,10 +496,27 @@ mod external_tests {
                     cmd: Command::Get { key: "Jose".into() },
                 }
             );
+            assert_eq!(
+                reqs[2].1,
+                ApiRequest::Req {
+                    id: 1,
+                    cmd: Command::Get { key: "Jose".into() },
+                }
+            );
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
-                    result: CommandResult::Put { old_value: None },
+                    result: Some(CommandResult::Put { old_value: None }),
+                    redirect: None,
+                },
+                client,
+            )
+            .await?;
+            api.send_reply(
+                ApiReply::Reply {
+                    id: 0,
+                    result: None,
+                    redirect: Some(1),
                 },
                 client,
             )
@@ -494,9 +524,10 @@ mod external_tests {
             api.send_reply(
                 ApiReply::Reply {
                     id: 1,
-                    result: CommandResult::Get {
+                    result: Some(CommandResult::Get {
                         value: Some("123".into()),
-                    },
+                    }),
+                    redirect: None,
                 },
                 client,
             )
@@ -524,20 +555,36 @@ mod external_tests {
                 cmd: Command::Get { key: "Jose".into() },
             })
             .await?;
+        send_stub
+            .send_req(ApiRequest::Req {
+                id: 1,
+                cmd: Command::Get { key: "Jose".into() },
+            })
+            .await?;
         assert_eq!(
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
-                result: CommandResult::Put { old_value: None }
+                result: Some(CommandResult::Put { old_value: None }),
+                redirect: None,
+            }
+        );
+        assert_eq!(
+            recv_stub.recv_reply().await?,
+            ApiReply::Reply {
+                id: 0,
+                result: None,
+                redirect: Some(1),
             }
         );
         assert_eq!(
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 1,
-                result: CommandResult::Get {
+                result: Some(CommandResult::Get {
                     value: Some("123".into())
-                }
+                }),
+                redirect: None,
             }
         );
         Ok(())
@@ -577,7 +624,8 @@ mod external_tests {
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
-                    result: CommandResult::Put { old_value: None },
+                    result: Some(CommandResult::Put { old_value: None }),
+                    redirect: None,
                 },
                 client,
             )
@@ -601,9 +649,10 @@ mod external_tests {
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
-                    result: CommandResult::Put {
+                    result: Some(CommandResult::Put {
                         old_value: Some("123".into()),
-                    },
+                    }),
+                    redirect: None,
                 },
                 client,
             )
@@ -629,7 +678,8 @@ mod external_tests {
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
-                result: CommandResult::Put { old_value: None }
+                result: Some(CommandResult::Put { old_value: None }),
+                redirect: None,
             }
         );
         send_stub.send_req(ApiRequest::Leave).await?;
@@ -650,9 +700,10 @@ mod external_tests {
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
-                result: CommandResult::Put {
+                result: Some(CommandResult::Put {
                     old_value: Some("123".into())
-                }
+                }),
+                redirect: None,
             }
         );
         Ok(())

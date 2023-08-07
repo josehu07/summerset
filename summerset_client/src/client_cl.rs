@@ -1,8 +1,10 @@
 //! Closed-loop client implementation.
 
+use tokio::time::Duration;
+
 use summerset::{
     GenericClient, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, SummersetError, pf_info, pf_error, logged_err,
+    RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
 /// Closed-loop client struct.
@@ -15,23 +17,58 @@ pub struct ClientClosedLoop {
 
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
+
+    /// Reply timeout timer.
+    timer: Timer,
+
+    /// Reply timeout duration.
+    timeout: Duration,
 }
 
 impl ClientClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(id: ClientId, stub: Box<dyn GenericClient>) -> Self {
+    pub fn new(
+        id: ClientId,
+        stub: Box<dyn GenericClient>,
+        timeout: Duration,
+    ) -> Self {
         ClientClosedLoop {
             id,
             stub,
             next_req: 0,
+            timer: Timer::new(),
+            timeout,
         }
     }
 
-    /// Send a Get request and wait for its reply.
+    /// Wait on a reply from the service with timeout. Returns `Ok(None)` if
+    /// timed-out.
+    async fn recv_reply_with_timeout(
+        &mut self,
+    ) -> Result<Option<ApiReply>, SummersetError> {
+        self.timer.kickoff(self.timeout)?;
+
+        tokio::select! {
+            () = self.timer.timeout() => {
+                pf_debug!(self.id; "timed-out waiting for reply");
+                Ok(None)
+            }
+
+            reply = self.stub.recv_reply() => {
+                Ok(Some(reply?))
+            }
+        }
+    }
+
+    /// Send a Get request and wait for its reply. Returns:
+    ///   - `Ok(Some(Some(value)))` if successful and key exists
+    ///   - `Ok(Some(None))` if successful and key does not exist
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
+    ///   - `Err(err)` if any unexpected error occurs
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    ) -> Result<Option<Option<String>>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -42,33 +79,43 @@ impl ClientClosedLoop {
             })
             .await?;
 
-        let reply = self.stub.recv_reply().await?;
+        let reply = self.recv_reply_with_timeout().await?;
         match reply {
-            ApiReply::Reply {
+            Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
-            } => {
+                ..
+            }) => {
                 if reply_id != req_id {
-                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
+                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
+                                         req_id, reply_id)
                 } else {
                     match cmd_result {
-                        CommandResult::Get { value } => Ok(value),
+                        None => Ok(None),
+                        Some(CommandResult::Get { value }) => Ok(Some(value)),
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
                         }
                     }
                 }
             }
+
+            None => Ok(None), // timed-out
+
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 
-    /// Send a Put request and wait for its reply.
+    /// Send a Put request and wait for its reply. Returns:
+    ///   - `Ok(Some(Some(old_value)))` if successful and key exists
+    ///   - `Ok(Some(None))` if successful and key did not exist
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
+    ///   - `Err(err)` if any unexpected error occurs
     pub async fn put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    ) -> Result<Option<Option<String>>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -82,23 +129,31 @@ impl ClientClosedLoop {
             })
             .await?;
 
-        let reply = self.stub.recv_reply().await?;
+        let reply = self.recv_reply_with_timeout().await?;
         match reply {
-            ApiReply::Reply {
+            Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
-            } => {
+                ..
+            }) => {
                 if reply_id != req_id {
-                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}", req_id, reply_id)
+                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
+                                         req_id, reply_id)
                 } else {
                     match cmd_result {
-                        CommandResult::Put { old_value } => Ok(old_value),
+                        None => Ok(None),
+                        Some(CommandResult::Put { old_value }) => {
+                            Ok(Some(old_value))
+                        }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")
                         }
                     }
                 }
             }
+
+            None => Ok(None), // timed-out
+
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }

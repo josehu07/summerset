@@ -8,6 +8,7 @@ use clap::Parser;
 use env_logger::Env;
 
 use tokio::runtime::Builder;
+use tokio::time::Duration;
 
 use summerset::{
     SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error, pf_info,
@@ -50,6 +51,10 @@ struct CliArgs {
     /// Number of tokio worker threads.
     #[arg(long, default_value_t = 1)]
     threads: usize,
+
+    /// Reply timeout duration in millisecs.
+    #[arg(long, default_value_t = 5000)]
+    timeout_ms: u64,
 }
 
 impl CliArgs {
@@ -76,6 +81,11 @@ impl CliArgs {
             Err(SummersetError(format!(
                 "invalid number of threads {}",
                 self.threads
+            )))
+        } else if self.timeout_ms == 0 {
+            Err(SummersetError(format!(
+                "invalid timeout duration {} ms",
+                self.timeout_ms
             )))
         } else {
             SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
@@ -121,7 +131,11 @@ fn client_main() -> Result<(), SummersetError> {
         stub.setup().await?;
 
         if args.open_cnt == 0 {
-            let mut client = ClientClosedLoop::new(args.id, stub);
+            let mut client = ClientClosedLoop::new(
+                args.id,
+                stub,
+                Duration::from_millis(args.timeout_ms),
+            );
             pf_info!(args.id; "{:?}", client.get("Jose").await?);
             pf_info!(args.id; "{:?}", client.put("Jose", "123").await?);
             pf_info!(args.id; "{:?}", client.get("Jose").await?);
@@ -129,8 +143,11 @@ fn client_main() -> Result<(), SummersetError> {
             pf_info!(args.id; "{:?}", client.get("Jose").await?);
             client.leave().await?;
         } else {
-            // may go out-of-order
-            let mut client = ClientOpenLoop::new(args.id, stub);
+            let mut client = ClientOpenLoop::new(
+                args.id,
+                stub,
+                Duration::from_millis(args.timeout_ms),
+            );
             client.issue_get("Jose").await?;
             client.issue_put("Jose", "123").await?;
             client.issue_get("Jose").await?;
@@ -176,6 +193,7 @@ mod client_args_tests {
             ],
             open_cnt: 0,
             threads: 1,
+            timeout_ms: 5000,
             config: "".into(),
         };
         assert_eq!(args.sanitize(), Ok(SMRProtocol::RepNothing));
@@ -194,6 +212,7 @@ mod client_args_tests {
             ],
             open_cnt: 0,
             threads: 1,
+            timeout_ms: 5000,
             config: "".into(),
         };
         assert!(args.sanitize().is_err());
@@ -208,6 +227,7 @@ mod client_args_tests {
             replicas: vec![],
             open_cnt: 0,
             threads: 1,
+            timeout_ms: 5000,
             config: "".into(),
         };
         assert!(args.sanitize().is_err());
@@ -225,6 +245,7 @@ mod client_args_tests {
             ],
             open_cnt: 0,
             threads: 1,
+            timeout_ms: 5000,
             config: "".into(),
         };
         assert!(args.sanitize().is_err());
@@ -243,6 +264,26 @@ mod client_args_tests {
             ],
             open_cnt: 0,
             threads: 0,
+            timeout_ms: 5000,
+            config: "".into(),
+        };
+        assert!(args.sanitize().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_invalid_timeout_ms() -> Result<(), SummersetError> {
+        let args = CliArgs {
+            protocol: "RepNothing".into(),
+            id: 7456,
+            replicas: vec![
+                "127.0.0.1:52700".parse()?,
+                "127.0.0.1:52701".parse()?,
+                "127.0.0.1:52702".parse()?,
+            ],
+            open_cnt: 0,
+            threads: 1,
+            timeout_ms: 0,
             config: "".into(),
         };
         assert!(args.sanitize().is_err());

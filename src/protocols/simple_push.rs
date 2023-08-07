@@ -111,16 +111,16 @@ pub struct SimplePushReplica {
     peer_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// ExternalApi module.
-    external_api: Option<ExternalApi>,
+    external_api: ExternalApi,
 
     /// StateMachine module.
-    state_machine: Option<StateMachine>,
+    state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: Option<StorageHub<LogEntry>>,
+    storage_hub: StorageHub<LogEntry>,
 
     /// TransportHub module.
-    transport_hub: Option<TransportHub<PushMsg>>,
+    transport_hub: TransportHub<PushMsg>,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -134,7 +134,7 @@ impl SimplePushReplica {
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
-        (inst_idx << 32 | cmd_idx) as CommandId
+        ((inst_idx << 32) | cmd_idx) as CommandId
     }
 
     /// Decompose CommandId into instance index & command index within.
@@ -174,15 +174,13 @@ impl SimplePushReplica {
             from_peer: None,
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
+        self.insts.push(inst);
 
         // submit log action to make this instance durable
         let log_entry = LogEntry::FromClient {
             reqs: req_batch.clone(),
         };
         self.storage_hub
-            .as_mut()
-            .unwrap()
             .submit_action(
                 inst_idx as LogActionId,
                 LogAction::Append {
@@ -194,8 +192,6 @@ impl SimplePushReplica {
 
         // send push message to chosen peers
         self.transport_hub
-            .as_mut()
-            .unwrap()
             .bcast_msg(
                 PushMsg::Push {
                     src_inst_idx: inst_idx,
@@ -241,8 +237,6 @@ impl SimplePushReplica {
                 match req {
                     ApiRequest::Req { cmd, .. } => {
                         self.state_machine
-                            .as_mut()
-                            .unwrap()
                             .submit_cmd(
                                 Self::make_command_id(inst_idx, cmd_idx),
                                 cmd.clone(),
@@ -258,8 +252,6 @@ impl SimplePushReplica {
         if let Some((peer, src_inst_idx)) = inst.from_peer {
             assert!(inst.pending_peers.count() == 0);
             self.transport_hub
-                .as_mut()
-                .unwrap()
                 .send_msg(
                     PushMsg::PushReply {
                         src_inst_idx,
@@ -288,7 +280,7 @@ impl SimplePushReplica {
             from_peer: Some((peer, src_inst_idx)),
         };
         let inst_idx = self.insts.len();
-        self.insts.push(inst); // TODO: snapshotting & garbage collection
+        self.insts.push(inst);
 
         // submit log action to make this instance durable
         let log_entry = LogEntry::PeerPushed {
@@ -296,8 +288,6 @@ impl SimplePushReplica {
             reqs: req_batch.clone(),
         };
         self.storage_hub
-            .as_mut()
-            .unwrap()
             .submit_action(
                 inst_idx as LogActionId,
                 LogAction::Append {
@@ -345,8 +335,6 @@ impl SimplePushReplica {
                 match req {
                     ApiRequest::Req { cmd, .. } => {
                         self.state_machine
-                            .as_mut()
-                            .unwrap()
                             .submit_cmd(
                                 Self::make_command_id(inst_idx, cmd_idx),
                                 cmd.clone(),
@@ -394,12 +382,11 @@ impl SimplePushReplica {
             match req {
                 ApiRequest::Req { id: req_id, .. } => {
                     self.external_api
-                        .as_mut()
-                        .unwrap()
                         .send_reply(
                             ApiReply::Reply {
                                 id: *req_id,
-                                result: cmd_result,
+                                result: Some(cmd_result),
+                                redirect: None,
                             },
                             *client,
                         )
@@ -484,34 +471,29 @@ impl GenericReplica for SimplePushReplica {
             api_addr,
             config,
             peer_addrs,
-            external_api: None,
-            state_machine: None,
-            storage_hub: None,
-            transport_hub: None,
+            external_api: ExternalApi::new(id),
+            state_machine: StateMachine::new(id),
+            storage_hub: StorageHub::new(id),
+            transport_hub: TransportHub::new(id, population),
             insts: vec![],
             log_offset: 0,
         })
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        let mut state_machine = StateMachine::new(self.id);
-        state_machine
+        self.state_machine
             .setup(self.config.api_chan_cap, self.config.api_chan_cap)
             .await?;
-        self.state_machine = Some(state_machine);
 
-        let mut storage_hub = StorageHub::new(self.id);
-        storage_hub
+        self.storage_hub
             .setup(
                 Path::new(&self.config.backer_path),
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
-        self.storage_hub = Some(storage_hub);
 
-        let mut transport_hub = TransportHub::new(self.id, self.population);
-        transport_hub
+        self.transport_hub
             .setup(
                 self.smr_addr,
                 self.config.base_chan_cap,
@@ -519,12 +501,10 @@ impl GenericReplica for SimplePushReplica {
             )
             .await?;
         if !self.peer_addrs.is_empty() {
-            transport_hub.group_connect(&self.peer_addrs).await?;
+            self.transport_hub.group_connect(&self.peer_addrs).await?;
         }
-        self.transport_hub = Some(transport_hub);
 
-        let mut external_api = ExternalApi::new(self.id);
-        external_api
+        self.external_api
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
@@ -532,7 +512,6 @@ impl GenericReplica for SimplePushReplica {
                 self.config.api_chan_cap,
             )
             .await?;
-        self.external_api = Some(external_api);
 
         Ok(())
     }
@@ -541,7 +520,7 @@ impl GenericReplica for SimplePushReplica {
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.as_mut().unwrap().get_req_batch() => {
+                req_batch = self.external_api.get_req_batch() => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -553,7 +532,7 @@ impl GenericReplica for SimplePushReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.as_mut().unwrap().get_result() => {
+                log_result = self.storage_hub.get_result() => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -565,7 +544,7 @@ impl GenericReplica for SimplePushReplica {
                 },
 
                 // message from peer
-                msg = self.transport_hub.as_mut().unwrap().recv_msg() => {
+                msg = self.transport_hub.recv_msg() => {
                     if let Err(e) = msg {
                         pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
@@ -587,7 +566,7 @@ impl GenericReplica for SimplePushReplica {
                 }
 
                 // state machine execution result
-                cmd_result = self.state_machine.as_mut().unwrap().get_result() => {
+                cmd_result = self.state_machine.get_result() => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;

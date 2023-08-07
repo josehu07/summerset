@@ -385,9 +385,9 @@ where
                             if let Err(e) = Self::write_msg(&msg, &mut conn_write)
                                             .await
                                     {
-                                        pf_error!(me; "error sending to {}: {}", id, e);
+                                        pf_error!(me; "error sending -> {}: {}", id, e);
                                     } else {
-                                        pf_trace!(me; "sent to {} msg {:?}", id, msg);
+                                        pf_trace!(me; "sent -> {} msg {:?}", id, msg);
                                     }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -398,7 +398,7 @@ where
                 msg = Self::read_msg(&mut conn_read) => {
                     match msg {
                         Ok(msg) => {
-                            pf_trace!(me; "recv from {} msg {:?}", id, msg);
+                            pf_trace!(me; "recv <- {} msg {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)).await {
                                 pf_error!(
                                     me;
@@ -410,7 +410,7 @@ where
                         },
 
                         Err(e) => {
-                            pf_error!(me; "error receiving msg from {}: {}", id, e);
+                            pf_error!(me; "error receiving msg <- {}: {}", id, e);
                             break; // probably the peer exitted ungracefully
                         }
                     }

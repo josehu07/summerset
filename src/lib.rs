@@ -12,7 +12,7 @@ mod protocols;
 // Things (other than exported macros) exposed to users of this crate:
 
 #[doc(inline)]
-pub use crate::utils::{SummersetError, ReplicaMap};
+pub use crate::utils::{SummersetError, ReplicaMap, Timer};
 
 #[doc(inline)]
 pub use crate::server::{
