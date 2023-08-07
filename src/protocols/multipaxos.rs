@@ -1212,6 +1212,7 @@ impl GenericClient for MultiPaxosClient {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
+        // connect to default replica
         self.api_stub
             .connect(self.servers[&self.config.init_server_id])
             .await

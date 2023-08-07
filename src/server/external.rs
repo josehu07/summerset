@@ -42,7 +42,7 @@ pub enum ApiRequest {
 }
 
 /// Reply back to client.
-// TODO: add information fields such as retry status...
+// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiReply {
     /// Reply to regular request.

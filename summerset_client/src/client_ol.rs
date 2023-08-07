@@ -2,9 +2,11 @@
 
 use std::collections::HashSet;
 
+use tokio::time::Duration;
+
 use summerset::{
     GenericClient, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, SummersetError, pf_info, pf_error, logged_err,
+    RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
 /// Open-loop client struct.
@@ -20,16 +22,47 @@ pub struct ClientOpenLoop {
 
     /// Set of pending requests whose reply has not been received.
     pending_reqs: HashSet<RequestId>,
+
+    /// Reply timeout timer.
+    timer: Timer,
+
+    /// Reply timeout duration.
+    timeout: Duration,
 }
 
 impl ClientOpenLoop {
     /// Creates a new open-loop client.
-    pub fn new(id: ClientId, stub: Box<dyn GenericClient>) -> Self {
+    pub fn new(
+        id: ClientId,
+        stub: Box<dyn GenericClient>,
+        timeout: Duration,
+    ) -> Self {
         ClientOpenLoop {
             id,
             stub,
             next_req: 0,
             pending_reqs: HashSet::new(),
+            timer: Timer::new(),
+            timeout,
+        }
+    }
+
+    /// Wait on a reply from the service with timeout. Returns `Ok(None)` if
+    /// timed-out.
+    async fn recv_reply_with_timeout(
+        &mut self,
+    ) -> Result<Option<ApiReply>, SummersetError> {
+        self.timer.kickoff(self.timeout)?;
+
+        tokio::select! {
+            () = self.timer.timeout() => {
+                pf_debug!(self.id; "timed-out waiting for reply");
+                Ok(None)
+            }
+
+            reply = self.stub.recv_reply() => {
+                Ok(Some(reply?))
+            }
         }
     }
 
@@ -77,25 +110,32 @@ impl ClientOpenLoop {
 
     /// Wait for the next reply. Returns the request ID and:
     ///   - `Ok(Some(cmd_result))` if request successful
-    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader
+    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn wait_reply(
         &mut self,
-    ) -> Result<(RequestId, Option<CommandResult>), SummersetError> {
-        let reply = self.stub.recv_reply().await?;
+    ) -> Result<Option<(RequestId, CommandResult)>, SummersetError> {
+        let reply = self.recv_reply_with_timeout().await?;
         match reply {
-            ApiReply::Reply {
+            Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
                 ..
-            } => {
+            }) => {
                 if !self.pending_reqs.contains(&reply_id) {
                     logged_err!(self.id; "request ID {} not in pending set", reply_id)
                 } else {
                     self.pending_reqs.remove(&reply_id);
-                    Ok((reply_id, cmd_result))
+                    if let Some(res) = cmd_result {
+                        Ok(Some((reply_id, res)))
+                    } else {
+                        Ok(None)
+                    }
                 }
             }
+
+            None => Ok(None), // timed-out
+
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }

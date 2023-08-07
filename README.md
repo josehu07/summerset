@@ -63,7 +63,7 @@ cargo run [-r] -p summerset_client -- -h
 
 - [x] event-based programming structure
 - [x] implementation of MultiPaxos
-  - [ ] client-side timeout/retry logic
+  - [x] client-side timeout/retry logic
   - [ ] state persistence & restart check
   - [ ] automatic leader election, backoffs
   - [ ] snapshotting & garbage collection
