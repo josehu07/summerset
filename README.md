@@ -74,7 +74,8 @@ cargo run [-r] -p summerset_client -- -h
 - [ ] implementation of Crossword prototype
 - [ ] complete client-side utilities
   - [x] REPL-style client
-  - [ ] benchmarking client
+  - [ ] random benchmarking client
+  - [ ] benchmarking with YCSB input
   - [ ] testing client
 - [ ] better README
 

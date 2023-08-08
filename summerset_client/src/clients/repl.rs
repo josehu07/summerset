@@ -11,9 +11,9 @@ use summerset::{
 };
 
 /// Prompt string at the start of line.
-const PROMPT: &str = ">>> ";
+const PROMPT: &str = ">>>>> ";
 
-/// Interactive REPL-style client.
+/// Interactive REPL-style client struct.
 pub struct ClientRepl {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
@@ -35,13 +35,13 @@ impl ClientRepl {
         }
     }
 
-    /// Print the prompt string.
+    /// Prints the prompt string.
     fn print_prompt(&mut self) {
         print!("{}", PROMPT);
         io::stdout().flush().unwrap();
     }
 
-    /// Print (optionally) an error message and the help message.
+    /// Prints (optionally) an error message and the help message.
     fn print_help(&mut self, err: Option<&SummersetError>) {
         if let Some(e) = err {
             println!("ERROR: {}", e);
@@ -57,7 +57,7 @@ impl ClientRepl {
         io::stdout().flush().unwrap();
     }
 
-    /// Read in user input and parse into a command.
+    /// Reads in user input and parses into a command.
     fn read_command(&mut self) -> Result<Option<Command>, SummersetError> {
         self.input_buf.clear();
         io::stdin().read_line(&mut self.input_buf)?;
@@ -129,7 +129,7 @@ impl ClientRepl {
         }
     }
 
-    /// Issue the command to the service and wait for the reply.
+    /// Issues the command to the service and wait for the reply.
     async fn eval_command(
         &mut self,
         cmd: Command,
@@ -151,7 +151,7 @@ impl ClientRepl {
         }
     }
 
-    /// Print command execution result.
+    /// Prints command execution result.
     fn print_result(&mut self, result: Option<(RequestId, CommandResult)>) {
         if let Some((req_id, cmd_result)) = result {
             println!("({}) {:?}", req_id, cmd_result);

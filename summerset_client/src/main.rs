@@ -15,7 +15,7 @@ use summerset::{SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error};
 mod drivers;
 mod clients;
 
-use crate::clients::{ClientMode, ClientRepl};
+use crate::clients::{ClientMode, ClientRepl, ClientBench};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -43,13 +43,13 @@ struct CliArgs {
     #[arg(short, long)]
     mode: String,
 
-    /// Number of open-loop requests to maintain.
-    // TODO: actually use this arg
-    #[arg(long, default_value_t = 100)]
-    open_cnt: u64,
+    /// Mode-specific client parameters TOML string.
+    /// Every '+' is treated as newline.
+    #[arg(long, default_value_t = String::from(""))]
+    params: String,
 
     /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 2)]
     threads: usize,
 
     /// Reply timeout duration in millisecs.
@@ -77,12 +77,7 @@ impl CliArgs {
             replicas_set.insert(addr);
         }
 
-        if self.open_cnt == 0 {
-            Err(SummersetError(format!(
-                "invalid number of open requests {}",
-                self.open_cnt
-            )))
-        } else if self.threads == 0 {
+        if self.threads == 0 {
             Err(SummersetError(format!(
                 "invalid number of threads {}",
                 self.threads
@@ -126,6 +121,14 @@ fn client_main() -> Result<(), SummersetError> {
         Some(&args.config[..])
     };
 
+    // parse optional params string if given
+    let params_str = if args.params.is_empty() {
+        None
+    } else {
+        args.params = args.params.replace('+', "\n");
+        Some(&args.params[..])
+    };
+
     // create client struct with given servers list
     let mut stub = protocol.new_client_stub(args.id, servers, config_str)?;
 
@@ -149,6 +152,16 @@ fn client_main() -> Result<(), SummersetError> {
                     Duration::from_millis(args.timeout_ms),
                 );
                 repl.run().await;
+            }
+            ClientMode::Bench => {
+                // run benchmarking client
+                let mut bench = ClientBench::new(
+                    args.id,
+                    stub,
+                    Duration::from_millis(args.timeout_ms),
+                    params_str,
+                )?;
+                bench.run().await?;
             }
         }
 
@@ -183,10 +196,10 @@ mod client_args_tests {
                 "127.0.0.1:52702".parse()?,
             ],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert_eq!(
             args.sanitize(),
@@ -206,10 +219,10 @@ mod client_args_tests {
                 "127.0.0.1:52702".parse()?,
             ],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -222,10 +235,10 @@ mod client_args_tests {
             id: 7456,
             replicas: vec![],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -241,10 +254,10 @@ mod client_args_tests {
                 "127.0.0.1:52700".parse()?,
             ],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -261,10 +274,10 @@ mod client_args_tests {
                 "127.0.0.1:52702".parse()?,
             ],
             mode: "invalid_mode".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -281,10 +294,10 @@ mod client_args_tests {
                 "127.0.0.1:52702".parse()?,
             ],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 0,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -301,10 +314,10 @@ mod client_args_tests {
                 "127.0.0.1:52702".parse()?,
             ],
             mode: "repl".into(),
-            open_cnt: 100,
             threads: 1,
             timeout_ms: 0,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())

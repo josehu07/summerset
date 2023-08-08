@@ -42,7 +42,7 @@ struct CliArgs {
     replicas: Vec<SocketAddr>,
 
     /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 16)]
     threads: usize,
 }
 

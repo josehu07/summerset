@@ -452,7 +452,7 @@ where
         let mut file_size: usize = metadata.unwrap().len() as usize;
 
         while let Some((id, action)) = rx_log.recv().await {
-            pf_trace!(me; "log action {:?}", action);
+            // pf_trace!(me; "log action {:?}", action);
             let res =
                 Self::do_action(me, &mut backer_file, &mut file_size, action)
                     .await;

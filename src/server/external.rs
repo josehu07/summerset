@@ -359,7 +359,7 @@ impl ExternalApi {
                             if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
                                 pf_error!(me; "error replying to {}: {}", id, e);
                             } else {
-                                pf_trace!(me; "replied to {} reply {:?}", id, reply);
+                                // pf_trace!(me; "replied to {} reply {:?}", id, reply);
                             }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -381,7 +381,7 @@ impl ExternalApi {
                         },
 
                         Ok(req) => {
-                            pf_trace!(me; "request from {} req {:?}", id, req);
+                            // pf_trace!(me; "request from {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)).await {
                                 pf_error!(
                                     me; "error sending to tx_req for {}: {}", id, e

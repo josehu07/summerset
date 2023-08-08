@@ -17,7 +17,7 @@ PROTOCOL_CONFIGS = {
 }
 
 
-def launch_servers(protocol, num_replicas):
+def launch_servers(protocol, num_replicas, release):
     api_ports = list(range(52700, 52700 + num_replicas))
     smr_ports = list(range(52800, 52800 + num_replicas))
     replica_list = []
@@ -34,6 +34,10 @@ def launch_servers(protocol, num_replicas):
             "run",
             "-p",
             "summerset_server",
+        ]
+        if release:
+            cmd.append("-r")
+        cmd += [
             "--",
             "-p",
             protocol,
@@ -58,7 +62,10 @@ if __name__ == "__main__":
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument(
-        "-r", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+    )
+    parser.add_argument(
+        "-r", "--release", action="store_true", help="if set, run release mode"
     )
     args = parser.parse_args()
 
@@ -74,7 +81,7 @@ if __name__ == "__main__":
     for path in Path("/tmp").glob("summerset.*.wal"):
         path.unlink()
 
-    server_procs = launch_servers(args.protocol, args.num_replicas)
+    server_procs = launch_servers(args.protocol, args.num_replicas, args.release)
 
     for proc in server_procs:
         proc.wait()

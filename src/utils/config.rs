@@ -8,6 +8,7 @@
 /// ```no_compile
 /// let config = parsed_config!(config_str => MyConfig; batch_size, file_path)?;
 /// ```
+#[macro_export]
 macro_rules! parsed_config {
     ($config_str:expr => $config_type:ty; $($field:ident),+) => {{
         let config_str: Option<&str> = $config_str;

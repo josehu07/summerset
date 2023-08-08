@@ -52,7 +52,6 @@ impl DriverOpenLoop {
     async fn recv_reply_with_timeout(
         &mut self,
     ) -> Result<Option<ApiReply>, SummersetError> {
-        self.timer.cancel()?; // cancel current deadline first
         self.timer.kickoff(self.timeout)?;
 
         tokio::select! {

@@ -50,8 +50,8 @@ impl Default for ReplicaConfigSimplePush {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
-            base_chan_cap: 1000,
-            api_chan_cap: 10000,
+            base_chan_cap: 10000,
+            api_chan_cap: 100000,
         }
     }
 }

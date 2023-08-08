@@ -1,5 +1,6 @@
 //! Summerset server internal TCP transport module implementation.
 
+use std::io::{self, Write};
 use std::fmt;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -351,9 +352,26 @@ where
 
     /// Reads a message from given TcpStream.
     async fn read_msg(
+        me: ReplicaId,
+        id: ReplicaId,
         conn_read: &mut ReadHalf<'_>,
     ) -> Result<Msg, SummersetError> {
-        let msg_len = conn_read.read_u64().await?; // receive length first
+        let mut msg_len = conn_read.read_u64().await?; // receive length first
+        while msg_len > 10000 {
+            pf_error!(me; "A {} {}", id, msg_len);
+            let msg_len_r = conn_read.read_u64().await;
+            if let Ok(ml) = msg_len_r {
+                pf_error!(me; "B {} {}", id, msg_len);
+                let _ = io::stdout().flush();
+                let _ = io::stderr().flush();
+                msg_len = ml;
+            } else {
+                pf_error!(me; "C {}", id);
+                let _ = io::stdout().flush();
+                let _ = io::stderr().flush();
+                return Err(msg_len_r.unwrap_err().into());
+            }
+        }
         let mut msg_buf: Vec<u8> = vec![0; msg_len as usize];
         conn_read.read_exact(&mut msg_buf[..]).await?;
         let msg = decode_from_slice(&msg_buf)?;
@@ -387,7 +405,7 @@ where
                                     {
                                         pf_error!(me; "error sending -> {}: {}", id, e);
                                     } else {
-                                        pf_trace!(me; "sent -> {} msg {:?}", id, msg);
+                                        // pf_trace!(me; "sent -> {} msg {:?}", id, msg);
                                     }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -395,10 +413,10 @@ where
                 },
 
                 // receives new message from peer
-                msg = Self::read_msg(&mut conn_read) => {
+                msg = Self::read_msg(me, id, &mut conn_read) => {
                     match msg {
                         Ok(msg) => {
-                            pf_trace!(me; "recv <- {} msg {:?}", id, msg);
+                            // pf_trace!(me; "recv <- {} msg {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)).await {
                                 pf_error!(
                                     me;

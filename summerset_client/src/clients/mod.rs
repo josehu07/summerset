@@ -3,14 +3,16 @@
 mod repl;
 pub use repl::ClientRepl;
 
-// mod tester;
+mod bench;
+pub use bench::ClientBench;
 
-// mod bench;
+// mod tester;
 
 /// Enum of supported client utility modes.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ClientMode {
     Repl,
+    Bench,
 }
 
 impl ClientMode {
@@ -18,6 +20,7 @@ impl ClientMode {
     pub fn parse_name(name: &str) -> Option<Self> {
         match &name.to_lowercase()[..] {
             "repl" => Some(Self::Repl),
+            "bench" => Some(Self::Bench),
             _ => None,
         }
     }
@@ -39,6 +42,7 @@ mod modes_name_tests {
     #[test]
     fn parse_valid_names() {
         valid_name_test!(Repl);
+        valid_name_test!(Bench);
     }
 
     #[test]
