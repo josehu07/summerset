@@ -1,4 +1,4 @@
-//! Closed-loop client implementation.
+//! Closed-loop client-side driver implementation.
 
 use tokio::time::Duration;
 
@@ -7,8 +7,8 @@ use summerset::{
     RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
-/// Closed-loop client struct.
-pub struct ClientClosedLoop {
+/// Closed-loop driver struct.
+pub struct DriverClosedLoop {
     /// Client ID.
     id: ClientId,
 
@@ -25,14 +25,14 @@ pub struct ClientClosedLoop {
     timeout: Duration,
 }
 
-impl ClientClosedLoop {
+impl DriverClosedLoop {
     /// Creates a new closed-loop client.
     pub fn new(
         id: ClientId,
         stub: Box<dyn GenericClient>,
         timeout: Duration,
     ) -> Self {
-        ClientClosedLoop {
+        DriverClosedLoop {
             id,
             stub,
             next_req: 0,
@@ -55,6 +55,7 @@ impl ClientClosedLoop {
             }
 
             reply = self.stub.recv_reply() => {
+                self.timer.cancel()?; // cancel current deadline
                 Ok(Some(reply?))
             }
         }
@@ -68,7 +69,7 @@ impl ClientClosedLoop {
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<Option<String>>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -92,7 +93,9 @@ impl ClientClosedLoop {
                 } else {
                     match cmd_result {
                         None => Ok(None),
-                        Some(CommandResult::Get { value }) => Ok(Some(value)),
+                        Some(CommandResult::Get { value }) => {
+                            Ok(Some((req_id, value)))
+                        }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
                         }
@@ -115,7 +118,7 @@ impl ClientClosedLoop {
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<Option<String>>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -143,7 +146,7 @@ impl ClientClosedLoop {
                     match cmd_result {
                         None => Ok(None),
                         Some(CommandResult::Put { old_value }) => {
-                            Ok(Some(old_value))
+                            Ok(Some((req_id, old_value)))
                         }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")

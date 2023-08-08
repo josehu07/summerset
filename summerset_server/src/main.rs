@@ -19,6 +19,11 @@ struct CliArgs {
     #[arg(short, long, default_value_t = String::from("RepNothing"))]
     protocol: String,
 
+    /// Protocol-specific server configuration TOML string.
+    /// Every '+' is treated as newline.
+    #[arg(long, default_value_t = String::from(""))]
+    config: String,
+
     /// Key-value API port open to clients.
     #[arg(short, long, default_value_t = 52700)]
     api_port: u16,
@@ -35,11 +40,6 @@ struct CliArgs {
     /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
     #[arg(short, long)]
     replicas: Vec<SocketAddr>,
-
-    /// Protocol-specific server configuration TOML string.
-    /// Every '+' is treated as newline.
-    #[arg(long, default_value_t = String::from(""))]
-    config: String,
 
     /// Number of tokio worker threads.
     #[arg(long, default_value_t = 2)]
@@ -97,12 +97,9 @@ impl CliArgs {
                 self.threads
             )))
         } else {
-            SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
-                SummersetError(format!(
-                    "protocol name '{}' unrecognized",
-                    self.protocol
-                ))
-            })
+            SMRProtocol::parse_name(&self.protocol).ok_or(SummersetError(
+                format!("protocol name '{}' unrecognized", self.protocol),
+            ))
         }
     }
 }

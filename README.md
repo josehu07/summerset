@@ -72,7 +72,10 @@ cargo run [-r] -p summerset_client -- -h
   - [ ] membership discovery & view changes
 - [ ] implementation of Raft
 - [ ] implementation of Crossword prototype
-- [ ] complete client, tests, & benchmarks
+- [ ] complete client-side utilities
+  - [x] REPL-style client
+  - [ ] benchmarking client
+  - [ ] testing client
 - [ ] better README
 
 ---

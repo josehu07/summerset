@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use crate::utils::SummersetError;
 
+use futures::future::FutureExt;
+
 use tokio::sync::{watch, Notify};
 use tokio::time::{self, Duration, Instant};
 
@@ -17,7 +19,7 @@ use tokio::time::{self, Duration, Instant};
 #[derive(Debug)]
 pub struct Timer {
     /// Deadline setting channel (caller side sender).
-    deadline_tx: watch::Sender<Instant>,
+    deadline_tx: watch::Sender<Option<Instant>>,
 
     /// Timeout notification channel (caller side receiver).
     notify: Arc<Notify>,
@@ -26,7 +28,7 @@ pub struct Timer {
 impl Timer {
     /// Creates a new timer utility.
     pub fn new() -> Self {
-        let (deadline_tx, mut deadline_rx) = watch::channel(Instant::now());
+        let (deadline_tx, mut deadline_rx) = watch::channel(None);
         let notify = Arc::new(Notify::new());
         let notify_ref = notify.clone();
 
@@ -38,13 +40,15 @@ impl Timer {
             while deadline_rx.changed().await.is_ok() {
                 // received a new deadline
                 let deadline = *deadline_rx.borrow();
-                sleep.as_mut().reset(deadline);
-                (&mut sleep).await;
+                if let Some(ddl) = deadline {
+                    sleep.as_mut().reset(ddl);
+                    (&mut sleep).await;
 
-                // only send notification if deadline has not changed since
-                // last wakeup
-                if let Ok(false) = deadline_rx.has_changed() {
-                    notify_ref.notify_one();
+                    // only send notification if deadline has not changed since
+                    // last wakeup
+                    if let Ok(false) = deadline_rx.has_changed() {
+                        notify_ref.notify_one();
+                    }
                 }
             }
             // sender has been dropped, terminate
@@ -68,7 +72,18 @@ impl Timer {
             )));
         }
 
-        self.deadline_tx.send(Instant::now() + dur)?;
+        self.deadline_tx.send(Some(Instant::now() + dur))?;
+        Ok(())
+    }
+
+    /// Cancels the currently scheduled timeout if one is kicked-off or
+    /// already ticked.
+    pub fn cancel(&self) -> Result<(), SummersetError> {
+        self.deadline_tx.send(None)?;
+
+        // consume all existing timeout notifications
+        while self.notify.notified().now_or_never().is_some() {}
+
         Ok(())
     }
 
@@ -95,12 +110,7 @@ mod timer_tests {
         let timer = Arc::new(Timer::new());
         let timer_ref = timer.clone();
         let start = Instant::now();
-        tokio::spawn(async move {
-            // setter-side
-            timer_ref.kickoff(Duration::from_millis(100))?;
-            Ok::<(), SummersetError>(())
-        });
-        // looper-side
+        timer_ref.kickoff(Duration::from_millis(100))?;
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
@@ -127,6 +137,24 @@ mod timer_tests {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(250));
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timer_cancel() -> Result<(), SummersetError> {
+        let timer = Arc::new(Timer::new());
+        let timer_ref = timer.clone();
+        let start = Instant::now();
+        timer_ref.kickoff(Duration::from_millis(50))?;
+        time::sleep(Duration::from_millis(100)).await;
+        timer_ref.cancel()?;
+        timer_ref.kickoff(Duration::from_millis(200))?;
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(300));
             }
         }
         Ok(())

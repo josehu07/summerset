@@ -276,7 +276,7 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         assert!(batch_size > 0);
-        pf_trace!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if !self.is_leader {

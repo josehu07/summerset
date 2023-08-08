@@ -5,7 +5,7 @@ use std::io;
 use std::net;
 
 /// Customized error type for Summerset.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SummersetError(pub String);
 
 impl fmt::Display for SummersetError {
@@ -36,7 +36,9 @@ impl_from_error!(toml::de::Error);
 impl_from_error!(tokio::sync::SetError<tokio::net::TcpListener>);
 impl_from_error!(tokio::sync::SetError<tokio::fs::File>);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
-impl_from_error!(tokio::sync::watch::error::SendError<tokio::time::Instant>);
+impl_from_error!(
+    tokio::sync::watch::error::SendError<Option<tokio::time::Instant>>
+);
 
 #[cfg(test)]
 mod error_tests {

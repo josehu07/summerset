@@ -1,4 +1,4 @@
-//! Open-loop client implementation.
+//! Open-loop client-side driver implementation.
 
 use std::collections::HashSet;
 
@@ -9,8 +9,8 @@ use summerset::{
     RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
-/// Open-loop client struct.
-pub struct ClientOpenLoop {
+/// Open-loop driver struct.
+pub struct DriverOpenLoop {
     /// Client ID.
     id: ClientId,
 
@@ -30,14 +30,14 @@ pub struct ClientOpenLoop {
     timeout: Duration,
 }
 
-impl ClientOpenLoop {
+impl DriverOpenLoop {
     /// Creates a new open-loop client.
     pub fn new(
         id: ClientId,
         stub: Box<dyn GenericClient>,
         timeout: Duration,
     ) -> Self {
-        ClientOpenLoop {
+        DriverOpenLoop {
             id,
             stub,
             next_req: 0,
@@ -52,6 +52,7 @@ impl ClientOpenLoop {
     async fn recv_reply_with_timeout(
         &mut self,
     ) -> Result<Option<ApiReply>, SummersetError> {
+        self.timer.cancel()?; // cancel current deadline first
         self.timer.kickoff(self.timeout)?;
 
         tokio::select! {
@@ -61,6 +62,7 @@ impl ClientOpenLoop {
             }
 
             reply = self.stub.recv_reply() => {
+                self.timer.cancel()?; // cancel current deadline
                 Ok(Some(reply?))
             }
         }
