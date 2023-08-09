@@ -50,8 +50,8 @@ impl Default for ReplicaConfigSimplePush {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
-            base_chan_cap: 1000,
-            api_chan_cap: 10000,
+            base_chan_cap: 10000,
+            api_chan_cap: 100000,
         }
     }
 }
@@ -98,14 +98,14 @@ pub struct SimplePushReplica {
     /// Cluster size (number of replicas).
     population: u8,
 
-    /// Address string for peer-to-peer connections.
-    smr_addr: SocketAddr,
+    /// Configuraiton parameters struct.
+    config: ReplicaConfigSimplePush,
 
     /// Address string for client requests API.
     api_addr: SocketAddr,
 
-    /// Configuraiton parameters struct.
-    config: ReplicaConfigSimplePush,
+    /// Local address strings for peer-peer connections.
+    conn_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// Map from peer replica ID -> address.
     peer_addrs: HashMap<ReplicaId, SocketAddr>,
@@ -407,8 +407,8 @@ impl GenericReplica for SimplePushReplica {
     fn new(
         id: ReplicaId,
         population: u8,
-        smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        conn_addrs: HashMap<ReplicaId, SocketAddr>,
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
@@ -424,11 +424,11 @@ impl GenericReplica for SimplePushReplica {
                 id, population
             )));
         }
-        if smr_addr == api_addr {
+        if conn_addrs.len() != peer_addrs.len() {
             return logged_err!(
                 id;
-                "smr_addr and api_addr are the same '{}'",
-                smr_addr
+                "size of conn_addrs {} != size of peer_addrs {}",
+                conn_addrs.len(), peer_addrs.len()
             );
         }
 
@@ -467,9 +467,9 @@ impl GenericReplica for SimplePushReplica {
         Ok(SimplePushReplica {
             id,
             population,
-            smr_addr,
-            api_addr,
             config,
+            api_addr,
+            conn_addrs,
             peer_addrs,
             external_api: ExternalApi::new(id),
             state_machine: StateMachine::new(id),
@@ -495,13 +495,15 @@ impl GenericReplica for SimplePushReplica {
 
         self.transport_hub
             .setup(
-                self.smr_addr,
+                &self.conn_addrs,
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
         if !self.peer_addrs.is_empty() {
-            self.transport_hub.group_connect(&self.peer_addrs).await?;
+            self.transport_hub
+                .group_connect(&self.conn_addrs, &self.peer_addrs)
+                .await?;
         }
 
         self.external_api

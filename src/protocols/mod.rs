@@ -53,25 +53,28 @@ impl SMRProtocol {
         &self,
         id: ReplicaId,
         population: u8,
-        smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        conn_addrs: HashMap<ReplicaId, SocketAddr>,
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
             Self::RepNothing => {
                 box_if_ok!(RepNothingReplica::new(
-                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                    id, population, api_addr, conn_addrs, peer_addrs,
+                    config_str
                 ))
             }
             Self::SimplePush => {
                 box_if_ok!(SimplePushReplica::new(
-                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                    id, population, api_addr, conn_addrs, peer_addrs,
+                    config_str
                 ))
             }
             Self::MultiPaxos => {
                 box_if_ok!(MultiPaxosReplica::new(
-                    id, population, smr_addr, api_addr, peer_addrs, config_str
+                    id, population, api_addr, conn_addrs, peer_addrs,
+                    config_str
                 ))
             }
         }

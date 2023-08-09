@@ -10,15 +10,12 @@ use env_logger::Env;
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
-use summerset::{
-    SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error, pf_info,
-};
+use summerset::{SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error};
 
-mod client_cl;
-use client_cl::ClientClosedLoop;
+mod drivers;
+mod clients;
 
-mod client_ol;
-use client_ol::ClientOpenLoop;
+use crate::clients::{ClientMode, ClientRepl, ClientBench};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -28,28 +25,31 @@ struct CliArgs {
     #[arg(short, long, default_value_t = String::from("RepNothing"))]
     protocol: String,
 
-    /// Client ID.
-    #[arg(short, long, default_value_t = 2857)]
-    id: ClientId,
-
-    /// List of server replica nodes, the order of which maps to replica IDs.
-    /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
-    #[arg(short, long)]
-    replicas: Vec<SocketAddr>,
-
-    /// Number of open-loop requests to maintain. If `0`, uses the closed-loop
-    /// client implementation.
-    // TODO: actually use this arg
-    #[arg(long, default_value_t = 0)]
-    open_cnt: u64,
-
     /// Protocol-specific client configuration TOML string.
     /// Every '+' is treated as newline.
     #[arg(long, default_value_t = String::from(""))]
     config: String,
 
+    /// Client ID.
+    #[arg(short, long, default_value_t = 2857)]
+    id: ClientId,
+
+    /// List of server replica nodes, the order of which maps to replica IDs.
+    /// Example: '-r host0:api_port0 -r host1:api_port1 -r host2:api_port2'.
+    #[arg(short, long)]
+    replicas: Vec<SocketAddr>,
+
+    /// Client utility mode to run: repl|bench|tester.
+    #[arg(short, long)]
+    mode: String,
+
+    /// Mode-specific client parameters TOML string.
+    /// Every '+' is treated as newline.
+    #[arg(long, default_value_t = String::from(""))]
+    params: String,
+
     /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 2)]
     threads: usize,
 
     /// Reply timeout duration in millisecs.
@@ -60,7 +60,7 @@ struct CliArgs {
 impl CliArgs {
     /// Sanitize command line arguments, return `Ok(protocol)` on success
     /// or `Err(SummersetError)` on any error.
-    fn sanitize(&self) -> Result<SMRProtocol, SummersetError> {
+    fn sanitize(&self) -> Result<(ClientMode, SMRProtocol), SummersetError> {
         if self.replicas.is_empty() {
             return Err(SummersetError("replicas list is empty".into()));
         }
@@ -88,12 +88,17 @@ impl CliArgs {
                 self.timeout_ms
             )))
         } else {
-            SMRProtocol::parse_name(&self.protocol).ok_or_else(|| {
+            let mode =
+                ClientMode::parse_name(&self.mode).ok_or(SummersetError(
+                    format!("utility mode '{}' unrecognized", self.mode),
+                ))?;
+            let protocol = SMRProtocol::parse_name(&self.protocol).ok_or(
                 SummersetError(format!(
                     "protocol name '{}' unrecognized",
                     self.protocol
-                ))
-            })
+                )),
+            )?;
+            Ok((mode, protocol))
         }
     }
 }
@@ -102,7 +107,7 @@ impl CliArgs {
 fn client_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let mut args = CliArgs::parse();
-    let protocol = args.sanitize()?;
+    let (mode, protocol) = args.sanitize()?;
     let mut servers = HashMap::new();
     for (id, &addr) in args.replicas.iter().enumerate() {
         servers.insert(id as ReplicaId, addr);
@@ -114,6 +119,14 @@ fn client_main() -> Result<(), SummersetError> {
     } else {
         args.config = args.config.replace('+', "\n");
         Some(&args.config[..])
+    };
+
+    // parse optional params string if given
+    let params_str = if args.params.is_empty() {
+        None
+    } else {
+        args.params = args.params.replace('+', "\n");
+        Some(&args.params[..])
     };
 
     // create client struct with given servers list
@@ -130,35 +143,26 @@ fn client_main() -> Result<(), SummersetError> {
     runtime.block_on(async move {
         stub.setup().await?;
 
-        if args.open_cnt == 0 {
-            let mut client = ClientClosedLoop::new(
-                args.id,
-                stub,
-                Duration::from_millis(args.timeout_ms),
-            );
-            pf_info!(args.id; "{:?}", client.get("Jose").await?);
-            pf_info!(args.id; "{:?}", client.put("Jose", "123").await?);
-            pf_info!(args.id; "{:?}", client.get("Jose").await?);
-            pf_info!(args.id; "{:?}", client.put("Jose", "456").await?);
-            pf_info!(args.id; "{:?}", client.get("Jose").await?);
-            client.leave().await?;
-        } else {
-            let mut client = ClientOpenLoop::new(
-                args.id,
-                stub,
-                Duration::from_millis(args.timeout_ms),
-            );
-            client.issue_get("Jose").await?;
-            client.issue_put("Jose", "123").await?;
-            client.issue_get("Jose").await?;
-            client.issue_put("Jose", "456").await?;
-            client.issue_get("Jose").await?;
-            pf_info!(args.id; "{:?}", client.wait_reply().await?);
-            pf_info!(args.id; "{:?}", client.wait_reply().await?);
-            pf_info!(args.id; "{:?}", client.wait_reply().await?);
-            pf_info!(args.id; "{:?}", client.wait_reply().await?);
-            pf_info!(args.id; "{:?}", client.wait_reply().await?);
-            client.leave().await?;
+        match mode {
+            ClientMode::Repl => {
+                // run interactive REPL loop
+                let mut repl = ClientRepl::new(
+                    args.id,
+                    stub,
+                    Duration::from_millis(args.timeout_ms),
+                );
+                repl.run().await;
+            }
+            ClientMode::Bench => {
+                // run benchmarking client
+                let mut bench = ClientBench::new(
+                    args.id,
+                    stub,
+                    Duration::from_millis(args.timeout_ms),
+                    params_str,
+                )?;
+                bench.run().await?;
+            }
         }
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
@@ -191,12 +195,16 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
-        assert_eq!(args.sanitize(), Ok(SMRProtocol::RepNothing));
+        assert_eq!(
+            args.sanitize(),
+            Ok((ClientMode::Repl, SMRProtocol::RepNothing))
+        );
         Ok(())
     }
 
@@ -210,10 +218,11 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -225,10 +234,11 @@ mod client_args_tests {
             protocol: "RepNothing".into(),
             id: 7456,
             replicas: vec![],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -243,10 +253,31 @@ mod client_args_tests {
                 "127.0.0.1:52700".parse()?,
                 "127.0.0.1:52700".parse()?,
             ],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
+        };
+        assert!(args.sanitize().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_invalid_mode() -> Result<(), SummersetError> {
+        let args = CliArgs {
+            protocol: "RepNothing".into(),
+            id: 7456,
+            replicas: vec![
+                "127.0.0.1:52700".parse()?,
+                "127.0.0.1:52701".parse()?,
+                "127.0.0.1:52702".parse()?,
+            ],
+            mode: "invalid_mode".into(),
+            threads: 1,
+            timeout_ms: 5000,
+            config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -262,10 +293,11 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 0,
             timeout_ms: 5000,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -281,10 +313,11 @@ mod client_args_tests {
                 "127.0.0.1:52701".parse()?,
                 "127.0.0.1:52702".parse()?,
             ],
-            open_cnt: 0,
+            mode: "repl".into(),
             threads: 1,
             timeout_ms: 0,
             config: "".into(),
+            params: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())

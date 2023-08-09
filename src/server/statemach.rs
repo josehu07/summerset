@@ -167,7 +167,7 @@ impl StateMachine {
 
         while let Some((id, cmd)) = rx_exec.recv().await {
             let res = Self::execute(&mut state, &cmd);
-            pf_trace!(me; "executed {:?}", cmd);
+            // pf_trace!(me; "executed {:?}", cmd);
 
             if let Err(e) = tx_ack.send((id, res)).await {
                 pf_error!(me; "error sending to tx_ack: {}", e);

@@ -1,11 +1,11 @@
 //! Replication protocol: MultiPaxos.
 //!
 //! Multi-decree Paxos protocol. References:
-//!   - https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf
-//!   - https://dl.acm.org/doi/pdf/10.1145/1281100.1281103
-//!   - https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf
-//!   - https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical
-//!   - https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go
+//!   - <https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf>
+//!   - <https://dl.acm.org/doi/pdf/10.1145/1281100.1281103>
+//!   - <https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf>
+//!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
+//!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -41,16 +41,20 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Capacity for req/reply channels.
     pub api_chan_cap: usize,
+
+    /// Whether to call `fsync()`/`fdatasync()` on logger.
+    pub logger_sync: bool,
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
         ReplicaConfigMultiPaxos {
-            batch_interval_us: 1000,
+            batch_interval_us: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
-            base_chan_cap: 1000,
-            api_chan_cap: 10000,
+            base_chan_cap: 10000,
+            api_chan_cap: 100000,
+            logger_sync: false,
         }
     }
 }
@@ -169,14 +173,14 @@ pub struct MultiPaxosReplica {
     /// Majority quorum size.
     quorum_cnt: u8,
 
-    /// Address string for peer-to-peer connections.
-    smr_addr: SocketAddr,
+    /// Configuraiton parameters struct.
+    config: ReplicaConfigMultiPaxos,
 
     /// Address string for client requests API.
     api_addr: SocketAddr,
 
-    /// Configuraiton parameters struct.
-    config: ReplicaConfigMultiPaxos,
+    /// Local address strings for peer-peer connections.
+    conn_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// Map from peer replica ID -> address.
     peer_addrs: HashMap<ReplicaId, SocketAddr>,
@@ -276,7 +280,7 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         assert!(batch_size > 0);
-        pf_trace!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if !self.is_leader {
@@ -365,7 +369,7 @@ impl MultiPaxosReplica {
                             slot,
                             ballot: self.bal_prep_sent,
                         },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -402,7 +406,7 @@ impl MultiPaxosReplica {
                             ballot: inst.bal,
                             reqs: req_batch.clone(),
                         },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -617,7 +621,7 @@ impl MultiPaxosReplica {
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
                         entry: LogEntry::PrepareBal { slot, ballot },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -674,7 +678,7 @@ impl MultiPaxosReplica {
                                    slot, inst.bal);
 
                 // update bal_prepared
-                assert!(self.bal_prepared < ballot);
+                assert!(self.bal_prepared <= ballot);
                 self.bal_prepared = ballot;
 
                 // record update to largest accepted ballot and corresponding data
@@ -687,7 +691,7 @@ impl MultiPaxosReplica {
                                 ballot,
                                 reqs: inst.reqs.clone(),
                             },
-                            sync: true,
+                            sync: self.config.logger_sync,
                         },
                     )
                     .await?;
@@ -756,7 +760,7 @@ impl MultiPaxosReplica {
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
                         entry: LogEntry::AcceptData { slot, ballot, reqs },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -809,7 +813,7 @@ impl MultiPaxosReplica {
                         Self::make_log_action_id(slot, Status::Committed),
                         LogAction::Append {
                             entry: LogEntry::CommitSlot { slot },
-                            sync: true,
+                            sync: self.config.logger_sync,
                         },
                     )
                     .await?;
@@ -875,7 +879,7 @@ impl MultiPaxosReplica {
                 Self::make_log_action_id(slot, Status::Committed),
                 LogAction::Append {
                     entry: LogEntry::CommitSlot { slot },
-                    sync: true,
+                    sync: self.config.logger_sync,
                 },
             )
             .await?;
@@ -977,8 +981,8 @@ impl GenericReplica for MultiPaxosReplica {
     fn new(
         id: ReplicaId,
         population: u8,
-        smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        conn_addrs: HashMap<ReplicaId, SocketAddr>,
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
@@ -994,17 +998,17 @@ impl GenericReplica for MultiPaxosReplica {
                 id, population
             )));
         }
-        if smr_addr == api_addr {
+        if conn_addrs.len() != peer_addrs.len() {
             return logged_err!(
                 id;
-                "smr_addr and api_addr are the same '{}'",
-                smr_addr
+                "size of conn_addrs {} != size of peer_addrs {}",
+                conn_addrs.len(), peer_addrs.len()
             );
         }
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, backer_path,
-                                    base_chan_cap, api_chan_cap)?;
+                                    base_chan_cap, api_chan_cap, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -1031,9 +1035,9 @@ impl GenericReplica for MultiPaxosReplica {
             id,
             population,
             quorum_cnt: (population / 2) + 1,
-            smr_addr,
-            api_addr,
             config,
+            api_addr,
+            conn_addrs,
             peer_addrs,
             external_api: ExternalApi::new(id),
             state_machine: StateMachine::new(id),
@@ -1065,13 +1069,15 @@ impl GenericReplica for MultiPaxosReplica {
 
         self.transport_hub
             .setup(
-                self.smr_addr,
+                &self.conn_addrs,
                 self.config.base_chan_cap,
                 self.config.base_chan_cap,
             )
             .await?;
         if !self.peer_addrs.is_empty() {
-            self.transport_hub.group_connect(&self.peer_addrs).await?;
+            self.transport_hub
+                .group_connect(&self.conn_addrs, &self.peer_addrs)
+                .await?;
         }
 
         self.external_api

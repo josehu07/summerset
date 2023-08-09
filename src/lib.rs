@@ -30,3 +30,4 @@ pub use crate::protocols::SMRProtocol;
 // config strings
 pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
 pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};
+pub use crate::protocols::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};

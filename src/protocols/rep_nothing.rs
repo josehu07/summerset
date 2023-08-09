@@ -44,8 +44,8 @@ impl Default for ReplicaConfigRepNothing {
         ReplicaConfigRepNothing {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
-            base_chan_cap: 1000,
-            api_chan_cap: 10000,
+            base_chan_cap: 10000,
+            api_chan_cap: 100000,
         }
     }
 }
@@ -72,14 +72,14 @@ pub struct RepNothingReplica {
     /// Cluster size (number of replicas).
     _population: u8,
 
-    /// Address string for peer-to-peer connections.
-    _smr_addr: SocketAddr,
+    /// Configuraiton parameters struct.
+    config: ReplicaConfigRepNothing,
 
     /// Address string for client requests API.
     api_addr: SocketAddr,
 
-    /// Configuraiton parameters struct.
-    config: ReplicaConfigRepNothing,
+    /// Local address strings for peer-peer connections.
+    _conn_addrs: HashMap<ReplicaId, SocketAddr>,
 
     /// Map from peer replica ID -> address.
     _peer_addrs: HashMap<ReplicaId, SocketAddr>,
@@ -243,8 +243,8 @@ impl GenericReplica for RepNothingReplica {
     fn new(
         id: ReplicaId,
         population: u8,
-        smr_addr: SocketAddr,
         api_addr: SocketAddr,
+        conn_addrs: HashMap<ReplicaId, SocketAddr>,
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
@@ -260,11 +260,11 @@ impl GenericReplica for RepNothingReplica {
                 id, population
             )));
         }
-        if smr_addr == api_addr {
+        if conn_addrs.len() != peer_addrs.len() {
             return logged_err!(
                 id;
-                "smr_addr and api_addr are the same '{}'",
-                smr_addr
+                "size of conn_addrs {} != size of peer_addrs {}",
+                conn_addrs.len(), peer_addrs.len()
             );
         }
 
@@ -296,9 +296,9 @@ impl GenericReplica for RepNothingReplica {
         Ok(RepNothingReplica {
             id,
             _population: population,
-            _smr_addr: smr_addr,
-            api_addr,
             config,
+            api_addr,
+            _conn_addrs: conn_addrs,
             _peer_addrs: peer_addrs,
             external_api: ExternalApi::new(id),
             state_machine: StateMachine::new(id),
