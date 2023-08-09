@@ -17,41 +17,58 @@ PROTOCOL_CONFIGS = {
 }
 
 
+def launch_replica(
+    protocol, api_port, base_conn_port, replica_id, replica_list, config, release
+):
+    cmd = [
+        "cargo",
+        "run",
+        "-p",
+        "summerset_server",
+    ]
+    if release:
+        cmd.append("-r")
+
+    cmd += [
+        "--",
+        "-p",
+        protocol,
+        "-a",
+        str(api_port),
+        "-b",
+        str(base_conn_port),
+        "-i",
+        str(replica_id),
+    ]
+    cmd += replica_list
+    cmd += ["--config", config]
+
+    return run_process(cmd)
+
+
 def launch_servers(protocol, num_replicas, release):
-    api_ports = list(range(52700, 52700 + num_replicas))
-    smr_ports = list(range(52800, 52800 + num_replicas))
-    replica_list = []
+    api_ports = list(range(52700, 52700 + num_replicas * 10, 10))
+    base_conn_ports = list(range(52800, 52800 + num_replicas * 10, 10))
+    replica_lists = [[] for _ in range(num_replicas)]
     for replica in range(num_replicas):
-        replica_list += ["-r", f"127.0.0.1:{smr_ports[replica]}"]
+        for peer in range(num_replicas):
+            replica_lists[replica] += [
+                "-r",
+                f"127.0.0.1:{base_conn_ports[peer] + replica}",
+            ]
 
     server_procs = []
     for replica in range(num_replicas):
-        api_port = api_ports[replica]
-        smr_port = smr_ports[replica]
-
-        cmd = [
-            "cargo",
-            "run",
-            "-p",
-            "summerset_server",
-        ]
-        if release:
-            cmd.append("-r")
-        cmd += [
-            "--",
-            "-p",
+        proc = launch_replica(
             protocol,
-            "-a",
-            str(api_port),
-            "-s",
-            str(smr_port),
-            "-i",
-            str(replica),
-        ]
-        cmd += replica_list
-        cmd += ["--config", PROTOCOL_CONFIGS[protocol](replica, num_replicas)]
-
-        server_procs.append(run_process(cmd))
+            api_ports[replica],
+            base_conn_ports[replica],
+            replica,
+            replica_lists[replica],
+            PROTOCOL_CONFIGS[protocol](replica, num_replicas),
+            release,
+        )
+        server_procs.append(proc)
 
     return server_procs
 

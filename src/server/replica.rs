@@ -18,10 +18,14 @@ pub trait GenericReplica {
     fn new(
         id: ReplicaId,
         population: u8,
-        smr_addr: SocketAddr,
+        // local address open for client API
         api_addr: SocketAddr,
+        // local addresses open for peer-peer transport
+        conn_addrs: HashMap<ReplicaId, SocketAddr>,
+        // remote addresses of peers
         peer_addrs: HashMap<ReplicaId, SocketAddr>,
-        config_str: Option<&str>, // protocol-specific config in TOML format
+        // protocol-specific config in TOML format
+        config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where
         Self: Sized;

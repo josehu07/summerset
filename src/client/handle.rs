@@ -18,8 +18,10 @@ pub trait GenericClient {
     /// Creates a new client stub.
     fn new(
         id: ClientId,
+        // remote addresses of server replicas
         servers: HashMap<ReplicaId, SocketAddr>,
-        config_str: Option<&str>, // protocol-specific config in TOML format
+        // protocol-specific config in TOML format
+        config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where
         Self: Sized;

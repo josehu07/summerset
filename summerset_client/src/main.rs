@@ -35,7 +35,7 @@ struct CliArgs {
     id: ClientId,
 
     /// List of server replica nodes, the order of which maps to replica IDs.
-    /// Example: '-r host1:smr_port1 -r host2:smr_port2 -r host3:smr_port3'.
+    /// Example: '-r host0:api_port0 -r host1:api_port1 -r host2:api_port2'.
     #[arg(short, long)]
     replicas: Vec<SocketAddr>,
 

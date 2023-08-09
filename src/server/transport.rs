@@ -41,8 +41,8 @@ pub struct TransportHub<Msg> {
     /// Receiver side of the recv channel.
     rx_recv: Option<mpsc::Receiver<(ReplicaId, Msg)>>,
 
-    /// TCP listener for peer connections.
-    peer_listener: Option<TcpListener>,
+    /// TCP listeners for peer connections.
+    peer_listeners: HashMap<ReplicaId, TcpListener>,
 
     /// Map from peer ID -> peer messenger thread join handles.
     peer_messenger_handles: HashMap<ReplicaId, JoinHandle<()>>,
@@ -68,22 +68,29 @@ where
             tx_sends: HashMap::new(),
             tx_recv: None,
             rx_recv: None,
-            peer_listener: None,
+            peer_listeners: HashMap::new(),
             peer_messenger_handles: HashMap::new(),
         }
     }
 
-    /// Spawns the message sender thread. Creates an send channel for sending
-    /// messages to peers and an recv channel for listening on peers' messages.
-    /// Creates a TCP listener for peer connections.
+    /// Spawns the message sender thread. Creates a send channel for sending
+    /// messages to peers and a recv channel for listening on peers' messages.
+    /// Creates TCP listeners for peers with higher IDs.
     pub async fn setup(
         &mut self,
-        smr_addr: SocketAddr,
+        conn_addrs: &HashMap<ReplicaId, SocketAddr>,
         chan_send_cap: usize,
         chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
-        if self.peer_listener.is_some() {
+        if self.tx_recv.is_some() {
             return logged_err!(self.me; "setup already done");
+        }
+        if conn_addrs.len() != (self.population as usize) - 1 {
+            return logged_err!(
+                self.me;
+                "invalid size of conn_addrs {}",
+                conn_addrs.len()
+            );
         }
         if chan_send_cap == 0 {
             return logged_err!(
@@ -106,22 +113,29 @@ where
         self.tx_recv = Some(tx_recv);
         self.rx_recv = Some(rx_recv);
 
-        let peer_listener = TcpListener::bind(smr_addr).await?;
-        self.peer_listener = Some(peer_listener);
+        for (&id, &addr) in conn_addrs {
+            assert_ne!(id, self.me);
+            if id > self.me {
+                self.peer_listeners
+                    .insert(id, TcpListener::bind(addr).await?);
+            }
+        }
 
         Ok(())
     }
 
-    /// Connects to a new peer replica actively.
-    pub async fn connect_peer(
+    /// Connects to a new peer replica with lower ID actively, and spawns the
+    /// corresponding message recver thread. Should be called after `setup`.
+    // TODO: maybe make this function pub
+    async fn connect_peer(
         &mut self,
         id: ReplicaId,
-        addr: SocketAddr,
+        peer_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        if self.peer_listener.is_none() {
+        if self.tx_recv.is_none() {
             return logged_err!(self.me; "connect_peer called before setup");
         }
-        if id == self.me || id >= self.population {
+        if id >= self.me {
             return logged_err!(self.me; "invalid peer ID {} to connect", id);
         }
         if self.peer_messenger_handles.contains_key(&id) {
@@ -132,8 +146,16 @@ where
             );
         }
 
-        pf_debug!(self.me; "connecting to peer '{}'...", addr);
-        let mut stream = TcpStream::connect(addr).await?;
+        // on MacOS, it seems that `connect()` might report `EADDRINUSE` if
+        // the socket is bound to a specific port, hence the following piece
+        // is currently commented out. A proactive connector will therefore
+        // use a kernel-assigned ephemeral port instead of a custom port
+        // let socket = TcpSocket::new_v4()?;
+        // socket.set_reuseaddr(true)?;
+        // socket.bind(local_addr)?;
+
+        pf_debug!(self.me; "connecting to peer {} '{}'...", id, peer_addr);
+        let mut stream = TcpStream::connect(peer_addr).await?;
         stream.write_u8(self.me).await?; // send my ID
 
         let (tx_send, rx_send) = mpsc::channel(self.chan_send_cap);
@@ -142,7 +164,7 @@ where
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
             self.me,
             id,
-            addr,
+            peer_addr,
             stream,
             rx_send,
             self.tx_recv.as_ref().unwrap().clone(),
@@ -154,21 +176,38 @@ where
         Ok(())
     }
 
-    /// Waits for a connection attempt from some peer, and spawns the
-    /// corresponding message recver thread. Should be called after `setup`.
-    /// Returns the connecting peer's ID if successful.
-    pub async fn wait_on_peer(&mut self) -> Result<ReplicaId, SummersetError> {
-        if self.peer_listener.is_none() {
+    /// Waits for a connection attempt from some peer with higher ID, and
+    /// spawns the corresponding message recver thread. Should be called
+    /// after `setup`.
+    // TODO: maybe make this function pub
+    async fn wait_on_peer(
+        &mut self,
+        id: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        if self.tx_recv.is_none() {
             return logged_err!(self.me; "wait_on_peer called before setup");
         }
+        if id <= self.me {
+            return logged_err!(self.me; "invalid peer ID {} to connect", id);
+        }
+        if self.peer_messenger_handles.contains_key(&id) {
+            return logged_err!(
+                self.me;
+                "peer ID {} already in peer_messenger_handles",
+                id
+            );
+        }
+        if !self.peer_listeners.contains_key(&id) {
+            return logged_err!(self.me; "peer ID {} not in peer_listeners", id);
+        }
 
-        pf_debug!(self.me; "waiting on peer connection...");
-        let (mut stream, addr) =
-            self.peer_listener.as_ref().unwrap().accept().await?;
-        let id = stream.read_u8().await?; // receive connecting peer's ID
+        pf_debug!(self.me; "waiting on '{}' for peer {}...",
+                           self.peer_listeners[&id].local_addr()?, id);
+        let (mut stream, peer_addr) = self.peer_listeners[&id].accept().await?;
+        let recv_id = stream.read_u8().await?; // receive connecting peer's ID
 
-        if id == self.me || id >= self.population {
-            return logged_err!(self.me; "invalid peer ID {} waited on", id);
+        if recv_id != id {
+            return logged_err!(self.me; "mismatch peer ID {} waited on", id);
         }
         if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!(
@@ -184,7 +223,7 @@ where
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
             self.me,
             id,
-            addr,
+            peer_addr,
             stream,
             rx_send,
             self.tx_recv.as_ref().unwrap().clone(),
@@ -193,7 +232,7 @@ where
             .insert(id, peer_messenger_handle);
 
         pf_debug!(self.me; "waited on peer {}", id);
-        Ok(id)
+        Ok(())
     }
 
     /// Convenience function of a simple deadlock-free strategy for a group of
@@ -201,6 +240,7 @@ where
     /// IDs connected if successful.
     pub async fn group_connect(
         &mut self,
+        conn_addrs: &HashMap<ReplicaId, SocketAddr>,
         peer_addrs: &HashMap<ReplicaId, SocketAddr>,
     ) -> Result<HashSet<ReplicaId>, SummersetError> {
         // sort peers ID list
@@ -217,37 +257,33 @@ where
                 peer_ids
             );
         }
+        if conn_addrs.len() != peer_ids.len() {
+            return logged_err!(
+                self.me;
+                "size of conn_addrs {} != size of peer_addrs {}",
+                conn_addrs.len(), peer_ids.len()
+            );
+        }
 
         let mid_idx = peer_ids.partition_point(|&id| id < self.me);
         let mut connected: HashSet<ReplicaId> = HashSet::new();
 
-        // for peers with ID smaller than me, connect to them actively
+        // for peers with ID smaller than me, connect to them actively in
+        // increasing ID order
         for &id in &peer_ids[..mid_idx] {
-            let addr = peer_addrs[&id];
-            while self.connect_peer(id, addr).await.is_err() {
+            let peer_addr = peer_addrs[&id];
+            while let Err(e) = self.connect_peer(id, peer_addr).await {
                 // retry until connected
-                sleep(Duration::from_millis(1)).await;
+                pf_debug!(self.me; "error connecting to peer {}: {}", id, e);
+                sleep(Duration::from_millis(100)).await;
             }
             connected.insert(id);
         }
 
-        // for peers with ID larger than me, wait on their connection
-        for _ in &peer_ids[mid_idx..] {
-            let id = self.wait_on_peer().await?;
-            if id <= self.me || id >= self.population {
-                return logged_err!(
-                    self.me;
-                    "unexpected peer ID {} waited on",
-                    id
-                );
-            }
-            if connected.contains(&id) {
-                return logged_err!(
-                    self.me;
-                    "duplicate peer ID {} waited on",
-                    id
-                );
-            }
+        // for peers with ID larger than me, wait on their connection in
+        // increasing ID order
+        for &id in &peer_ids[mid_idx..] {
+            self.wait_on_peer(id).await?;
             connected.insert(id);
         }
 
@@ -265,7 +301,7 @@ where
         msg: Msg,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.peer_listener.is_none() {
+        if self.tx_recv.is_none() {
             return logged_err!(self.me; "send_msg called before setup");
         }
 
@@ -294,7 +330,7 @@ where
         msg: Msg,
         target: ReplicaMap,
     ) -> Result<(), SummersetError> {
-        if self.peer_listener.is_none() {
+        if self.tx_recv.is_none() {
             return logged_err!(self.me; "bcast_msg called before setup");
         }
 
@@ -314,7 +350,7 @@ where
     pub async fn recv_msg(
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
-        if self.peer_listener.is_none() {
+        if self.tx_recv.is_none() {
             return logged_err!(self.me; "recv_msg called before setup");
         }
 
@@ -451,51 +487,16 @@ mod transport_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn hub_setup() -> Result<(), SummersetError> {
-        let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        assert!(hub.setup("127.0.0.1:51800".parse()?, 0, 0).await.is_err());
-        hub.setup("127.0.0.1:51801".parse()?, 100, 100).await?;
+        let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
+        let conn_addrs = HashMap::from([
+            (0, "127.0.0.1:51810".parse()?),
+            (2, "127.0.0.1:51812".parse()?),
+        ]);
+        assert!(hub.setup(&conn_addrs, 0, 0).await.is_err());
+        hub.setup(&conn_addrs, 100, 100).await?;
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
-        assert!(hub.peer_listener.is_some());
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn manual_connect() -> Result<(), SummersetError> {
-        tokio::spawn(async move {
-            // replica 1
-            let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
-            hub.setup("127.0.0.1:53801".parse()?, 1, 1).await?;
-            while hub
-                .connect_peer(0, "127.0.0.1:53800".parse()?)
-                .await
-                .is_err()
-            {
-                sleep(Duration::from_millis(1)).await;
-            }
-            Ok::<(), SummersetError>(())
-        });
-        tokio::spawn(async move {
-            // replica 2
-            let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
-            hub.setup("127.0.0.1:53802".parse()?, 1, 1).await?;
-            while hub
-                .connect_peer(0, "127.0.0.1:53800".parse()?)
-                .await
-                .is_err()
-            {
-                sleep(Duration::from_millis(1)).await;
-            }
-            Ok::<(), SummersetError>(())
-        });
-        // replica 0
-        let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        hub.setup("127.0.0.1:53800".parse()?, 1, 1).await?;
-        let mut peers = HashSet::new();
-        peers.insert(hub.wait_on_peer().await?);
-        peers.insert(hub.wait_on_peer().await?);
-        let ref_peers = HashSet::from([1, 2]);
-        assert_eq!(peers, ref_peers);
+        assert_eq!(hub.peer_listeners.len(), 1);
         Ok(())
     }
 
@@ -504,34 +505,45 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
-            hub.setup("127.0.0.1:54801".parse()?, 1, 1).await?;
-            hub.group_connect(&HashMap::from([
-                (0, "127.0.0.1:54800".parse()?),
-                (2, "127.0.0.1:54802".parse()?),
-            ]))
-            .await?;
+            let conn_addrs = HashMap::from([
+                (0, "127.0.0.1:53810".parse()?),
+                (2, "127.0.0.1:53812".parse()?),
+            ]);
+            let peer_addrs = HashMap::from([
+                (0, "127.0.0.1:53801".parse()?),
+                (2, "127.0.0.1:53821".parse()?),
+            ]);
+            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.group_connect(&conn_addrs, &peer_addrs).await?;
             Ok::<(), SummersetError>(())
         });
         tokio::spawn(async move {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
-            hub.setup("127.0.0.1:54802".parse()?, 1, 1).await?;
-            hub.group_connect(&HashMap::from([
-                (0, "127.0.0.1:54800".parse()?),
-                (1, "127.0.0.1:54801".parse()?),
-            ]))
-            .await?;
+            let conn_addrs = HashMap::from([
+                (0, "127.0.0.1:53820".parse()?),
+                (1, "127.0.0.1:53821".parse()?),
+            ]);
+            let peer_addrs = HashMap::from([
+                (0, "127.0.0.1:53802".parse()?),
+                (1, "127.0.0.1:53812".parse()?),
+            ]);
+            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.group_connect(&conn_addrs, &peer_addrs).await?;
             Ok::<(), SummersetError>(())
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        hub.setup("127.0.0.1:54800".parse()?, 1, 1).await?;
-        let connected = hub
-            .group_connect(&HashMap::from([
-                (1, "127.0.0.1:54801".parse()?),
-                (2, "127.0.0.1:54802".parse()?),
-            ]))
-            .await?;
+        let conn_addrs = HashMap::from([
+            (1, "127.0.0.1:53801".parse()?),
+            (2, "127.0.0.1:53802".parse()?),
+        ]);
+        let peer_addrs = HashMap::from([
+            (1, "127.0.0.1:53810".parse()?),
+            (2, "127.0.0.1:53820".parse()?),
+        ]);
+        hub.setup(&conn_addrs, 1, 1).await?;
+        let connected = hub.group_connect(&conn_addrs, &peer_addrs).await?;
         assert_eq!(connected, HashSet::from([1, 2]));
         Ok(())
     }
@@ -541,12 +553,16 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> = TransportHub::new(1, 3);
-            hub.setup("127.0.0.1:55801".parse()?, 1, 1).await?;
-            hub.group_connect(&HashMap::from([
-                (0, "127.0.0.1:55800".parse()?),
-                (2, "127.0.0.1:55802".parse()?),
-            ]))
-            .await?;
+            let conn_addrs = HashMap::from([
+                (0, "127.0.0.1:54810".parse()?),
+                (2, "127.0.0.1:54812".parse()?),
+            ]);
+            let peer_addrs = HashMap::from([
+                (0, "127.0.0.1:54801".parse()?),
+                (2, "127.0.0.1:54821".parse()?),
+            ]);
+            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.group_connect(&conn_addrs, &peer_addrs).await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
@@ -568,12 +584,16 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 2
             let mut hub: TransportHub<TestMsg> = TransportHub::new(2, 3);
-            hub.setup("127.0.0.1:55802".parse()?, 1, 1).await?;
-            hub.group_connect(&HashMap::from([
-                (0, "127.0.0.1:55800".parse()?),
-                (1, "127.0.0.1:55801".parse()?),
-            ]))
-            .await?;
+            let conn_addrs = HashMap::from([
+                (0, "127.0.0.1:54820".parse()?),
+                (1, "127.0.0.1:54821".parse()?),
+            ]);
+            let peer_addrs = HashMap::from([
+                (0, "127.0.0.1:54802".parse()?),
+                (1, "127.0.0.1:54812".parse()?),
+            ]);
+            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.group_connect(&conn_addrs, &peer_addrs).await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert!(id == 0);
@@ -594,12 +614,16 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> = TransportHub::new(0, 3);
-        hub.setup("127.0.0.1:55800".parse()?, 1, 1).await?;
-        hub.group_connect(&HashMap::from([
-            (1, "127.0.0.1:55801".parse()?),
-            (2, "127.0.0.1:55802".parse()?),
-        ]))
-        .await?;
+        let conn_addrs = HashMap::from([
+            (1, "127.0.0.1:54801".parse()?),
+            (2, "127.0.0.1:54802".parse()?),
+        ]);
+        let peer_addrs = HashMap::from([
+            (1, "127.0.0.1:54810".parse()?),
+            (2, "127.0.0.1:54820".parse()?),
+        ]);
+        hub.setup(&conn_addrs, 1, 1).await?;
+        hub.group_connect(&conn_addrs, &peer_addrs).await?;
         // send a message to 1 and 2
         let mut map = ReplicaMap::new(3, true)?;
         map.set(0, false)?;

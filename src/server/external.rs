@@ -438,7 +438,7 @@ mod external_tests {
             .is_err());
         assert!(api
             .setup(
-                "127.0.0.1:51701".parse()?,
+                "127.0.0.1:51710".parse()?,
                 Duration::from_nanos(10),
                 100,
                 100,
@@ -446,7 +446,7 @@ mod external_tests {
             .await
             .is_err());
         api.setup(
-            "127.0.0.1:51702".parse()?,
+            "127.0.0.1:51720".parse()?,
             Duration::from_millis(1),
             100,
             100,
