@@ -50,10 +50,10 @@ pub struct ReplicaConfigMultiPaxos {
 impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
         ReplicaConfigMultiPaxos {
-            batch_interval_us: 5000,
+            batch_interval_us: 1000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
-            base_chan_cap: 10000,
-            api_chan_cap: 100000,
+            base_chan_cap: 100000,
+            api_chan_cap: 1000000,
             logger_sync: false,
         }
     }

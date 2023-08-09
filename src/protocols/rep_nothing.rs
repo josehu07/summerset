@@ -44,8 +44,8 @@ impl Default for ReplicaConfigRepNothing {
         ReplicaConfigRepNothing {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
-            base_chan_cap: 10000,
-            api_chan_cap: 100000,
+            base_chan_cap: 100000,
+            api_chan_cap: 1000000,
         }
     }
 }

@@ -7,6 +7,8 @@ use crate::utils::SummersetError;
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
+use bytes::{Bytes, BytesMut};
+
 use serde::{Serialize, Deserialize};
 
 use rmp_serde::encode::to_vec as encode_to_vec;
@@ -313,12 +315,45 @@ impl ExternalApi {
 impl ExternalApi {
     /// Reads a client request from given TcpStream.
     async fn read_req(
+        // first 8 btyes being the request length, and the rest bytes being the
+        // request itself
+        req_buf: &mut BytesMut,
         conn_read: &mut ReadHalf<'_>,
     ) -> Result<ApiRequest, SummersetError> {
-        let req_len = conn_read.read_u64().await?; // receive length first
-        let mut req_buf: Vec<u8> = vec![0; req_len as usize];
-        conn_read.read_exact(&mut req_buf[..]).await?;
-        let req = decode_from_slice(&req_buf)?;
+        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
+        // here because this function is used as a `tokio::select!` branch and
+        // that those two methods are not cancellation-safe
+
+        // read length of request first
+        assert!(req_buf.capacity() >= 8);
+        while req_buf.len() < 8 {
+            // req_len not wholesomely read from socket before last cancellation
+            conn_read.read_buf(req_buf).await?;
+        }
+        let req_len = u64::from_be_bytes(req_buf[..8].try_into().unwrap());
+
+        // then read the request itself
+        let req_end = 8 + req_len as usize;
+        if req_buf.capacity() < req_end {
+            // capacity not big enough, reserve more space
+            req_buf.reserve(req_end - req_buf.capacity());
+        }
+        while req_buf.len() < req_end {
+            conn_read.read_buf(req_buf).await?;
+        }
+        let req = decode_from_slice(&req_buf[8..req_end])?;
+
+        // if reached this point, no further cancellation to this call is
+        // possible (because there are no more awaits ahead); discard bytes
+        // used in this call
+        if req_buf.len() > req_end {
+            let buf_tail = Bytes::copy_from_slice(&req_buf[req_end..]);
+            req_buf.clear();
+            req_buf.extend_from_slice(&buf_tail);
+        } else {
+            req_buf.clear();
+        }
+
         Ok(req)
     }
 
@@ -345,6 +380,7 @@ impl ExternalApi {
         pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
 
         let (mut conn_read, mut conn_write) = conn.split();
+        let mut req_buf = BytesMut::with_capacity(8 + 1024);
 
         loop {
             tokio::select! {
@@ -367,7 +403,7 @@ impl ExternalApi {
                 },
 
                 // receives client request
-                req = Self::read_req(&mut conn_read) => {
+                req = Self::read_req(&mut req_buf, &mut conn_read) => {
                     match req {
                         // client leaving, send dummy reply and break
                         Ok(ApiRequest::Leave) => {

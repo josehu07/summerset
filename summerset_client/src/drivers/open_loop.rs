@@ -1,4 +1,9 @@
 //! Open-loop client-side driver implementation.
+//!
+//! It is recommanded to avoid the following coding style of using a open-loop
+//! client: issuing a large batch of requests, waiting for all of the replies,
+//! and repeat. This could easily hit the TCP socket buffer size limit and lead
+//! to deadlocks.
 
 use std::collections::HashSet;
 

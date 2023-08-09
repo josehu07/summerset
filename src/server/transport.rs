@@ -7,6 +7,8 @@ use std::net::SocketAddr;
 use crate::utils::{SummersetError, ReplicaMap};
 use crate::server::ReplicaId;
 
+use bytes::{Bytes, BytesMut};
+
 use serde::{Serialize, de::DeserializeOwned};
 
 use rmp_serde::encode::to_vec as encode_to_vec;
@@ -387,12 +389,45 @@ where
 
     /// Reads a message from given TcpStream.
     async fn read_msg(
+        // first 8 btyes being the message length, and the rest bytes being the
+        // message itself
+        msg_buf: &mut BytesMut,
         conn_read: &mut ReadHalf<'_>,
     ) -> Result<Msg, SummersetError> {
-        let msg_len = conn_read.read_u64().await?; // receive length first
-        let mut msg_buf: Vec<u8> = vec![0; msg_len as usize];
-        conn_read.read_exact(&mut msg_buf[..]).await?;
-        let msg = decode_from_slice(&msg_buf)?;
+        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
+        // here because this function is used as a `tokio::select!` branch and
+        // that those two methods are not cancellation-safe
+
+        // read length of message first
+        assert!(msg_buf.capacity() >= 8);
+        while msg_buf.len() < 8 {
+            // msg_len not wholesomely read from socket before last cancellation
+            conn_read.read_buf(msg_buf).await?;
+        }
+        let msg_len = u64::from_be_bytes(msg_buf[..8].try_into().unwrap());
+
+        // then read the message itself
+        let msg_end = 8 + msg_len as usize;
+        if msg_buf.capacity() < msg_end {
+            // capacity not big enough, reserve more space
+            msg_buf.reserve(msg_end - msg_buf.capacity());
+        }
+        while msg_buf.len() < msg_end {
+            conn_read.read_buf(msg_buf).await?;
+        }
+        let msg = decode_from_slice(&msg_buf[8..msg_end])?;
+
+        // if reached this point, no further cancellation to this call is
+        // possible (because there are no more awaits ahead); discard bytes
+        // used in this call
+        if msg_buf.len() > msg_end {
+            let buf_tail = Bytes::copy_from_slice(&msg_buf[msg_end..]);
+            msg_buf.clear();
+            msg_buf.extend_from_slice(&buf_tail);
+        } else {
+            msg_buf.clear();
+        }
+
         Ok(msg)
     }
 
@@ -408,6 +443,7 @@ where
         pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
 
         let (mut conn_read, mut conn_write) = conn.split();
+        let mut msg_buf = BytesMut::with_capacity(8 + 1024);
 
         loop {
             tokio::select! {
@@ -431,7 +467,7 @@ where
                 },
 
                 // receives new message from peer
-                msg = Self::read_msg(&mut conn_read) => {
+                msg = Self::read_msg(&mut msg_buf, &mut conn_read) => {
                     match msg {
                         Ok(msg) => {
                             // pf_trace!(me; "recv <- {} msg {:?}", id, msg);

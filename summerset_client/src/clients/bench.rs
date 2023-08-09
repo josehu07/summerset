@@ -19,7 +19,7 @@ use summerset::{
 
 lazy_static! {
     /// Pool of keys to choose from.
-    // TODO: maybe use a dynamic pool of keys
+    // TODO: enable using a dynamic pool of keys
     static ref KEYS_POOL: Vec<String> = {
         let mut pool = vec![];
         for _ in 0..5 {
@@ -34,7 +34,10 @@ lazy_static! {
     };
 
     /// Target batch duration to approach.
-    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(100);
+    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(10);
+
+    /// Statistics printing interval.
+    static ref PRINT_INTERVAL: Duration = Duration::from_millis(500);
 }
 
 /// Mode parameters struct.
@@ -57,7 +60,7 @@ pub struct ModeParamsBench {
 impl Default for ModeParamsBench {
     fn default() -> Self {
         ModeParamsBench {
-            init_batch_size: 100,
+            init_batch_size: 1,
             length_s: 30,
             put_ratio: 50,
             value_size: 1024,
@@ -138,11 +141,17 @@ impl ClientBench {
     }
 
     /// Issues a batch of requests and waits for all of their replies.
-    /// Returns the number of successful replies received.
-    async fn do_batch(&mut self, num_reqs: u64) -> Result<u64, SummersetError> {
+    /// Returns the number of successful replies received and a latency sample
+    /// in microseconds if sampled.
+    async fn do_batch(
+        &mut self,
+        num_reqs: u64,
+    ) -> Result<(u64, Option<f64>), SummersetError> {
         assert!(num_reqs > 0);
+        let (mut first_issue_ts, mut last_issue_ts) = (None, None);
+        let (mut first_reply_ts, mut last_reply_ts) = (None, None);
 
-        for _ in 0..num_reqs {
+        for i in 0..num_reqs {
             let cmd = self.gen_rand_cmd();
             match cmd {
                 Command::Get { key } => {
@@ -152,21 +161,68 @@ impl ClientBench {
                     self.driver.issue_put(&key, &value).await?;
                 }
             }
-        }
 
-        let mut ok_cnt = 0;
-        for _ in 0..num_reqs {
-            let result = self.driver.wait_reply().await?;
-            if result.is_some() {
-                ok_cnt += 1;
+            if i == 0 {
+                first_issue_ts = Some(Instant::now());
+            }
+            if i == num_reqs - 1 {
+                last_issue_ts = Some(Instant::now());
             }
         }
 
-        Ok(ok_cnt)
+        let mut ok_cnt = 0;
+        for i in 0..num_reqs {
+            let result = self.driver.wait_reply().await?;
+            if result.is_some() {
+                ok_cnt += 1;
+
+                if i == 0 {
+                    first_reply_ts = Some(Instant::now());
+                }
+                if i == num_reqs - 1 {
+                    last_reply_ts = Some(Instant::now());
+                }
+            }
+        }
+
+        // calculate latency sample
+        let first_lat = if first_issue_ts.is_some() && first_reply_ts.is_some()
+        {
+            Some(
+                (first_reply_ts
+                    .unwrap()
+                    .duration_since(first_issue_ts.unwrap())
+                    .as_nanos() as f64)
+                    / 1000.0,
+            )
+        } else {
+            None
+        };
+        let last_lat = if last_issue_ts.is_some() && last_reply_ts.is_some() {
+            Some(
+                (last_reply_ts
+                    .unwrap()
+                    .duration_since(last_issue_ts.unwrap())
+                    .as_nanos() as f64)
+                    / 1000.0,
+            )
+        } else {
+            None
+        };
+        let lat_sample = if first_lat.is_some() && last_lat.is_some() {
+            Some((first_lat.unwrap() + last_lat.unwrap()) / 2.0)
+        } else if first_lat.is_some() {
+            first_lat
+        } else if last_lat.is_some() {
+            last_lat
+        } else {
+            None
+        };
+
+        Ok((ok_cnt, lat_sample))
     }
 
     /// Runs the adaptive benchmark for given time length.
-    // TODO: add latency information
     pub async fn run(&mut self) -> Result<(), SummersetError> {
         let start = Instant::now();
         let mut now = start;
@@ -176,28 +232,48 @@ impl ClientBench {
         let mut ok_cnt = 0;
         let mut total_cnt = 0;
 
+        let mut chunk_cnt = 0;
+        let mut chunk_lats: Vec<f64> = vec![];
+
         println!(
-            "{:^11} | {:^7} | {:^12} | {:>7} / {:<7}",
-            "Elapsed (s)", "Batch", "Tpt (reqs/s)", "OK", "Total"
+            "{:^11} | {:^12} | {:^12} | {:>8} / {:<8}",
+            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "OK", "Total"
         );
+        let mut last_print = now;
+
         while now.duration_since(start) < length {
             let batch_start = now;
 
-            let batch_ok_cnt = self.do_batch(batch_size).await?;
+            let (batch_ok_cnt, lat_sample) = self.do_batch(batch_size).await?;
             ok_cnt += batch_ok_cnt;
             total_cnt += batch_size;
 
-            // print at the end of every batch
+            chunk_cnt += batch_ok_cnt;
+            if let Some(lat) = lat_sample {
+                chunk_lats.push(lat);
+            }
+
             now = Instant::now();
+
+            // print statistics if print interval passed
             let elapsed = now.duration_since(start);
-            println!(
-                "{:>11.2} | {:>7} | {:>12.2} | {:>7} / {:<7}",
-                elapsed.as_secs_f64(),
-                batch_size,
-                (ok_cnt as f64) / elapsed.as_secs_f64(),
-                ok_cnt,
-                total_cnt
-            );
+            let print_elapsed = now.duration_since(last_print);
+            if print_elapsed >= *PRINT_INTERVAL {
+                let tpt = (chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let lat =
+                    chunk_lats.iter().sum::<f64>() / (chunk_lats.len() as f64);
+                println!(
+                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} / {:<8}",
+                    elapsed.as_secs_f64(),
+                    tpt,
+                    lat,
+                    ok_cnt,
+                    total_cnt
+                );
+                last_print = now;
+                chunk_cnt = 0;
+                chunk_lats.clear();
+            }
 
             // adaptively adjust number of requests per batch
             let batch_dur = now.duration_since(batch_start);
