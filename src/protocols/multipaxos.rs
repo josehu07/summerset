@@ -41,6 +41,9 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Capacity for req/reply channels.
     pub api_chan_cap: usize,
+
+    /// Whether to call `fsync()`/`fdatasync()` on logger.
+    pub logger_sync: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -51,6 +54,7 @@ impl Default for ReplicaConfigMultiPaxos {
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             base_chan_cap: 10000,
             api_chan_cap: 100000,
+            logger_sync: false,
         }
     }
 }
@@ -365,7 +369,7 @@ impl MultiPaxosReplica {
                             slot,
                             ballot: self.bal_prep_sent,
                         },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -402,7 +406,7 @@ impl MultiPaxosReplica {
                             ballot: inst.bal,
                             reqs: req_batch.clone(),
                         },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -617,7 +621,7 @@ impl MultiPaxosReplica {
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
                         entry: LogEntry::PrepareBal { slot, ballot },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -687,7 +691,7 @@ impl MultiPaxosReplica {
                                 ballot,
                                 reqs: inst.reqs.clone(),
                             },
-                            sync: true,
+                            sync: self.config.logger_sync,
                         },
                     )
                     .await?;
@@ -756,7 +760,7 @@ impl MultiPaxosReplica {
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
                         entry: LogEntry::AcceptData { slot, ballot, reqs },
-                        sync: true,
+                        sync: self.config.logger_sync,
                     },
                 )
                 .await?;
@@ -809,7 +813,7 @@ impl MultiPaxosReplica {
                         Self::make_log_action_id(slot, Status::Committed),
                         LogAction::Append {
                             entry: LogEntry::CommitSlot { slot },
-                            sync: true,
+                            sync: self.config.logger_sync,
                         },
                     )
                     .await?;
@@ -875,7 +879,7 @@ impl MultiPaxosReplica {
                 Self::make_log_action_id(slot, Status::Committed),
                 LogAction::Append {
                     entry: LogEntry::CommitSlot { slot },
-                    sync: true,
+                    sync: self.config.logger_sync,
                 },
             )
             .await?;
@@ -1004,7 +1008,7 @@ impl GenericReplica for MultiPaxosReplica {
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, backer_path,
-                                    base_chan_cap, api_chan_cap)?;
+                                    base_chan_cap, api_chan_cap, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
