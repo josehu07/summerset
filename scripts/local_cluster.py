@@ -11,13 +11,13 @@ def run_process(cmd):
 
 
 PROTOCOL_CONFIGS = {
-    "RepNothing": lambda r, _: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
-    "MultiPaxos": lambda r, _: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'+logger_sync=false",
 }
 
 
-def launch_replica(
+def compose_server_cmd(
     protocol, api_port, base_conn_port, replica_id, replica_list, config, release
 ):
     cmd = [
@@ -41,9 +41,10 @@ def launch_replica(
         str(replica_id),
     ]
     cmd += replica_list
-    cmd += ["--config", config]
+    if len(config) > 0:
+        cmd += ["--config", config]
 
-    return run_process(cmd)
+    return cmd
 
 
 def launch_servers(protocol, num_replicas, release):
@@ -59,7 +60,7 @@ def launch_servers(protocol, num_replicas, release):
 
     server_procs = []
     for replica in range(num_replicas):
-        proc = launch_replica(
+        cmd = compose_server_cmd(
             protocol,
             api_ports[replica],
             base_conn_ports[replica],
@@ -68,6 +69,7 @@ def launch_servers(protocol, num_replicas, release):
             PROTOCOL_CONFIGS[protocol](replica, num_replicas),
             release,
         )
+        proc = run_process(cmd)
         server_procs.append(proc)
 
     return server_procs
@@ -99,6 +101,5 @@ if __name__ == "__main__":
         path.unlink()
 
     server_procs = launch_servers(args.protocol, args.num_replicas, args.release)
-
     for proc in server_procs:
         proc.wait()
