@@ -825,17 +825,10 @@ impl MultiPaxosReplica {
 
                 // send Commit messages to replicas
                 self.transport_hub
-                    .bcast_msg(
-                        PeerMsg::Accept {
-                            slot,
-                            ballot,
-                            reqs: inst.reqs.clone(),
-                        },
-                        replicas,
-                    )
+                    .bcast_msg(PeerMsg::Commit { slot }, replicas)
                     .await?;
-                pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                  slot, ballot);
+                pf_trace!(self.id; "broadcast Commit messages for slot {} bal {}",
+                                   slot, ballot);
             }
         }
 
@@ -920,7 +913,6 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of state machine exec result chan recv.
-    /// TODO: reply to client, update Status::Executed and exec_bar properly
     async fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
@@ -937,18 +929,20 @@ impl MultiPaxosReplica {
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
-            self.external_api
-                .send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
-                    client,
-                )
-                .await?;
-            pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
-                               client, slot, cmd_idx);
+            if self.external_api.has_client(client)? {
+                self.external_api
+                    .send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(cmd_result),
+                            redirect: None,
+                        },
+                        client,
+                    )
+                    .await?;
+                pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
+                                   client, slot, cmd_idx);
+            }
         } else {
             return logged_err!(self.id; "unexpected API request type");
         }
@@ -964,7 +958,7 @@ impl MultiPaxosReplica {
             if slot == self.exec_bar {
                 while self.exec_bar < self.insts.len() {
                     let inst = &mut self.insts[self.exec_bar];
-                    if inst.status < Status::Committed {
+                    if inst.status < Status::Executed {
                         break;
                     }
                     self.exec_bar += 1;

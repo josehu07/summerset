@@ -177,6 +177,16 @@ impl ExternalApi {
         Ok(())
     }
 
+    /// Returns whether a client ID is connected to me.
+    pub fn has_client(&self, client: ClientId) -> Result<bool, SummersetError> {
+        if self.client_acceptor_handle.is_none() {
+            return logged_err!(self.me; "has_client called before setup");
+        }
+
+        let tx_replies_guard = self.tx_replies.as_ref().unwrap().guard();
+        Ok(tx_replies_guard.contains_key(&client))
+    }
+
     /// Waits for the next batch dumping signal and collects all requests
     /// currently in the req channel. Returns a non-empty `VecDeque` of
     /// requests on success.
@@ -647,6 +657,8 @@ mod external_tests {
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
+            assert!(api.has_client(client)?);
+            assert!(!api.has_client(client + 1)?);
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -672,6 +684,8 @@ mod external_tests {
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
+            assert!(api.has_client(client)?);
+            assert!(!api.has_client(client + 1)?);
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
