@@ -16,6 +16,9 @@ const PROMPT: &str = ">>>>> ";
 
 /// Interactive REPL-style client struct.
 pub struct ClientRepl {
+    /// Client ID.
+    _id: ClientId,
+
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -31,6 +34,7 @@ impl ClientRepl {
         timeout: Duration,
     ) -> Self {
         ClientRepl {
+            _id: id,
             driver: DriverClosedLoop::new(id, stub, timeout),
             input_buf: String::new(),
         }

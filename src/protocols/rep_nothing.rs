@@ -444,15 +444,12 @@ impl GenericEndpoint for RepNothingClient {
             })
     }
 
-    async fn send_req(
+    fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
         match self.stubs {
-            Some((ref mut send_stub, _)) => {
-                send_stub.send_req(req).await?;
-                Ok(())
-            }
+            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
             None => logged_err!(self.id; "client is not set up"),
         }
     }

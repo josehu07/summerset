@@ -1221,15 +1221,12 @@ impl GenericEndpoint for MultiPaxosClient {
             })
     }
 
-    async fn send_req(
+    fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
         match self.conn_stubs {
-            Some((ref mut send_stub, _)) => {
-                send_stub.send_req(req).await?;
-                Ok(())
-            }
+            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
             None => logged_err!(self.id; "client is not set up"),
         }
     }
@@ -1249,7 +1246,7 @@ impl GenericEndpoint for MultiPaxosClient {
                     if result.is_none() && redirect.is_some() {
                         let redirect_id = redirect.unwrap();
                         assert!((redirect_id as usize) < self.servers.len());
-                        send_stub.send_req(ApiRequest::Leave).await?;
+                        send_stub.send_req(Some(&ApiRequest::Leave))?;
                         if let Ok(stubs) = self
                             .api_stub
                             .connect(self.servers[&redirect_id])

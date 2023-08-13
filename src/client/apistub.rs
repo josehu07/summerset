@@ -1,5 +1,6 @@
 //! Summerset client API communication stub implementation.
 
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
@@ -48,33 +49,88 @@ impl ClientApiStub {
 /// Client write stub that owns a TCP write half.
 pub struct ClientSendStub {
     /// My client ID.
-    _id: ClientId,
+    id: ClientId,
 
     /// Write-half split of the TCP connection stream.
     conn_write: OwnedWriteHalf,
+
+    /// Request write buffer for deadlock avoidance.
+    req_buf: BytesMut,
+
+    /// Request write buffer cursor at first unwritten byte.
+    req_buf_cursor: usize,
 }
 
 impl ClientSendStub {
     /// Creates a new write stub.
     fn new(id: ClientId, conn_write: OwnedWriteHalf) -> Self {
         ClientSendStub {
-            _id: id,
+            id,
             conn_write,
+            req_buf: BytesMut::with_capacity(8 + 1024),
+            req_buf_cursor: 0,
         }
     }
 
-    /// Sends a request to established server connection.
-    pub async fn send_req(
+    /// Sends a request to established server connection. Returns:
+    ///   - `Ok(true)` if successful
+    ///   - `Ok(false)` if socket full and may block; in this case, the input
+    ///                 request is saved and the next calls to `send_req()`
+    ///                 must give arg `req == None` to retry until successful
+    ///                 (typically after doing a few `recv_reply()`s to free
+    ///                 up some buffer space)
+    ///   - `Err(err)` if any unexpected error occurs
+    pub fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
-        let req_bytes = encode_to_vec(&req)?;
-        let req_len = req_bytes.len();
-        self.conn_write.write_u64(req_len as u64).await?; // send length first
-        self.conn_write.write_all(&req_bytes[..]).await?;
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
+        // DEADLOCK AVOIDANCE: we avoid using `write_u64()` and `write_all()`
+        // here because, in the case of TCP buffers being full, the service and
+        // the client may both be blocking on trying to send (write) into the
+        // buffers, resulting in a circular deadlock
+
+        // if last write was not successful, cannot make a new request
+        if req.is_some() && !self.req_buf.is_empty() {
+            return logged_err!(self.id; "attempting new request while should retry");
+        } else if req.is_none() && self.req_buf.is_empty() {
+            return logged_err!(self.id; "attempting to retry while buffer is empty");
+        } else if req.is_some() {
+            // sending a new request, fill req_buf
+            assert_eq!(self.req_buf_cursor, 0);
+            let req_bytes = encode_to_vec(req.unwrap())?;
+            let req_len = req_bytes.len();
+            self.req_buf.extend_from_slice(&req_len.to_be_bytes());
+            assert_eq!(self.req_buf.len(), 8);
+            self.req_buf.extend_from_slice(req_bytes.as_slice());
+        } else {
+            // retrying last unsuccessful write
+            assert!(self.req_buf_cursor < self.req_buf.len());
+            pf_debug!(self.id; "retrying last unsuccessful send_req");
+        }
+
+        // try until length + the request are all written
+        while self.req_buf_cursor < self.req_buf.len() {
+            match self
+                .conn_write
+                .try_write(&self.req_buf[self.req_buf_cursor..])
+            {
+                Ok(n) => {
+                    self.req_buf_cursor += n;
+                }
+                Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
+                    pf_debug!(self.id; "send_req would block; TCP buffer full?");
+                    return Ok(false);
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        // everything written, clear req_buf
+        self.req_buf.clear();
+        self.req_buf_cursor = 0;
 
         // pf_trace!(self.id; "send req {:?}", req);
-        Ok(())
+        Ok(true)
     }
 }
 

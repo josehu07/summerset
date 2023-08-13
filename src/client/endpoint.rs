@@ -31,8 +31,10 @@ pub trait GenericEndpoint {
     async fn setup(&mut self) -> Result<(), SummersetError>;
 
     /// Sends a request to the service according to protocol-specific logic.
-    async fn send_req(&mut self, req: ApiRequest)
-        -> Result<(), SummersetError>;
+    fn send_req(
+        &mut self,
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError>;
 
     /// Receives a reply from the service according to protocol-specific logic.
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError>;

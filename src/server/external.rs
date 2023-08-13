@@ -586,27 +586,21 @@ mod external_tests {
         let api_stub = ClientApiStub::new(client);
         let (mut send_stub, mut recv_stub) =
             api_stub.connect("127.0.0.1:53700".parse()?).await?;
-        send_stub
-            .send_req(ApiRequest::Req {
-                id: 0,
-                cmd: Command::Put {
-                    key: "Jose".into(),
-                    value: "123".into(),
-                },
-            })
-            .await?;
-        send_stub
-            .send_req(ApiRequest::Req {
-                id: 1,
-                cmd: Command::Get { key: "Jose".into() },
-            })
-            .await?;
-        send_stub
-            .send_req(ApiRequest::Req {
-                id: 1,
-                cmd: Command::Get { key: "Jose".into() },
-            })
-            .await?;
+        send_stub.send_req(Some(&ApiRequest::Req {
+            id: 0,
+            cmd: Command::Put {
+                key: "Jose".into(),
+                value: "123".into(),
+            },
+        }))?;
+        send_stub.send_req(Some(&ApiRequest::Req {
+            id: 1,
+            cmd: Command::Get { key: "Jose".into() },
+        }))?;
+        send_stub.send_req(Some(&ApiRequest::Req {
+            id: 1,
+            cmd: Command::Get { key: "Jose".into() },
+        }))?;
         assert_eq!(
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
@@ -715,15 +709,13 @@ mod external_tests {
         let api_stub = ClientApiStub::new(client);
         let (mut send_stub, mut recv_stub) =
             api_stub.connect("127.0.0.1:54700".parse()?).await?;
-        send_stub
-            .send_req(ApiRequest::Req {
-                id: 0,
-                cmd: Command::Put {
-                    key: "Jose".into(),
-                    value: "123".into(),
-                },
-            })
-            .await?;
+        send_stub.send_req(Some(&ApiRequest::Req {
+            id: 0,
+            cmd: Command::Put {
+                key: "Jose".into(),
+                value: "123".into(),
+            },
+        }))?;
         assert_eq!(
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
@@ -732,20 +724,18 @@ mod external_tests {
                 redirect: None,
             }
         );
-        send_stub.send_req(ApiRequest::Leave).await?;
+        send_stub.send_req(Some(&ApiRequest::Leave))?;
         assert_eq!(recv_stub.recv_reply().await?, ApiReply::Leave);
         time::sleep(Duration::from_micros(100)).await;
         let (mut send_stub, mut recv_stub) =
             api_stub.connect("127.0.0.1:54700".parse()?).await?;
-        send_stub
-            .send_req(ApiRequest::Req {
-                id: 0,
-                cmd: Command::Put {
-                    key: "Jose".into(),
-                    value: "456".into(),
-                },
-            })
-            .await?;
+        send_stub.send_req(Some(&ApiRequest::Req {
+            id: 0,
+            cmd: Command::Put {
+                key: "Jose".into(),
+                value: "456".into(),
+            },
+        }))?;
         assert_eq!(
             recv_stub.recv_reply().await?,
             ApiReply::Reply {
