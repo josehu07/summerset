@@ -5,7 +5,9 @@
 [![Tests status](https://github.com/josehu07/summerset/actions/workflows/tests.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Summerset is a distributed key-value store incorporating a wide range of state machine replication (SMR) protocols for research purposes.
+Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. Summerset adopts a modularized, channel-oriented, and event-based programming structure. This makes protocol implementation much more straightforward and intuitive; a protocol is basically a set of handlers plus an event selection loop.
+
+More protocols are actively being added.
 
 ## Build
 
@@ -73,10 +75,10 @@ Complete cluster management and benchmarking scripts are available in another re
   - [ ] membership discovery & view changes
 - [ ] implementation of Raft
 - [ ] implementation of Crossword prototype
-- [ ] complete client-side utilities
+- [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client
-  - [ ] testing client
+  - [x] testing client
   - [ ] benchmarking with YCSB input
 - [ ] better README
 

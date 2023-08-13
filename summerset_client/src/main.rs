@@ -15,7 +15,7 @@ use summerset::{SMRProtocol, ClientId, ReplicaId, SummersetError, pf_error};
 mod drivers;
 mod clients;
 
-use crate::clients::{ClientMode, ClientRepl, ClientBench};
+use crate::clients::{ClientMode, ClientRepl, ClientBench, ClientTester};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -163,13 +163,23 @@ fn client_main() -> Result<(), SummersetError> {
                 )?;
                 bench.run().await?;
             }
+            ClientMode::Tester => {
+                // run correctness testing client
+                let mut tester = ClientTester::new(
+                    args.id,
+                    stub,
+                    Duration::from_millis(args.timeout_ms),
+                    params_str,
+                )?;
+                tester.run().await?;
+            }
         }
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
 }
 
-fn main() {
+fn main() -> Result<(), SummersetError> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp(None)
         .format_module_path(true)
@@ -178,6 +188,9 @@ fn main() {
 
     if let Err(e) = client_main() {
         pf_error!("client"; "client_main exitted: {}", e);
+        Err(e)
+    } else {
+        Ok(())
     }
 }
 
