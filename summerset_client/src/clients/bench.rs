@@ -34,7 +34,7 @@ lazy_static! {
     };
 
     /// Target batch duration to approach.
-    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(10);
+    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(5);
 
     /// Statistics printing interval.
     static ref PRINT_INTERVAL: Duration = Duration::from_millis(500);
@@ -54,6 +54,9 @@ pub struct ModeParamsBench {
 
     /// Value size in bytes.
     pub value_size: usize,
+
+    /// Whether to adaptively adjust batch size.
+    pub adaptive: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -64,6 +67,7 @@ impl Default for ModeParamsBench {
             length_s: 30,
             put_ratio: 50,
             value_size: 1024,
+            adaptive: false,
         }
     }
 }
@@ -93,7 +97,7 @@ impl ClientBench {
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                      init_batch_size, length_s, put_ratio,
-                                     value_size)?;
+                                     value_size, adaptive)?;
         if params.init_batch_size == 0 {
             return logged_err!(id; "invalid params.init_batch_size '{}'",
                                    params.init_batch_size);
@@ -275,14 +279,16 @@ impl ClientBench {
                 chunk_lats.clear();
             }
 
-            // adaptively adjust number of requests per batch
-            let batch_dur = now.duration_since(batch_start);
-            assert!(!batch_dur.is_zero());
-            let adjust =
-                TARGET_BATCH_DUR.as_secs_f64() / batch_dur.as_secs_f64();
-            batch_size = ((batch_size as f64) * adjust) as u64;
-            if batch_size == 0 {
-                batch_size = 1;
+            if self.params.adaptive {
+                // adaptively adjust number of requests per batch
+                let batch_dur = now.duration_since(batch_start);
+                assert!(!batch_dur.is_zero());
+                let adjust =
+                    TARGET_BATCH_DUR.as_secs_f64() / batch_dur.as_secs_f64();
+                batch_size = ((batch_size as f64) * adjust) as u64;
+                if batch_size == 0 {
+                    batch_size = 1;
+                }
             }
         }
 

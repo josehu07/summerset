@@ -21,7 +21,7 @@ pub use crate::server::{
 };
 
 #[doc(inline)]
-pub use crate::client::{ClientId, GenericClient};
+pub use crate::client::{ClientId, GenericEndpoint};
 
 #[doc(inline)]
 pub use crate::protocols::SMRProtocol;

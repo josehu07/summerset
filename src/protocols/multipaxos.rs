@@ -18,7 +18,7 @@ use crate::server::{
     GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -1180,7 +1180,7 @@ pub struct MultiPaxosClient {
 }
 
 #[async_trait]
-impl GenericClient for MultiPaxosClient {
+impl GenericEndpoint for MultiPaxosClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,

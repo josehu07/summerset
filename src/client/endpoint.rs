@@ -1,4 +1,4 @@
-//! Summerset generic client trait to be implemented by all protocol-specific
+//! Summerset generic client traits to be implemented by all protocol-specific
 //! client stub structs.
 
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ pub type ClientId = u64;
 
 /// Client trait to be implement by all protocol-specific client structs.
 #[async_trait]
-pub trait GenericClient {
+pub trait GenericEndpoint {
     /// Creates a new client stub.
     fn new(
         id: ClientId,

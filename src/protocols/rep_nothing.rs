@@ -13,7 +13,7 @@ use crate::server::{
     ApiReply, StorageHub, LogAction, LogResult, LogActionId, GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -406,7 +406,7 @@ pub struct RepNothingClient {
 }
 
 #[async_trait]
-impl GenericClient for RepNothingClient {
+impl GenericEndpoint for RepNothingClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,

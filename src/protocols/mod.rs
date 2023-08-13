@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
 use crate::server::{GenericReplica, ReplicaId};
-use crate::client::{GenericClient, ClientId};
+use crate::client::{GenericEndpoint, ClientId};
 
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};
@@ -86,7 +86,7 @@ impl SMRProtocol {
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
         config_str: Option<&str>,
-    ) -> Result<Box<dyn GenericClient>, SummersetError> {
+    ) -> Result<Box<dyn GenericEndpoint>, SummersetError> {
         match self {
             Self::RepNothing => {
                 box_if_ok!(RepNothingClient::new(id, servers, config_str))

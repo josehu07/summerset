@@ -15,7 +15,7 @@ use crate::server::{
     GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -613,7 +613,7 @@ pub struct SimplePushClient {
 }
 
 #[async_trait]
-impl GenericClient for SimplePushClient {
+impl GenericEndpoint for SimplePushClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
