@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericClient, ClientId, Command, SummersetError, pf_error, logged_err,
+    GenericEndpoint, ClientId, Command, SummersetError, pf_error, logged_err,
     parsed_config,
 };
 
@@ -91,7 +91,7 @@ impl ClientBench {
     /// Creates a new benchmarking client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {

@@ -7,7 +7,8 @@ use crate::drivers::DriverClosedLoop;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericClient, ClientId, Command, CommandResult, RequestId, SummersetError,
+    GenericEndpoint, ClientId, Command, CommandResult, RequestId,
+    SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -26,7 +27,7 @@ impl ClientRepl {
     /// Creates a new REPL-style client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
     ) -> Self {
         ClientRepl {

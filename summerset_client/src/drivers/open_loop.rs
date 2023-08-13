@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericClient, ClientId, Command, CommandResult, ApiRequest, ApiReply,
+    GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
     RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
@@ -20,7 +20,7 @@ pub struct DriverOpenLoop {
     id: ClientId,
 
     /// Protocol-specific client stub.
-    stub: Box<dyn GenericClient>,
+    stub: Box<dyn GenericEndpoint>,
 
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
@@ -39,7 +39,7 @@ impl DriverOpenLoop {
     /// Creates a new open-loop client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
     ) -> Self {
         DriverOpenLoop {
