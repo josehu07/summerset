@@ -69,11 +69,12 @@ pub struct ExternalApi {
     me: ReplicaId,
 
     /// Receiver side of the req channel.
-    rx_req: Option<mpsc::Receiver<(ClientId, ApiRequest)>>,
+    rx_req: Option<mpsc::UnboundedReceiver<(ClientId, ApiRequest)>>,
 
     /// Map from client ID -> sender side of its reply channel, shared with
     /// the client acceptor thread.
-    tx_replies: Option<flashmap::ReadHandle<ClientId, mpsc::Sender<ApiReply>>>,
+    tx_replies:
+        Option<flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<ApiReply>>>,
 
     /// Notify used as batch dumping signal, shared with the batch ticker
     /// thread.
@@ -115,25 +116,9 @@ impl ExternalApi {
         &mut self,
         api_addr: SocketAddr,
         batch_interval: Duration,
-        chan_req_cap: usize,
-        chan_reply_cap: usize,
     ) -> Result<(), SummersetError> {
         if self.client_acceptor_handle.is_some() {
             return logged_err!(self.me; "setup already done");
-        }
-        if chan_req_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_req_cap {}",
-                chan_req_cap
-            );
-        }
-        if chan_reply_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_reply_cap {}",
-                chan_reply_cap
-            );
         }
         if batch_interval < Duration::from_micros(1) {
             return logged_err!(
@@ -143,11 +128,11 @@ impl ExternalApi {
             );
         }
 
-        let (tx_req, rx_req) = mpsc::channel(chan_req_cap);
+        let (tx_req, rx_req) = mpsc::unbounded_channel();
         self.rx_req = Some(rx_req);
 
         let (tx_replies_write, tx_replies_read) =
-            flashmap::new::<ClientId, mpsc::Sender<ApiReply>>();
+            flashmap::new::<ClientId, mpsc::UnboundedSender<ApiReply>>();
         self.tx_replies = Some(tx_replies_read);
 
         let client_listener = TcpListener::bind(api_addr).await?;
@@ -160,7 +145,6 @@ impl ExternalApi {
             tokio::spawn(Self::client_acceptor_thread(
                 self.me,
                 tx_req,
-                chan_reply_cap,
                 client_listener,
                 tx_replies_write,
                 client_servant_handles_write,
@@ -233,7 +217,6 @@ impl ExternalApi {
             Some(tx_reply) => {
                 tx_reply
                     .send(reply)
-                    .await
                     .map_err(|e| SummersetError(e.to_string()))?;
                 Ok(())
             }
@@ -253,10 +236,12 @@ impl ExternalApi {
     /// Client acceptor thread function.
     async fn client_acceptor_thread(
         me: ReplicaId,
-        tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
-        chan_reply_cap: usize,
+        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         client_listener: TcpListener,
-        mut tx_replies: flashmap::WriteHandle<ClientId, mpsc::Sender<ApiReply>>,
+        mut tx_replies: flashmap::WriteHandle<
+            ClientId,
+            mpsc::UnboundedSender<ApiReply>,
+        >,
         mut client_servant_handles: flashmap::WriteHandle<
             ClientId,
             JoinHandle<()>,
@@ -297,7 +282,7 @@ impl ExternalApi {
             }
             pf_info!(me; "accepted new client {}", id);
 
-            let (tx_reply, rx_reply) = mpsc::channel(chan_reply_cap);
+            let (tx_reply, rx_reply) = mpsc::unbounded_channel();
             tx_replies_guard.insert(id, tx_reply);
 
             let client_servant_handle =
@@ -384,8 +369,8 @@ impl ExternalApi {
         id: ClientId,
         addr: SocketAddr,
         mut conn: TcpStream,
-        tx_req: mpsc::Sender<(ClientId, ApiRequest)>,
-        mut rx_reply: mpsc::Receiver<ApiReply>,
+        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
+        mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
     ) {
         pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
 
@@ -428,7 +413,7 @@ impl ExternalApi {
 
                         Ok(req) => {
                             // pf_trace!(me; "request from {} req {:?}", id, req);
-                            if let Err(e) = tx_req.send((id, req)).await {
+                            if let Err(e) = tx_req.send((id, req)) {
                                 pf_error!(
                                     me; "error sending to tx_req for {}: {}", id, e
                                 );
@@ -479,25 +464,11 @@ mod external_tests {
     async fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
         assert!(api
-            .setup("127.0.0.1:51700".parse()?, Duration::from_millis(1), 0, 0)
+            .setup("127.0.0.1:51710".parse()?, Duration::from_nanos(10),)
             .await
             .is_err());
-        assert!(api
-            .setup(
-                "127.0.0.1:51710".parse()?,
-                Duration::from_nanos(10),
-                100,
-                100,
-            )
-            .await
-            .is_err());
-        api.setup(
-            "127.0.0.1:51720".parse()?,
-            Duration::from_millis(1),
-            100,
-            100,
-        )
-        .await?;
+        api.setup("127.0.0.1:51720".parse()?, Duration::from_millis(1))
+            .await?;
         assert!(api.rx_req.is_some());
         assert!(api.client_acceptor_handle.is_some());
         assert!(api.batch_ticker_handle.is_some());
@@ -511,13 +482,8 @@ mod external_tests {
         tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new(0);
-            api.setup(
-                "127.0.0.1:53700".parse()?,
-                Duration::from_millis(1),
-                5,
-                5,
-            )
-            .await?;
+            api.setup("127.0.0.1:53700".parse()?, Duration::from_millis(1))
+                .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.len() < 3 {
@@ -637,13 +603,8 @@ mod external_tests {
         tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new(0);
-            api.setup(
-                "127.0.0.1:54700".parse()?,
-                Duration::from_millis(1),
-                5,
-                5,
-            )
-            .await?;
+            api.setup("127.0.0.1:54700".parse()?, Duration::from_millis(1))
+                .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.is_empty() {

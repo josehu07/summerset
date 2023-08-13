@@ -15,7 +15,7 @@ use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, RequestId, SummersetError, pf_debug,
+    GenericEndpoint, ClientId, Command, RequestId, SummersetError, pf_info,
     pf_error, logged_err, parsed_config,
 };
 
@@ -327,8 +327,8 @@ impl ClientBench {
         }
 
         if !self.pending_reqs.is_empty() {
-            pf_debug!(self.id; "there are {} pending requests",
-                               self.pending_reqs.len());
+            pf_info!(self.id; "there are {} pending requests",
+                              self.pending_reqs.len());
         }
 
         self.driver.leave().await?;

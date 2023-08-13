@@ -36,12 +36,6 @@ pub struct ReplicaConfigMultiPaxos {
     /// Path to backing file.
     pub backer_path: String,
 
-    /// Base capacity for most channels.
-    pub base_chan_cap: usize,
-
-    /// Capacity for req/reply channels.
-    pub api_chan_cap: usize,
-
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 }
@@ -52,8 +46,6 @@ impl Default for ReplicaConfigMultiPaxos {
         ReplicaConfigMultiPaxos {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
-            base_chan_cap: 100000,
-            api_chan_cap: 1000000,
             logger_sync: false,
         }
     }
@@ -1002,26 +994,12 @@ impl GenericReplica for MultiPaxosReplica {
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, backer_path,
-                                    base_chan_cap, api_chan_cap, logger_sync)?;
+                                    logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
-            );
-        }
-        if config.base_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.base_chan_cap {}",
-                config.base_chan_cap
-            );
-        }
-        if config.api_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.api_chan_cap {}",
-                config.api_chan_cap
             );
         }
 
@@ -1049,25 +1027,13 @@ impl GenericReplica for MultiPaxosReplica {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine
-            .setup(self.config.api_chan_cap, self.config.api_chan_cap)
-            .await?;
+        self.state_machine.setup().await?;
 
         self.storage_hub
-            .setup(
-                Path::new(&self.config.backer_path),
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
+            .setup(Path::new(&self.config.backer_path))
             .await?;
 
-        self.transport_hub
-            .setup(
-                &self.conn_addrs,
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
-            .await?;
+        self.transport_hub.setup(&self.conn_addrs).await?;
         if !self.peer_addrs.is_empty() {
             self.transport_hub
                 .group_connect(&self.conn_addrs, &self.peer_addrs)
@@ -1078,8 +1044,6 @@ impl GenericReplica for MultiPaxosReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
-                self.config.api_chan_cap,
-                self.config.api_chan_cap,
             )
             .await?;
 

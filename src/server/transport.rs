@@ -29,18 +29,15 @@ pub struct TransportHub<Msg> {
     /// Cluster size (total number of replicas).
     population: u8,
 
-    /// Capacity of a send channel.
-    chan_send_cap: usize,
-
     /// Map from peer ID -> Sender side of the send channel.
-    tx_sends: HashMap<ReplicaId, mpsc::Sender<Msg>>,
+    tx_sends: HashMap<ReplicaId, mpsc::UnboundedSender<Msg>>,
 
     /// Sender side of the recv channel, stored here so that we can clone it
     /// to a message recver thread when a new peer is connected.
-    tx_recv: Option<mpsc::Sender<(ReplicaId, Msg)>>,
+    tx_recv: Option<mpsc::UnboundedSender<(ReplicaId, Msg)>>,
 
     /// Receiver side of the recv channel.
-    rx_recv: Option<mpsc::Receiver<(ReplicaId, Msg)>>,
+    rx_recv: Option<mpsc::UnboundedReceiver<(ReplicaId, Msg)>>,
 
     /// TCP listeners for peer connections.
     peer_listeners: HashMap<ReplicaId, TcpListener>,
@@ -65,7 +62,6 @@ where
         TransportHub {
             me,
             population,
-            chan_send_cap: 0,
             tx_sends: HashMap::new(),
             tx_recv: None,
             rx_recv: None,
@@ -80,8 +76,6 @@ where
     pub async fn setup(
         &mut self,
         conn_addrs: &HashMap<ReplicaId, SocketAddr>,
-        chan_send_cap: usize,
-        chan_recv_cap: usize,
     ) -> Result<(), SummersetError> {
         if self.tx_recv.is_some() {
             return logged_err!(self.me; "setup already done");
@@ -93,24 +87,8 @@ where
                 conn_addrs.len()
             );
         }
-        if chan_send_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_send_cap {}",
-                chan_send_cap
-            );
-        }
-        if chan_recv_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_recv_cap {}",
-                chan_recv_cap
-            );
-        }
 
-        self.chan_send_cap = chan_send_cap;
-
-        let (tx_recv, rx_recv) = mpsc::channel(chan_recv_cap);
+        let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         self.tx_recv = Some(tx_recv);
         self.rx_recv = Some(rx_recv);
 
@@ -159,7 +137,7 @@ where
         let mut stream = TcpStream::connect(peer_addr).await?;
         stream.write_u8(self.me).await?; // send my ID
 
-        let (tx_send, rx_send) = mpsc::channel(self.chan_send_cap);
+        let (tx_send, rx_send) = mpsc::unbounded_channel();
         self.tx_sends.insert(id, tx_send);
 
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
@@ -218,7 +196,7 @@ where
             );
         }
 
-        let (tx_send, rx_send) = mpsc::channel(self.chan_send_cap);
+        let (tx_send, rx_send) = mpsc::unbounded_channel();
         self.tx_sends.insert(id, tx_send);
 
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
@@ -310,7 +288,6 @@ where
             Some(tx_send) => {
                 tx_send
                     .send(msg)
-                    .await
                     .map_err(|e| SummersetError(e.to_string()))?;
             }
             None => {
@@ -437,8 +414,8 @@ where
         id: ReplicaId,    // corresonding peer's ID
         addr: SocketAddr, // corresponding peer's address
         mut conn: TcpStream,
-        mut rx_send: mpsc::Receiver<Msg>,
-        tx_recv: mpsc::Sender<(ReplicaId, Msg)>,
+        mut rx_send: mpsc::UnboundedReceiver<Msg>,
+        tx_recv: mpsc::UnboundedSender<(ReplicaId, Msg)>,
     ) {
         pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
 
@@ -471,12 +448,11 @@ where
                     match msg {
                         Ok(msg) => {
                             // pf_trace!(me; "recv <- {} msg {:?}", id, msg);
-                            if let Err(e) = tx_recv.send((id, msg)).await {
+                            if let Err(e) = tx_recv.send((id, msg)) {
                                 pf_error!(
                                     me;
                                     "error sending to tx_recv for {}: {}",
-                                    id,
-                                    e
+                                    id, e
                                 );
                             }
                         },
@@ -510,8 +486,7 @@ mod transport_tests {
             (0, "127.0.0.1:51810".parse()?),
             (2, "127.0.0.1:51812".parse()?),
         ]);
-        assert!(hub.setup(&conn_addrs, 0, 0).await.is_err());
-        hub.setup(&conn_addrs, 100, 100).await?;
+        hub.setup(&conn_addrs).await?;
         assert!(hub.tx_recv.is_some());
         assert!(hub.rx_recv.is_some());
         assert_eq!(hub.peer_listeners.len(), 1);
@@ -531,7 +506,7 @@ mod transport_tests {
                 (0, "127.0.0.1:53801".parse()?),
                 (2, "127.0.0.1:53821".parse()?),
             ]);
-            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.setup(&conn_addrs).await?;
             hub.group_connect(&conn_addrs, &peer_addrs).await?;
             Ok::<(), SummersetError>(())
         });
@@ -546,7 +521,7 @@ mod transport_tests {
                 (0, "127.0.0.1:53802".parse()?),
                 (1, "127.0.0.1:53812".parse()?),
             ]);
-            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.setup(&conn_addrs).await?;
             hub.group_connect(&conn_addrs, &peer_addrs).await?;
             Ok::<(), SummersetError>(())
         });
@@ -560,7 +535,7 @@ mod transport_tests {
             (1, "127.0.0.1:53810".parse()?),
             (2, "127.0.0.1:53820".parse()?),
         ]);
-        hub.setup(&conn_addrs, 1, 1).await?;
+        hub.setup(&conn_addrs).await?;
         let connected = hub.group_connect(&conn_addrs, &peer_addrs).await?;
         assert_eq!(connected, HashSet::from([1, 2]));
         Ok(())
@@ -579,7 +554,7 @@ mod transport_tests {
                 (0, "127.0.0.1:54801".parse()?),
                 (2, "127.0.0.1:54821".parse()?),
             ]);
-            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.setup(&conn_addrs).await?;
             hub.group_connect(&conn_addrs, &peer_addrs).await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -610,7 +585,7 @@ mod transport_tests {
                 (0, "127.0.0.1:54802".parse()?),
                 (1, "127.0.0.1:54812".parse()?),
             ]);
-            hub.setup(&conn_addrs, 1, 1).await?;
+            hub.setup(&conn_addrs).await?;
             hub.group_connect(&conn_addrs, &peer_addrs).await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -640,7 +615,7 @@ mod transport_tests {
             (1, "127.0.0.1:54810".parse()?),
             (2, "127.0.0.1:54820".parse()?),
         ]);
-        hub.setup(&conn_addrs, 1, 1).await?;
+        hub.setup(&conn_addrs).await?;
         hub.group_connect(&conn_addrs, &peer_addrs).await?;
         // send a message to 1 and 2
         let mut map = ReplicaMap::new(3, true)?;
