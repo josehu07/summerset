@@ -15,8 +15,8 @@ use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, RequestId, SummersetError, pf_info,
-    pf_error, logged_err, parsed_config,
+    GenericEndpoint, ClientId, RequestId, SummersetError, pf_info, pf_error,
+    logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -143,18 +143,15 @@ impl ClientBench {
         })
     }
 
-    /// Generates a random request.
-    fn gen_rand_cmd(&mut self) -> Command {
+    /// Issues a random request.
+    async fn issue_rand_cmd(
+        &mut self,
+    ) -> Result<Option<RequestId>, SummersetError> {
         let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
-            // Put
-            Command::Put {
-                key,
-                value: self.value.clone(),
-            }
+            self.driver.issue_put(&key, &self.value).await
         } else {
-            // Get
-            Command::Get { key }
+            self.driver.issue_get(&key).await
         }
     }
 
@@ -175,12 +172,7 @@ impl ClientBench {
             let req_id = if self.should_retry {
                 self.driver.issue_retry().await?
             } else {
-                match self.gen_rand_cmd() {
-                    Command::Get { key } => self.driver.issue_get(&key).await?,
-                    Command::Put { key, value } => {
-                        self.driver.issue_put(&key, &value).await?
-                    }
-                }
+                self.issue_rand_cmd().await?
             };
 
             if let Some(id) = req_id {
