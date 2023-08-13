@@ -1,5 +1,7 @@
 //! Benchmarking client using open-loop driver.
 
+use std::collections::HashSet;
+
 use crate::drivers::DriverOpenLoop;
 
 use lazy_static::lazy_static;
@@ -13,8 +15,8 @@ use serde::Deserialize;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericClient, ClientId, Command, SummersetError, pf_error, logged_err,
-    parsed_config,
+    GenericEndpoint, ClientId, Command, RequestId, SummersetError, pf_info,
+    pf_error, logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -34,7 +36,7 @@ lazy_static! {
     };
 
     /// Target batch duration to approach.
-    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(10);
+    static ref TARGET_BATCH_DUR: Duration = Duration::from_millis(5);
 
     /// Statistics printing interval.
     static ref PRINT_INTERVAL: Duration = Duration::from_millis(500);
@@ -54,6 +56,9 @@ pub struct ModeParamsBench {
 
     /// Value size in bytes.
     pub value_size: usize,
+
+    /// Whether to adaptively adjust batch size.
+    pub adaptive: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -64,12 +69,16 @@ impl Default for ModeParamsBench {
             length_s: 30,
             put_ratio: 50,
             value_size: 1024,
+            adaptive: false,
         }
     }
 }
 
 /// Benchmarking client struct.
 pub struct ClientBench {
+    /// Client ID.
+    id: ClientId,
+
     /// Open-loop request driver.
     driver: DriverOpenLoop,
 
@@ -81,19 +90,25 @@ pub struct ClientBench {
 
     /// Fixed value generated according to specified size.
     value: String,
+
+    /// Set of pending request IDs.
+    pending_reqs: HashSet<RequestId>,
+
+    /// If true, there is request to be retried.
+    should_retry: bool,
 }
 
 impl ClientBench {
     /// Creates a new benchmarking client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                      init_batch_size, length_s, put_ratio,
-                                     value_size)?;
+                                     value_size, adaptive)?;
         if params.init_batch_size == 0 {
             return logged_err!(id; "invalid params.init_batch_size '{}'",
                                    params.init_batch_size);
@@ -118,10 +133,13 @@ impl ClientBench {
             .collect();
 
         Ok(ClientBench {
+            id,
             driver: DriverOpenLoop::new(id, stub, timeout),
             params,
             rng: rand::thread_rng(),
             value,
+            pending_reqs: HashSet::new(),
+            should_retry: false,
         })
     }
 
@@ -151,38 +169,58 @@ impl ClientBench {
         let (mut first_issue_ts, mut last_issue_ts) = (None, None);
         let (mut first_reply_ts, mut last_reply_ts) = (None, None);
 
-        for i in 0..num_reqs {
-            let cmd = self.gen_rand_cmd();
-            match cmd {
-                Command::Get { key } => {
-                    self.driver.issue_get(&key).await?;
+        let mut issue_cnt = 0;
+        let mut batch_pending_reqs = HashSet::new();
+        while issue_cnt < num_reqs {
+            let req_id = if self.should_retry {
+                self.driver.issue_retry().await?
+            } else {
+                match self.gen_rand_cmd() {
+                    Command::Get { key } => self.driver.issue_get(&key).await?,
+                    Command::Put { key, value } => {
+                        self.driver.issue_put(&key, &value).await?
+                    }
                 }
-                Command::Put { key, value } => {
-                    self.driver.issue_put(&key, &value).await?;
-                }
+            };
+
+            if let Some(id) = req_id {
+                batch_pending_reqs.insert(id);
+                issue_cnt += 1;
+                self.should_retry = false;
+            } else {
+                // got `WouldBlock` failure
+                self.should_retry = true;
+                break;
             }
 
-            if i == 0 {
+            if issue_cnt == 0 {
                 first_issue_ts = Some(Instant::now());
             }
-            if i == num_reqs - 1 {
+            if issue_cnt == num_reqs - 1 {
                 last_issue_ts = Some(Instant::now());
             }
         }
 
-        let mut ok_cnt = 0;
-        for i in 0..num_reqs {
+        let (mut reply_cnt, mut ok_cnt) = (0, 0);
+        while reply_cnt < issue_cnt {
             let result = self.driver.wait_reply().await?;
-            if result.is_some() {
-                ok_cnt += 1;
+            reply_cnt += 1;
 
-                if i == 0 {
+            if let Some((req_id, _)) = result {
+                ok_cnt += 1;
+                batch_pending_reqs.remove(&req_id);
+
+                if reply_cnt == 0 {
                     first_reply_ts = Some(Instant::now());
                 }
-                if i == num_reqs - 1 {
+                if reply_cnt == issue_cnt - 1 {
                     last_reply_ts = Some(Instant::now());
                 }
             }
+        }
+
+        for req_id in batch_pending_reqs {
+            self.pending_reqs.insert(req_id);
         }
 
         // calculate latency sample
@@ -275,15 +313,22 @@ impl ClientBench {
                 chunk_lats.clear();
             }
 
-            // adaptively adjust number of requests per batch
-            let batch_dur = now.duration_since(batch_start);
-            assert!(!batch_dur.is_zero());
-            let adjust =
-                TARGET_BATCH_DUR.as_secs_f64() / batch_dur.as_secs_f64();
-            batch_size = ((batch_size as f64) * adjust) as u64;
-            if batch_size == 0 {
-                batch_size = 1;
+            if self.params.adaptive {
+                // adaptively adjust number of requests per batch
+                let batch_dur = now.duration_since(batch_start);
+                assert!(!batch_dur.is_zero());
+                let adjust =
+                    TARGET_BATCH_DUR.as_secs_f64() / batch_dur.as_secs_f64();
+                batch_size = ((batch_size as f64) * adjust) as u64;
+                if batch_size == 0 {
+                    batch_size = 1;
+                }
             }
+        }
+
+        if !self.pending_reqs.is_empty() {
+            pf_info!(self.id; "there are {} pending requests",
+                              self.pending_reqs.len());
         }
 
         self.driver.leave().await?;

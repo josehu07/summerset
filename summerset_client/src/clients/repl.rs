@@ -7,7 +7,8 @@ use crate::drivers::DriverClosedLoop;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericClient, ClientId, Command, CommandResult, RequestId, SummersetError,
+    GenericEndpoint, ClientId, Command, CommandResult, RequestId,
+    SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -15,6 +16,9 @@ const PROMPT: &str = ">>>>> ";
 
 /// Interactive REPL-style client struct.
 pub struct ClientRepl {
+    /// Client ID.
+    _id: ClientId,
+
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -26,10 +30,11 @@ impl ClientRepl {
     /// Creates a new REPL-style client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
     ) -> Self {
         ClientRepl {
+            _id: id,
             driver: DriverClosedLoop::new(id, stub, timeout),
             input_buf: String::new(),
         }

@@ -13,7 +13,7 @@ use crate::server::{
     ApiReply, StorageHub, LogAction, LogResult, LogActionId, GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -30,12 +30,6 @@ pub struct ReplicaConfigRepNothing {
 
     /// Path to backing file.
     pub backer_path: String,
-
-    /// Base capacity for most channels.
-    pub base_chan_cap: usize,
-
-    /// Capacity for req/reply channels.
-    pub api_chan_cap: usize,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -44,8 +38,6 @@ impl Default for ReplicaConfigRepNothing {
         ReplicaConfigRepNothing {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
-            base_chan_cap: 100000,
-            api_chan_cap: 1000000,
         }
     }
 }
@@ -269,27 +261,12 @@ impl GenericReplica for RepNothingReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, backer_path, base_chan_cap,
-                                    api_chan_cap)?;
+                                    batch_interval_us, backer_path)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
-            );
-        }
-        if config.base_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.base_chan_cap {}",
-                config.base_chan_cap
-            );
-        }
-        if config.api_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.api_chan_cap {}",
-                config.api_chan_cap
             );
         }
 
@@ -309,24 +286,18 @@ impl GenericReplica for RepNothingReplica {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine
-            .setup(self.config.api_chan_cap, self.config.api_chan_cap)
-            .await?;
+        self.state_machine.setup().await?;
 
         self.storage_hub
-            .setup(
-                Path::new(&self.config.backer_path),
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
+            .setup(Path::new(&self.config.backer_path))
             .await?;
+
+        // TransportHub is not needed in RepNothing
 
         self.external_api
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
-                self.config.api_chan_cap,
-                self.config.api_chan_cap,
             )
             .await?;
 
@@ -406,7 +377,7 @@ pub struct RepNothingClient {
 }
 
 #[async_trait]
-impl GenericClient for RepNothingClient {
+impl GenericEndpoint for RepNothingClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
@@ -444,15 +415,12 @@ impl GenericClient for RepNothingClient {
             })
     }
 
-    async fn send_req(
+    fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
         match self.stubs {
-            Some((ref mut send_stub, _)) => {
-                send_stub.send_req(req).await?;
-                Ok(())
-            }
+            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
             None => logged_err!(self.id; "client is not set up"),
         }
     }

@@ -42,10 +42,10 @@ pub struct StateMachine {
     me: ReplicaId,
 
     /// Sender side of the exec channel.
-    tx_exec: Option<mpsc::Sender<(CommandId, Command)>>,
+    tx_exec: Option<mpsc::UnboundedSender<(CommandId, Command)>>,
 
     /// Receiver side of the ack channel.
-    rx_ack: Option<mpsc::Receiver<(CommandId, CommandResult)>>,
+    rx_ack: Option<mpsc::UnboundedReceiver<(CommandId, CommandResult)>>,
 
     /// Join handle of the executor thread. The state HashMap is owned by this
     /// thread.
@@ -66,31 +66,13 @@ impl StateMachine {
 
     /// Spawns the executor thread. Creates an exec channel for submitting
     /// commands to the state machine and an ack channel for getting results.
-    pub async fn setup(
-        &mut self,
-        chan_exec_cap: usize,
-        chan_ack_cap: usize,
-    ) -> Result<(), SummersetError> {
+    pub async fn setup(&mut self) -> Result<(), SummersetError> {
         if self.executor_handle.is_some() {
             return logged_err!(self.me; "setup already done");
         }
-        if chan_exec_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_exec_cap {}",
-                chan_exec_cap
-            );
-        }
-        if chan_ack_cap == 0 {
-            return logged_err!(
-                self.me;
-                "invalid chan_ack_cap {}",
-                chan_ack_cap
-            );
-        }
 
-        let (tx_exec, rx_exec) = mpsc::channel(chan_exec_cap);
-        let (tx_ack, rx_ack) = mpsc::channel(chan_ack_cap);
+        let (tx_exec, rx_exec) = mpsc::unbounded_channel();
+        let (tx_ack, rx_ack) = mpsc::unbounded_channel();
         self.tx_exec = Some(tx_exec);
         self.rx_ack = Some(rx_ack);
 
@@ -114,7 +96,6 @@ impl StateMachine {
         match self.tx_exec {
             Some(ref tx_exec) => Ok(tx_exec
                 .send((id, cmd))
-                .await
                 .map_err(|e| SummersetError(e.to_string()))?),
             None => logged_err!(self.me; "tx_exec not created yet"),
         }
@@ -157,8 +138,8 @@ impl StateMachine {
     /// Executor thread function.
     async fn executor_thread(
         me: ReplicaId,
-        mut rx_exec: mpsc::Receiver<(CommandId, Command)>,
-        tx_ack: mpsc::Sender<(CommandId, CommandResult)>,
+        mut rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
+        tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
     ) {
         pf_debug!(me; "executor thread spawned");
 
@@ -169,7 +150,7 @@ impl StateMachine {
             let res = Self::execute(&mut state, &cmd);
             // pf_trace!(me; "executed {:?}", cmd);
 
-            if let Err(e) = tx_ack.send((id, res)).await {
+            if let Err(e) = tx_ack.send((id, res)) {
                 pf_error!(me; "error sending to tx_ack: {}", e);
             }
         }
@@ -297,8 +278,7 @@ mod statemach_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn sm_setup() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new(0);
-        assert!(sm.setup(0, 0).await.is_err());
-        sm.setup(100, 100).await?;
+        sm.setup().await?;
         assert!(sm.tx_exec.is_some());
         assert!(sm.rx_ack.is_some());
         assert!(sm.executor_handle.is_some());
@@ -308,7 +288,7 @@ mod statemach_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_exec_ack() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new(0);
-        sm.setup(2, 2).await?;
+        sm.setup().await?;
         sm.submit_cmd(
             0,
             Command::Put {

@@ -3,7 +3,7 @@
 use tokio::time::Duration;
 
 use summerset::{
-    GenericClient, ClientId, Command, CommandResult, ApiRequest, ApiReply,
+    GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
     RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
 };
 
@@ -13,7 +13,7 @@ pub struct DriverClosedLoop {
     id: ClientId,
 
     /// Protocol-specific client stub.
-    stub: Box<dyn GenericClient>,
+    stub: Box<dyn GenericEndpoint>,
 
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
@@ -29,7 +29,7 @@ impl DriverClosedLoop {
     /// Creates a new closed-loop client.
     pub fn new(
         id: ClientId,
-        stub: Box<dyn GenericClient>,
+        stub: Box<dyn GenericEndpoint>,
         timeout: Duration,
     ) -> Self {
         DriverClosedLoop {
@@ -39,6 +39,18 @@ impl DriverClosedLoop {
             timer: Timer::new(),
             timeout,
         }
+    }
+
+    /// Attempt to send a request, retrying if received `WouldBlock` failure.
+    fn send_req_retry_on_block(
+        &mut self,
+        req: &ApiRequest,
+    ) -> Result<(), SummersetError> {
+        let mut success = self.stub.send_req(Some(req))?;
+        while !success {
+            success = self.stub.send_req(None)?;
+        }
+        Ok(())
     }
 
     /// Wait on a reply from the service with timeout. Returns `Ok(None)` if
@@ -73,12 +85,10 @@ impl DriverClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.stub
-            .send_req(ApiRequest::Req {
-                id: req_id,
-                cmd: Command::Get { key: key.into() },
-            })
-            .await?;
+        self.send_req_retry_on_block(&ApiRequest::Req {
+            id: req_id,
+            cmd: Command::Get { key: key.into() },
+        })?;
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -122,15 +132,13 @@ impl DriverClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.stub
-            .send_req(ApiRequest::Req {
-                id: req_id,
-                cmd: Command::Put {
-                    key: key.into(),
-                    value: value.into(),
-                },
-            })
-            .await?;
+        self.send_req_retry_on_block(&ApiRequest::Req {
+            id: req_id,
+            cmd: Command::Put {
+                key: key.into(),
+                value: value.into(),
+            },
+        })?;
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -163,7 +171,7 @@ impl DriverClosedLoop {
 
     /// Send leave notification.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        self.stub.send_req(ApiRequest::Leave).await?;
+        self.send_req_retry_on_block(&ApiRequest::Leave)?;
 
         let reply = self.stub.recv_reply().await?;
         match reply {

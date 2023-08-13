@@ -18,7 +18,7 @@ use crate::server::{
     GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -36,12 +36,6 @@ pub struct ReplicaConfigMultiPaxos {
     /// Path to backing file.
     pub backer_path: String,
 
-    /// Base capacity for most channels.
-    pub base_chan_cap: usize,
-
-    /// Capacity for req/reply channels.
-    pub api_chan_cap: usize,
-
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 }
@@ -52,8 +46,6 @@ impl Default for ReplicaConfigMultiPaxos {
         ReplicaConfigMultiPaxos {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
-            base_chan_cap: 100000,
-            api_chan_cap: 1000000,
             logger_sync: false,
         }
     }
@@ -825,17 +817,10 @@ impl MultiPaxosReplica {
 
                 // send Commit messages to replicas
                 self.transport_hub
-                    .bcast_msg(
-                        PeerMsg::Accept {
-                            slot,
-                            ballot,
-                            reqs: inst.reqs.clone(),
-                        },
-                        replicas,
-                    )
+                    .bcast_msg(PeerMsg::Commit { slot }, replicas)
                     .await?;
-                pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                  slot, ballot);
+                pf_trace!(self.id; "broadcast Commit messages for slot {} bal {}",
+                                   slot, ballot);
             }
         }
 
@@ -920,7 +905,6 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of state machine exec result chan recv.
-    /// TODO: reply to client, update Status::Executed and exec_bar properly
     async fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
@@ -937,18 +921,20 @@ impl MultiPaxosReplica {
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
-            self.external_api
-                .send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
-                    client,
-                )
-                .await?;
-            pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
-                               client, slot, cmd_idx);
+            if self.external_api.has_client(client)? {
+                self.external_api
+                    .send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(cmd_result),
+                            redirect: None,
+                        },
+                        client,
+                    )
+                    .await?;
+                pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
+                                   client, slot, cmd_idx);
+            }
         } else {
             return logged_err!(self.id; "unexpected API request type");
         }
@@ -964,7 +950,7 @@ impl MultiPaxosReplica {
             if slot == self.exec_bar {
                 while self.exec_bar < self.insts.len() {
                     let inst = &mut self.insts[self.exec_bar];
-                    if inst.status < Status::Committed {
+                    if inst.status < Status::Executed {
                         break;
                     }
                     self.exec_bar += 1;
@@ -1008,26 +994,12 @@ impl GenericReplica for MultiPaxosReplica {
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, backer_path,
-                                    base_chan_cap, api_chan_cap, logger_sync)?;
+                                    logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
-            );
-        }
-        if config.base_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.base_chan_cap {}",
-                config.base_chan_cap
-            );
-        }
-        if config.api_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.api_chan_cap {}",
-                config.api_chan_cap
             );
         }
 
@@ -1055,25 +1027,13 @@ impl GenericReplica for MultiPaxosReplica {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine
-            .setup(self.config.api_chan_cap, self.config.api_chan_cap)
-            .await?;
+        self.state_machine.setup().await?;
 
         self.storage_hub
-            .setup(
-                Path::new(&self.config.backer_path),
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
+            .setup(Path::new(&self.config.backer_path))
             .await?;
 
-        self.transport_hub
-            .setup(
-                &self.conn_addrs,
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
-            .await?;
+        self.transport_hub.setup(&self.conn_addrs).await?;
         if !self.peer_addrs.is_empty() {
             self.transport_hub
                 .group_connect(&self.conn_addrs, &self.peer_addrs)
@@ -1084,8 +1044,6 @@ impl GenericReplica for MultiPaxosReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
-                self.config.api_chan_cap,
-                self.config.api_chan_cap,
             )
             .await?;
 
@@ -1186,7 +1144,7 @@ pub struct MultiPaxosClient {
 }
 
 #[async_trait]
-impl GenericClient for MultiPaxosClient {
+impl GenericEndpoint for MultiPaxosClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
@@ -1227,15 +1185,12 @@ impl GenericClient for MultiPaxosClient {
             })
     }
 
-    async fn send_req(
+    fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
         match self.conn_stubs {
-            Some((ref mut send_stub, _)) => {
-                send_stub.send_req(req).await?;
-                Ok(())
-            }
+            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
             None => logged_err!(self.id; "client is not set up"),
         }
     }
@@ -1255,7 +1210,7 @@ impl GenericClient for MultiPaxosClient {
                     if result.is_none() && redirect.is_some() {
                         let redirect_id = redirect.unwrap();
                         assert!((redirect_id as usize) < self.servers.len());
-                        send_stub.send_req(ApiRequest::Leave).await?;
+                        send_stub.send_req(Some(&ApiRequest::Leave))?;
                         if let Ok(stubs) = self
                             .api_stub
                             .connect(self.servers[&redirect_id])

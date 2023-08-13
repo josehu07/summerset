@@ -15,7 +15,7 @@ use crate::server::{
     GenericReplica,
 };
 use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericClient,
+    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
 };
 
 use async_trait::async_trait;
@@ -35,12 +35,6 @@ pub struct ReplicaConfigSimplePush {
 
     /// Number of peer servers to push each command to.
     pub rep_degree: u8,
-
-    /// Base capacity for most channels.
-    pub base_chan_cap: usize,
-
-    /// Capacity for req/reply channels.
-    pub api_chan_cap: usize,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -50,8 +44,6 @@ impl Default for ReplicaConfigSimplePush {
             batch_interval_us: 1000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
-            base_chan_cap: 100000,
-            api_chan_cap: 1000000,
         }
     }
 }
@@ -433,8 +425,7 @@ impl GenericReplica for SimplePushReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigSimplePush;
-                                    batch_interval_us, backer_path, rep_degree,
-                                    base_chan_cap, api_chan_cap)?;
+                                    batch_interval_us, backer_path, rep_degree)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -447,20 +438,6 @@ impl GenericReplica for SimplePushReplica {
                 id;
                 "invalid config.rep_degree {}",
                 config.rep_degree
-            );
-        }
-        if config.base_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.base_chan_cap {}",
-                config.base_chan_cap
-            );
-        }
-        if config.api_chan_cap == 0 {
-            return logged_err!(
-                id;
-                "invalid config.api_chan_cap {}",
-                config.api_chan_cap
             );
         }
 
@@ -481,25 +458,13 @@ impl GenericReplica for SimplePushReplica {
     }
 
     async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine
-            .setup(self.config.api_chan_cap, self.config.api_chan_cap)
-            .await?;
+        self.state_machine.setup().await?;
 
         self.storage_hub
-            .setup(
-                Path::new(&self.config.backer_path),
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
+            .setup(Path::new(&self.config.backer_path))
             .await?;
 
-        self.transport_hub
-            .setup(
-                &self.conn_addrs,
-                self.config.base_chan_cap,
-                self.config.base_chan_cap,
-            )
-            .await?;
+        self.transport_hub.setup(&self.conn_addrs).await?;
         if !self.peer_addrs.is_empty() {
             self.transport_hub
                 .group_connect(&self.conn_addrs, &self.peer_addrs)
@@ -510,8 +475,6 @@ impl GenericReplica for SimplePushReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
-                self.config.api_chan_cap,
-                self.config.api_chan_cap,
             )
             .await?;
 
@@ -613,7 +576,7 @@ pub struct SimplePushClient {
 }
 
 #[async_trait]
-impl GenericClient for SimplePushClient {
+impl GenericEndpoint for SimplePushClient {
     fn new(
         id: ClientId,
         servers: HashMap<ReplicaId, SocketAddr>,
@@ -651,15 +614,12 @@ impl GenericClient for SimplePushClient {
             })
     }
 
-    async fn send_req(
+    fn send_req(
         &mut self,
-        req: ApiRequest,
-    ) -> Result<(), SummersetError> {
+        req: Option<&ApiRequest>,
+    ) -> Result<bool, SummersetError> {
         match self.stubs {
-            Some((ref mut send_stub, _)) => {
-                send_stub.send_req(req).await?;
-                Ok(())
-            }
+            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
             None => logged_err!(self.id; "client is not set up"),
         }
     }
