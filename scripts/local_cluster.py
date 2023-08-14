@@ -1,3 +1,4 @@
+import sys
 import os
 import argparse
 import subprocess
@@ -100,6 +101,10 @@ if __name__ == "__main__":
     for path in Path("/tmp").glob("summerset.*.wal"):
         path.unlink()
 
+    overall_rc = 0
     server_procs = launch_servers(args.protocol, args.num_replicas, args.release)
     for proc in server_procs:
-        proc.wait()
+        rc = proc.wait()
+        if rc != 0 and overall_rc == 0:
+            overall_rc = rc
+    sys.exit(overall_rc)

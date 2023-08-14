@@ -1,3 +1,4 @@
+import sys
 import os
 import argparse
 import subprocess
@@ -140,4 +141,5 @@ if __name__ == "__main__":
         glue_params_str(args, MODE_PARAMS[args.mode]),
         args.release,
     )
-    client_proc.wait()
+    rc = client_proc.wait()
+    sys.exit(rc)
