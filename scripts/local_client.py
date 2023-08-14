@@ -19,6 +19,7 @@ PROTOCOL_CONFIGS = {
 MODE_PARAMS = {
     "repl": [],
     "bench": ["init_batch_size", "value_size", "put_ratio", "length_s", "adaptive"],
+    "tester": ["test_name", "keep_going", "logger_on"],
 }
 
 
@@ -96,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
 
     subparsers = parser.add_subparsers(
-        required=True, dest="mode", description="client utility mode"
+        required=True, dest="mode", description="client utility mode: repl|bench|tester"
     )
 
     parser_repl = subparsers.add_parser("repl", help="REPL mode")
@@ -112,6 +113,17 @@ if __name__ == "__main__":
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
     parser_bench.add_argument(
         "-a", "--adaptive", action="store_true", help="adaptive batch size"
+    )
+
+    parser_tester = subparsers.add_parser("tester", help="testing mode")
+    parser_tester.add_argument(
+        "-t", "--test_name", type=str, required=True, help="<test_name>|basic|all"
+    )
+    parser_tester.add_argument(
+        "-k", "--keep_going", action="store_true", help="continue upon failed test"
+    )
+    parser_tester.add_argument(
+        "--logger_on", action="store_true", help="do not suppress logger output"
     )
 
     args = parser.parse_args()

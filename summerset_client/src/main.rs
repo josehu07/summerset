@@ -2,6 +2,7 @@
 
 use std::collections::{HashSet, HashMap};
 use std::net::SocketAddr;
+use std::process::ExitCode;
 
 use clap::Parser;
 
@@ -179,18 +180,18 @@ fn client_main() -> Result<(), SummersetError> {
     })
 }
 
-fn main() -> Result<(), SummersetError> {
+fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp(None)
         .format_module_path(true)
         .format_target(false)
         .init();
 
-    if let Err(e) = client_main() {
+    if let Err(ref e) = client_main() {
         pf_error!("client"; "client_main exitted: {}", e);
-        Err(e)
+        ExitCode::FAILURE
     } else {
-        Ok(())
+        ExitCode::SUCCESS
     }
 }
 

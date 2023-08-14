@@ -79,6 +79,7 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] REPL-style client
   - [x] random benchmarking client
   - [x] testing client
+  - [ ] replica management commands
   - [ ] benchmarking with YCSB input
 - [ ] better README
 
