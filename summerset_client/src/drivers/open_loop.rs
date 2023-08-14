@@ -52,6 +52,29 @@ impl DriverOpenLoop {
         }
     }
 
+    /// Establishes connection with the service.
+    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+        self.stub.connect().await
+    }
+
+    /// Sends leave notification and forgets about the current TCP connections.
+    /// The leave action is left synchronous.
+    pub async fn leave(&mut self) -> Result<(), SummersetError> {
+        let mut sent = self.stub.send_req(Some(&ApiRequest::Leave)).await?;
+        while !sent {
+            sent = self.stub.send_req(None).await?;
+        }
+
+        let reply = self.stub.recv_reply().await?;
+        match reply {
+            ApiReply::Leave => {
+                pf_info!(self.id; "left current server connection");
+                Ok(())
+            }
+            _ => logged_err!(self.id; "unexpected reply type received"),
+        }
+    }
+
     /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
     /// timed-out.
     async fn recv_reply_with_timeout(
@@ -87,7 +110,7 @@ impl DriverOpenLoop {
             cmd: Command::Get { key: key.into() },
         };
 
-        if self.stub.send_req(Some(&req))? {
+        if self.stub.send_req(Some(&req)).await? {
             // successful
             self.pending_reqs.insert(req_id);
             self.next_req += 1;
@@ -117,7 +140,7 @@ impl DriverOpenLoop {
             },
         };
 
-        if self.stub.send_req(Some(&req))? {
+        if self.stub.send_req(Some(&req)).await? {
             // successful
             self.pending_reqs.insert(req_id);
             self.next_req += 1;
@@ -135,7 +158,7 @@ impl DriverOpenLoop {
     ) -> Result<Option<RequestId>, SummersetError> {
         let req_id = self.next_req;
 
-        if self.stub.send_req(None)? {
+        if self.stub.send_req(None).await? {
             // successful
             self.pending_reqs.insert(req_id);
             self.next_req += 1;
@@ -174,23 +197,6 @@ impl DriverOpenLoop {
 
             None => Ok(None), // timed-out
 
-            _ => logged_err!(self.id; "unexpected reply type received"),
-        }
-    }
-
-    /// Sends leave notification. The leave action is left synchronous.
-    pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        let mut sent = self.stub.send_req(Some(&ApiRequest::Leave))?;
-        while !sent {
-            sent = self.stub.send_req(None)?;
-        }
-
-        let reply = self.stub.recv_reply().await?;
-        match reply {
-            ApiReply::Leave => {
-                pf_info!(self.id; "left current server connection");
-                Ok(())
-            }
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }

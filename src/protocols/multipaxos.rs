@@ -1175,7 +1175,7 @@ impl GenericEndpoint for MultiPaxosClient {
         })
     }
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
+    async fn connect(&mut self) -> Result<(), SummersetError> {
         // connect to default replica
         self.api_stub
             .connect(self.servers[&self.config.init_server_id])
@@ -1185,7 +1185,16 @@ impl GenericEndpoint for MultiPaxosClient {
             })
     }
 
-    fn send_req(
+    async fn forget(&mut self) -> Result<(), SummersetError> {
+        if let Some((send_stub, _)) = self.conn_stubs.take() {
+            send_stub.forget();
+            // drop both stubs
+        }
+        self.conn_stubs = None;
+        Ok(())
+    }
+
+    async fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {

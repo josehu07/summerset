@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use crate::drivers::DriverOpenLoop;
 
+use color_print::cprintln;
+
 use log::{self, LevelFilter};
 
 use lazy_static::lazy_static;
@@ -228,7 +230,9 @@ impl ClientTester {
         &mut self,
         name: &str,
     ) -> Result<(), SummersetError> {
+        // reset everything to initial state at the start of each test
         // TODO: reset service state
+        self.driver.connect().await?;
         self.cached_replies.clear();
 
         let result = match name {
@@ -240,12 +244,14 @@ impl ClientTester {
             }
         };
 
+        // send leave notification and forget about the TCP connections at the
+        // end of each test
         self.driver.leave().await?;
 
         if let Err(ref e) = result {
-            println!("{:>16} | {:^6} | {}", name, "FAIL", e);
+            cprintln!("{:>16} | <red>{:^6}</> | {}", name, "FAIL", e);
         } else {
-            println!("{:>16} | {:^6} | --", name, "PASS");
+            cprintln!("{:>16} | <green>{:^6}</> | --", name, "PASS");
         }
         result
     }
@@ -313,7 +319,7 @@ impl ClientTester {
 
     /// Client leaves and reconnects.
     async fn test_reconnect(&mut self) -> Result<(), SummersetError> {
-        Ok(())
+        Err(SummersetError("hahaha".into()))
     }
 
     /// Replica node crashes and restarts.

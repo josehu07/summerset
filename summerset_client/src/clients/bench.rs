@@ -254,6 +254,8 @@ impl ClientBench {
 
     /// Runs the adaptive benchmark for given time length.
     pub async fn run(&mut self) -> Result<(), SummersetError> {
+        self.driver.connect().await?;
+
         let start = Instant::now();
         let mut now = start;
         let length = Duration::from_secs(self.params.length_s);

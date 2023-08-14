@@ -41,14 +41,35 @@ impl DriverClosedLoop {
         }
     }
 
+    /// Establishes connection with the service.
+    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+        self.stub.connect().await
+    }
+
+    /// Sends leave notification and forgets about the current TCP connections.
+    pub async fn leave(&mut self) -> Result<(), SummersetError> {
+        self.send_req_retry_on_block(&ApiRequest::Leave).await?;
+
+        let reply = self.stub.recv_reply().await?;
+        match reply {
+            ApiReply::Leave => {
+                pf_info!(self.id; "left current server connection")
+            }
+            _ => return logged_err!(self.id; "unexpected reply type received"),
+        }
+
+        self.stub.forget().await?;
+        Ok(())
+    }
+
     /// Attempt to send a request, retrying if received `WouldBlock` failure.
-    fn send_req_retry_on_block(
+    async fn send_req_retry_on_block(
         &mut self,
         req: &ApiRequest,
     ) -> Result<(), SummersetError> {
-        let mut success = self.stub.send_req(Some(req))?;
+        let mut success = self.stub.send_req(Some(req)).await?;
         while !success {
-            success = self.stub.send_req(None)?;
+            success = self.stub.send_req(None).await?;
         }
         Ok(())
     }
@@ -88,7 +109,8 @@ impl DriverClosedLoop {
         self.send_req_retry_on_block(&ApiRequest::Req {
             id: req_id,
             cmd: Command::Get { key: key.into() },
-        })?;
+        })
+        .await?;
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -138,7 +160,8 @@ impl DriverClosedLoop {
                 key: key.into(),
                 value: value.into(),
             },
-        })?;
+        })
+        .await?;
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -165,20 +188,6 @@ impl DriverClosedLoop {
 
             None => Ok(None), // timed-out
 
-            _ => logged_err!(self.id; "unexpected reply type received"),
-        }
-    }
-
-    /// Send leave notification.
-    pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        self.send_req_retry_on_block(&ApiRequest::Leave)?;
-
-        let reply = self.stub.recv_reply().await?;
-        match reply {
-            ApiReply::Leave => {
-                pf_info!(self.id; "left current server connection");
-                Ok(())
-            }
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }

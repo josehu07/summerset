@@ -4,6 +4,8 @@ use std::io::{self, Write};
 
 use crate::drivers::DriverClosedLoop;
 
+use color_print::cprint;
+
 use tokio::time::Duration;
 
 use summerset::{
@@ -42,7 +44,7 @@ impl ClientRepl {
 
     /// Prints the prompt string.
     fn print_prompt(&mut self) {
-        print!("{}", PROMPT);
+        cprint!("<bright-yellow>{}</>", PROMPT);
         io::stdout().flush().unwrap();
     }
 
@@ -172,7 +174,6 @@ impl ClientRepl {
 
         let cmd = self.read_command()?;
         if cmd.is_none() {
-            self.driver.leave().await?;
             return Ok(false);
         }
 
@@ -183,11 +184,16 @@ impl ClientRepl {
     }
 
     /// Runs the infinite REPL loop.
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self) -> Result<(), SummersetError> {
+        self.driver.connect().await?;
+
         loop {
             if let Ok(false) = self.iter().await {
+                self.driver.leave().await?;
                 break;
             }
         }
+
+        Ok(())
     }
 }

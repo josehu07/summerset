@@ -28,10 +28,15 @@ pub trait GenericEndpoint {
 
     /// Establishes connection to the service according to protocol-specific
     /// logic.
-    async fn setup(&mut self) -> Result<(), SummersetError>;
+    async fn connect(&mut self) -> Result<(), SummersetError>;
+
+    /// Forgets about the current TCP connections, to be called by a client
+    /// after sending a `Leave` request if the client lives on and may decide
+    /// to reconnect later.
+    async fn forget(&mut self) -> Result<(), SummersetError>;
 
     /// Sends a request to the service according to protocol-specific logic.
-    fn send_req(
+    async fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError>;

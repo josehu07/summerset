@@ -15,3 +15,4 @@ serde = { version = "1.0", features = ["derive"] }
 toml = { version = "0.7", features = ["parse"] }
 log = "0.4"
 env_logger = "0.10"
+color-print = { version = "0.3", features = ["terminfo"] }

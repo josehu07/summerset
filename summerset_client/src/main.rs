@@ -131,7 +131,7 @@ fn client_main() -> Result<(), SummersetError> {
     };
 
     // create client struct with given servers list
-    let mut stub = protocol.new_client_stub(args.id, servers, config_str)?;
+    let stub = protocol.new_client_stub(args.id, servers, config_str)?;
 
     // create tokio multi-threaded runtime
     let runtime = Builder::new_multi_thread()
@@ -142,8 +142,6 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        stub.setup().await?;
-
         match mode {
             ClientMode::Repl => {
                 // run interactive REPL loop
@@ -152,7 +150,7 @@ fn client_main() -> Result<(), SummersetError> {
                     stub,
                     Duration::from_millis(args.timeout_ms),
                 );
-                repl.run().await;
+                repl.run().await?;
             }
             ClientMode::Bench => {
                 // run benchmarking client

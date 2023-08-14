@@ -132,6 +132,11 @@ impl ClientSendStub {
         // pf_trace!(self.id; "send req {:?}", req);
         Ok(true)
     }
+
+    /// Forgets about the write-half TCP connection.
+    pub fn forget(self) {
+        self.conn_write.forget();
+    }
 }
 
 /// Client read stub that owns a TCP read half.

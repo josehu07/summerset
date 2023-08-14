@@ -604,7 +604,7 @@ impl GenericEndpoint for SimplePushClient {
         })
     }
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
+    async fn connect(&mut self) -> Result<(), SummersetError> {
         let api_stub = ClientApiStub::new(self.id);
         api_stub
             .connect(self.servers[&self.config.server_id])
@@ -614,7 +614,16 @@ impl GenericEndpoint for SimplePushClient {
             })
     }
 
-    fn send_req(
+    async fn forget(&mut self) -> Result<(), SummersetError> {
+        if let Some((send_stub, _)) = self.stubs.take() {
+            send_stub.forget();
+            // drop both stubs
+        }
+        self.stubs = None;
+        Ok(())
+    }
+
+    async fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
