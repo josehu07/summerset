@@ -27,7 +27,6 @@ pub type RequestId = u64;
 
 /// Request received from client.
 // TODO: add information fields such as read-only flag...
-// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiRequest {
     /// Regular request.
@@ -44,7 +43,6 @@ pub enum ApiRequest {
 }
 
 /// Reply back to client.
-// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiReply {
     /// Reply to regular request.
