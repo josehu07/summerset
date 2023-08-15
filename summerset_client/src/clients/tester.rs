@@ -319,11 +319,18 @@ impl ClientTester {
 
     /// Client leaves and reconnects.
     async fn test_reconnect(&mut self) -> Result<(), SummersetError> {
-        Err(SummersetError("hahaha".into()))
+        let v0 = Self::gen_rand_string(8);
+        let mut req_id = self.issue_put("Jose", &v0).await?;
+        self.expect_put_reply(req_id, Some(None), 1).await?;
+        self.driver.leave().await?;
+        self.driver.connect().await?;
+        req_id = self.issue_get("Jose").await?;
+        self.expect_get_reply(req_id, Some(Some(&v0)), 1).await?;
+        Ok(())
     }
 
     /// Replica node crashes and restarts.
     async fn test_crash_restart(&mut self) -> Result<(), SummersetError> {
-        Ok(())
+        todo!("TODO")
     }
 }
