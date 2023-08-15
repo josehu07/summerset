@@ -154,7 +154,7 @@ impl ClientTester {
 
         let mut result = self.driver.wait_reply().await?;
         while result.is_none() || result.as_ref().unwrap().0 != req_id {
-            if let Some((id, cmd_result)) = result {
+            if let Some((id, cmd_result, _)) = result {
                 self.cached_replies.insert(id, cmd_result);
             } else {
                 num_tries += 1;

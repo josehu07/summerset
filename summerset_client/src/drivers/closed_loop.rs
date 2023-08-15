@@ -1,6 +1,6 @@
 //! Closed-loop client-side driver implementation.
 
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
@@ -95,14 +95,15 @@ impl DriverClosedLoop {
     }
 
     /// Send a Get request and wait for its reply. Returns:
-    ///   - `Ok(Some(Some(value)))` if successful and key exists
-    ///   - `Ok(Some(None))` if successful and key does not exist
+    ///   - `Ok(Some((id, Some(value), latency)))` if successful and key exists
+    ///   - `Ok(Some((id, None, latency)))` if successful and key does not exist
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
+    {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -111,6 +112,7 @@ impl DriverClosedLoop {
             cmd: Command::Get { key: key.into() },
         })
         .await?;
+        let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -126,7 +128,8 @@ impl DriverClosedLoop {
                     match cmd_result {
                         None => Ok(None),
                         Some(CommandResult::Get { value }) => {
-                            Ok(Some((req_id, value)))
+                            let lat = Instant::now().duration_since(issue_ts);
+                            Ok(Some((req_id, value, lat)))
                         }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
@@ -142,15 +145,16 @@ impl DriverClosedLoop {
     }
 
     /// Send a Put request and wait for its reply. Returns:
-    ///   - `Ok(Some(Some(old_value)))` if successful and key exists
-    ///   - `Ok(Some(None))` if successful and key did not exist
+    ///   - `Ok(Some((id, Some(old_value), latency)))` if successful and key exists
+    ///   - `Ok(Some((id, None, latency)))` if successful and key did not exist
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
+    {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -162,6 +166,7 @@ impl DriverClosedLoop {
             },
         })
         .await?;
+        let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -177,7 +182,8 @@ impl DriverClosedLoop {
                     match cmd_result {
                         None => Ok(None),
                         Some(CommandResult::Put { old_value }) => {
-                            Ok(Some((req_id, old_value)))
+                            let lat = Instant::now().duration_since(issue_ts);
+                            Ok(Some((req_id, old_value, lat)))
                         }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")

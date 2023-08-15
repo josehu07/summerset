@@ -30,6 +30,9 @@ pub struct ReplicaConfigSimplePush {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
+    /// Client request batching maximum batch size.
+    pub max_batch_size: usize,
+
     /// Path to backing file.
     pub backer_path: String,
 
@@ -42,6 +45,7 @@ impl Default for ReplicaConfigSimplePush {
     fn default() -> Self {
         ReplicaConfigSimplePush {
             batch_interval_us: 1000,
+            max_batch_size: 5000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
         }
@@ -425,7 +429,8 @@ impl GenericReplica for SimplePushReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigSimplePush;
-                                    batch_interval_us, backer_path, rep_degree)?;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, rep_degree)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -475,6 +480,7 @@ impl GenericReplica for SimplePushReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
+                self.config.max_batch_size,
             )
             .await?;
 

@@ -50,7 +50,7 @@ struct CliArgs {
     params: String,
 
     /// Number of tokio worker threads.
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 4)]
     threads: usize,
 
     /// Reply timeout duration in millisecs.

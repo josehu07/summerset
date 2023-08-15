@@ -78,6 +78,9 @@ pub struct ExternalApi {
     /// thread.
     batch_notify: Arc<Notify>,
 
+    /// Maximum number of requests to return per batch; 0 means no limit.
+    max_batch_size: usize,
+
     /// Join handle of the client acceptor thread.
     client_acceptor_handle: Option<JoinHandle<()>>,
 
@@ -99,6 +102,7 @@ impl ExternalApi {
             rx_req: None,
             tx_replies: None,
             batch_notify: Arc::new(Notify::new()),
+            max_batch_size: 0,
             client_acceptor_handle: None,
             client_servant_handles: None,
             batch_ticker_handle: None,
@@ -114,6 +118,7 @@ impl ExternalApi {
         &mut self,
         api_addr: SocketAddr,
         batch_interval: Duration,
+        max_batch_size: usize,
     ) -> Result<(), SummersetError> {
         if self.client_acceptor_handle.is_some() {
             return logged_err!(self.me; "setup already done");
@@ -125,6 +130,8 @@ impl ExternalApi {
                 batch_interval.as_micros()
             );
         }
+
+        self.max_batch_size = max_batch_size;
 
         let (tx_req, rx_req) = mpsc::unbounded_channel();
         self.rx_req = Some(rx_req);
@@ -180,18 +187,22 @@ impl ExternalApi {
         }
 
         // ignore ticks with an empty batch
-        let mut batch = Vec::new();
+        let mut batch = Vec::with_capacity(self.max_batch_size);
         while batch.is_empty() {
             self.batch_notify.notified().await;
 
             match self.rx_req {
-                Some(ref mut rx_req) => loop {
-                    match rx_req.try_recv() {
-                        Ok((client, req)) => batch.push((client, req)),
-                        Err(TryRecvError::Empty) => break,
-                        Err(e) => return Err(SummersetError::from(e)),
+                Some(ref mut rx_req) => {
+                    while self.max_batch_size == 0
+                        || batch.len() < self.max_batch_size
+                    {
+                        match rx_req.try_recv() {
+                            Ok((client, req)) => batch.push((client, req)),
+                            Err(TryRecvError::Empty) => break,
+                            Err(e) => return Err(SummersetError::from(e)),
+                        }
                     }
-                },
+                }
                 None => return logged_err!(self.me; "rx_req not created yet"),
             }
         }
@@ -462,10 +473,10 @@ mod external_tests {
     async fn api_setup() -> Result<(), SummersetError> {
         let mut api = ExternalApi::new(0);
         assert!(api
-            .setup("127.0.0.1:51710".parse()?, Duration::from_nanos(10),)
+            .setup("127.0.0.1:51710".parse()?, Duration::from_nanos(10), 5000)
             .await
             .is_err());
-        api.setup("127.0.0.1:51720".parse()?, Duration::from_millis(1))
+        api.setup("127.0.0.1:51720".parse()?, Duration::from_millis(1), 0)
             .await?;
         assert!(api.rx_req.is_some());
         assert!(api.client_acceptor_handle.is_some());
@@ -480,7 +491,7 @@ mod external_tests {
         tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new(0);
-            api.setup("127.0.0.1:53700".parse()?, Duration::from_millis(1))
+            api.setup("127.0.0.1:53700".parse()?, Duration::from_millis(1), 0)
                 .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
@@ -601,7 +612,7 @@ mod external_tests {
         tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new(0);
-            api.setup("127.0.0.1:54700".parse()?, Duration::from_millis(1))
+            api.setup("127.0.0.1:54700".parse()?, Duration::from_millis(1), 0)
                 .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];

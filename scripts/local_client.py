@@ -19,7 +19,7 @@ PROTOCOL_CONFIGS = {
 
 MODE_PARAMS = {
     "repl": [],
-    "bench": ["init_batch_size", "value_size", "put_ratio", "length_s", "adaptive"],
+    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
     "tester": ["test_name", "keep_going", "logger_on"],
 }
 
@@ -105,16 +105,13 @@ if __name__ == "__main__":
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
     parser_bench.add_argument(
-        "-b", "--init_batch_size", type=int, help="initial batch size"
+        "-f", "--freq_target", type=int, help="frequency target reqs per sec"
     )
     parser_bench.add_argument(
         "-v", "--value_size", type=int, help="value size in bytes"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
-    parser_bench.add_argument(
-        "-a", "--adaptive", action="store_true", help="adaptive batch size"
-    )
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
     parser_tester.add_argument(

@@ -5,9 +5,9 @@
 //! and repeat. This could easily hit the TCP socket buffer size limit and lead
 //! to excessive `WouldBlock` failures.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
@@ -25,8 +25,12 @@ pub struct DriverOpenLoop {
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
 
-    /// Set of pending requests whose reply has not been received.
-    pending_reqs: HashSet<RequestId>,
+    /// Set of pending requests whose reply has not been received, along with
+    /// their issuing timestamp.
+    pending_reqs: HashMap<RequestId, Instant>,
+
+    /// Last request reported `WouldBlock` failure.
+    should_retry: bool,
 
     /// Reply timeout timer.
     timer: Timer,
@@ -46,7 +50,8 @@ impl DriverOpenLoop {
             id,
             stub,
             next_req: 0,
-            pending_reqs: HashSet::new(),
+            pending_reqs: HashMap::new(),
+            should_retry: false,
             timer: Timer::new(),
             timeout,
         }
@@ -57,9 +62,19 @@ impl DriverOpenLoop {
         self.stub.connect().await
     }
 
-    /// Sends leave notification and forgets about the current TCP connections.
-    /// The leave action is left synchronous.
+    /// Waits for all pending replies to be received, then sends leave
+    /// notification and forgets about the current TCP connections. The leave
+    /// action is left synchronous.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
+        // loop until all pending replies have been received
+        while self.should_retry {
+            self.issue_retry().await?;
+        }
+        while !self.pending_reqs.is_empty() {
+            self.wait_reply().await?;
+        }
+
+        // then send the leave notification
         let mut sent = self.stub.send_req(Some(&ApiRequest::Leave)).await?;
         while !sent {
             sent = self.stub.send_req(None).await?;
@@ -69,6 +84,7 @@ impl DriverOpenLoop {
         match reply {
             ApiReply::Leave => {
                 pf_info!(self.id; "left current server connection");
+                self.stub.forget().await?;
                 Ok(())
             }
             _ => logged_err!(self.id; "unexpected reply type received"),
@@ -112,11 +128,13 @@ impl DriverOpenLoop {
 
         if self.stub.send_req(Some(&req)).await? {
             // successful
-            self.pending_reqs.insert(req_id);
+            self.pending_reqs.insert(req_id, Instant::now());
             self.next_req += 1;
+            self.should_retry = false;
             Ok(Some(req_id))
         } else {
             // got `WouldBlock` failure
+            self.should_retry = true;
             Ok(None)
         }
     }
@@ -142,11 +160,13 @@ impl DriverOpenLoop {
 
         if self.stub.send_req(Some(&req)).await? {
             // successful
-            self.pending_reqs.insert(req_id);
+            self.pending_reqs.insert(req_id, Instant::now());
             self.next_req += 1;
+            self.should_retry = false;
             Ok(Some(req_id))
         } else {
             // got `WouldBlock` failure
+            self.should_retry = true;
             Ok(None)
         }
     }
@@ -160,22 +180,25 @@ impl DriverOpenLoop {
 
         if self.stub.send_req(None).await? {
             // successful
-            self.pending_reqs.insert(req_id);
+            self.pending_reqs.insert(req_id, Instant::now());
             self.next_req += 1;
+            self.should_retry = false;
             Ok(Some(req_id))
         } else {
             // got `WouldBlock` failure
+            self.should_retry = true;
             Ok(None)
         }
     }
 
     /// Waits for the next reply. Returns the request ID and:
-    ///   - `Ok(Some(cmd_result))` if request successful
+    ///   - `Ok(Some((id, cmd_result, latency)))` if request successful
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn wait_reply(
         &mut self,
-    ) -> Result<Option<(RequestId, CommandResult)>, SummersetError> {
+    ) -> Result<Option<(RequestId, CommandResult, Duration)>, SummersetError>
+    {
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
             Some(ApiReply::Reply {
@@ -183,12 +206,15 @@ impl DriverOpenLoop {
                 result: cmd_result,
                 ..
             }) => {
-                if !self.pending_reqs.contains(&reply_id) {
-                    logged_err!(self.id; "request ID {} not in pending set", reply_id)
+                if !self.pending_reqs.contains_key(&reply_id) {
+                    logged_err!(self.id; "request ID {} not in pending set",
+                                         reply_id)
                 } else {
-                    self.pending_reqs.remove(&reply_id);
+                    let issue_ts = self.pending_reqs.remove(&reply_id).unwrap();
+                    let lat = Instant::now().duration_since(issue_ts);
+
                     if let Some(res) = cmd_result {
-                        Ok(Some((reply_id, res)))
+                        Ok(Some((reply_id, res, lat)))
                     } else {
                         Ok(None)
                     }

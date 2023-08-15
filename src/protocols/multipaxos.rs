@@ -33,6 +33,9 @@ pub struct ReplicaConfigMultiPaxos {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
+    /// Client request batching maximum batch size.
+    pub max_batch_size: usize,
+
     /// Path to backing file.
     pub backer_path: String,
 
@@ -45,6 +48,7 @@ impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
         ReplicaConfigMultiPaxos {
             batch_interval_us: 1000,
+            max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
         }
@@ -993,8 +997,8 @@ impl GenericReplica for MultiPaxosReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
-                                    batch_interval_us, backer_path,
-                                    logger_sync)?;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -1044,6 +1048,7 @@ impl GenericReplica for MultiPaxosReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
+                self.config.max_batch_size,
             )
             .await?;
 

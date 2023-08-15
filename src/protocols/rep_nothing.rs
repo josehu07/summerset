@@ -28,6 +28,9 @@ pub struct ReplicaConfigRepNothing {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
+    /// Client request batching maximum batch size.
+    pub max_batch_size: usize,
+
     /// Path to backing file.
     pub backer_path: String,
 }
@@ -37,6 +40,7 @@ impl Default for ReplicaConfigRepNothing {
     fn default() -> Self {
         ReplicaConfigRepNothing {
             batch_interval_us: 1000,
+            max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
         }
     }
@@ -261,7 +265,8 @@ impl GenericReplica for RepNothingReplica {
         }
 
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, backer_path)?;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -298,6 +303,7 @@ impl GenericReplica for RepNothingReplica {
             .setup(
                 self.api_addr,
                 Duration::from_micros(self.config.batch_interval_us),
+                self.config.max_batch_size,
             )
             .await?;
 
