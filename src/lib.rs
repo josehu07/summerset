@@ -4,6 +4,7 @@
 #[macro_use]
 mod utils;
 
+// mod manager;
 mod server;
 mod client;
 
@@ -13,6 +14,9 @@ mod protocols;
 
 #[doc(inline)]
 pub use crate::utils::{SummersetError, ReplicaMap, Timer};
+
+// #[doc(inline)]
+// pub use crate::manager::{CtrlEvent, ClusterManager};
 
 #[doc(inline)]
 pub use crate::server::{

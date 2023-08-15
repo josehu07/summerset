@@ -185,10 +185,10 @@ impl ClientBench {
                 break;
             }
 
-            if issue_cnt == 0 {
+            if issue_cnt == 1 {
                 first_issue_ts = Some(Instant::now());
             }
-            if issue_cnt == num_reqs - 1 {
+            if issue_cnt == num_reqs {
                 last_issue_ts = Some(Instant::now());
             }
         }
@@ -202,10 +202,10 @@ impl ClientBench {
                 ok_cnt += 1;
                 batch_pending_reqs.remove(&req_id);
 
-                if reply_cnt == 0 {
+                if reply_cnt == 1 {
                     first_reply_ts = Some(Instant::now());
                 }
-                if reply_cnt == issue_cnt - 1 {
+                if reply_cnt == issue_cnt {
                     last_reply_ts = Some(Instant::now());
                 }
             }

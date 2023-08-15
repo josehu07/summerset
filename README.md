@@ -57,7 +57,7 @@ Some helper scripts for running server nodes and clients as local processes are 
 
 ```bash
 python3 scripts/local_cluster.py -h
-python3 scripts/local_endpoint.py -h
+python3 scripts/local_client.py -h
 ```
 
 Complete cluster management and benchmarking scripts are available in another repo, [Wayrest](https://github.com/josehu07/wayrest), which is a Python module for managing replication protocol clusters and running distributed experiments.
@@ -79,7 +79,6 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] REPL-style client
   - [x] random benchmarking client
   - [x] testing client
-  - [ ] replica management commands
   - [ ] benchmarking with YCSB input
 - [ ] better README
 
