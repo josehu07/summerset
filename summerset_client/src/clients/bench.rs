@@ -10,7 +10,7 @@ use rand::rngs::ThreadRng;
 
 use serde::Deserialize;
 
-use tokio::time::{self, Duration, Instant, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
     GenericEndpoint, ClientId, RequestId, SummersetError, pf_error, logged_err,
@@ -138,149 +138,86 @@ impl ClientBench {
         }
     }
 
-    /// Runs closed-loop style benchmark.
-    async fn run_closed_loop(&mut self) -> Result<(), SummersetError> {
-        let start = Instant::now();
-        let (mut now, mut last_print) = (start, start);
-        let length = Duration::from_secs(self.params.length_s);
+    /// Runs one iteration action of closed-loop style benchmark.
+    #[allow(clippy::too_many_arguments)]
+    async fn closed_loop_iter(
+        &mut self,
+        total_cnt: &mut u64,
+        reply_cnt: &mut u64,
+        chunk_cnt: &mut u64,
+        chunk_lats: &mut Vec<f64>,
+        retrying: &mut bool,
+    ) -> Result<(), SummersetError> {
+        // send next request
+        let req_id = if *retrying {
+            self.driver.issue_retry().await?
+        } else {
+            self.issue_rand_cmd().await?
+        };
 
-        let (mut reply_cnt, mut total_cnt) = (0, 0);
-        let mut chunk_cnt = 0;
-        let mut chunk_lats: Vec<f64> = vec![];
+        *retrying = req_id.is_none();
+        if !*retrying {
+            *total_cnt += 1;
+        }
 
-        // run for specified length
-        let mut retrying = false;
-        while now.duration_since(start) < length {
-            // send next request
-            let req_id = if retrying {
-                self.driver.issue_retry().await?
-            } else {
-                self.issue_rand_cmd().await?
-            };
+        // wait for the next reply
+        if *total_cnt > *reply_cnt {
+            let result = self.driver.wait_reply().await?;
 
-            retrying = req_id.is_none();
-            if !retrying {
-                total_cnt += 1;
-            }
-
-            // wait for the next reply
-            if total_cnt > reply_cnt {
-                let result = self.driver.wait_reply().await?;
-
-                if let Some((_, _, lat)) = result {
-                    reply_cnt += 1;
-                    chunk_cnt += 1;
-                    let lat_us = lat.as_secs_f64() * 1000000.0;
-                    chunk_lats.push(lat_us);
-                }
-            }
-
-            now = Instant::now();
-
-            // print statistics if print interval passed
-            let elapsed = now.duration_since(start);
-            let print_elapsed = now.duration_since(last_print);
-            if print_elapsed >= *PRINT_INTERVAL {
-                let tpt = (chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if chunk_lats.is_empty() {
-                    0.0
-                } else {
-                    chunk_lats.iter().sum::<f64>() / (chunk_lats.len() as f64)
-                };
-                println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} / {:<8}",
-                    elapsed.as_secs_f64(),
-                    tpt,
-                    lat,
-                    reply_cnt,
-                    total_cnt
-                );
-                last_print = now;
-                chunk_cnt = 0;
-                chunk_lats.clear();
+            if let Some((_, _, lat)) = result {
+                *reply_cnt += 1;
+                *chunk_cnt += 1;
+                let lat_us = lat.as_secs_f64() * 1000000.0;
+                chunk_lats.push(lat_us);
             }
         }
 
         Ok(())
     }
 
-    /// Runs open-loop style benchmark.
-    async fn run_open_loop(&mut self) -> Result<(), SummersetError> {
-        let start = Instant::now();
-        let (mut now, mut last_print) = (start, start);
-        let length = Duration::from_secs(self.params.length_s);
+    /// Runs one iteration action of open-loop style benchmark.
+    #[allow(clippy::too_many_arguments)]
+    async fn open_loop_iter(
+        &mut self,
+        total_cnt: &mut u64,
+        reply_cnt: &mut u64,
+        chunk_cnt: &mut u64,
+        chunk_lats: &mut Vec<f64>,
+        retrying: &mut bool,
+        slowdown: &mut bool,
+        ticker: &mut Interval,
+    ) -> Result<(), SummersetError> {
+        tokio::select! {
+            // prioritize receiving reply
+            biased;
 
-        let (mut total_cnt, mut reply_cnt) = (0, 0);
-        let mut chunk_cnt = 0;
-        let mut chunk_lats: Vec<f64> = vec![];
+            // receive next reply
+            result = self.driver.wait_reply() => {
+                if let Some((_, _, lat)) = result? {
+                    *reply_cnt += 1;
+                    *chunk_cnt += 1;
+                    let lat_us = lat.as_secs_f64() * 1000000.0;
+                    chunk_lats.push(lat_us);
 
-        // kick off frequency interval ticker
-        let delay = Duration::from_nanos(1000000000 / self.params.freq_target);
-        let mut ticker = time::interval(delay);
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        // run for specified length
-        let (mut slowdown, mut retrying) = (false, false);
-        while now.duration_since(start) < length {
-            tokio::select! {
-                // prioritize receiving reply
-                biased;
-
-                // receive next reply
-                result = self.driver.wait_reply() => {
-                    let result = result?;
-
-                    if let Some((_, _, lat)) = result {
-                        reply_cnt += 1;
-                        chunk_cnt += 1;
-                        let lat_us = lat.as_secs_f64() * 1000000.0;
-                        chunk_lats.push(lat_us);
-
-                        if slowdown {
-                            slowdown = false;
-                        }
-                    }
-                }
-
-                // send next request
-                _ = ticker.tick(), if !slowdown => {
-                    let req_id = if retrying {
-                        self.driver.issue_retry().await?
-                    } else {
-                        self.issue_rand_cmd().await?
-                    };
-
-                    retrying = req_id.is_none();
-                    slowdown = retrying && (total_cnt > reply_cnt);
-                    if !retrying {
-                        total_cnt += 1;
+                    if *slowdown {
+                        *slowdown = false;
                     }
                 }
             }
 
-            now = Instant::now();
-
-            // print statistics if print interval passed
-            let elapsed = now.duration_since(start);
-            let print_elapsed = now.duration_since(last_print);
-            if print_elapsed >= *PRINT_INTERVAL {
-                let tpt = (chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if chunk_lats.is_empty() {
-                    0.0
+            // send next request
+            _ = ticker.tick(), if !*slowdown => {
+                let req_id = if *retrying {
+                    self.driver.issue_retry().await?
                 } else {
-                    chunk_lats.iter().sum::<f64>() / (chunk_lats.len() as f64)
+                    self.issue_rand_cmd().await?
                 };
-                println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} / {:<8}",
-                    elapsed.as_secs_f64(),
-                    tpt,
-                    lat,
-                    reply_cnt,
-                    total_cnt
-                );
-                last_print = now;
-                chunk_cnt = 0;
-                chunk_lats.clear();
+
+                *retrying = req_id.is_none();
+                *slowdown = *retrying && (*total_cnt > *reply_cnt);
+                if !*retrying {
+                    *total_cnt += 1;
+                }
             }
         }
 
@@ -295,10 +232,75 @@ impl ClientBench {
             "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Reply", "Total"
         );
 
-        if self.params.freq_target == 0 {
-            self.run_closed_loop().await?;
+        let mut freq_ticker = if self.params.freq_target > 0 {
+            // open-loop, kick off frequency interval ticker
+            // kick off frequency interval ticker
+            let delay =
+                Duration::from_nanos(1000000000 / self.params.freq_target);
+            let mut ticker = time::interval(delay);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            Some(ticker)
         } else {
-            self.run_open_loop().await?;
+            None
+        };
+
+        let start = Instant::now();
+        let (mut now, mut last_print) = (start, start);
+        let length = Duration::from_secs(self.params.length_s);
+
+        let (mut total_cnt, mut reply_cnt) = (0, 0);
+        let mut chunk_cnt = 0;
+        let mut chunk_lats: Vec<f64> = vec![];
+
+        // run for specified length
+        let (mut slowdown, mut retrying) = (false, false);
+        while now.duration_since(start) < length {
+            if self.params.freq_target == 0 {
+                self.closed_loop_iter(
+                    &mut total_cnt,
+                    &mut reply_cnt,
+                    &mut chunk_cnt,
+                    &mut chunk_lats,
+                    &mut retrying,
+                )
+                .await?;
+            } else {
+                self.open_loop_iter(
+                    &mut total_cnt,
+                    &mut reply_cnt,
+                    &mut chunk_cnt,
+                    &mut chunk_lats,
+                    &mut retrying,
+                    &mut slowdown,
+                    freq_ticker.as_mut().unwrap(),
+                )
+                .await?;
+            }
+
+            now = Instant::now();
+
+            // print statistics if print interval passed
+            let elapsed = now.duration_since(start);
+            let print_elapsed = now.duration_since(last_print);
+            if print_elapsed >= *PRINT_INTERVAL {
+                let tpt = (chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let lat = if chunk_lats.is_empty() {
+                    0.0
+                } else {
+                    chunk_lats.iter().sum::<f64>() / (chunk_lats.len() as f64)
+                };
+                println!(
+                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} / {:<8}",
+                    elapsed.as_secs_f64(),
+                    tpt,
+                    lat,
+                    reply_cnt,
+                    total_cnt
+                );
+                last_print = now;
+                chunk_cnt = 0;
+                chunk_lats.clear();
+            }
         }
 
         self.driver.leave().await?;
