@@ -3,20 +3,17 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::utils::SummersetError;
+use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 
 use serde::{Serialize, Deserialize};
 
-use rmp_serde::encode::to_vec as encode_to_vec;
-use rmp_serde::decode::from_slice as decode_from_slice;
-
 use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{ReadHalf, WriteHalf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
@@ -322,54 +319,19 @@ impl ExternalApi {
         // first 8 btyes being the request length, and the rest bytes being the
         // request itself
         req_buf: &mut BytesMut,
-        conn_read: &mut ReadHalf<'_>,
+        conn_read: &mut OwnedReadHalf,
     ) -> Result<ApiRequest, SummersetError> {
-        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
-        // here because this function is used as a `tokio::select!` branch and
-        // that those two methods are not cancellation-safe
-
-        // read length of request first
-        assert!(req_buf.capacity() >= 8);
-        while req_buf.len() < 8 {
-            // req_len not wholesomely read from socket before last cancellation
-            conn_read.read_buf(req_buf).await?;
-        }
-        let req_len = u64::from_be_bytes(req_buf[..8].try_into().unwrap());
-
-        // then read the request itself
-        let req_end = 8 + req_len as usize;
-        if req_buf.capacity() < req_end {
-            // capacity not big enough, reserve more space
-            req_buf.reserve(req_end - req_buf.capacity());
-        }
-        while req_buf.len() < req_end {
-            conn_read.read_buf(req_buf).await?;
-        }
-        let req = decode_from_slice(&req_buf[8..req_end])?;
-
-        // if reached this point, no further cancellation to this call is
-        // possible (because there are no more awaits ahead); discard bytes
-        // used in this call
-        if req_buf.len() > req_end {
-            let buf_tail = Bytes::copy_from_slice(&req_buf[req_end..]);
-            req_buf.clear();
-            req_buf.extend_from_slice(&buf_tail);
-        } else {
-            req_buf.clear();
-        }
-
-        Ok(req)
+        safe_tcp_read(req_buf, conn_read).await
     }
 
     /// Writes a reply through given TcpStream.
-    async fn write_reply(
-        reply: &ApiReply,
-        conn_write: &mut WriteHalf<'_>,
-    ) -> Result<(), SummersetError> {
-        let reply_bytes = encode_to_vec(reply)?;
-        conn_write.write_u64(reply_bytes.len() as u64).await?; // send length first
-        conn_write.write_all(&reply_bytes[..]).await?;
-        Ok(())
+    fn write_reply(
+        reply_buf: &mut BytesMut,
+        reply_buf_cursor: &mut usize,
+        conn_write: &OwnedWriteHalf,
+        reply: Option<&ApiReply>,
+    ) -> Result<bool, SummersetError> {
+        safe_tcp_write(reply_buf, reply_buf_cursor, conn_write, reply)
     }
 
     /// Client request listener and reply sender thread function.
@@ -377,15 +339,18 @@ impl ExternalApi {
         me: ReplicaId,
         id: ClientId,
         addr: SocketAddr,
-        mut conn: TcpStream,
+        conn: TcpStream,
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
     ) {
         pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
 
-        let (mut conn_read, mut conn_write) = conn.split();
+        let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
+        let mut reply_buf = BytesMut::with_capacity(8 + 1024);
+        let mut reply_buf_cursor = 0;
 
+        let mut retrying = false;
         loop {
             tokio::select! {
                 // select between getting a new reply to send back and receiving
@@ -393,13 +358,25 @@ impl ExternalApi {
                 biased;
 
                 // gets a reply to send back
-                reply = rx_reply.recv() => {
+                reply = rx_reply.recv(), if !retrying => {
                     match reply {
                         Some(reply) => {
-                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
-                                pf_error!(me; "error replying to {}: {}", id, e);
-                            } else {
-                                // pf_trace!(me; "replied to {} reply {:?}", id, reply);
+                            match Self::write_reply(
+                                &mut reply_buf,
+                                &mut reply_buf_cursor,
+                                &conn_write,
+                                Some(&reply)
+                            ) {
+                                Ok(true) => {
+                                    // pf_trace!(me; "replied to {} reply {:?}", id, reply);
+                                }
+                                Ok(false) => {
+                                    pf_debug!(me; "should start retrying reply send -> {}", id);
+                                    retrying = true;
+                                }
+                                Err(e) => {
+                                    pf_error!(me; "error replying -> {}: {}", id, e);
+                                }
                             }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -412,9 +389,14 @@ impl ExternalApi {
                         // client leaving, send dummy reply and break
                         Ok(ApiRequest::Leave) => {
                             let reply = ApiReply::Leave;
-                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
-                                pf_error!(me; "error replying to {}: {}", id, e);
-                            } else {
+                            if let Err(e) = Self::write_reply(
+                                &mut reply_buf,
+                                &mut reply_buf_cursor,
+                                &conn_write,
+                                Some(&reply),
+                            ) {
+                                pf_error!(me; "error replying -> {}: {}", id, e);
+                            } else { // skips `WouldBlock` failure check here
                                 pf_info!(me; "client {} has left", id);
                             }
                             break;
@@ -423,18 +405,37 @@ impl ExternalApi {
                         Ok(req) => {
                             // pf_trace!(me; "request from {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!(
-                                    me; "error sending to tx_req for {}: {}", id, e
-                                );
+                                pf_error!(me; "error sending to tx_req for {}: {}", id, e);
                             }
                         },
 
                         Err(e) => {
-                            pf_error!(me; "error reading request from {}: {}", id, e);
+                            pf_error!(me; "error reading request <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
                 },
+
+                // retrying last unsuccessful reply send
+                _ = conn_write.writable(), if retrying => {
+                    match Self::write_reply(
+                        &mut reply_buf,
+                        &mut reply_buf_cursor,
+                        &conn_write,
+                        None
+                    ) {
+                        Ok(true) => {
+                            pf_debug!(me; "finished retrying last reply send -> {}", id);
+                            retrying = false;
+                        }
+                        Ok(false) => {
+                            pf_debug!(me; "still should retry last reply send -> {}", id);
+                        }
+                        Err(e) => {
+                            pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
+                        }
+                    }
+                }
             }
         }
 

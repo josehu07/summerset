@@ -1,20 +1,16 @@
 //! Summerset client API communication stub implementation.
 
-use std::io::ErrorKind;
 use std::net::SocketAddr;
 
-use crate::utils::SummersetError;
+use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
 use crate::server::{ApiRequest, ApiReply};
 use crate::client::ClientId;
 
-use bytes::{Bytes, BytesMut};
-
-use rmp_serde::encode::to_vec as encode_to_vec;
-use rmp_serde::decode::from_slice as decode_from_slice;
+use bytes::BytesMut;
 
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 /// Client API connection stub.
 pub struct ClientApiStub {
@@ -84,53 +80,21 @@ impl ClientSendStub {
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        // DEADLOCK AVOIDANCE: we avoid using `write_u64()` and `write_all()`
-        // here because, in the case of TCP buffers being full, the service and
-        // the client may both be blocking on trying to send (write) into the
-        // buffers, resulting in a circular deadlock
-
-        // if last write was not successful, cannot make a new request
-        if req.is_some() && !self.req_buf.is_empty() {
-            return logged_err!(self.id; "attempting new request while should retry");
-        } else if req.is_none() && self.req_buf.is_empty() {
-            return logged_err!(self.id; "attempting to retry while buffer is empty");
-        } else if req.is_some() {
-            // sending a new request, fill req_buf
-            assert_eq!(self.req_buf_cursor, 0);
-            let req_bytes = encode_to_vec(req.unwrap())?;
-            let req_len = req_bytes.len();
-            self.req_buf.extend_from_slice(&req_len.to_be_bytes());
-            assert_eq!(self.req_buf.len(), 8);
-            self.req_buf.extend_from_slice(req_bytes.as_slice());
-        } else {
-            // retrying last unsuccessful write
-            assert!(self.req_buf_cursor < self.req_buf.len());
+        if req.is_none() {
             pf_debug!(self.id; "retrying last unsuccessful send_req");
         }
-
-        // try until length + the request are all written
-        while self.req_buf_cursor < self.req_buf.len() {
-            match self
-                .conn_write
-                .try_write(&self.req_buf[self.req_buf_cursor..])
-            {
-                Ok(n) => {
-                    self.req_buf_cursor += n;
-                }
-                Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
-                    pf_debug!(self.id; "send_req would block; TCP buffer full?");
-                    return Ok(false);
-                }
-                Err(err) => return Err(err.into()),
-            }
-        }
-
-        // everything written, clear req_buf
-        self.req_buf.clear();
-        self.req_buf_cursor = 0;
+        let retrying = safe_tcp_write(
+            &mut self.req_buf,
+            &mut self.req_buf_cursor,
+            &self.conn_write,
+            req,
+        )?;
 
         // pf_trace!(self.id; "send req {:?}", req);
-        Ok(true)
+        if retrying {
+            pf_debug!(self.id; "send_req would block; TCP buffer full?");
+        }
+        Ok(retrying)
     }
 
     /// Forgets about the write-half TCP connection.
@@ -163,41 +127,8 @@ impl ClientRecvStub {
 
     /// Receives a reply from established server connection.
     pub async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
-        // here because this function is used as a `tokio::select!` branch and
-        // that those two methods are not cancellation-safe
-
-        // read length of reply first
-        assert!(self.reply_buf.capacity() >= 8);
-        while self.reply_buf.len() < 8 {
-            // reply_len not wholesomely read from socket before last cancellation
-            self.conn_read.read_buf(&mut self.reply_buf).await?;
-        }
-        let reply_len =
-            u64::from_be_bytes(self.reply_buf[..8].try_into().unwrap());
-
-        // then read the reply itself
-        let reply_end = 8 + reply_len as usize;
-        if self.reply_buf.capacity() < reply_end {
-            // capacity not big enough, reserve more space
-            self.reply_buf
-                .reserve(reply_end - self.reply_buf.capacity());
-        }
-        while self.reply_buf.len() < reply_end {
-            self.conn_read.read_buf(&mut self.reply_buf).await?;
-        }
-        let reply = decode_from_slice(&self.reply_buf[8..reply_end])?;
-
-        // if reached this point, no further cancellation to this call is
-        // possible (because there are no more awaits ahead); discard bytes
-        // used in this call
-        if self.reply_buf.len() > reply_end {
-            let buf_tail = Bytes::copy_from_slice(&self.reply_buf[reply_end..]);
-            self.reply_buf.clear();
-            self.reply_buf.extend_from_slice(&buf_tail);
-        } else {
-            self.reply_buf.clear();
-        }
+        let reply =
+            safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
         // pf_trace!(self.id; "recv reply {:?}", reply);
         Ok(reply)

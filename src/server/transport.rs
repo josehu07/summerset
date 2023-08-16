@@ -4,18 +4,15 @@ use std::fmt;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, ReplicaMap};
+use crate::utils::{SummersetError, ReplicaMap, safe_tcp_read, safe_tcp_write};
 use crate::server::ReplicaId;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 
 use serde::{Serialize, de::DeserializeOwned};
 
-use rmp_serde::encode::to_vec as encode_to_vec;
-use rmp_serde::decode::from_slice as decode_from_slice;
-
 use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -354,58 +351,23 @@ where
         + 'static,
 {
     /// Writes a message through given TcpStream.
-    async fn write_msg(
-        msg: &Msg,
-        conn_write: &mut WriteHalf<'_>,
-    ) -> Result<(), SummersetError> {
-        let msg_bytes = encode_to_vec(msg)?;
-        conn_write.write_u64(msg_bytes.len() as u64).await?; // send length first
-        conn_write.write_all(&msg_bytes[..]).await?;
-        Ok(())
+    fn write_msg(
+        write_buf: &mut BytesMut,
+        write_buf_cursor: &mut usize,
+        conn_write: &OwnedWriteHalf,
+        msg: Option<&Msg>,
+    ) -> Result<bool, SummersetError> {
+        safe_tcp_write(write_buf, write_buf_cursor, conn_write, msg)
     }
 
     /// Reads a message from given TcpStream.
     async fn read_msg(
         // first 8 btyes being the message length, and the rest bytes being the
         // message itself
-        msg_buf: &mut BytesMut,
-        conn_read: &mut ReadHalf<'_>,
+        read_buf: &mut BytesMut,
+        conn_read: &mut OwnedReadHalf,
     ) -> Result<Msg, SummersetError> {
-        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
-        // here because this function is used as a `tokio::select!` branch and
-        // that those two methods are not cancellation-safe
-
-        // read length of message first
-        assert!(msg_buf.capacity() >= 8);
-        while msg_buf.len() < 8 {
-            // msg_len not wholesomely read from socket before last cancellation
-            conn_read.read_buf(msg_buf).await?;
-        }
-        let msg_len = u64::from_be_bytes(msg_buf[..8].try_into().unwrap());
-
-        // then read the message itself
-        let msg_end = 8 + msg_len as usize;
-        if msg_buf.capacity() < msg_end {
-            // capacity not big enough, reserve more space
-            msg_buf.reserve(msg_end - msg_buf.capacity());
-        }
-        while msg_buf.len() < msg_end {
-            conn_read.read_buf(msg_buf).await?;
-        }
-        let msg = decode_from_slice(&msg_buf[8..msg_end])?;
-
-        // if reached this point, no further cancellation to this call is
-        // possible (because there are no more awaits ahead); discard bytes
-        // used in this call
-        if msg_buf.len() > msg_end {
-            let buf_tail = Bytes::copy_from_slice(&msg_buf[msg_end..]);
-            msg_buf.clear();
-            msg_buf.extend_from_slice(&buf_tail);
-        } else {
-            msg_buf.clear();
-        }
-
-        Ok(msg)
+        safe_tcp_read(read_buf, conn_read).await
     }
 
     /// Peer messenger thread function.
@@ -413,47 +375,56 @@ where
         me: ReplicaId,
         id: ReplicaId,    // corresonding peer's ID
         addr: SocketAddr, // corresponding peer's address
-        mut conn: TcpStream,
+        conn: TcpStream,
         mut rx_send: mpsc::UnboundedReceiver<Msg>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, Msg)>,
     ) {
         pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
 
-        let (mut conn_read, mut conn_write) = conn.split();
-        let mut msg_buf = BytesMut::with_capacity(8 + 1024);
+        let (mut conn_read, conn_write) = conn.into_split();
+        let mut read_buf = BytesMut::with_capacity(8 + 1024);
+        let mut write_buf = BytesMut::with_capacity(8 + 1024);
+        let mut write_buf_cursor = 0;
 
+        let mut retrying = false;
         loop {
             tokio::select! {
                 // select between getting a new message to send out and
                 // receiving a new message from peer
 
                 // gets a message to send out
-                msg = rx_send.recv() => {
+                msg = rx_send.recv(), if !retrying => {
                     match msg {
                         Some(msg) => {
-                            if let Err(e) = Self::write_msg(&msg, &mut conn_write)
-                                            .await
-                                    {
-                                        pf_error!(me; "error sending -> {}: {}", id, e);
-                                    } else {
-                                        // pf_trace!(me; "sent -> {} msg {:?}", id, msg);
-                                    }
+                            match Self::write_msg(
+                                &mut write_buf,
+                                &mut write_buf_cursor,
+                                &conn_write,
+                                Some(&msg),
+                            ) {
+                                Ok(true) => {
+                                    // pf_trace!(me; "sent -> {} msg {:?}", id, msg);
+                                }
+                                Ok(false) => {
+                                    pf_debug!(me; "should start retrying msg send -> {}", id);
+                                    retrying = true;
+                                }
+                                Err(e) => {
+                                    pf_error!(me; "error sending -> {}: {}", id, e);
+                                }
+                            }
                         },
                         None => break, // channel gets closed and no messages remain
                     }
                 },
 
                 // receives new message from peer
-                msg = Self::read_msg(&mut msg_buf, &mut conn_read) => {
+                msg = Self::read_msg(&mut read_buf, &mut conn_read) => {
                     match msg {
                         Ok(msg) => {
                             // pf_trace!(me; "recv <- {} msg {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)) {
-                                pf_error!(
-                                    me;
-                                    "error sending to tx_recv for {}: {}",
-                                    id, e
-                                );
+                                pf_error!(me; "error sending to tx_recv for {}: {}", id, e);
                             }
                         },
 
@@ -463,6 +434,27 @@ where
                         }
                     }
                 },
+
+                // retrying last unsuccessful message send
+                _ = conn_write.writable(), if retrying => {
+                    match Self::write_msg(
+                        &mut write_buf,
+                        &mut write_buf_cursor,
+                        &conn_write,
+                        None
+                    ) {
+                        Ok(true) => {
+                            pf_debug!(me; "finished retrying last msg send -> {}", id);
+                            retrying = false;
+                        }
+                        Ok(false) => {
+                            pf_debug!(me; "still should retry last msg send -> {}", id);
+                        }
+                        Err(e) => {
+                            pf_error!(me; "error retrying last msg send -> {}: {}", id, e);
+                        }
+                    }
+                }
             }
         }
 
