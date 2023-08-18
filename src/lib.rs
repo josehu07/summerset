@@ -4,7 +4,7 @@
 #[macro_use]
 mod utils;
 
-// mod manager;
+mod manager;
 mod server;
 mod client;
 
@@ -15,8 +15,8 @@ mod protocols;
 #[doc(inline)]
 pub use crate::utils::{SummersetError, ReplicaMap, Timer};
 
-// #[doc(inline)]
-// pub use crate::manager::{CtrlEvent, ClusterManager};
+#[doc(inline)]
+pub use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply, ClusterManager};
 
 #[doc(inline)]
 pub use crate::server::{
@@ -28,7 +28,7 @@ pub use crate::server::{
 pub use crate::client::{ClientId, GenericEndpoint};
 
 #[doc(inline)]
-pub use crate::protocols::SMRProtocol;
+pub use crate::protocols::SmrProtocol;
 
 // below are config structs exposed for users to know how to write TOML-format
 // config strings

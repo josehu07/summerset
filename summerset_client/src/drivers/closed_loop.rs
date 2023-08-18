@@ -4,7 +4,7 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
+    RequestId, Timer, SummersetError, pf_debug, pf_error, logged_err,
 };
 
 /// Closed-loop driver struct.
@@ -12,8 +12,8 @@ pub struct DriverClosedLoop {
     /// Client ID.
     id: ClientId,
 
-    /// Protocol-specific client stub.
-    stub: Box<dyn GenericEndpoint>,
+    /// Protocol-specific client endpoint.
+    endpoint: Box<dyn GenericEndpoint>,
 
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
@@ -27,14 +27,10 @@ pub struct DriverClosedLoop {
 
 impl DriverClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         DriverClosedLoop {
-            id,
-            stub,
+            id: 255, // nil at this time
+            endpoint,
             next_req: 0,
             timer: Timer::new(),
             timeout,
@@ -43,33 +39,27 @@ impl DriverClosedLoop {
 
     /// Establishes connection with the service.
     pub async fn connect(&mut self) -> Result<(), SummersetError> {
-        self.stub.connect().await
-    }
-
-    /// Sends leave notification and forgets about the current TCP connections.
-    pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        self.send_req_retry_on_block(&ApiRequest::Leave).await?;
-
-        let reply = self.stub.recv_reply().await?;
-        match reply {
-            ApiReply::Leave => {
-                pf_info!(self.id; "left current server connection")
-            }
-            _ => return logged_err!(self.id; "unexpected reply type received"),
-        }
-
-        self.stub.forget().await?;
+        let id = self.endpoint.connect().await?;
+        self.id = id;
         Ok(())
     }
 
+    /// Sends leave notification and forgets about the current TCP connections.
+    pub async fn leave(
+        &mut self,
+        permanent: bool,
+    ) -> Result<(), SummersetError> {
+        self.endpoint.leave(permanent).await
+    }
+
     /// Attempt to send a request, retrying if received `WouldBlock` failure.
-    async fn send_req_retry_on_block(
+    fn send_req_retry_on_block(
         &mut self,
         req: &ApiRequest,
     ) -> Result<(), SummersetError> {
-        let mut success = self.stub.send_req(Some(req)).await?;
+        let mut success = self.endpoint.send_req(Some(req))?;
         while !success {
-            success = self.stub.send_req(None).await?;
+            success = self.endpoint.send_req(None)?;
         }
         Ok(())
     }
@@ -87,7 +77,7 @@ impl DriverClosedLoop {
                 Ok(None)
             }
 
-            reply = self.stub.recv_reply() => {
+            reply = self.endpoint.recv_reply() => {
                 self.timer.cancel()?; // cancel current deadline
                 Ok(Some(reply?))
             }
@@ -110,8 +100,7 @@ impl DriverClosedLoop {
         self.send_req_retry_on_block(&ApiRequest::Req {
             id: req_id,
             cmd: Command::Get { key: key.into() },
-        })
-        .await?;
+        })?;
         let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;
@@ -164,8 +153,7 @@ impl DriverClosedLoop {
                 key: key.into(),
                 value: value.into(),
             },
-        })
-        .await?;
+        })?;
         let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;

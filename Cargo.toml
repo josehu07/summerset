@@ -1,5 +1,5 @@
 [workspace]
-members = ["summerset_server", "summerset_client"]
+members = ["summerset_server", "summerset_client", "summerset_manager"]
 
 [package]
 name = "summerset"

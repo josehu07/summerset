@@ -1037,6 +1037,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "summerset_manager"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "env_logger",
+ "log",
+ "rand",
+ "summerset",
+ "tokio",
+]
+
+[[package]]
 name = "summerset_server"
 version = "0.1.0"
 dependencies = [

@@ -4,6 +4,8 @@ use std::fmt;
 use std::io;
 use std::net;
 
+use crate::server::ReplicaId;
+
 /// Customized error type for Summerset.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SummersetError(pub String);
@@ -38,6 +40,9 @@ impl_from_error!(tokio::sync::SetError<tokio::fs::File>);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(
     tokio::sync::watch::error::SendError<Option<tokio::time::Instant>>
+);
+impl_from_error!(
+    tokio::sync::mpsc::error::SendError<(ReplicaId, net::SocketAddr)>
 );
 
 #[cfg(test)]

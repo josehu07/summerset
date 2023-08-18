@@ -1,6 +1,4 @@
 //! Correctness testing client using open-loop driver.
-//!
-//! TODO: add replica management commands: reset, shutdown, restart, etc.
 
 use std::collections::HashMap;
 
@@ -20,8 +18,8 @@ use serde::Deserialize;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericEndpoint, ClientId, CommandResult, RequestId, SummersetError,
-    pf_error, logged_err, parsed_config,
+    GenericEndpoint, CommandResult, RequestId, SummersetError, pf_error,
+    logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -60,9 +58,6 @@ impl Default for ModeParamsTester {
 
 /// Correctness testing client struct.
 pub struct ClientTester {
-    /// Client ID.
-    id: ClientId,
-
     /// Open-loop request driver.
     driver: DriverOpenLoop,
 
@@ -76,8 +71,7 @@ pub struct ClientTester {
 impl ClientTester {
     /// Creates a new testing client.
     pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
+        endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
@@ -90,8 +84,7 @@ impl ClientTester {
         }
 
         Ok(ClientTester {
-            id,
-            driver: DriverOpenLoop::new(id, stub, timeout),
+            driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             cached_replies: HashMap::new(),
         })
@@ -112,26 +105,23 @@ impl ClientTester {
     }
 
     /// Issues a Get request, retrying immediately on `WouldBlock` failures.
-    async fn issue_get(
-        &mut self,
-        key: &str,
-    ) -> Result<RequestId, SummersetError> {
-        let mut req_id = self.driver.issue_get(key).await?;
+    fn issue_get(&mut self, key: &str) -> Result<RequestId, SummersetError> {
+        let mut req_id = self.driver.issue_get(key)?;
         while req_id.is_none() {
-            req_id = self.driver.issue_retry().await?;
+            req_id = self.driver.issue_retry()?;
         }
         Ok(req_id.unwrap())
     }
 
     /// Issues a Put request, retrying immediately on `WouldBlock` failures.
-    async fn issue_put(
+    fn issue_put(
         &mut self,
         key: &str,
         value: &str,
     ) -> Result<RequestId, SummersetError> {
-        let mut req_id = self.driver.issue_put(key, value).await?;
+        let mut req_id = self.driver.issue_put(key, value)?;
         while req_id.is_none() {
-            req_id = self.driver.issue_retry().await?;
+            req_id = self.driver.issue_retry()?;
         }
         Ok(req_id.unwrap())
     }
@@ -231,7 +221,7 @@ impl ClientTester {
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        // TODO: reset service state
+        // TODO: reset service state here
         self.driver.connect().await?;
         self.cached_replies.clear();
 
@@ -239,14 +229,12 @@ impl ClientTester {
             "primitives" => self.test_primitives().await,
             "reconnect" => self.test_reconnect().await,
             "crash_restart" => self.test_crash_restart().await,
-            _ => {
-                return logged_err!(self.id; "unrecognized test name '{}'", name)
-            }
+            _ => return logged_err!("c"; "unrecognized test name '{}'", name),
         };
 
         // send leave notification and forget about the TCP connections at the
         // end of each test
-        self.driver.leave().await?;
+        self.driver.leave(false).await?;
 
         if let Err(ref e) = result {
             cprintln!("{:>16} | <red>{:^6}</> | {}", name, "FAIL", e);
@@ -290,6 +278,7 @@ impl ClientTester {
             _ => return self.do_test_by_name(&test_name).await,
         }
 
+        self.driver.leave(true).await?;
         if all_pass {
             Ok(())
         } else {
@@ -302,17 +291,17 @@ impl ClientTester {
 impl ClientTester {
     /// Basic primitive operations.
     async fn test_primitives(&mut self) -> Result<(), SummersetError> {
-        let mut req_id = self.issue_get("Jose").await?;
+        let mut req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(None), 1).await?;
         let v0 = Self::gen_rand_string(8);
-        req_id = self.issue_put("Jose", &v0).await?;
+        req_id = self.issue_put("Jose", &v0)?;
         self.expect_put_reply(req_id, Some(None), 1).await?;
-        req_id = self.issue_get("Jose").await?;
+        req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(Some(&v0)), 1).await?;
         let v1 = Self::gen_rand_string(16);
-        req_id = self.issue_put("Jose", &v1).await?;
+        req_id = self.issue_put("Jose", &v1)?;
         self.expect_put_reply(req_id, Some(Some(&v0)), 1).await?;
-        req_id = self.issue_get("Jose").await?;
+        req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(Some(&v1)), 1).await?;
         Ok(())
     }
@@ -320,11 +309,11 @@ impl ClientTester {
     /// Client leaves and reconnects.
     async fn test_reconnect(&mut self) -> Result<(), SummersetError> {
         let v0 = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v0).await?;
+        let mut req_id = self.issue_put("Jose", &v0)?;
         self.expect_put_reply(req_id, Some(None), 1).await?;
-        self.driver.leave().await?;
+        self.driver.leave(false).await?;
         self.driver.connect().await?;
-        req_id = self.issue_get("Jose").await?;
+        req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(Some(&v0)), 1).await?;
         Ok(())
     }

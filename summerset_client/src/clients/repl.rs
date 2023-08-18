@@ -9,8 +9,7 @@ use color_print::cprint;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, CommandResult, RequestId,
-    SummersetError,
+    GenericEndpoint, Command, CommandResult, RequestId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -18,9 +17,6 @@ const PROMPT: &str = ">>>>> ";
 
 /// Interactive REPL-style client struct.
 pub struct ClientRepl {
-    /// Client ID.
-    _id: ClientId,
-
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -30,14 +26,9 @@ pub struct ClientRepl {
 
 impl ClientRepl {
     /// Creates a new REPL-style client.
-    pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         ClientRepl {
-            _id: id,
-            driver: DriverClosedLoop::new(id, stub, timeout),
+            driver: DriverClosedLoop::new(endpoint, timeout),
             input_buf: String::new(),
         }
     }
@@ -194,7 +185,7 @@ impl ClientRepl {
 
         loop {
             if let Ok(false) = self.iter().await {
-                self.driver.leave().await?;
+                self.driver.leave(true).await?;
                 break;
             }
         }

@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    GenericEndpoint, ClientId, RequestId, SummersetError, pf_error, logged_err,
+    GenericEndpoint, RequestId, SummersetError, pf_error, logged_err,
     parsed_config,
 };
 
@@ -67,9 +67,6 @@ impl Default for ModeParamsBench {
 
 /// Benchmarking client struct.
 pub struct ClientBench {
-    /// Client ID.
-    _id: ClientId,
-
     /// Open-loop request driver.
     driver: DriverOpenLoop,
 
@@ -86,8 +83,7 @@ pub struct ClientBench {
 impl ClientBench {
     /// Creates a new benchmarking client.
     pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
+        endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
@@ -95,19 +91,19 @@ impl ClientBench {
                                      freq_target, length_s, put_ratio,
                                      value_size)?;
         if params.freq_target > 10000000 {
-            return logged_err!(id; "invalid params.freq_target '{}'",
+            return logged_err!("c"; "invalid params.freq_target '{}'",
                                    params.freq_target);
         }
         if params.length_s == 0 {
-            return logged_err!(id; "invalid params.length_s '{}'",
+            return logged_err!("c"; "invalid params.length_s '{}'",
                                    params.length_s);
         }
         if params.put_ratio > 100 {
-            return logged_err!(id; "invalid params.put_ratio '{}'",
+            return logged_err!("c"; "invalid params.put_ratio '{}'",
                                    params.put_ratio);
         }
         if params.value_size == 0 {
-            return logged_err!(id; "invalid params.value_size '{}'",
+            return logged_err!("c"; "invalid params.value_size '{}'",
                                    params.value_size);
         }
 
@@ -118,8 +114,7 @@ impl ClientBench {
             .collect();
 
         Ok(ClientBench {
-            _id: id,
-            driver: DriverOpenLoop::new(id, stub, timeout),
+            driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
             value,
@@ -127,14 +122,12 @@ impl ClientBench {
     }
 
     /// Issues a random request.
-    async fn issue_rand_cmd(
-        &mut self,
-    ) -> Result<Option<RequestId>, SummersetError> {
+    fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
         let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
-            self.driver.issue_put(&key, &self.value).await
+            self.driver.issue_put(&key, &self.value)
         } else {
-            self.driver.issue_get(&key).await
+            self.driver.issue_get(&key)
         }
     }
 
@@ -150,9 +143,9 @@ impl ClientBench {
     ) -> Result<(), SummersetError> {
         // send next request
         let req_id = if *retrying {
-            self.driver.issue_retry().await?
+            self.driver.issue_retry()?
         } else {
-            self.issue_rand_cmd().await?
+            self.issue_rand_cmd()?
         };
 
         *retrying = req_id.is_none();
@@ -208,9 +201,9 @@ impl ClientBench {
             // send next request
             _ = ticker.tick(), if !*slowdown => {
                 let req_id = if *retrying {
-                    self.driver.issue_retry().await?
+                    self.driver.issue_retry()?
                 } else {
-                    self.issue_rand_cmd().await?
+                    self.issue_rand_cmd()?
                 };
 
                 *retrying = req_id.is_none();
@@ -303,7 +296,7 @@ impl ClientBench {
             }
         }
 
-        self.driver.leave().await?;
+        self.driver.leave(true).await?;
         Ok(())
     }
 }

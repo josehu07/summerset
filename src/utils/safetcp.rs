@@ -36,7 +36,9 @@ where
     Conn: AsyncReadExt + std::marker::Unpin,
 {
     // read length of obj first
-    assert!(read_buf.capacity() >= 8);
+    if read_buf.capacity() < 8 {
+        read_buf.reserve(8 - read_buf.capacity());
+    }
     while read_buf.len() < 8 {
         // obj_len not wholesomely read from socket before last cancellation
         conn_read.read_buf(read_buf).await?;

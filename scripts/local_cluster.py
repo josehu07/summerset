@@ -2,7 +2,17 @@ import sys
 import os
 import argparse
 import subprocess
+import time
 from pathlib import Path
+
+
+def do_cargo_build(release):
+    print("Building everything...")
+    cmd = ["cargo", "build", "--workspace"]
+    if release:
+        cmd.append("-r")
+    proc = subprocess.Popen(cmd)
+    proc.wait()
 
 
 def run_process(cmd):
@@ -11,62 +21,71 @@ def run_process(cmd):
     return proc
 
 
+MANAGER_SRV_PORT = 52600
+MANAGER_CLI_PORT = 52601
+
+SERVER_API_PORT = lambda r: 52700 + r
+SERVER_P2P_PORT = lambda r: 52800 + r
+
+
 PROTOCOL_CONFIGS = {
-    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'+logger_sync=true",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
-    "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'+logger_sync=false",
+    "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
 }
 
 
-def compose_server_cmd(
-    protocol, api_port, base_conn_port, replica_id, replica_list, config, release
-):
-    cmd = [
-        "cargo",
-        "run",
-        "-p",
-        "summerset_server",
-    ]
-    if release:
-        cmd.append("-r")
-
+def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
+    cmd = [f"./target/{'release' if release else 'debug'}/summerset_manager"]
     cmd += [
-        "--",
+        "-p",
+        protocol,
+        "-s",
+        str(srv_port),
+        "-c",
+        str(cli_port),
+        "-n",
+        str(num_replicas),
+    ]
+    return cmd
+
+
+def launch_manager(protocol, num_replicas, release):
+    cmd = compose_manager_cmd(
+        protocol,
+        MANAGER_SRV_PORT,
+        MANAGER_CLI_PORT,
+        num_replicas,
+        release,
+    )
+    return run_process(cmd)
+
+
+def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
+    cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
+    cmd += [
         "-p",
         protocol,
         "-a",
         str(api_port),
-        "-b",
-        str(base_conn_port),
         "-i",
-        str(replica_id),
+        str(p2p_port),
+        "-m",
+        manager,
     ]
-    cmd += replica_list
     if len(config) > 0:
         cmd += ["--config", config]
-
     return cmd
 
 
 def launch_servers(protocol, num_replicas, release):
-    api_ports = list(range(52700, 52700 + num_replicas * 10, 10))
-    base_conn_ports = list(range(52800, 52800 + num_replicas * 10, 10))
-    replica_lists = [[] for _ in range(num_replicas)]
-    for replica in range(num_replicas):
-        for peer in range(num_replicas):
-            replica_lists[replica] += [
-                "-r",
-                f"127.0.0.1:{base_conn_ports[peer] + replica}",
-            ]
-
     server_procs = []
     for replica in range(num_replicas):
         cmd = compose_server_cmd(
             protocol,
-            api_ports[replica],
-            base_conn_ports[replica],
-            replica,
-            replica_lists[replica],
+            SERVER_API_PORT(replica),
+            SERVER_P2P_PORT(replica),
+            f"127.0.0.1:{MANAGER_SRV_PORT}",
             PROTOCOL_CONFIGS[protocol](replica, num_replicas),
             release,
         )
@@ -77,7 +96,7 @@ def launch_servers(protocol, num_replicas, release):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
@@ -101,10 +120,15 @@ if __name__ == "__main__":
     for path in Path("/tmp").glob("summerset.*.wal"):
         path.unlink()
 
-    overall_rc = 0
-    server_procs = launch_servers(args.protocol, args.num_replicas, args.release)
-    for proc in server_procs:
-        rc = proc.wait()
-        if rc != 0 and overall_rc == 0:
-            overall_rc = rc
-    sys.exit(overall_rc)
+    # build everything
+    do_cargo_build(args.release)
+
+    # launch cluster manager oracle first
+    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
+    time.sleep(0.5)  # 500ms
+
+    # then launch server replicas
+    launch_servers(args.protocol, args.num_replicas, args.release)
+
+    rc = manager_proc.wait()
+    sys.exit(rc)
