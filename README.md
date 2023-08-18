@@ -27,7 +27,7 @@ Formal TLA+ specification of some protocols are provided in `tla+/`.
 - **Event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop;
 - **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels.
 
-These design choices make protocol implementation in Summerset surprisingly straight-forward and **understandable**, without any sacrifice on performance.
+These design choices make protocol implementation in Summerset surprisingly straight-forward and **understandable**, without any sacrifice on performance. Comments / issues / PRs are always welcome!
 
 </details>
 
