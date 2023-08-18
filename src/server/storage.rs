@@ -72,13 +72,13 @@ pub struct StorageHub<Ent> {
     me: ReplicaId,
 
     /// Sender side of the log channel.
-    tx_log: Option<mpsc::UnboundedSender<(LogActionId, LogAction<Ent>)>>,
+    tx_log: mpsc::UnboundedSender<(LogActionId, LogAction<Ent>)>,
 
     /// Receiver side of the ack channel.
-    rx_ack: Option<mpsc::UnboundedReceiver<(LogActionId, LogResult<Ent>)>>,
+    rx_ack: mpsc::UnboundedReceiver<(LogActionId, LogResult<Ent>)>,
 
     /// Join handle of the logger thread.
-    logger_handle: Option<JoinHandle<()>>,
+    _logger_handle: JoinHandle<()>,
 }
 
 // StorageHub public API implementation
@@ -92,30 +92,20 @@ where
         + Sync
         + 'static,
 {
-    /// Creates a new durable storage logging hub.
-    pub fn new(me: ReplicaId) -> Self {
-        StorageHub {
-            me,
-            tx_log: None,
-            rx_ack: None,
-            logger_handle: None,
-        }
-    }
-
-    /// Spawns the logger thread. Creates a log channel for submitting logging
-    /// actions to the logger and an ack channel for getting results. Prepares
-    /// the given backing file as durability backend.
-    pub async fn setup(&mut self, path: &Path) -> Result<(), SummersetError> {
-        if self.logger_handle.is_some() {
-            return logged_err!(self.me; "setup already done");
-        }
-
+    /// Creates a new durable storage logging hub. Spawns the logger thread.
+    /// Creates a log channel for submitting logging actions to the logger and
+    /// an ack channel for getting results. Prepares the given backing file as
+    /// durability backend.
+    pub async fn new_and_setup(
+        me: ReplicaId,
+        path: &Path,
+    ) -> Result<Self, SummersetError> {
         // prepare backing file
         if !fs::try_exists(path).await? {
             File::create(path).await?;
-            pf_info!(self.me; "created backer file '{}'", path.display());
+            pf_info!(me; "created backer file '{}'", path.display());
         } else {
-            pf_info!(self.me; "backer file '{}' already exists", path.display());
+            pf_info!(me; "backer file '{}' already exists", path.display());
         }
         let mut backer_file =
             OpenOptions::new().read(true).write(true).open(path).await?;
@@ -123,56 +113,36 @@ where
 
         let (tx_log, rx_log) = mpsc::unbounded_channel();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
-        self.tx_log = Some(tx_log);
-        self.rx_ack = Some(rx_ack);
 
-        let logger_handle = tokio::spawn(Self::logger_thread(
-            self.me,
-            backer_file,
-            rx_log,
-            tx_ack,
-        ));
-        self.logger_handle = Some(logger_handle);
+        let logger_handle =
+            tokio::spawn(Self::logger_thread(me, backer_file, rx_log, tx_ack));
 
-        Ok(())
+        Ok(StorageHub {
+            me,
+            tx_log,
+            rx_ack,
+            _logger_handle: logger_handle,
+        })
     }
 
     /// Submits an action by sending it to the log channel.
-    pub async fn submit_action(
+    pub fn submit_action(
         &mut self,
         id: LogActionId,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
-        if self.logger_handle.is_none() {
-            return logged_err!(self.me; "submit_action called before setup");
-        }
-
-        match self.tx_log {
-            Some(ref tx_log) => tx_log
-                .send((id, action))
-                .map_err(|e| SummersetError(e.to_string()))?,
-            None => {
-                return logged_err!(self.me; "tx_log not created yet");
-            }
-        }
-
-        Ok(())
+        self.tx_log
+            .send((id, action))
+            .map_err(|e| SummersetError(e.to_string()))
     }
 
     /// Waits for the next logging result by receiving from the ack channel.
     pub async fn get_result(
         &mut self,
     ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
-        if self.logger_handle.is_none() {
-            return logged_err!(self.me; "get_result called before setup");
-        }
-
-        match self.rx_ack {
-            Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some((id, result)) => Ok((id, result)),
-                None => logged_err!(self.me; "ack channel has been closed"),
-            },
-            None => logged_err!(self.me; "rx_ack not created yet"),
+        match self.rx_ack.recv().await {
+            Some((id, result)) => Ok((id, result)),
+            None => logged_err!(self.me; "ack channel has been closed"),
         }
     }
 }
@@ -676,29 +646,15 @@ mod storage_tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn hub_setup() -> Result<(), SummersetError> {
-        let mut hub: StorageHub<TestEntry> = StorageHub::new(0);
-        let path = Path::new("/tmp/test-backer-5.log");
-        hub.setup(path).await?;
-        assert!(hub.tx_log.is_some());
-        assert!(hub.rx_ack.is_some());
-        assert!(hub.logger_handle.is_some());
-        Ok(())
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_log_ack() -> Result<(), SummersetError> {
-        let mut hub = StorageHub::new(0);
         let path = Path::new("/tmp/test-backer-6.log");
+        let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = encode_to_vec(&entry)?;
-        hub.setup(path).await?;
-        hub.submit_action(0, LogAction::Append { entry, sync: true })
-            .await?;
-        hub.submit_action(1, LogAction::Read { offset: 0 }).await?;
-        hub.submit_action(2, LogAction::Truncate { offset: 0 })
-            .await?;
+        hub.submit_action(0, LogAction::Append { entry, sync: true })?;
+        hub.submit_action(1, LogAction::Read { offset: 0 })?;
+        hub.submit_action(2, LogAction::Truncate { offset: 0 })?;
         assert_eq!(
             hub.get_result().await?,
             (

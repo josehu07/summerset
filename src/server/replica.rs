@@ -1,7 +1,6 @@
 //! Summerset generic replica trait to be implemented by all protocol-specific
 //! server replica structs.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
@@ -14,25 +13,16 @@ pub type ReplicaId = u8;
 /// Replica trait to be implement by all protocol-specific server structs.
 #[async_trait]
 pub trait GenericReplica {
-    /// Creates a new replica module.
-    fn new(
-        id: ReplicaId,
-        population: u8,
-        // local address open for client API
+    /// Creates a new replica module and sets up required functionality modules
+    /// according to protocol-specific logic.
+    async fn new_and_setup(
         api_addr: SocketAddr,
-        // local addresses open for peer-peer transport
-        conn_addrs: HashMap<ReplicaId, SocketAddr>,
-        // remote addresses of peers
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
-        // protocol-specific config in TOML format
+        p2p_addr: SocketAddr,
+        manager: SocketAddr, // remote address of manager oracle
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where
         Self: Sized;
-
-    /// Sets up required functionality modules according to protocol-specific
-    /// logic.
-    async fn setup(&mut self) -> Result<(), SummersetError>;
 
     /// Main event loop logic of running this replica.
     async fn run(&mut self);

@@ -1,21 +1,21 @@
-//! Summerset client API communication stub implementation.
+//! Summerset client -> manager oracle control API stub implementation.
 
 use std::net::SocketAddr;
 
 use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
-use crate::server::{ApiRequest, ApiReply};
+use crate::manager::{CtrlRequest, CtrlReply};
 use crate::client::ClientId;
 
 use bytes::BytesMut;
 
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncReadExt;
 
-/// Client API connection stub.
-pub struct ClientApiStub {
+/// Client -> manager oracle control API stub.
+pub struct ClientCtrlStub {
     /// My client ID.
-    id: ClientId,
+    pub id: ClientId,
 
     /// Write-half split of the TCP connection stream.
     conn_write: OwnedWriteHalf,
@@ -33,18 +33,17 @@ pub struct ClientApiStub {
     reply_buf: BytesMut,
 }
 
-impl ClientApiStub {
-    /// Creates a new API connection stub by connecting to the given server.
+impl ClientCtrlStub {
+    /// Creates a new control API stub and connects to the manager.
     pub async fn new_by_connect(
-        id: ClientId,
-        addr: SocketAddr,
+        manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        pf_info!(id; "connecting to server '{}'...", addr);
-        let mut stream = TcpStream::connect(addr).await?;
-        stream.write_u64(id).await?; // send my client ID
+        pf_info!("c"; "connecting to manager '{}'...", manager);
+        let mut stream = TcpStream::connect(manager).await?;
+        let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 
-        Ok(ClientApiStub {
+        Ok(ClientCtrlStub {
             id,
             conn_write: write_half,
             req_buf: BytesMut::with_capacity(8 + 1024),
@@ -54,7 +53,7 @@ impl ClientApiStub {
         })
     }
 
-    /// Sends a request to established server connection. Returns:
+    /// Sends a request to established manager connection. Returns:
     ///   - `Ok(true)` if successful
     ///   - `Ok(false)` if socket full and may block; in this case, the input
     ///                 request is saved and the next calls to `send_req()`
@@ -64,7 +63,7 @@ impl ClientApiStub {
     ///   - `Err(err)` if any unexpected error occurs
     pub fn send_req(
         &mut self,
-        req: Option<&ApiRequest>,
+        req: Option<&CtrlRequest>,
     ) -> Result<bool, SummersetError> {
         if req.is_none() {
             pf_debug!(self.id; "retrying last unsuccessful send_req");
@@ -83,8 +82,8 @@ impl ClientApiStub {
         Ok(retrying)
     }
 
-    /// Receives a reply from established server connection.
-    pub async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+    /// Receives a reply from established manager connection.
+    pub async fn recv_reply(&mut self) -> Result<CtrlReply, SummersetError> {
         let reply =
             safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
@@ -98,4 +97,4 @@ impl ClientApiStub {
     }
 }
 
-// Unit tests are done together with `server::external`.
+// Unit tests are done together with `manager::reactor`.

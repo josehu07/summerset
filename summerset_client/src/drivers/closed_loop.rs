@@ -1,10 +1,10 @@
 //! Closed-loop client-side driver implementation.
 
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, Timer, SummersetError, pf_debug, pf_info, pf_error, logged_err,
+    RequestId, Timer, SummersetError, pf_debug, pf_error, logged_err,
 };
 
 /// Closed-loop driver struct.
@@ -12,8 +12,8 @@ pub struct DriverClosedLoop {
     /// Client ID.
     id: ClientId,
 
-    /// Protocol-specific client stub.
-    stub: Box<dyn GenericEndpoint>,
+    /// Protocol-specific client endpoint.
+    endpoint: Box<dyn GenericEndpoint>,
 
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
@@ -27,18 +27,29 @@ pub struct DriverClosedLoop {
 
 impl DriverClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         DriverClosedLoop {
-            id,
-            stub,
+            id: 255, // nil at this time
+            endpoint,
             next_req: 0,
             timer: Timer::new(),
             timeout,
         }
+    }
+
+    /// Establishes connection with the service.
+    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+        let id = self.endpoint.connect().await?;
+        self.id = id;
+        Ok(())
+    }
+
+    /// Sends leave notification and forgets about the current TCP connections.
+    pub async fn leave(
+        &mut self,
+        permanent: bool,
+    ) -> Result<(), SummersetError> {
+        self.endpoint.leave(permanent).await
     }
 
     /// Attempt to send a request, retrying if received `WouldBlock` failure.
@@ -46,9 +57,9 @@ impl DriverClosedLoop {
         &mut self,
         req: &ApiRequest,
     ) -> Result<(), SummersetError> {
-        let mut success = self.stub.send_req(Some(req))?;
+        let mut success = self.endpoint.send_req(Some(req))?;
         while !success {
-            success = self.stub.send_req(None)?;
+            success = self.endpoint.send_req(None)?;
         }
         Ok(())
     }
@@ -66,7 +77,7 @@ impl DriverClosedLoop {
                 Ok(None)
             }
 
-            reply = self.stub.recv_reply() => {
+            reply = self.endpoint.recv_reply() => {
                 self.timer.cancel()?; // cancel current deadline
                 Ok(Some(reply?))
             }
@@ -74,14 +85,15 @@ impl DriverClosedLoop {
     }
 
     /// Send a Get request and wait for its reply. Returns:
-    ///   - `Ok(Some(Some(value)))` if successful and key exists
-    ///   - `Ok(Some(None))` if successful and key does not exist
+    ///   - `Ok(Some((id, Some(value), latency)))` if successful and key exists
+    ///   - `Ok(Some((id, None, latency)))` if successful and key does not exist
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
+    {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -89,6 +101,7 @@ impl DriverClosedLoop {
             id: req_id,
             cmd: Command::Get { key: key.into() },
         })?;
+        let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -104,7 +117,8 @@ impl DriverClosedLoop {
                     match cmd_result {
                         None => Ok(None),
                         Some(CommandResult::Get { value }) => {
-                            Ok(Some((req_id, value)))
+                            let lat = Instant::now().duration_since(issue_ts);
+                            Ok(Some((req_id, value, lat)))
                         }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
@@ -120,15 +134,16 @@ impl DriverClosedLoop {
     }
 
     /// Send a Put request and wait for its reply. Returns:
-    ///   - `Ok(Some(Some(old_value)))` if successful and key exists
-    ///   - `Ok(Some(None))` if successful and key did not exist
+    ///   - `Ok(Some((id, Some(old_value), latency)))` if successful and key exists
+    ///   - `Ok(Some((id, None, latency)))` if successful and key did not exist
     ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
     ///   - `Err(err)` if any unexpected error occurs
     pub async fn put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<(RequestId, Option<String>)>, SummersetError> {
+    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
+    {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -139,6 +154,7 @@ impl DriverClosedLoop {
                 value: value.into(),
             },
         })?;
+        let issue_ts = Instant::now();
 
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
@@ -154,7 +170,8 @@ impl DriverClosedLoop {
                     match cmd_result {
                         None => Ok(None),
                         Some(CommandResult::Put { old_value }) => {
-                            Ok(Some((req_id, old_value)))
+                            let lat = Instant::now().duration_since(issue_ts);
+                            Ok(Some((req_id, old_value, lat)))
                         }
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")
@@ -165,20 +182,6 @@ impl DriverClosedLoop {
 
             None => Ok(None), // timed-out
 
-            _ => logged_err!(self.id; "unexpected reply type received"),
-        }
-    }
-
-    /// Send leave notification.
-    pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        self.send_req_retry_on_block(&ApiRequest::Leave)?;
-
-        let reply = self.stub.recv_reply().await?;
-        match reply {
-            ApiReply::Leave => {
-                pf_info!(self.id; "left current server connection");
-                Ok(())
-            }
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }

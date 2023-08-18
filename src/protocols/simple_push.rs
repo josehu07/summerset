@@ -4,19 +4,18 @@
 //! replicas. Upon receiving acknowledgement from all peers, executes the
 //! command on the state machine and replies.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::utils::{SummersetError, ReplicaMap};
+use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, StateMachine, CommandResult, CommandId, ExternalApi, ApiRequest,
-    ApiReply, StorageHub, LogAction, LogResult, LogActionId, TransportHub,
-    GenericReplica,
+    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
+    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
+    TransportHub, GenericReplica,
 };
-use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
-};
+use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
+use crate::protocols::SmrProtocol;
 
 use async_trait::async_trait;
 
@@ -30,6 +29,9 @@ pub struct ReplicaConfigSimplePush {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
+    /// Client request batching maximum batch size.
+    pub max_batch_size: usize,
+
     /// Path to backing file.
     pub backer_path: String,
 
@@ -42,6 +44,7 @@ impl Default for ReplicaConfigSimplePush {
     fn default() -> Self {
         ReplicaConfigSimplePush {
             batch_interval_us: 1000,
+            max_batch_size: 5000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
         }
@@ -87,20 +90,20 @@ pub struct SimplePushReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
-    /// Cluster size (number of replicas).
+    /// Total number of replicas in cluster.
     population: u8,
 
-    /// Configuraiton parameters struct.
+    /// Configuration parameters struct.
     config: ReplicaConfigSimplePush,
 
     /// Address string for client requests API.
-    api_addr: SocketAddr,
+    _api_addr: SocketAddr,
 
-    /// Local address strings for peer-peer connections.
-    conn_addrs: HashMap<ReplicaId, SocketAddr>,
+    /// Address string for internal peer-peer communication.
+    _p2p_addr: SocketAddr,
 
-    /// Map from peer replica ID -> address.
-    peer_addrs: HashMap<ReplicaId, SocketAddr>,
+    /// ControlHub module.
+    control_hub: ControlHub,
 
     /// ExternalApi module.
     external_api: ExternalApi,
@@ -137,7 +140,7 @@ impl SimplePushReplica {
     }
 
     /// Handler of client request batch chan recv.
-    async fn handle_req_batch(
+    fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
@@ -145,7 +148,7 @@ impl SimplePushReplica {
         assert!(batch_size > 0);
 
         // target peers to push to
-        let mut target = ReplicaMap::new(self.population, false)?;
+        let mut target = ReplicaMap::new(self.population, false);
         let mut peer_cnt = 0;
         for peer in 0..self.population {
             if peer_cnt == self.config.rep_degree {
@@ -172,32 +175,28 @@ impl SimplePushReplica {
         let log_entry = LogEntry::FromClient {
             reqs: req_batch.clone(),
         };
-        self.storage_hub
-            .submit_action(
-                inst_idx as LogActionId,
-                LogAction::Append {
-                    entry: log_entry,
-                    sync: true,
-                },
-            )
-            .await?;
+        self.storage_hub.submit_action(
+            inst_idx as LogActionId,
+            LogAction::Append {
+                entry: log_entry,
+                sync: true,
+            },
+        )?;
 
         // send push message to chosen peers
-        self.transport_hub
-            .bcast_msg(
-                PushMsg::Push {
-                    src_inst_idx: inst_idx,
-                    reqs: req_batch,
-                },
-                target,
-            )
-            .await?;
+        self.transport_hub.bcast_msg(
+            PushMsg::Push {
+                src_inst_idx: inst_idx,
+                reqs: req_batch,
+            },
+            Some(target),
+        )?;
 
         Ok(())
     }
 
     /// Handler of durable logging result chan recv.
-    async fn handle_log_result(
+    fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<LogEntry>,
@@ -228,12 +227,10 @@ impl SimplePushReplica {
             for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
                 match req {
                     ApiRequest::Req { cmd, .. } => {
-                        self.state_machine
-                            .submit_cmd(
-                                Self::make_command_id(inst_idx, cmd_idx),
-                                cmd.clone(),
-                            )
-                            .await?
+                        self.state_machine.submit_cmd(
+                            Self::make_command_id(inst_idx, cmd_idx),
+                            cmd.clone(),
+                        )?
                     }
                     _ => continue, // ignore other types of requests
                 }
@@ -243,22 +240,20 @@ impl SimplePushReplica {
         // if this instance was pushed from a peer, reply to that peer
         if let Some((peer, src_inst_idx)) = inst.from_peer {
             assert!(inst.pending_peers.count() == 0);
-            self.transport_hub
-                .send_msg(
-                    PushMsg::PushReply {
-                        src_inst_idx,
-                        num_reqs: inst.reqs.len(),
-                    },
-                    peer,
-                )
-                .await?;
+            self.transport_hub.send_msg(
+                PushMsg::PushReply {
+                    src_inst_idx,
+                    num_reqs: inst.reqs.len(),
+                },
+                peer,
+            )?;
         }
 
         Ok(())
     }
 
     /// Handler of push message from peer.
-    async fn handle_push_msg(
+    fn handle_push_msg(
         &mut self,
         peer: ReplicaId,
         src_inst_idx: usize,
@@ -267,7 +262,7 @@ impl SimplePushReplica {
         let inst = Instance {
             reqs: req_batch.clone(),
             durable: false,
-            pending_peers: ReplicaMap::new(self.population, false)?,
+            pending_peers: ReplicaMap::new(self.population, false),
             execed: vec![false; req_batch.len()],
             from_peer: Some((peer, src_inst_idx)),
         };
@@ -279,21 +274,19 @@ impl SimplePushReplica {
             peer,
             reqs: req_batch.clone(),
         };
-        self.storage_hub
-            .submit_action(
-                inst_idx as LogActionId,
-                LogAction::Append {
-                    entry: log_entry,
-                    sync: true,
-                },
-            )
-            .await?;
+        self.storage_hub.submit_action(
+            inst_idx as LogActionId,
+            LogAction::Append {
+                entry: log_entry,
+                sync: true,
+            },
+        )?;
 
         Ok(())
     }
 
     /// Handler of push reply from peer.
-    async fn handle_push_reply(
+    fn handle_push_reply(
         &mut self,
         peer: ReplicaId,
         inst_idx: usize,
@@ -326,12 +319,10 @@ impl SimplePushReplica {
             for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
                 match req {
                     ApiRequest::Req { cmd, .. } => {
-                        self.state_machine
-                            .submit_cmd(
-                                Self::make_command_id(inst_idx, cmd_idx),
-                                cmd.clone(),
-                            )
-                            .await?
+                        self.state_machine.submit_cmd(
+                            Self::make_command_id(inst_idx, cmd_idx),
+                            cmd.clone(),
+                        )?
                     }
                     _ => continue, // ignore other types of requests
                 }
@@ -342,7 +333,7 @@ impl SimplePushReplica {
     }
 
     /// Handler of state machine exec result chan recv.
-    async fn handle_cmd_result(
+    fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,
@@ -373,16 +364,14 @@ impl SimplePushReplica {
             let (client, req) = &inst.reqs[cmd_idx];
             match req {
                 ApiRequest::Req { id: req_id, .. } => {
-                    self.external_api
-                        .send_reply(
-                            ApiReply::Reply {
-                                id: *req_id,
-                                result: Some(cmd_result),
-                                redirect: None,
-                            },
-                            *client,
-                        )
-                        .await?;
+                    self.external_api.send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(cmd_result),
+                            redirect: None,
+                        },
+                        *client,
+                    )?;
                 }
                 _ => {
                     return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
@@ -392,93 +381,93 @@ impl SimplePushReplica {
 
         Ok(())
     }
+
+    /// Synthesized handler of manager control messages.
+    fn handle_ctrl_msg(&mut self, _msg: CtrlMsg) -> Result<(), SummersetError> {
+        // TODO: fill this when more control message types added
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl GenericReplica for SimplePushReplica {
-    fn new(
-        id: ReplicaId,
-        population: u8,
+    async fn new_and_setup(
         api_addr: SocketAddr,
-        conn_addrs: HashMap<ReplicaId, SocketAddr>,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        p2p_addr: SocketAddr,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if population == 0 {
-            return Err(SummersetError(format!(
-                "invalid population {}",
-                population
-            )));
-        }
-        if id >= population {
-            return Err(SummersetError(format!(
-                "invalid replica ID {} / {}",
-                id, population
-            )));
-        }
-        if conn_addrs.len() != peer_addrs.len() {
-            return logged_err!(
-                id;
-                "size of conn_addrs {} != size of peer_addrs {}",
-                conn_addrs.len(), peer_addrs.len()
-            );
-        }
-
         let config = parsed_config!(config_str => ReplicaConfigSimplePush;
-                                    batch_interval_us, backer_path, rep_degree)?;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, rep_degree)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
-                id;
+                "s";
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
             );
         }
-        if config.rep_degree >= population {
-            return logged_err!(
-                id;
-                "invalid config.rep_degree {}",
-                config.rep_degree
-            );
+
+        // connect to the cluster manager and get assigned a server ID
+        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let id = control_hub.me;
+
+        // ask for population number and the list of peers to proactively
+        // connect to
+        control_hub.send_ctrl(CtrlMsg::NewServerJoin {
+            id,
+            protocol: SmrProtocol::SimplePush,
+            api_addr,
+            p2p_addr,
+        })?;
+        let (population, to_peers) = if let CtrlMsg::ConnectToPeers {
+            population,
+            to_peers,
+        } = control_hub.recv_ctrl().await?
+        {
+            (population, to_peers)
+        } else {
+            return logged_err!(id; "unexpected ctrl msg type received");
+        };
+
+        let state_machine = StateMachine::new_and_setup(id).await?;
+
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
+
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+
+        // proactively connect to some peers, then wait for all population
+        // have been connected with me
+        for (peer, addr) in to_peers {
+            transport_hub.connect_to_peer(peer, addr).await?;
         }
+        transport_hub.wait_for_group(population).await?;
+
+        let external_api = ExternalApi::new_and_setup(
+            id,
+            api_addr,
+            Duration::from_micros(config.batch_interval_us),
+            config.max_batch_size,
+        )
+        .await?;
 
         Ok(SimplePushReplica {
             id,
             population,
             config,
-            api_addr,
-            conn_addrs,
-            peer_addrs,
-            external_api: ExternalApi::new(id),
-            state_machine: StateMachine::new(id),
-            storage_hub: StorageHub::new(id),
-            transport_hub: TransportHub::new(id, population),
+            _api_addr: api_addr,
+            _p2p_addr: p2p_addr,
+            control_hub,
+            external_api,
+            state_machine,
+            storage_hub,
+            transport_hub,
             insts: vec![],
             log_offset: 0,
         })
-    }
-
-    async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine.setup().await?;
-
-        self.storage_hub
-            .setup(Path::new(&self.config.backer_path))
-            .await?;
-
-        self.transport_hub.setup(&self.conn_addrs).await?;
-        if !self.peer_addrs.is_empty() {
-            self.transport_hub
-                .group_connect(&self.conn_addrs, &self.peer_addrs)
-                .await?;
-        }
-
-        self.external_api
-            .setup(
-                self.api_addr,
-                Duration::from_micros(self.config.batch_interval_us),
-            )
-            .await?;
-
-        Ok(())
     }
 
     async fn run(&mut self) {
@@ -491,7 +480,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch).await {
+                    if let Err(e) = self.handle_req_batch(req_batch) {
                         pf_error!(self.id; "error handling req batch: {}", e);
                     }
                 },
@@ -503,7 +492,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
+                    if let Err(e) = self.handle_log_result(action_id, log_result) {
                         pf_error!(self.id; "error handling log result {}: {}", action_id, e);
                     }
                 },
@@ -517,12 +506,12 @@ impl GenericReplica for SimplePushReplica {
                     let (peer, msg) = msg.unwrap();
                     match msg {
                         PushMsg::Push { src_inst_idx, reqs } => {
-                            if let Err(e) = self.handle_push_msg(peer, src_inst_idx, reqs).await {
+                            if let Err(e) = self.handle_push_msg(peer, src_inst_idx, reqs) {
                                 pf_error!(self.id; "error handling peer msg: {}", e);
                             }
                         },
                         PushMsg::PushReply { src_inst_idx, num_reqs } => {
-                            if let Err(e) = self.handle_push_reply(peer, src_inst_idx, num_reqs).await {
+                            if let Err(e) = self.handle_push_reply(peer, src_inst_idx, num_reqs) {
                                 pf_error!(self.id; "error handling peer reply: {}", e);
                             }
                         },
@@ -537,10 +526,22 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
                         pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
+
+                // manager control message
+                ctrl_msg = self.control_hub.recv_ctrl() => {
+                    if let Err(e) = ctrl_msg {
+                        pf_error!(self.id; "error getting ctrl msg: {}", e);
+                        continue;
+                    }
+                    let ctrl_msg = ctrl_msg.unwrap();
+                    if let Err(e) = self.handle_ctrl_msg(ctrl_msg) {
+                        pf_error!(self.id; "error handling ctrl msg: {}", e);
+                    }
+                }
             }
         }
     }
@@ -565,68 +566,136 @@ pub struct SimplePushClient {
     /// Client ID.
     id: ClientId,
 
-    /// Server addresses of the service.
-    servers: HashMap<ReplicaId, SocketAddr>,
+    /// Address of the cluster manager oracle.
+    manager: SocketAddr,
 
     /// Configuration parameters struct.
     config: ClientConfigSimplePush,
 
-    /// Stubs for communicating with the service.
-    stubs: Option<(ClientSendStub, ClientRecvStub)>,
+    /// Control API stub to the cluster manager.
+    ctrl_stub: Option<ClientCtrlStub>,
+
+    /// API stubs for communicating with servers.
+    api_stub: Option<ClientApiStub>,
 }
 
 #[async_trait]
 impl GenericEndpoint for SimplePushClient {
     fn new(
-        id: ClientId,
-        servers: HashMap<ReplicaId, SocketAddr>,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if servers.is_empty() {
-            return logged_err!(id; "empty servers list");
-        }
-
         let config = parsed_config!(config_str => ClientConfigSimplePush;
                                     server_id)?;
-        if !servers.contains_key(&config.server_id) {
-            return logged_err!(
-                id;
-                "server_id {} not found in servers",
-                config.server_id
-            );
-        }
 
         Ok(SimplePushClient {
-            id,
-            servers,
+            id: 255, // nil at this time
+            manager,
             config,
-            stubs: None,
+            ctrl_stub: None,
+            api_stub: None,
         })
     }
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
-        let api_stub = ClientApiStub::new(self.id);
-        api_stub
-            .connect(self.servers[&self.config.server_id])
-            .await
-            .map(|stubs| {
-                self.stubs = Some(stubs);
-            })
+    async fn connect(&mut self) -> Result<ClientId, SummersetError> {
+        // disallow reconnection without leaving
+        if self.api_stub.is_some() {
+            return logged_err!(self.id; "reconnecting without leaving");
+        }
+
+        // if ctrl_stubs not established yet, connect to the manager
+        if self.ctrl_stub.is_none() {
+            let ctrl_stub =
+                ClientCtrlStub::new_by_connect(self.manager).await?;
+            self.id = ctrl_stub.id;
+            self.ctrl_stub = Some(ctrl_stub);
+        }
+        let ctrl_stub = self.ctrl_stub.as_mut().unwrap();
+
+        // ask the manager about the list of active servers
+        let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::QueryInfo { servers } => {
+                // connect to the one with server ID in config
+                let api_stub = ClientApiStub::new_by_connect(
+                    self.id,
+                    servers[&self.config.server_id],
+                )
+                .await?;
+                self.api_stub = Some(api_stub);
+                Ok(self.id)
+            }
+            _ => logged_err!(self.id; "unexpected reply type received"),
+        }
+    }
+
+    async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
+        // send leave notification to current connected server
+        if let Some(mut api_stub) = self.api_stub.take() {
+            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
+            while !sent {
+                sent = api_stub.send_req(None)?;
+            }
+
+            let reply = api_stub.recv_reply().await?;
+            match reply {
+                ApiReply::Leave => {
+                    pf_info!(self.id; "left current server connection");
+                    api_stub.forget();
+                }
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
+                }
+            }
+        }
+
+        // if permanently leaving, send leave notification to the manager
+        if permanent {
+            // disallow multiple permanent leaving
+            if self.ctrl_stub.is_none() {
+                return logged_err!(self.id; "repeated permanent leaving");
+            }
+
+            if let Some(mut ctrl_stub) = self.ctrl_stub.take() {
+                let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+                while !sent {
+                    sent = ctrl_stub.send_req(None)?;
+                }
+
+                let reply = ctrl_stub.recv_reply().await?;
+                match reply {
+                    CtrlReply::Leave => {
+                        pf_info!(self.id; "left current manager connection");
+                        ctrl_stub.forget();
+                    }
+                    _ => {
+                        return logged_err!(self.id; "unexpected reply type received");
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        match self.stubs {
-            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
+        match self.api_stub {
+            Some(ref mut api_stub) => api_stub.send_req(req),
             None => logged_err!(self.id; "client is not set up"),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        match self.stubs {
-            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
+        match self.api_stub {
+            Some(ref mut api_stub) => api_stub.recv_reply().await,
             None => logged_err!(self.id; "client is not set up"),
         }
     }

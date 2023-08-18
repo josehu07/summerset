@@ -1,6 +1,6 @@
 [package]
-name = "summerset_client"
-description = "Summerset client side executable"
+name = "summerset_manager"
+description = "Summerset cluster manager oracle"
 version = "0.1.0"
 edition = "2021"
 authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
@@ -9,10 +9,6 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 summerset = { path = "../" }
 tokio = { version = "1.29", features = ["macros", "rt-multi-thread"] }
 rand = "0.8"
-lazy_static = "1.4"
 clap = { version = "4.0", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-toml = { version = "0.7", features = ["parse"] }
 log = "0.4"
 env_logger = "0.10"
-color-print = { version = "0.3", features = ["terminfo"] }

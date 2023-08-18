@@ -1,12 +1,14 @@
 //! Summerset's collection of replication protocols.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
-use crate::server::{GenericReplica, ReplicaId};
-use crate::client::{GenericEndpoint, ClientId};
+use crate::manager::ClusterManager;
+use crate::server::GenericReplica;
+use crate::client::GenericEndpoint;
+
+use serde::{Serialize, Deserialize};
 
 mod rep_nothing;
 use rep_nothing::{RepNothingReplica, RepNothingClient};
@@ -21,8 +23,8 @@ use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
 pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 
 /// Enum of supported replication protocol types.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum SMRProtocol {
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+pub enum SmrProtocol {
     RepNothing,
     SimplePush,
     MultiPaxos,
@@ -37,8 +39,8 @@ macro_rules! box_if_ok {
     };
 }
 
-impl SMRProtocol {
-    /// Parse command line string into SMRProtocol enum.
+impl SmrProtocol {
+    /// Parse command line string into SmrProtocol enum.
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
             "RepNothing" => Some(Self::RepNothing),
@@ -48,60 +50,74 @@ impl SMRProtocol {
         }
     }
 
-    /// Create a server replicator module instance of this protocol on heap.
-    pub fn new_server_node(
+    /// Create the cluster manager for this protocol.
+    pub async fn new_cluster_manager_setup(
         &self,
-        id: ReplicaId,
+        srv_addr: SocketAddr,
+        cli_addr: SocketAddr,
         population: u8,
+    ) -> Result<ClusterManager, SummersetError> {
+        ClusterManager::new_and_setup(*self, srv_addr, cli_addr, population)
+            .await
+    }
+
+    /// Create a server replica instance of this protocol on heap.
+    pub async fn new_server_replica_setup(
+        &self,
         api_addr: SocketAddr,
-        conn_addrs: HashMap<ReplicaId, SocketAddr>,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        p2p_addr: SocketAddr,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericReplica>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(RepNothingReplica::new(
-                    id, population, api_addr, conn_addrs, peer_addrs,
-                    config_str
-                ))
+                box_if_ok!(
+                    RepNothingReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushReplica::new(
-                    id, population, api_addr, conn_addrs, peer_addrs,
-                    config_str
-                ))
+                box_if_ok!(
+                    SimplePushReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
             }
             Self::MultiPaxos => {
-                box_if_ok!(MultiPaxosReplica::new(
-                    id, population, api_addr, conn_addrs, peer_addrs,
-                    config_str
-                ))
+                box_if_ok!(
+                    MultiPaxosReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
             }
         }
     }
 
-    /// Create a client replicator stub instance of this protocol on heap.
-    pub fn new_client_stub(
+    /// Create a client endpoint instance of this protocol on heap.
+    pub fn new_client_endpoint(
         &self,
-        id: ClientId,
-        servers: HashMap<ReplicaId, SocketAddr>,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericEndpoint>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(RepNothingClient::new(id, servers, config_str))
+                box_if_ok!(RepNothingClient::new(manager, config_str))
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushClient::new(id, servers, config_str))
+                box_if_ok!(SimplePushClient::new(manager, config_str))
             }
             Self::MultiPaxos => {
-                box_if_ok!(MultiPaxosClient::new(id, servers, config_str))
+                box_if_ok!(MultiPaxosClient::new(manager, config_str))
             }
         }
     }
 }
 
-impl fmt::Display for SMRProtocol {
+impl fmt::Display for SmrProtocol {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?}", self)
     }
@@ -114,8 +130,8 @@ mod protocols_name_tests {
     macro_rules! valid_name_test {
         ($protocol:ident) => {
             assert_eq!(
-                SMRProtocol::parse_name(stringify!($protocol)),
-                Some(SMRProtocol::$protocol)
+                SmrProtocol::parse_name(stringify!($protocol)),
+                Some(SmrProtocol::$protocol)
             );
         };
     }
@@ -129,6 +145,6 @@ mod protocols_name_tests {
 
     #[test]
     fn parse_invalid_name() {
-        assert_eq!(SMRProtocol::parse_name("InvalidProtocol"), None);
+        assert_eq!(SmrProtocol::parse_name("InvalidProtocol"), None);
     }
 }

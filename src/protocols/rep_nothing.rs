@@ -3,18 +3,18 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
+use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, StateMachine, CommandResult, CommandId, ExternalApi, ApiRequest,
-    ApiReply, StorageHub, LogAction, LogResult, LogActionId, GenericReplica,
+    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
+    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
+    GenericReplica,
 };
-use crate::client::{
-    ClientId, ClientApiStub, ClientSendStub, ClientRecvStub, GenericEndpoint,
-};
+use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
+use crate::protocols::SmrProtocol;
 
 use async_trait::async_trait;
 
@@ -28,8 +28,14 @@ pub struct ReplicaConfigRepNothing {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
+    /// Client request batching maximum batch size.
+    pub max_batch_size: usize,
+
     /// Path to backing file.
     pub backer_path: String,
+
+    /// Whether to call `fsync()`/`fdatasync()` on logger.
+    pub logger_sync: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -37,7 +43,9 @@ impl Default for ReplicaConfigRepNothing {
     fn default() -> Self {
         ReplicaConfigRepNothing {
             batch_interval_us: 1000,
+            max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
+            logger_sync: false,
         }
     }
 }
@@ -61,20 +69,17 @@ pub struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
-    /// Cluster size (number of replicas).
-    _population: u8,
-
-    /// Configuraiton parameters struct.
+    /// Configuration parameters struct.
     config: ReplicaConfigRepNothing,
 
     /// Address string for client requests API.
-    api_addr: SocketAddr,
+    _api_addr: SocketAddr,
 
-    /// Local address strings for peer-peer connections.
-    _conn_addrs: HashMap<ReplicaId, SocketAddr>,
+    /// Address string for internal peer-peer communication.
+    _p2p_addr: SocketAddr,
 
-    /// Map from peer replica ID -> address.
-    _peer_addrs: HashMap<ReplicaId, SocketAddr>,
+    /// ControlHub module.
+    control_hub: ControlHub,
 
     /// ExternalApi module.
     external_api: ExternalApi,
@@ -108,7 +113,7 @@ impl RepNothingReplica {
     }
 
     /// Handler of client request batch chan recv.
-    async fn handle_req_batch(
+    fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
@@ -125,21 +130,19 @@ impl RepNothingReplica {
 
         // submit log action to make this instance durable
         let log_entry = LogEntry { reqs: req_batch };
-        self.storage_hub
-            .submit_action(
-                inst_idx as LogActionId,
-                LogAction::Append {
-                    entry: log_entry,
-                    sync: true,
-                },
-            )
-            .await?;
+        self.storage_hub.submit_action(
+            inst_idx as LogActionId,
+            LogAction::Append {
+                entry: log_entry,
+                sync: self.config.logger_sync,
+            },
+        )?;
 
         Ok(())
     }
 
     /// Handler of durable logging result chan recv.
-    async fn handle_log_result(
+    fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<LogEntry>,
@@ -168,14 +171,10 @@ impl RepNothingReplica {
         // submit execution commands in order
         for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
             match req {
-                ApiRequest::Req { cmd, .. } => {
-                    self.state_machine
-                        .submit_cmd(
-                            Self::make_command_id(inst_idx, cmd_idx),
-                            cmd.clone(),
-                        )
-                        .await?
-                }
+                ApiRequest::Req { cmd, .. } => self.state_machine.submit_cmd(
+                    Self::make_command_id(inst_idx, cmd_idx),
+                    cmd.clone(),
+                )?,
                 _ => continue, // ignore other types of requests
             }
         }
@@ -184,7 +183,7 @@ impl RepNothingReplica {
     }
 
     /// Handler of state machine exec result chan recv.
-    async fn handle_cmd_result(
+    fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,
@@ -210,16 +209,14 @@ impl RepNothingReplica {
         let (client, req) = &inst.reqs[cmd_idx];
         match req {
             ApiRequest::Req { id: req_id, .. } => {
-                self.external_api
-                    .send_reply(
-                        ApiReply::Reply {
-                            id: *req_id,
-                            result: Some(cmd_result),
-                            redirect: None,
-                        },
-                        *client,
-                    )
-                    .await?;
+                self.external_api.send_reply(
+                    ApiReply::Reply {
+                        id: *req_id,
+                        result: Some(cmd_result),
+                        redirect: None,
+                    },
+                    *client,
+                )?;
             }
             _ => {
                 return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
@@ -228,80 +225,74 @@ impl RepNothingReplica {
 
         Ok(())
     }
+
+    /// Synthesized handler of manager control messages.
+    fn handle_ctrl_msg(&mut self, _msg: CtrlMsg) -> Result<(), SummersetError> {
+        // TODO: fill this when more control message types added
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl GenericReplica for RepNothingReplica {
-    fn new(
-        id: ReplicaId,
-        population: u8,
+    async fn new_and_setup(
         api_addr: SocketAddr,
-        conn_addrs: HashMap<ReplicaId, SocketAddr>,
-        peer_addrs: HashMap<ReplicaId, SocketAddr>,
+        p2p_addr: SocketAddr,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if population == 0 {
-            return Err(SummersetError(format!(
-                "invalid population {}",
-                population
-            )));
-        }
-        if id >= population {
-            return Err(SummersetError(format!(
-                "invalid replica ID {} / {}",
-                id, population
-            )));
-        }
-        if conn_addrs.len() != peer_addrs.len() {
-            return logged_err!(
-                id;
-                "size of conn_addrs {} != size of peer_addrs {}",
-                conn_addrs.len(), peer_addrs.len()
-            );
-        }
-
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, backer_path)?;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
-                id;
+                "s";
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
             );
         }
 
-        Ok(RepNothingReplica {
+        // connect to the cluster manager and get assigned a server ID
+        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let id = control_hub.me;
+
+        // tell the manager tha I have joined
+        control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
-            _population: population,
-            config,
+            protocol: SmrProtocol::RepNothing,
             api_addr,
-            _conn_addrs: conn_addrs,
-            _peer_addrs: peer_addrs,
-            external_api: ExternalApi::new(id),
-            state_machine: StateMachine::new(id),
-            storage_hub: StorageHub::new(id),
-            insts: vec![],
-            log_offset: 0,
-        })
-    }
+            p2p_addr,
+        })?;
+        control_hub.recv_ctrl().await?;
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
-        self.state_machine.setup().await?;
+        let state_machine = StateMachine::new_and_setup(id).await?;
 
-        self.storage_hub
-            .setup(Path::new(&self.config.backer_path))
-            .await?;
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
 
         // TransportHub is not needed in RepNothing
 
-        self.external_api
-            .setup(
-                self.api_addr,
-                Duration::from_micros(self.config.batch_interval_us),
-            )
-            .await?;
+        let external_api = ExternalApi::new_and_setup(
+            id,
+            api_addr,
+            Duration::from_micros(config.batch_interval_us),
+            config.max_batch_size,
+        )
+        .await?;
 
-        Ok(())
+        Ok(RepNothingReplica {
+            id,
+            config,
+            _api_addr: api_addr,
+            _p2p_addr: p2p_addr,
+            control_hub,
+            external_api,
+            state_machine,
+            storage_hub,
+            insts: vec![],
+            log_offset: 0,
+        })
     }
 
     async fn run(&mut self) {
@@ -314,7 +305,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch).await {
+                    if let Err(e) = self.handle_req_batch(req_batch) {
                         pf_error!(self.id; "error handling req batch: {}", e);
                     }
                 },
@@ -326,7 +317,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
+                    if let Err(e) = self.handle_log_result(action_id, log_result) {
                         pf_error!(self.id; "error handling log result {}: {}", action_id, e);
                     }
                 },
@@ -338,10 +329,22 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
                         pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
+
+                // manager control message
+                ctrl_msg = self.control_hub.recv_ctrl() => {
+                    if let Err(e) = ctrl_msg {
+                        pf_error!(self.id; "error getting ctrl msg: {}", e);
+                        continue;
+                    }
+                    let ctrl_msg = ctrl_msg.unwrap();
+                    if let Err(e) = self.handle_ctrl_msg(ctrl_msg) {
+                        pf_error!(self.id; "error handling ctrl msg: {}", e);
+                    }
+                }
             }
         }
     }
@@ -366,68 +369,136 @@ pub struct RepNothingClient {
     /// Client ID.
     id: ClientId,
 
-    /// Server addresses of the service.
-    servers: HashMap<ReplicaId, SocketAddr>,
+    /// Address of the cluster manager oracle.
+    manager: SocketAddr,
 
     /// Configuration parameters struct.
     config: ClientConfigRepNothing,
 
-    /// Stubs for communicating with the service.
-    stubs: Option<(ClientSendStub, ClientRecvStub)>,
+    /// Control API stub to the cluster manager.
+    ctrl_stub: Option<ClientCtrlStub>,
+
+    /// API stubs for communicating with servers.
+    api_stub: Option<ClientApiStub>,
 }
 
 #[async_trait]
 impl GenericEndpoint for RepNothingClient {
     fn new(
-        id: ClientId,
-        servers: HashMap<ReplicaId, SocketAddr>,
+        manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        if servers.is_empty() {
-            return logged_err!(id; "empty servers list");
-        }
-
         let config = parsed_config!(config_str => ClientConfigRepNothing;
                                     server_id)?;
-        if !servers.contains_key(&config.server_id) {
-            return logged_err!(
-                id;
-                "server_id {} not found in servers",
-                config.server_id
-            );
-        }
 
         Ok(RepNothingClient {
-            id,
-            servers,
+            id: 255, // nil at this time
+            manager,
             config,
-            stubs: None,
+            ctrl_stub: None,
+            api_stub: None,
         })
     }
 
-    async fn setup(&mut self) -> Result<(), SummersetError> {
-        let api_stub = ClientApiStub::new(self.id);
-        api_stub
-            .connect(self.servers[&self.config.server_id])
-            .await
-            .map(|stubs| {
-                self.stubs = Some(stubs);
-            })
+    async fn connect(&mut self) -> Result<ClientId, SummersetError> {
+        // disallow reconnection without leaving
+        if self.api_stub.is_some() {
+            return logged_err!(self.id; "reconnecting without leaving");
+        }
+
+        // if ctrl_stubs not established yet, connect to the manager
+        if self.ctrl_stub.is_none() {
+            let ctrl_stub =
+                ClientCtrlStub::new_by_connect(self.manager).await?;
+            self.id = ctrl_stub.id;
+            self.ctrl_stub = Some(ctrl_stub);
+        }
+        let ctrl_stub = self.ctrl_stub.as_mut().unwrap();
+
+        // ask the manager about the list of active servers
+        let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::QueryInfo { servers } => {
+                // connect to the one with server ID in config
+                let api_stub = ClientApiStub::new_by_connect(
+                    self.id,
+                    servers[&self.config.server_id],
+                )
+                .await?;
+                self.api_stub = Some(api_stub);
+                Ok(self.id)
+            }
+            _ => logged_err!(self.id; "unexpected reply type received"),
+        }
+    }
+
+    async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
+        // send leave notification to current connected server
+        if let Some(mut api_stub) = self.api_stub.take() {
+            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
+            while !sent {
+                sent = api_stub.send_req(None)?;
+            }
+
+            let reply = api_stub.recv_reply().await?;
+            match reply {
+                ApiReply::Leave => {
+                    pf_info!(self.id; "left current server connection");
+                    api_stub.forget();
+                }
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
+                }
+            }
+        }
+
+        // if permanently leaving, send leave notification to the manager
+        if permanent {
+            // disallow multiple permanent leaving
+            if self.ctrl_stub.is_none() {
+                return logged_err!(self.id; "repeated permanent leaving");
+            }
+
+            if let Some(mut ctrl_stub) = self.ctrl_stub.take() {
+                let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+                while !sent {
+                    sent = ctrl_stub.send_req(None)?;
+                }
+
+                let reply = ctrl_stub.recv_reply().await?;
+                match reply {
+                    CtrlReply::Leave => {
+                        pf_info!(self.id; "left current manager connection");
+                        ctrl_stub.forget();
+                    }
+                    _ => {
+                        return logged_err!(self.id; "unexpected reply type received");
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        match self.stubs {
-            Some((ref mut send_stub, _)) => Ok(send_stub.send_req(req)?),
+        match self.api_stub {
+            Some(ref mut api_stub) => api_stub.send_req(req),
             None => logged_err!(self.id; "client is not set up"),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        match self.stubs {
-            Some((_, ref mut recv_stub)) => recv_stub.recv_reply().await,
+        match self.api_stub {
+            Some(ref mut api_stub) => api_stub.recv_reply().await,
             None => logged_err!(self.id; "client is not set up"),
         }
     }

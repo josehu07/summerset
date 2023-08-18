@@ -4,11 +4,12 @@ use std::io::{self, Write};
 
 use crate::drivers::DriverClosedLoop;
 
+use color_print::cprint;
+
 use tokio::time::Duration;
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, CommandResult, RequestId,
-    SummersetError,
+    GenericEndpoint, Command, CommandResult, RequestId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -16,9 +17,6 @@ const PROMPT: &str = ">>>>> ";
 
 /// Interactive REPL-style client struct.
 pub struct ClientRepl {
-    /// Client ID.
-    _id: ClientId,
-
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -28,21 +26,16 @@ pub struct ClientRepl {
 
 impl ClientRepl {
     /// Creates a new REPL-style client.
-    pub fn new(
-        id: ClientId,
-        stub: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         ClientRepl {
-            _id: id,
-            driver: DriverClosedLoop::new(id, stub, timeout),
+            driver: DriverClosedLoop::new(endpoint, timeout),
             input_buf: String::new(),
         }
     }
 
     /// Prints the prompt string.
     fn print_prompt(&mut self) {
-        print!("{}", PROMPT);
+        cprint!("<bright-yellow>{}</>", PROMPT);
         io::stdout().flush().unwrap();
     }
 
@@ -138,18 +131,19 @@ impl ClientRepl {
     async fn eval_command(
         &mut self,
         cmd: Command,
-    ) -> Result<Option<(RequestId, CommandResult)>, SummersetError> {
+    ) -> Result<Option<(RequestId, CommandResult, Duration)>, SummersetError>
+    {
         match cmd {
             Command::Get { key } => {
-                Ok(self.driver.get(&key).await?.map(|(req_id, value)| {
-                    (req_id, CommandResult::Get { value })
+                Ok(self.driver.get(&key).await?.map(|(req_id, value, lat)| {
+                    (req_id, CommandResult::Get { value }, lat)
                 }))
             }
 
             Command::Put { key, value } => {
                 Ok(self.driver.put(&key, &value).await?.map(
-                    |(req_id, old_value)| {
-                        (req_id, CommandResult::Put { old_value })
+                    |(req_id, old_value, lat)| {
+                        (req_id, CommandResult::Put { old_value }, lat)
                     },
                 ))
             }
@@ -157,9 +151,13 @@ impl ClientRepl {
     }
 
     /// Prints command execution result.
-    fn print_result(&mut self, result: Option<(RequestId, CommandResult)>) {
-        if let Some((req_id, cmd_result)) = result {
-            println!("({}) {:?}", req_id, cmd_result);
+    fn print_result(
+        &mut self,
+        result: Option<(RequestId, CommandResult, Duration)>,
+    ) {
+        if let Some((req_id, cmd_result, lat)) = result {
+            let lat_ms = lat.as_secs_f64() * 1000.0;
+            println!("({}) {:?} <took {:.2} ms>", req_id, cmd_result, lat_ms);
         } else {
             println!("Unsuccessful: wrong leader or timeout?");
         }
@@ -172,7 +170,6 @@ impl ClientRepl {
 
         let cmd = self.read_command()?;
         if cmd.is_none() {
-            self.driver.leave().await?;
             return Ok(false);
         }
 
@@ -183,11 +180,16 @@ impl ClientRepl {
     }
 
     /// Runs the infinite REPL loop.
-    pub async fn run(&mut self) {
+    pub async fn run(&mut self) -> Result<(), SummersetError> {
+        self.driver.connect().await?;
+
         loop {
             if let Ok(false) = self.iter().await {
+                self.driver.leave(true).await?;
                 break;
             }
         }
+
+        Ok(())
     }
 }

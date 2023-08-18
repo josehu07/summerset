@@ -1,0 +1,143 @@
+//! Safe TCP read/write helpers that provides cancellation safety on the read
+//! side and deadlock avoidance on the write side.
+
+use std::io::ErrorKind;
+
+use crate::utils::SummersetError;
+
+use bytes::{Bytes, BytesMut};
+
+use serde::{Serialize, de::DeserializeOwned};
+
+use rmp_serde::encode::to_vec as encode_to_vec;
+use rmp_serde::decode::from_read as decode_from_read;
+
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+
+/// Receives an object of type `T` from TCP readable connection `conn_read`,
+/// using `read_buf` as buffer storage for partial reads. Returns:
+///   - `Ok(obj)` if successful; upon returning, the read buffer is cleared
+///   - `Err(err)` if any unexpected error occurs
+///
+/// CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()` here
+/// because this function is intended to be used as a `tokio::select!` branch
+/// and that those two methods are not cancellation-safe. In the case of being
+/// cancelled midway before receiving the entire object (note that such
+/// cancellation can only happen at `.await` points), bytes already read are
+/// stored in the read buffer and will continue to be appended by future
+/// invocations until successful returning.
+pub async fn safe_tcp_read<T, Conn>(
+    read_buf: &mut BytesMut,
+    conn_read: &mut Conn,
+) -> Result<T, SummersetError>
+where
+    T: DeserializeOwned,
+    Conn: AsyncReadExt + std::marker::Unpin,
+{
+    // read length of obj first
+    if read_buf.capacity() < 8 {
+        read_buf.reserve(8 - read_buf.capacity());
+    }
+    while read_buf.len() < 8 {
+        // obj_len not wholesomely read from socket before last cancellation
+        conn_read.read_buf(read_buf).await?;
+    }
+    let obj_len = u64::from_be_bytes(read_buf[..8].try_into().unwrap());
+
+    // then read the obj itself
+    let obj_end = 8 + obj_len as usize;
+    if read_buf.capacity() < obj_end {
+        // capacity not big enough, reserve more space
+        read_buf.reserve(obj_end - read_buf.capacity());
+    }
+    while read_buf.len() < obj_end {
+        conn_read.read_buf(read_buf).await?;
+    }
+    let obj = decode_from_read(&read_buf[8..obj_end])?;
+
+    // if reached this point, no further cancellation to this call is
+    // possible (because there are no more awaits ahead); discard bytes
+    // used in this call
+    if read_buf.len() > obj_end {
+        let buf_tail = Bytes::copy_from_slice(&read_buf[obj_end..]);
+        read_buf.clear();
+        read_buf.extend_from_slice(&buf_tail);
+    } else {
+        read_buf.clear();
+    }
+
+    Ok(obj)
+}
+
+/// Sends an object of type `T` to TCP writable connection `conn_write`, using
+/// `write_buf` as buffer storage for partial writes. Returns:
+///   - `Ok(true)` if successful
+///   - `Ok(false)` if socket full and may block; in this case, bytes of the
+///                 input object is saved in the write buffer, and the next
+///                 calls to `send_req()` must give arg `obj == None` to
+///                 indicate retrying (typically after doing a few reads on the
+///                 same socket to free up some buffer space), until the
+///                 function returns success
+///   - `Err(err)` if any unexpected error occurs
+///
+/// DEADLOCK AVOIDANCE: we avoid using `write_u64()` and `write_all()` here
+/// because, in the case of TCP buffers being full, if both ends of the
+/// connection are trying to write, they may both be blocking on either of
+/// these two methods, resulting in a circular deadlock.
+pub fn safe_tcp_write<T, Conn>(
+    write_buf: &mut BytesMut,
+    write_buf_cursor: &mut usize,
+    conn_write: &Conn,
+    obj: Option<&T>,
+) -> Result<bool, SummersetError>
+where
+    T: Serialize,
+    Conn: AsRef<TcpStream>,
+{
+    // if last write was not successful, cannot send a new object
+    if obj.is_some() && !write_buf.is_empty() {
+        return Err(SummersetError(
+            "attempting new object while should retry".into(),
+        ));
+    } else if obj.is_none() && write_buf.is_empty() {
+        return Err(SummersetError(
+            "attempting to retry while buffer is empty".into(),
+        ));
+    } else if obj.is_some() {
+        // sending a new object, fill write_buf
+        assert_eq!(*write_buf_cursor, 0);
+        let write_bytes = encode_to_vec(obj.unwrap())?;
+        let write_len = write_bytes.len();
+        write_buf.extend_from_slice(&write_len.to_be_bytes());
+        assert_eq!(write_buf.len(), 8);
+        write_buf.extend_from_slice(write_bytes.as_slice());
+    } else {
+        // retrying last unsuccessful write
+        assert!(*write_buf_cursor < write_buf.len());
+    }
+
+    // try until the length + the object are all written
+    while *write_buf_cursor < write_buf.len() {
+        match conn_write
+            .as_ref()
+            .try_write(&write_buf[*write_buf_cursor..])
+        {
+            Ok(n) => {
+                *write_buf_cursor += n;
+            }
+            Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
+                return Ok(false);
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    // everything written, clear write_buf
+    write_buf.clear();
+    *write_buf_cursor = 0;
+
+    Ok(true)
+}
+
+// No unit tests for these two helpers...

@@ -3,20 +3,17 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::utils::SummersetError;
+use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 
 use serde::{Serialize, Deserialize};
 
-use rmp_serde::encode::to_vec as encode_to_vec;
-use rmp_serde::decode::from_slice as decode_from_slice;
-
 use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{ReadHalf, WriteHalf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
@@ -27,7 +24,6 @@ pub type RequestId = u64;
 
 /// Request received from client.
 // TODO: add information fields such as read-only flag...
-// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiRequest {
     /// Regular request.
@@ -44,7 +40,6 @@ pub enum ApiRequest {
 }
 
 /// Reply back to client.
-// TODO: add other request variants for e.g. reconfiguration...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum ApiReply {
     /// Reply to regular request.
@@ -69,106 +64,90 @@ pub struct ExternalApi {
     me: ReplicaId,
 
     /// Receiver side of the req channel.
-    rx_req: Option<mpsc::UnboundedReceiver<(ClientId, ApiRequest)>>,
+    rx_req: mpsc::UnboundedReceiver<(ClientId, ApiRequest)>,
 
     /// Map from client ID -> sender side of its reply channel, shared with
     /// the client acceptor thread.
-    tx_replies:
-        Option<flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<ApiReply>>>,
+    tx_replies: flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<ApiReply>>,
 
     /// Notify used as batch dumping signal, shared with the batch ticker
     /// thread.
     batch_notify: Arc<Notify>,
 
+    /// Maximum number of requests to return per batch; 0 means no limit.
+    max_batch_size: usize,
+
     /// Join handle of the client acceptor thread.
-    client_acceptor_handle: Option<JoinHandle<()>>,
+    _client_acceptor_handle: JoinHandle<()>,
 
     /// Map from client ID -> client servant thread join handles, shared with
     /// the client acceptor thread.
-    client_servant_handles:
-        Option<flashmap::ReadHandle<ClientId, JoinHandle<()>>>,
+    _client_servant_handles: flashmap::ReadHandle<ClientId, JoinHandle<()>>,
 
     /// Join handle of the batch ticker thread.
-    batch_ticker_handle: Option<JoinHandle<()>>,
+    _batch_ticker_handle: JoinHandle<()>,
 }
 
-// ExternalApi Public API implementation
+// ExternalApi public API implementation
 impl ExternalApi {
-    /// Creates a new external API module.
-    pub fn new(me: ReplicaId) -> Self {
-        ExternalApi {
-            me,
-            rx_req: None,
-            tx_replies: None,
-            batch_notify: Arc::new(Notify::new()),
-            client_acceptor_handle: None,
-            client_servant_handles: None,
-            batch_ticker_handle: None,
-        }
-    }
-
-    /// Spawns the client acceptor thread and the batch ticker thread. Creates
-    /// a req channel for buffering incoming client requests and a reply
-    /// channel for sending back replies to clients. The capacity
-    /// `chan_req_cap` determines a hard limit of how many requests we can
-    /// buffer for batching. Creates a TCP listener for client connections.
-    pub async fn setup(
-        &mut self,
+    /// Creates a new external API module. Spawns the client acceptor thread
+    /// and the batch ticker thread. Creates a req channel for buffering
+    /// incoming client requests.
+    pub async fn new_and_setup(
+        me: ReplicaId,
         api_addr: SocketAddr,
         batch_interval: Duration,
-    ) -> Result<(), SummersetError> {
-        if self.client_acceptor_handle.is_some() {
-            return logged_err!(self.me; "setup already done");
-        }
+        max_batch_size: usize,
+    ) -> Result<Self, SummersetError> {
         if batch_interval < Duration::from_micros(1) {
             return logged_err!(
-                self.me;
+                me;
                 "batch_interval {} us too small",
                 batch_interval.as_micros()
             );
         }
 
         let (tx_req, rx_req) = mpsc::unbounded_channel();
-        self.rx_req = Some(rx_req);
 
         let (tx_replies_write, tx_replies_read) =
             flashmap::new::<ClientId, mpsc::UnboundedSender<ApiReply>>();
-        self.tx_replies = Some(tx_replies_read);
-
-        let client_listener = TcpListener::bind(api_addr).await?;
 
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
-        self.client_servant_handles = Some(client_servant_handles_read);
 
+        let client_listener = TcpListener::bind(api_addr).await?;
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
-                self.me,
+                me,
                 tx_req,
                 client_listener,
                 tx_replies_write,
                 client_servant_handles_write,
             ));
-        self.client_acceptor_handle = Some(client_acceptor_handle);
 
+        let batch_notify = Arc::new(Notify::new());
         let batch_ticker_handle = tokio::spawn(Self::batch_ticker_thread(
-            self.me,
+            me,
             batch_interval,
-            self.batch_notify.clone(),
+            batch_notify.clone(),
         ));
-        self.batch_ticker_handle = Some(batch_ticker_handle);
 
-        Ok(())
+        Ok(ExternalApi {
+            me,
+            rx_req,
+            tx_replies: tx_replies_read,
+            batch_notify,
+            max_batch_size,
+            _client_acceptor_handle: client_acceptor_handle,
+            _client_servant_handles: client_servant_handles_read,
+            _batch_ticker_handle: batch_ticker_handle,
+        })
     }
 
     /// Returns whether a client ID is connected to me.
-    pub fn has_client(&self, client: ClientId) -> Result<bool, SummersetError> {
-        if self.client_acceptor_handle.is_none() {
-            return logged_err!(self.me; "has_client called before setup");
-        }
-
-        let tx_replies_guard = self.tx_replies.as_ref().unwrap().guard();
-        Ok(tx_replies_guard.contains_key(&client))
+    pub fn has_client(&self, client: ClientId) -> bool {
+        let tx_replies_guard = self.tx_replies.guard();
+        tx_replies_guard.contains_key(&client)
     }
 
     /// Waits for the next batch dumping signal and collects all requests
@@ -177,24 +156,19 @@ impl ExternalApi {
     pub async fn get_req_batch(
         &mut self,
     ) -> Result<Vec<(ClientId, ApiRequest)>, SummersetError> {
-        if self.client_acceptor_handle.is_none() {
-            return logged_err!(self.me; "get_req_batch called before setup");
-        }
+        let mut batch = Vec::with_capacity(self.max_batch_size);
 
         // ignore ticks with an empty batch
-        let mut batch = Vec::new();
         while batch.is_empty() {
             self.batch_notify.notified().await;
 
-            match self.rx_req {
-                Some(ref mut rx_req) => loop {
-                    match rx_req.try_recv() {
-                        Ok((client, req)) => batch.push((client, req)),
-                        Err(TryRecvError::Empty) => break,
-                        Err(e) => return Err(SummersetError::from(e)),
-                    }
-                },
-                None => return logged_err!(self.me; "rx_req not created yet"),
+            while self.max_batch_size == 0 || batch.len() < self.max_batch_size
+            {
+                match self.rx_req.try_recv() {
+                    Ok((client, req)) => batch.push((client, req)),
+                    Err(TryRecvError::Empty) => break,
+                    Err(e) => return Err(SummersetError::from(e)),
+                }
             }
         }
 
@@ -203,16 +177,12 @@ impl ExternalApi {
     }
 
     /// Sends a reply back to client by sending to the reply channel.
-    pub async fn send_reply(
+    pub fn send_reply(
         &mut self,
         reply: ApiReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        if self.client_acceptor_handle.is_none() {
-            return logged_err!(self.me; "send_reply called before setup");
-        }
-
-        let tx_replies_guard = self.tx_replies.as_ref().unwrap().guard();
+        let tx_replies_guard = self.tx_replies.guard();
         match tx_replies_guard.get(&client) {
             Some(tx_reply) => {
                 tx_reply
@@ -233,6 +203,81 @@ impl ExternalApi {
 
 // ExternalApi client_acceptor thread implementation
 impl ExternalApi {
+    /// Accepts a new client connection.
+    async fn accept_new_client(
+        me: ReplicaId,
+        mut stream: TcpStream,
+        addr: SocketAddr,
+        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
+        tx_replies: &mut flashmap::WriteHandle<
+            ClientId,
+            mpsc::UnboundedSender<ApiReply>,
+        >,
+        client_servant_handles: &mut flashmap::WriteHandle<
+            ClientId,
+            JoinHandle<()>,
+        >,
+        tx_exit: mpsc::UnboundedSender<ClientId>,
+    ) -> Result<(), SummersetError> {
+        let id = stream.read_u64().await; // receive client ID
+        if let Err(e) = id {
+            return logged_err!(me; "error receiving new client ID: {}", e);
+        }
+        let id = id.unwrap();
+
+        let mut tx_replies_guard = tx_replies.guard();
+        if let Some(sender) = tx_replies_guard.get(&id) {
+            if sender.is_closed() {
+                // if this client ID has left before, garbage collect it now
+                let mut client_servant_handles_guard =
+                    client_servant_handles.guard();
+                client_servant_handles_guard.remove(id);
+                tx_replies_guard.remove(id);
+            } else {
+                return logged_err!(me; "duplicate client ID listened: {}", id);
+            }
+        }
+        pf_info!(me; "accepted new client {}", id);
+
+        let (tx_reply, rx_reply) = mpsc::unbounded_channel();
+        tx_replies_guard.insert(id, tx_reply);
+
+        let client_servant_handle = tokio::spawn(Self::client_servant_thread(
+            me, id, addr, stream, tx_req, rx_reply, tx_exit,
+        ));
+        let mut client_servant_handles_guard = client_servant_handles.guard();
+        client_servant_handles_guard.insert(id, client_servant_handle);
+
+        client_servant_handles_guard.publish();
+        tx_replies_guard.publish();
+        Ok(())
+    }
+
+    /// Removes handles of a left client connection.
+    fn remove_left_client(
+        me: ReplicaId,
+        id: ClientId,
+        tx_replies: &mut flashmap::WriteHandle<
+            ClientId,
+            mpsc::UnboundedSender<ApiReply>,
+        >,
+        client_servant_handles: &mut flashmap::WriteHandle<
+            ClientId,
+            JoinHandle<()>,
+        >,
+    ) -> Result<(), SummersetError> {
+        let mut tx_replies_guard = tx_replies.guard();
+        if !tx_replies_guard.contains_key(&id) {
+            return logged_err!(me; "client {} not found among active ones", id);
+        }
+        tx_replies_guard.remove(id);
+
+        let mut client_servant_handles_guard = client_servant_handles.guard();
+        client_servant_handles_guard.remove(id);
+
+        Ok(())
+    }
+
     /// Client acceptor thread function.
     async fn client_acceptor_thread(
         me: ReplicaId,
@@ -252,54 +297,45 @@ impl ExternalApi {
         let local_addr = client_listener.local_addr().unwrap();
         pf_info!(me; "accepting clients on '{}'", local_addr);
 
+        // create an exit mpsc channel for getting notified about termination
+        // of client servant threads
+        let (tx_exit, mut rx_exit) = mpsc::unbounded_channel();
+
         loop {
-            let accepted = client_listener.accept().await;
-            if let Err(e) = accepted {
-                pf_warn!(me; "error accepting client connection: {}", e);
-                continue;
-            }
-            let (mut stream, addr) = accepted.unwrap();
+            tokio::select! {
+                // new client connection
+                accepted = client_listener.accept() => {
+                    if let Err(e) = accepted {
+                        pf_warn!(me; "error accepting client connection: {}", e);
+                        continue;
+                    }
+                    let (stream, addr) = accepted.unwrap();
+                    if let Err(e) = Self::accept_new_client(
+                        me,
+                        stream,
+                        addr,
+                        tx_req.clone(),
+                        &mut tx_replies,
+                        &mut client_servant_handles,
+                        tx_exit.clone()
+                    ).await {
+                        pf_error!(me; "error accepting new client: {}", e);
+                    }
+                },
 
-            let id = stream.read_u64().await; // receive client ID
-            if let Err(e) = id {
-                pf_error!(me; "error receiving new client ID: {}", e);
-                continue;
-            }
-            let id = id.unwrap();
-
-            let mut tx_replies_guard = tx_replies.guard();
-            if let Some(sender) = tx_replies_guard.get(&id) {
-                if sender.is_closed() {
-                    // if this client ID has left before, garbage collect it now
-                    let mut client_servant_handles_guard =
-                        client_servant_handles.guard();
-                    client_servant_handles_guard.remove(id);
-                    tx_replies_guard.remove(id);
-                } else {
-                    pf_error!(me; "duplicate client ID listened: {}", id);
-                    continue;
+                // a client servant thread exits
+                id = rx_exit.recv() => {
+                    let id = id.unwrap();
+                    if let Err(e) = Self::remove_left_client(
+                        me,
+                        id,
+                        &mut tx_replies,
+                        &mut client_servant_handles
+                    ) {
+                        pf_error!(me; "error removing left client {}: {}", id, e);
+                    }
                 }
             }
-            pf_info!(me; "accepted new client {}", id);
-
-            let (tx_reply, rx_reply) = mpsc::unbounded_channel();
-            tx_replies_guard.insert(id, tx_reply);
-
-            let client_servant_handle =
-                tokio::spawn(Self::client_servant_thread(
-                    me,
-                    id,
-                    addr,
-                    stream,
-                    tx_req.clone(),
-                    rx_reply,
-                ));
-            let mut client_servant_handles_guard =
-                client_servant_handles.guard();
-            client_servant_handles_guard.insert(id, client_servant_handle);
-
-            client_servant_handles_guard.publish();
-            tx_replies_guard.publish();
         }
 
         // pf_debug!(me; "client_acceptor thread exitted");
@@ -313,54 +349,19 @@ impl ExternalApi {
         // first 8 btyes being the request length, and the rest bytes being the
         // request itself
         req_buf: &mut BytesMut,
-        conn_read: &mut ReadHalf<'_>,
+        conn_read: &mut OwnedReadHalf,
     ) -> Result<ApiRequest, SummersetError> {
-        // CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()`
-        // here because this function is used as a `tokio::select!` branch and
-        // that those two methods are not cancellation-safe
-
-        // read length of request first
-        assert!(req_buf.capacity() >= 8);
-        while req_buf.len() < 8 {
-            // req_len not wholesomely read from socket before last cancellation
-            conn_read.read_buf(req_buf).await?;
-        }
-        let req_len = u64::from_be_bytes(req_buf[..8].try_into().unwrap());
-
-        // then read the request itself
-        let req_end = 8 + req_len as usize;
-        if req_buf.capacity() < req_end {
-            // capacity not big enough, reserve more space
-            req_buf.reserve(req_end - req_buf.capacity());
-        }
-        while req_buf.len() < req_end {
-            conn_read.read_buf(req_buf).await?;
-        }
-        let req = decode_from_slice(&req_buf[8..req_end])?;
-
-        // if reached this point, no further cancellation to this call is
-        // possible (because there are no more awaits ahead); discard bytes
-        // used in this call
-        if req_buf.len() > req_end {
-            let buf_tail = Bytes::copy_from_slice(&req_buf[req_end..]);
-            req_buf.clear();
-            req_buf.extend_from_slice(&buf_tail);
-        } else {
-            req_buf.clear();
-        }
-
-        Ok(req)
+        safe_tcp_read(req_buf, conn_read).await
     }
 
     /// Writes a reply through given TcpStream.
-    async fn write_reply(
-        reply: &ApiReply,
-        conn_write: &mut WriteHalf<'_>,
-    ) -> Result<(), SummersetError> {
-        let reply_bytes = encode_to_vec(reply)?;
-        conn_write.write_u64(reply_bytes.len() as u64).await?; // send length first
-        conn_write.write_all(&reply_bytes[..]).await?;
-        Ok(())
+    fn write_reply(
+        reply_buf: &mut BytesMut,
+        reply_buf_cursor: &mut usize,
+        conn_write: &OwnedWriteHalf,
+        reply: Option<&ApiReply>,
+    ) -> Result<bool, SummersetError> {
+        safe_tcp_write(reply_buf, reply_buf_cursor, conn_write, reply)
     }
 
     /// Client request listener and reply sender thread function.
@@ -368,15 +369,19 @@ impl ExternalApi {
         me: ReplicaId,
         id: ClientId,
         addr: SocketAddr,
-        mut conn: TcpStream,
+        conn: TcpStream,
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
+        tx_exit: mpsc::UnboundedSender<ClientId>,
     ) {
         pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
 
-        let (mut conn_read, mut conn_write) = conn.split();
+        let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
+        let mut reply_buf = BytesMut::with_capacity(8 + 1024);
+        let mut reply_buf_cursor = 0;
 
+        let mut retrying = false;
         loop {
             tokio::select! {
                 // select between getting a new reply to send back and receiving
@@ -384,13 +389,25 @@ impl ExternalApi {
                 biased;
 
                 // gets a reply to send back
-                reply = rx_reply.recv() => {
+                reply = rx_reply.recv(), if !retrying => {
                     match reply {
                         Some(reply) => {
-                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
-                                pf_error!(me; "error replying to {}: {}", id, e);
-                            } else {
-                                // pf_trace!(me; "replied to {} reply {:?}", id, reply);
+                            match Self::write_reply(
+                                &mut reply_buf,
+                                &mut reply_buf_cursor,
+                                &conn_write,
+                                Some(&reply)
+                            ) {
+                                Ok(true) => {
+                                    // pf_trace!(me; "replied -> {} reply {:?}", id, reply);
+                                }
+                                Ok(false) => {
+                                    pf_debug!(me; "should start retrying reply send -> {}", id);
+                                    retrying = true;
+                                }
+                                Err(e) => {
+                                    pf_error!(me; "error replying -> {}: {}", id, e);
+                                }
                             }
                         },
                         None => break, // channel gets closed and no messages remain
@@ -400,35 +417,62 @@ impl ExternalApi {
                 // receives client request
                 req = Self::read_req(&mut req_buf, &mut conn_read) => {
                     match req {
-                        // client leaving, send dummy reply and break
                         Ok(ApiRequest::Leave) => {
+                            // client leaving, send dummy reply and break
                             let reply = ApiReply::Leave;
-                            if let Err(e) = Self::write_reply(&reply, &mut conn_write).await {
-                                pf_error!(me; "error replying to {}: {}", id, e);
-                            } else {
+                            if let Err(e) = Self::write_reply(
+                                &mut reply_buf,
+                                &mut reply_buf_cursor,
+                                &conn_write,
+                                Some(&reply),
+                            ) {
+                                pf_error!(me; "error replying -> {}: {}", id, e);
+                            } else { // skips `WouldBlock` failure check here
                                 pf_info!(me; "client {} has left", id);
                             }
                             break;
                         },
 
                         Ok(req) => {
-                            // pf_trace!(me; "request from {} req {:?}", id, req);
+                            // pf_trace!(me; "request <- {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!(
-                                    me; "error sending to tx_req for {}: {}", id, e
-                                );
+                                pf_error!(me; "error sending to tx_req for {}: {}", id, e);
                             }
                         },
 
                         Err(e) => {
-                            pf_error!(me; "error reading request from {}: {}", id, e);
+                            pf_error!(me; "error reading request <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
                 },
+
+                // retrying last unsuccessful reply send
+                _ = conn_write.writable(), if retrying => {
+                    match Self::write_reply(
+                        &mut reply_buf,
+                        &mut reply_buf_cursor,
+                        &conn_write,
+                        None
+                    ) {
+                        Ok(true) => {
+                            pf_debug!(me; "finished retrying last reply send -> {}", id);
+                            retrying = false;
+                        }
+                        Ok(false) => {
+                            pf_debug!(me; "still should retry last reply send -> {}", id);
+                        }
+                        Err(e) => {
+                            pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
+                        }
+                    }
+                }
             }
         }
 
+        if let Err(e) = tx_exit.send(id) {
+            pf_error!(me; "error sending exit signal for {}: {}", id, e);
+        }
         pf_debug!(me; "client_servant thread for {} ({}) exitted", id, addr);
     }
 }
@@ -456,24 +500,8 @@ mod external_tests {
     use super::*;
     use crate::server::{Command, CommandResult};
     use crate::client::{ClientId, ClientApiStub};
-    use rand::Rng;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn api_setup() -> Result<(), SummersetError> {
-        let mut api = ExternalApi::new(0);
-        assert!(api
-            .setup("127.0.0.1:51710".parse()?, Duration::from_nanos(10),)
-            .await
-            .is_err());
-        api.setup("127.0.0.1:51720".parse()?, Duration::from_millis(1))
-            .await?;
-        assert!(api.rx_req.is_some());
-        assert!(api.client_acceptor_handle.is_some());
-        assert!(api.batch_ticker_handle.is_some());
-        Ok(())
-    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
@@ -481,9 +509,13 @@ mod external_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // server-side
-            let mut api = ExternalApi::new(0);
-            api.setup("127.0.0.1:53700".parse()?, Duration::from_millis(1))
-                .await?;
+            let mut api = ExternalApi::new_and_setup(
+                0,
+                "127.0.0.1:53700".parse()?,
+                Duration::from_millis(1),
+                0,
+            )
+            .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.len() < 3 {
@@ -491,6 +523,8 @@ mod external_tests {
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
+            assert_eq!(client, 2857);
+            assert!(api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -522,8 +556,7 @@ mod external_tests {
                     redirect: None,
                 },
                 client,
-            )
-            .await?;
+            )?;
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
@@ -531,8 +564,7 @@ mod external_tests {
                     redirect: Some(1),
                 },
                 client,
-            )
-            .await?;
+            )?;
             api.send_reply(
                 ApiReply::Reply {
                     id: 1,
@@ -542,33 +574,31 @@ mod external_tests {
                     redirect: None,
                 },
                 client,
-            )
-            .await?;
+            )?;
             Ok::<(), SummersetError>(())
         });
         // client-side
-        let client: ClientId = rand::thread_rng().gen();
         barrier.wait().await;
-        let api_stub = ClientApiStub::new(client);
-        let (mut send_stub, mut recv_stub) =
-            api_stub.connect("127.0.0.1:53700".parse()?).await?;
-        send_stub.send_req(Some(&ApiRequest::Req {
+        let mut api_stub =
+            ClientApiStub::new_by_connect(2857, "127.0.0.1:53700".parse()?)
+                .await?;
+        api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
                 key: "Jose".into(),
                 value: "123".into(),
             },
         }))?;
-        send_stub.send_req(Some(&ApiRequest::Req {
+        api_stub.send_req(Some(&ApiRequest::Req {
             id: 1,
             cmd: Command::Get { key: "Jose".into() },
         }))?;
-        send_stub.send_req(Some(&ApiRequest::Req {
+        api_stub.send_req(Some(&ApiRequest::Req {
             id: 1,
             cmd: Command::Get { key: "Jose".into() },
         }))?;
         assert_eq!(
-            recv_stub.recv_reply().await?,
+            api_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
                 result: Some(CommandResult::Put { old_value: None }),
@@ -576,7 +606,7 @@ mod external_tests {
             }
         );
         assert_eq!(
-            recv_stub.recv_reply().await?,
+            api_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
                 result: None,
@@ -584,7 +614,7 @@ mod external_tests {
             }
         );
         assert_eq!(
-            recv_stub.recv_reply().await?,
+            api_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 1,
                 result: Some(CommandResult::Get {
@@ -602,9 +632,13 @@ mod external_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // server-side
-            let mut api = ExternalApi::new(0);
-            api.setup("127.0.0.1:54700".parse()?, Duration::from_millis(1))
-                .await?;
+            let mut api = ExternalApi::new_and_setup(
+                0,
+                "127.0.0.1:54700".parse()?,
+                Duration::from_millis(1),
+                0,
+            )
+            .await?;
             barrier2.wait().await;
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.is_empty() {
@@ -612,8 +646,8 @@ mod external_tests {
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
-            assert!(api.has_client(client)?);
-            assert!(!api.has_client(client + 1)?);
+            assert_eq!(client, 2857);
+            assert!(api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -631,16 +665,16 @@ mod external_tests {
                     redirect: None,
                 },
                 client,
-            )
-            .await?;
+            )?;
             reqs.clear();
             while reqs.is_empty() {
                 let mut req_batch = api.get_req_batch().await?;
                 reqs.append(&mut req_batch);
             }
             let client = reqs[0].0;
-            assert!(api.has_client(client)?);
-            assert!(!api.has_client(client + 1)?);
+            assert_eq!(client, 2858);
+            assert!(api.has_client(2858));
+            assert!(!api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -660,17 +694,15 @@ mod external_tests {
                     redirect: None,
                 },
                 client,
-            )
-            .await?;
+            )?;
             Ok::<(), SummersetError>(())
         });
         // client-side
-        let client: ClientId = rand::thread_rng().gen();
         barrier.wait().await;
-        let api_stub = ClientApiStub::new(client);
-        let (mut send_stub, mut recv_stub) =
-            api_stub.connect("127.0.0.1:54700".parse()?).await?;
-        send_stub.send_req(Some(&ApiRequest::Req {
+        let mut api_stub =
+            ClientApiStub::new_by_connect(2857, "127.0.0.1:54700".parse()?)
+                .await?;
+        api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
                 key: "Jose".into(),
@@ -678,19 +710,21 @@ mod external_tests {
             },
         }))?;
         assert_eq!(
-            recv_stub.recv_reply().await?,
+            api_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
                 result: Some(CommandResult::Put { old_value: None }),
                 redirect: None,
             }
         );
-        send_stub.send_req(Some(&ApiRequest::Leave))?;
-        assert_eq!(recv_stub.recv_reply().await?, ApiReply::Leave);
-        time::sleep(Duration::from_micros(100)).await;
-        let (mut send_stub, mut recv_stub) =
-            api_stub.connect("127.0.0.1:54700".parse()?).await?;
-        send_stub.send_req(Some(&ApiRequest::Req {
+        api_stub.send_req(Some(&ApiRequest::Leave))?;
+        assert_eq!(api_stub.recv_reply().await?, ApiReply::Leave);
+        api_stub.forget();
+        time::sleep(Duration::from_millis(1)).await;
+        let mut api_stub =
+            ClientApiStub::new_by_connect(2858, "127.0.0.1:54700".parse()?)
+                .await?;
+        api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
                 key: "Jose".into(),
@@ -698,7 +732,7 @@ mod external_tests {
             },
         }))?;
         assert_eq!(
-            recv_stub.recv_reply().await?,
+            api_stub.recv_reply().await?,
             ApiReply::Reply {
                 id: 0,
                 result: Some(CommandResult::Put {

@@ -12,18 +12,15 @@ pub struct ReplicaMap(FixedBitSet);
 impl ReplicaMap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
     /// marked true initially; otherwise, all slots are initially false.
-    pub fn new(size: u8, ones: bool) -> Result<Self, SummersetError> {
+    pub fn new(size: u8, ones: bool) -> Self {
         if size == 0 {
-            return Err(SummersetError(format!(
-                "invalid bitmap size {}",
-                size
-            )));
+            panic!("invalid bitmap size {}", size);
         }
         let mut bitset = FixedBitSet::with_capacity(size as usize);
         if ones {
             bitset.set_range(.., true);
         }
-        Ok(ReplicaMap(bitset))
+        ReplicaMap(bitset)
     }
 
     /// Sets bit at index to given flag.
@@ -89,15 +86,14 @@ mod bitmap_tests {
     use super::*;
 
     #[test]
-    fn bitmap_new() {
-        assert!(ReplicaMap::new(0, true).is_err());
-        assert!(ReplicaMap::new(3, true).is_ok());
-        assert!(ReplicaMap::new(5, false).is_ok());
+    #[should_panic]
+    fn bitmap_new_panic() {
+        ReplicaMap::new(0, true);
     }
 
     #[test]
     fn bitmap_set_get() {
-        let mut map = ReplicaMap::new(7, false).unwrap();
+        let mut map = ReplicaMap::new(7, false);
         assert!(map.set(0, true).is_ok());
         assert!(map.set(1, false).is_ok());
         assert!(map.set(2, true).is_ok());
@@ -111,7 +107,7 @@ mod bitmap_tests {
 
     #[test]
     fn bitmap_count() {
-        let mut map = ReplicaMap::new(7, false).unwrap();
+        let mut map = ReplicaMap::new(7, false);
         assert_eq!(map.count(), 0);
         assert!(map.set(0, true).is_ok());
         assert!(map.set(2, true).is_ok());
@@ -122,7 +118,7 @@ mod bitmap_tests {
     #[test]
     fn bitmap_iter() {
         let ref_map = vec![true, true, false, true, true];
-        let mut map = ReplicaMap::new(5, true).unwrap();
+        let mut map = ReplicaMap::new(5, true);
         assert!(map.set(2, false).is_ok());
         for (id, flag) in map.iter() {
             assert_eq!(ref_map[id as usize], flag);

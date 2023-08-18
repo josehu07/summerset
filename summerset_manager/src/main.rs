@@ -1,4 +1,4 @@
-//! Summerset server replica executable.
+//! Summerset cluster manager oracle.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -19,22 +19,17 @@ struct CliArgs {
     #[arg(short, long, default_value_t = String::from("RepNothing"))]
     protocol: String,
 
-    /// Protocol-specific server configuration TOML string.
-    /// Every '+' is treated as newline.
-    #[arg(long, default_value_t = String::from(""))]
-    config: String,
+    /// Server-facing API port.
+    #[arg(short, long, default_value_t = 52600)]
+    srv_port: u16,
 
-    /// Key-value API port open to clients.
-    #[arg(short, long, default_value_t = 52700)]
-    api_port: u16,
+    /// Client-facing API port.
+    #[arg(short, long, default_value_t = 52601)]
+    cli_port: u16,
 
-    /// Internal peer-peer communication API port.
-    #[arg(short = 'i', long, default_value_t = 52800)]
-    p2p_port: u16,
-
-    /// Cluster manager oracle's server-facing address.
-    #[arg(short, long)]
-    manager: SocketAddr,
+    /// Total number of server replicas in cluster.
+    #[arg(short = 'n', long, default_value_t = 3)]
+    population: u8,
 
     /// Number of tokio worker threads.
     #[arg(long, default_value_t = 16)]
@@ -45,20 +40,25 @@ impl CliArgs {
     /// Sanitize command line arguments, return `Ok(protocol)` on success
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<SmrProtocol, SummersetError> {
-        if self.api_port <= 1024 {
+        if self.srv_port <= 1024 {
             Err(SummersetError(format!(
-                "invalid api_port {}",
-                self.api_port
+                "invalid srv_port {}",
+                self.srv_port
             )))
-        } else if self.p2p_port <= 1024 {
+        } else if self.cli_port <= 1024 {
             Err(SummersetError(format!(
-                "invalid p2p_port {}",
-                self.p2p_port
+                "invalid cli_port {}",
+                self.cli_port
             )))
-        } else if self.api_port == self.p2p_port {
+        } else if self.srv_port == self.cli_port {
             Err(SummersetError(format!(
-                "api_port == p2p_port {}",
-                self.api_port
+                "srv_port == cli_port {}",
+                self.srv_port
+            )))
+        } else if self.population == 0 {
+            Err(SummersetError(format!(
+                "invalid population {}",
+                self.population
             )))
         } else if self.threads < 2 {
             Err(SummersetError(format!(
@@ -73,60 +73,47 @@ impl CliArgs {
     }
 }
 
-// Server replica executable main entrance.
-fn server_main() -> Result<(), SummersetError> {
+// Cluster manager executable main entrance.
+fn manager_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
-    let mut args = CliArgs::parse();
+    let args = CliArgs::parse();
     let protocol = args.sanitize()?;
 
-    // parse key-value API port
-    let api_addr: SocketAddr = format!("127.0.0.1:{}", args.api_port)
+    // parse server-facing API port
+    let srv_addr: SocketAddr = format!("127.0.0.1:{}", args.srv_port)
         .parse()
         .map_err(|e| {
         SummersetError(format!(
-            "failed to parse api_addr: port {}: {}",
-            args.api_port, e
+            "failed to parse srv_addr: port {}: {}",
+            args.srv_port, e
         ))
     })?;
 
-    // parse internal peer-peer API port
-    let p2p_addr: SocketAddr = format!("127.0.0.1:{}", args.p2p_port)
+    // parse client-facing API port
+    let cli_addr: SocketAddr = format!("127.0.0.1:{}", args.cli_port)
         .parse()
         .map_err(|e| {
         SummersetError(format!(
-            "failed to parse p2p_addr: port {}: {}",
-            args.p2p_port, e
+            "failed to parse cli_addr: port {}: {}",
+            args.cli_port, e
         ))
     })?;
-
-    // parse optional config string if given
-    let config_str = if args.config.is_empty() {
-        None
-    } else {
-        args.config = args.config.replace('+', "\n");
-        Some(&args.config[..])
-    };
 
     // create tokio multi-threaded runtime
     let runtime = Builder::new_multi_thread()
         .enable_all()
         .worker_threads(args.threads)
-        .thread_name("tokio-worker-replica")
+        .thread_name("tokio-worker-manager")
         .build()?;
 
-    // enter tokio runtime, setup the server replica, and start the main event
-    // loop logic
+    // enter tokio runtime, setup the cluster manager, and start the main
+    // event loop logic
     runtime.block_on(async move {
-        let mut replica = protocol
-            .new_server_replica_setup(
-                api_addr,
-                p2p_addr,
-                args.manager,
-                config_str,
-            )
+        let mut manager = protocol
+            .new_cluster_manager_setup(srv_addr, cli_addr, args.population)
             .await?;
 
-        replica.run().await;
+        manager.run().await;
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
@@ -139,8 +126,8 @@ fn main() -> ExitCode {
         .format_target(false)
         .init();
 
-    if let Err(ref e) = server_main() {
-        pf_error!("s"; "server_main exitted: {}", e);
+    if let Err(ref e) = manager_main() {
+        pf_error!("m"; "manager_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -148,60 +135,56 @@ fn main() -> ExitCode {
 }
 
 #[cfg(test)]
-mod server_args_tests {
+mod manager_args_tests {
     use super::*;
 
     #[test]
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            api_port: 52701,
-            p2p_port: 52801,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 52600,
+            cli_port: 52601,
+            population: 3,
             threads: 2,
-            config: "".into(),
         };
         assert_eq!(args.sanitize(), Ok(SmrProtocol::RepNothing));
         Ok(())
     }
 
     #[test]
-    fn sanitize_invalid_api_port() -> Result<(), SummersetError> {
+    fn sanitize_invalid_srv_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            api_port: 1023,
-            p2p_port: 52800,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 1023,
+            cli_port: 52601,
+            population: 3,
             threads: 2,
-            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
     }
 
     #[test]
-    fn sanitize_invalid_p2p_port() -> Result<(), SummersetError> {
+    fn sanitize_invalid_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            api_port: 52700,
-            p2p_port: 1023,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 52600,
+            cli_port: 1023,
+            population: 3,
             threads: 2,
-            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
     }
 
     #[test]
-    fn sanitize_same_api_p2p_port() -> Result<(), SummersetError> {
+    fn sanitize_same_srv_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            api_port: 52700,
-            p2p_port: 52700,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 52600,
+            cli_port: 52600,
+            population: 3,
             threads: 2,
-            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -211,11 +194,23 @@ mod server_args_tests {
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
-            api_port: 52700,
-            p2p_port: 52800,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 52600,
+            cli_port: 52601,
+            population: 3,
             threads: 2,
-            config: "".into(),
+        };
+        assert!(args.sanitize().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sanitize_invalid_population() -> Result<(), SummersetError> {
+        let args = CliArgs {
+            protocol: "RepNothing".into(),
+            srv_port: 52600,
+            cli_port: 52601,
+            population: 0,
+            threads: 2,
         };
         assert!(args.sanitize().is_err());
         Ok(())
@@ -225,11 +220,10 @@ mod server_args_tests {
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            api_port: 52700,
-            p2p_port: 52800,
-            manager: "127.0.0.1:52600".parse()?,
+            srv_port: 52600,
+            cli_port: 52601,
+            population: 3,
             threads: 1,
-            config: "".into(),
         };
         assert!(args.sanitize().is_err());
         Ok(())

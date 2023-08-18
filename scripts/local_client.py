@@ -1,7 +1,15 @@
-import os
+import sys
 import argparse
 import subprocess
-from pathlib import Path
+
+
+def do_cargo_build(release):
+    print("Building everything...")
+    cmd = ["cargo", "build", "--workspace"]
+    if release:
+        cmd.append("-r")
+    proc = subprocess.Popen(cmd)
+    proc.wait()
 
 
 def run_process(cmd):
@@ -10,15 +18,20 @@ def run_process(cmd):
     return proc
 
 
+MANAGER_CLI_PORT = 52601
+
+
 PROTOCOL_CONFIGS = {
-    "RepNothing": lambda n: "",
-    "SimplePush": lambda n: "",
-    "MultiPaxos": lambda n: "",
+    "RepNothing": "",
+    "SimplePush": "",
+    "MultiPaxos": "",
 }
 
-MODE_PARAMS = {
+
+UTILITY_PARAM_NAMES = {
     "repl": [],
-    "bench": ["init_batch_size", "value_size", "put_ratio", "length_s", "adaptive"],
+    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
+    "tester": ["test_name", "keep_going", "logger_on"],
 }
 
 
@@ -40,43 +53,30 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, replica_list, config, mode, params, release):
-    cmd = [
-        "cargo",
-        "run",
-        "-p",
-        "summerset_client",
-    ]
-    if release:
-        cmd.append("-r")
-
+def compose_client_cmd(protocol, manager, config, utility, params, release):
+    cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
-        "--",
         "-p",
         protocol,
+        "-m",
+        manager,
     ]
-    cmd += replica_list
     if len(config) > 0:
         cmd += ["--config", config]
 
-    cmd += ["-m", mode]
+    cmd += ["-u", utility]
     if len(params) > 0:
         cmd += ["--params", params]
 
     return cmd
 
 
-def run_client(protocol, num_replicas, mode, params, release):
-    api_ports = list(range(52700, 52700 + num_replicas * 10, 10))
-    replica_list = []
-    for replica in range(num_replicas):
-        replica_list += ["-r", f"127.0.0.1:{api_ports[replica]}"]
-
+def run_client(protocol, utility, params, release):
     cmd = compose_client_cmd(
         protocol,
-        replica_list,
-        PROTOCOL_CONFIGS[protocol](num_replicas),
-        mode,
+        f"127.0.0.1:{MANAGER_CLI_PORT}",
+        PROTOCOL_CONFIGS[protocol],
+        utility,
         params,
         release,
     )
@@ -86,46 +86,56 @@ def run_client(protocol, num_replicas, mode, params, release):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
-    parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
     )
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
 
     subparsers = parser.add_subparsers(
-        required=True, dest="mode", description="client utility mode"
+        required=True,
+        dest="utility",
+        description="client utility mode: repl|bench|tester",
     )
 
     parser_repl = subparsers.add_parser("repl", help="REPL mode")
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
     parser_bench.add_argument(
-        "-b", "--init_batch_size", type=int, help="initial batch size"
+        "-f", "--freq_target", type=int, help="frequency target reqs per sec"
     )
     parser_bench.add_argument(
         "-v", "--value_size", type=int, help="value size in bytes"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
-    parser_bench.add_argument(
-        "-a", "--adaptive", action="store_true", help="adaptive batch size"
+
+    parser_tester = subparsers.add_parser("tester", help="testing mode")
+    parser_tester.add_argument(
+        "-t", "--test_name", type=str, required=True, help="<test_name>|basic|all"
+    )
+    parser_tester.add_argument(
+        "-k", "--keep_going", action="store_true", help="continue upon failed test"
+    )
+    parser_tester.add_argument(
+        "--logger_on", action="store_true", help="do not suppress logger output"
     )
 
     args = parser.parse_args()
 
     if args.protocol not in PROTOCOL_CONFIGS:
         raise ValueError(f"unknown protocol name '{args.protocol}'")
-    if args.num_replicas <= 0 or args.num_replicas > 9:
-        raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
+    # build everything
+    do_cargo_build(args.release)
+
+    # run client executable
     client_proc = run_client(
         args.protocol,
-        args.num_replicas,
-        args.mode,
-        glue_params_str(args, MODE_PARAMS[args.mode]),
+        args.utility,
+        glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
     )
-    client_proc.wait()
+
+    rc = client_proc.wait()
+    sys.exit(rc)

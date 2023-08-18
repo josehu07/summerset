@@ -1,11 +1,10 @@
 //! Summerset generic client traits to be implemented by all protocol-specific
 //! client stub structs.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
-use crate::server::{ReplicaId, ApiRequest, ApiReply};
+use crate::server::{ApiRequest, ApiReply};
 
 use async_trait::async_trait;
 
@@ -17,18 +16,21 @@ pub type ClientId = u64;
 pub trait GenericEndpoint {
     /// Creates a new client stub.
     fn new(
-        id: ClientId,
-        // remote addresses of server replicas
-        servers: HashMap<ReplicaId, SocketAddr>,
-        // protocol-specific config in TOML format
+        manager: SocketAddr, // remote address of manager oracle
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where
         Self: Sized;
 
-    /// Establishes connection to the service according to protocol-specific
-    /// logic.
-    async fn setup(&mut self) -> Result<(), SummersetError>;
+    /// Establishes connection to the service (or re-joins the service)
+    /// according to protocol-specific logic. Returns the assigned client ID
+    /// on success.
+    async fn connect(&mut self) -> Result<ClientId, SummersetError>;
+
+    /// Leaves the service: forgets about the current TCP connections and send
+    /// leave notifications according to protocol-specific logic. If `permanent`
+    /// is true, the connection to cluster manager oracle is also dropped.
+    async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError>;
 
     /// Sends a request to the service according to protocol-specific logic.
     fn send_req(

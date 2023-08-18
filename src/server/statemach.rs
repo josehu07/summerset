@@ -42,79 +42,54 @@ pub struct StateMachine {
     me: ReplicaId,
 
     /// Sender side of the exec channel.
-    tx_exec: Option<mpsc::UnboundedSender<(CommandId, Command)>>,
+    tx_exec: mpsc::UnboundedSender<(CommandId, Command)>,
 
     /// Receiver side of the ack channel.
-    rx_ack: Option<mpsc::UnboundedReceiver<(CommandId, CommandResult)>>,
+    rx_ack: mpsc::UnboundedReceiver<(CommandId, CommandResult)>,
 
     /// Join handle of the executor thread. The state HashMap is owned by this
     /// thread.
-    executor_handle: Option<JoinHandle<()>>,
+    _executor_handle: JoinHandle<()>,
 }
 
 // StateMachine public API implementation
 impl StateMachine {
-    /// Creates a new state machine with one executor thread.
-    pub fn new(me: ReplicaId) -> Self {
-        StateMachine {
-            me,
-            tx_exec: None,
-            rx_ack: None,
-            executor_handle: None,
-        }
-    }
-
-    /// Spawns the executor thread. Creates an exec channel for submitting
-    /// commands to the state machine and an ack channel for getting results.
-    pub async fn setup(&mut self) -> Result<(), SummersetError> {
-        if self.executor_handle.is_some() {
-            return logged_err!(self.me; "setup already done");
-        }
-
+    /// Creates a new state machine with one executor thread. Spawns the
+    /// executor thread. Creates an exec channel for submitting commands to the
+    /// state machine and an ack channel for getting results.
+    pub async fn new_and_setup(me: ReplicaId) -> Result<Self, SummersetError> {
         let (tx_exec, rx_exec) = mpsc::unbounded_channel();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
-        self.tx_exec = Some(tx_exec);
-        self.rx_ack = Some(rx_ack);
 
         let executor_handle =
-            tokio::spawn(Self::executor_thread(self.me, rx_exec, tx_ack));
-        self.executor_handle = Some(executor_handle);
+            tokio::spawn(Self::executor_thread(me, rx_exec, tx_ack));
 
-        Ok(())
+        Ok(StateMachine {
+            me,
+            tx_exec,
+            rx_ack,
+            _executor_handle: executor_handle,
+        })
     }
 
     /// Submits a command by sending it to the exec channel.
-    pub async fn submit_cmd(
+    pub fn submit_cmd(
         &mut self,
         id: CommandId,
         cmd: Command,
     ) -> Result<(), SummersetError> {
-        if self.executor_handle.is_none() {
-            return logged_err!(self.me; "submit_cmd called before setup");
-        }
-
-        match self.tx_exec {
-            Some(ref tx_exec) => Ok(tx_exec
-                .send((id, cmd))
-                .map_err(|e| SummersetError(e.to_string()))?),
-            None => logged_err!(self.me; "tx_exec not created yet"),
-        }
+        self.tx_exec
+            .send((id, cmd))
+            .map_err(|e| SummersetError(e.to_string()))
     }
 
     /// Waits for the next execution result by receiving from the ack channel.
     pub async fn get_result(
         &mut self,
     ) -> Result<(CommandId, CommandResult), SummersetError> {
-        if self.executor_handle.is_none() {
-            return logged_err!(self.me; "get_result called before setup");
-        }
-
-        match self.rx_ack {
-            Some(ref mut rx_ack) => match rx_ack.recv().await {
-                Some((id, result)) => Ok((id, result)),
-                None => logged_err!(self.me; "ack channel has been closed"),
-            },
-            None => logged_err!(self.me; "rx_ack not created yet"),
+        match self.rx_ack.recv().await {
+            Some((id, result)) => Ok((id, result)),
+            None => logged_err!(self.me; "ack channel has been closed"),
         }
     }
 }
@@ -275,36 +250,23 @@ mod statemach_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn sm_setup() -> Result<(), SummersetError> {
-        let mut sm = StateMachine::new(0);
-        sm.setup().await?;
-        assert!(sm.tx_exec.is_some());
-        assert!(sm.rx_ack.is_some());
-        assert!(sm.executor_handle.is_some());
-        Ok(())
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_exec_ack() -> Result<(), SummersetError> {
-        let mut sm = StateMachine::new(0);
-        sm.setup().await?;
+        let mut sm = StateMachine::new_and_setup(0).await?;
         sm.submit_cmd(
             0,
             Command::Put {
                 key: "Jose".into(),
                 value: "179".into(),
             },
-        )
-        .await?;
+        )?;
         sm.submit_cmd(
             1,
             Command::Put {
                 key: "Jose".into(),
                 value: "180".into(),
             },
-        )
-        .await?;
+        )?;
         assert_eq!(
             sm.get_result().await?,
             (0, CommandResult::Put { old_value: None })
