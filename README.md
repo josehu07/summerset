@@ -1,6 +1,6 @@
 This is a private mirror of [Summerset](https://github.com/josehu07/summerset). Below are a memo of development commands...
 
-To create a branch `public-main` to track public repo `main`, pull new things from it, and merge into the private `main`:
+To create a branch to track public repo `main`, pull new things from it, and merge into the private `main`:
 
 ```bash
 # in the private repo:
