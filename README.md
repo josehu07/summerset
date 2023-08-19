@@ -1,8 +1,39 @@
+This is a private mirror of [Summerset](https://github.com/josehu07/summerset). Below are a memo of development commands...
+
+To create a branch `public-main` to track public repo `main`, pull new things from it, and merge into the private `main`:
+
+```bash
+# in the private repo:
+git remote add public git@github.com:josehu07/summerset.git
+git config --add --local checkout.defaultRemote origin
+git checkout -b public-main
+git branch --set-upstream-to=public/main public-main
+git checkout main
+# skip the above for later times
+git pull public
+git merge public-main
+git push
+```
+
+To create a pull request on the public repo to make batched contributions from private repo `main`:
+
+```bash
+# in the public repo:
+git remote add private git@github.com:josehu07/summerset-private.git
+git config --add --local checkout.defaultRemote origin
+# skip the above for later times
+git checkout -b <PR_name>
+git branch --set-upstream-to=private/main <PR_name>
+git pull private
+git push origin <PR_name>
+# then, on GitHub, make a PR from <PR_name> branch to main
+```
+
 # Summerset
 
-[![Format check](https://github.com/josehu07/summerset/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Aformat)
-[![Build status](https://github.com/josehu07/summerset/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Abuild)
-[![Tests status](https://github.com/josehu07/summerset/actions/workflows/tests.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests)
+[![Format check](https://github.com/josehu07/summerset-private/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Aformat)
+[![Build status](https://github.com/josehu07/summerset-private/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Abuild)
+[![Tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
