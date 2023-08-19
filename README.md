@@ -8,7 +8,7 @@
 Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
 
 <p align="center">
-  <img width="420" src="./README.png">
+  <img width="360" src="./README.png">
 </p>
 
 <details>
