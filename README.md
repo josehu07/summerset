@@ -7,6 +7,10 @@
 
 Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
 
+<p align="center">
+  <img width="360" src="./README.png">
+</p>
+
 <details>
 <summary>List of currently implemented protocols...</summary>
 
@@ -113,7 +117,7 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] random benchmarking client
   - [x] testing client
   - [ ] benchmarking with YCSB input
-- [ ] better README
+- [ ] better README & documentation
 
 ---
 
