@@ -10,8 +10,10 @@ mod error;
 mod bitmap;
 mod timer;
 mod safetcp;
+mod rscoding;
 
 pub use error::SummersetError;
 pub use bitmap::ReplicaMap;
 pub use timer::Timer;
 pub use safetcp::{safe_tcp_read, safe_tcp_write};
+pub use rscoding::RSCodeword;

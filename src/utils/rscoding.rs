@@ -1,0 +1,655 @@
+//! Reed-Solomon erasure coding helpers.
+
+use std::fmt;
+use std::io;
+use std::collections::HashSet;
+use std::marker::PhantomData;
+
+use crate::utils::SummersetError;
+
+use bytes::{BytesMut, BufMut};
+
+use serde::{Serialize, de::DeserializeOwned};
+
+use rmp_serde::encode::write as encode_write;
+use rmp_serde::decode::from_read as decode_from_read;
+
+use reed_solomon_erasure::galois_8::ReedSolomon;
+
+/// A Reed-Solomon codeword with original data of type `T`.
+#[derive(Debug, Clone)]
+pub struct RSCodeword<T> {
+    /// Number of data shards.
+    num_data_shards: usize,
+
+    /// Number of parity shards.
+    num_parity_shards: usize,
+
+    /// Shards content. All `BytesMut` chunks are allocated contiguously by
+    /// `.split_to()` to minimize possible `.unsplit()` overhead.
+    shards: Vec<Option<BytesMut>>,
+
+    /// Exact length of original data in bytes.
+    data_len: usize,
+
+    /// Length in bytes of a shard.
+    shard_len: usize,
+
+    /// Zero-sized phantom marker to make this struct act as if it owns a data
+    /// of type `T` (yet in the form of vec of bytes).
+    phantom: PhantomData<T>,
+}
+
+impl<T> RSCodeword<T>
+where
+    T: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+{
+    /// Creates a new RSCodeword from original data or empty bytes.
+    fn new(
+        data_bytes: Option<BytesMut>,
+        data_len: usize,
+        num_data_shards: usize,
+        num_parity_shards: usize,
+    ) -> Result<Self, SummersetError> {
+        if num_data_shards == 0 {
+            return Err(SummersetError("num_data_shards is zero".into()));
+        }
+        if data_len < num_data_shards {
+            return Err(SummersetError(format!(
+                "data length too small: {}",
+                data_len
+            )));
+        }
+
+        let num_total_shards = num_data_shards + num_parity_shards;
+        let shard_len = if data_len % num_data_shards == 0 {
+            data_len / num_data_shards
+        } else {
+            (data_len / num_data_shards) + 1
+        };
+
+        let shards = if let Some(mut data_bytes) = data_bytes {
+            // if newing from original data
+            assert_eq!(data_bytes.len(), data_len);
+
+            // pad length to multiple of num_data_shards and compute shard size
+            let padded_len = shard_len * num_data_shards;
+            data_bytes.resize(padded_len, 0);
+
+            // split the bytes representation into contiguously stored shards
+            let mut shards = Vec::with_capacity(num_data_shards);
+            for _ in 0..(num_data_shards - 1) {
+                let shard = data_bytes.split_to(shard_len);
+                assert_eq!(shard.len(), shard_len);
+                shards.push(Some(shard));
+            }
+            assert_eq!(data_bytes.len(), shard_len);
+            shards.push(Some(data_bytes)); // the last shard
+            assert_eq!(shards.len(), num_data_shards);
+            for _ in num_data_shards..num_total_shards {
+                shards.push(None);
+            }
+            assert_eq!(shards.len(), num_total_shards);
+            shards
+        } else {
+            // if newing from empty
+            vec![None; num_total_shards]
+        };
+
+        Ok(RSCodeword {
+            num_data_shards,
+            num_parity_shards,
+            shards,
+            data_len,
+            shard_len,
+            phantom: PhantomData,
+        })
+    }
+
+    /// Creates a new RSCodeword from original data.
+    pub fn from_data(
+        data: T,
+        num_data_shards: usize,
+        num_parity_shards: usize,
+    ) -> Result<Self, SummersetError> {
+        // serialize original data into bytes
+        let mut data_writer = BytesMut::new().writer();
+        encode_write(&mut data_writer, &data)?;
+        let data_len = data_writer.get_ref().len();
+        Self::new(
+            Some(data_writer.into_inner()),
+            data_len,
+            num_data_shards,
+            num_parity_shards,
+        )
+    }
+
+    /// Creates a new RSCodeword from empty bytes, using given data length.
+    pub fn from_null(
+        data_len: usize,
+        num_data_shards: usize,
+        num_parity_shards: usize,
+    ) -> Result<Self, SummersetError> {
+        Self::new(None, data_len, num_data_shards, num_parity_shards)
+    }
+
+    /// Creates an `RSCodeword` struct that owns a copy of a subset of the
+    /// shards.
+    pub fn subset_copy(
+        &self,
+        subset: HashSet<usize>,
+    ) -> Result<Self, SummersetError> {
+        let mut shards = vec![None; self.num_shards()];
+        for i in subset {
+            if i >= shards.len() {
+                return Err(SummersetError(format!(
+                    "shard index {} out-of-bound",
+                    i
+                )));
+            }
+            shards[i] = self.shards[i].clone();
+        }
+
+        Ok(RSCodeword {
+            num_data_shards: self.num_data_shards,
+            num_parity_shards: self.num_parity_shards,
+            shards,
+            data_len: self.data_len,
+            shard_len: self.shard_len,
+            phantom: PhantomData,
+        })
+    }
+
+    /// Absorbs another `RSCodeword` struct, taking its available shards.
+    pub fn absorb_other(
+        &mut self,
+        mut other: RSCodeword<T>,
+    ) -> Result<(), SummersetError> {
+        // must have all configuration parameters matching
+        if self.num_data_shards != other.num_data_shards() {
+            return Err(SummersetError(format!(
+                "num_data_shards mismatch: expected {}, other {}",
+                self.num_data_shards,
+                other.num_data_shards()
+            )));
+        }
+        if self.num_parity_shards != other.num_parity_shards() {
+            return Err(SummersetError(format!(
+                "num_parity_shards mismatch: expected {}, other {}",
+                self.num_parity_shards,
+                other.num_parity_shards()
+            )));
+        }
+        if self.data_len != other.data_len() {
+            return Err(SummersetError(format!(
+                "data_len mismatch: expected {}, other {}",
+                self.data_len,
+                other.data_len()
+            )));
+        }
+        if self.shard_len != other.shard_len() {
+            return Err(SummersetError(format!(
+                "shard_len mismatch: expected {}, other {}",
+                self.shard_len,
+                other.shard_len()
+            )));
+        }
+
+        for i in 0..other.shards.len() {
+            if let Some(shard) = other.shards[i].take() {
+                if self.shards[i].is_none() {
+                    self.shards[i] = Some(shard);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Gets number of data shards.
+    pub fn num_data_shards(&self) -> usize {
+        self.num_data_shards
+    }
+
+    /// Gets number of parity shards.
+    pub fn num_parity_shards(&self) -> usize {
+        self.num_parity_shards
+    }
+
+    /// Gets total number of shards.
+    pub fn num_shards(&self) -> usize {
+        self.shards.len()
+    }
+
+    /// Gets number of currently available data shards.
+    pub fn avail_data_shards(&self) -> usize {
+        self.shards
+            .iter()
+            .take(self.num_data_shards)
+            .filter(|s| s.is_some())
+            .count()
+    }
+
+    /// Gets number of currently available parity shards.
+    pub fn avail_parity_shards(&self) -> usize {
+        self.shards
+            .iter()
+            .skip(self.num_data_shards)
+            .filter(|s| s.is_some())
+            .count()
+    }
+
+    /// Gets total number of currently available shards.
+    pub fn avail_shards(&self) -> usize {
+        self.shards.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// Gets length of original data in bytes.
+    pub fn data_len(&self) -> usize {
+        self.data_len
+    }
+
+    /// Gets length of a shard in bytes.
+    pub fn shard_len(&self) -> usize {
+        self.shard_len
+    }
+
+    /// Helper checker to ensure that the given ReedSolomon coder has the same
+    /// shard splits config as me.
+    fn shard_splits_match(
+        &self,
+        rs: &ReedSolomon,
+    ) -> Result<(), SummersetError> {
+        if rs.data_shard_count() != self.num_data_shards {
+            Err(SummersetError(format!(
+                "num_data_shards mismatch: expected {}, rs {}",
+                self.num_data_shards,
+                rs.data_shard_count()
+            )))
+        } else if rs.parity_shard_count() != self.num_parity_shards {
+            Err(SummersetError(format!(
+                "num_parity_shards mismatch: expected {}, rs {}",
+                self.num_parity_shards,
+                rs.parity_shard_count()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Computes the parity shards from data shards. Must have all data shards
+    /// present.
+    pub fn compute_parity(
+        &mut self,
+        rs: Option<&ReedSolomon>,
+    ) -> Result<(), SummersetError> {
+        if self.num_parity_shards == 0 {
+            return Ok(());
+        }
+        if let Some(rs) = rs {
+            self.shard_splits_match(rs)?;
+        } else {
+            return Err(SummersetError("ReedSolomon coder is None".into()));
+        }
+
+        if self.avail_data_shards() < self.num_data_shards {
+            return Err(SummersetError(format!(
+                "not all data shards present: {} / {}",
+                self.avail_data_shards(),
+                self.num_data_shards
+            )));
+        }
+
+        // allocate space for parity shards if haven't
+        for shard in self.shards.iter_mut().skip(self.num_data_shards) {
+            if shard.is_none() {
+                *shard = Some(BytesMut::zeroed(self.shard_len));
+            }
+        }
+
+        let slices: Vec<&mut BytesMut> = self
+            .shards
+            .iter_mut()
+            .map(|s| s.as_mut().unwrap())
+            .collect();
+        rs.unwrap().encode(slices)?;
+        Ok(())
+    }
+
+    /// Reconstructs all shards or data shards from currently available shards.
+    fn reconstruct(
+        &mut self,
+        rs: Option<&ReedSolomon>,
+        data_only: bool,
+    ) -> Result<(), SummersetError> {
+        if self.num_parity_shards == 0 {
+            if self.avail_data_shards() == self.num_data_shards {
+                return Ok(());
+            } else {
+                return Err(SummersetError(format!(
+                    "insufficient data shards: {}/ {}",
+                    self.avail_data_shards(),
+                    self.num_data_shards
+                )));
+            }
+        }
+        if let Some(rs) = rs {
+            self.shard_splits_match(rs)?;
+        } else {
+            return Err(SummersetError("ReedSolomon coder is None".into()));
+        }
+
+        if data_only {
+            rs.unwrap().reconstruct_data(&mut self.shards)?;
+        } else {
+            rs.unwrap().reconstruct(&mut self.shards)?;
+        }
+        Ok(())
+    }
+
+    /// Reconstructs all shards from currently available shards.
+    pub fn reconstruct_all(
+        &mut self,
+        rs: Option<&ReedSolomon>,
+    ) -> Result<(), SummersetError> {
+        self.reconstruct(rs, false)
+    }
+
+    /// Reconstructs data shards from currently available shards.
+    pub fn reconstruct_data(
+        &mut self,
+        rs: Option<&ReedSolomon>,
+    ) -> Result<(), SummersetError> {
+        self.reconstruct(rs, true)
+    }
+
+    /// Verifies if the currently parity shards are correct. Must have all data
+    /// & parity shards available.
+    pub fn verify_parity(
+        &mut self,
+        rs: Option<&ReedSolomon>,
+    ) -> Result<bool, SummersetError> {
+        if self.num_parity_shards == 0 {
+            return Ok(self.avail_data_shards() == self.num_data_shards);
+        }
+        if let Some(rs) = rs {
+            self.shard_splits_match(rs)?;
+        } else {
+            return Err(SummersetError("ReedSolomon is None".into()));
+        }
+
+        if self.avail_shards() < self.num_shards() {
+            return Err(SummersetError(format!(
+                "not all shards present: {} / {}",
+                self.avail_shards(),
+                self.num_shards()
+            )));
+        }
+
+        let slices: Vec<&BytesMut> =
+            self.shards.iter().map(|s| s.as_ref().unwrap()).collect();
+        Ok(rs.unwrap().verify(&slices)?)
+    }
+
+    /// Get a deserialized clone of original data.
+    pub fn get_data(&self) -> Result<T, SummersetError> {
+        if self.avail_data_shards() < self.num_data_shards {
+            return Err(SummersetError(format!(
+                "not all data shards present: {} / {}",
+                self.avail_data_shards(),
+                self.num_data_shards
+            )));
+        }
+
+        let reader = ShardsReader::new(
+            &self.shards,
+            self.num_data_shards,
+            self.shard_len,
+        )?;
+        Ok(decode_from_read(reader)?)
+    }
+}
+
+/// Helper type containing an immutable reference to a vector of `BytesMut`
+/// and a cursor; implements the `io::Read` trait to ease decoding from the
+/// vector without the need of merging them into a single `BytesMut`.
+struct ShardsReader<'a> {
+    /// Immutable reference to the split bytes.
+    shards: &'a Vec<Option<BytesMut>>,
+
+    /// Number of data shards in vec.
+    num_data_shards: usize,
+
+    /// Length in bytes of a shard.
+    shard_len: usize,
+
+    /// Composite cursor: (shard_idx, byte_idx).
+    cursor: (usize, usize),
+}
+
+impl<'a> ShardsReader<'a> {
+    /// Creates a new temporary reader.
+    fn new(
+        shards: &'a Vec<Option<BytesMut>>,
+        num_data_shards: usize,
+        shard_len: usize,
+    ) -> Result<Self, SummersetError> {
+        for shard in shards.iter().take(num_data_shards) {
+            if shard.is_none() {
+                return Err(SummersetError("some data shard is None".into()));
+            }
+            assert_eq!(shard.as_ref().unwrap().len(), shard_len);
+        }
+
+        Ok(ShardsReader {
+            shards,
+            num_data_shards,
+            shard_len,
+            cursor: (0, 0),
+        })
+    }
+}
+
+impl<'a> io::Read for ShardsReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut total_nread = 0;
+
+        while self.cursor.0 < self.num_data_shards {
+            let mut slice = &(self.shards[self.cursor.0].as_ref().unwrap())
+                [self.cursor.1..];
+            let (_, buf_tail) = buf.split_at_mut(total_nread);
+
+            let shard_nread = slice.read(buf_tail).unwrap();
+            if shard_nread == 0 {
+                // perhaps destination buf has been filled, early return
+                return Ok(total_nread);
+            }
+
+            total_nread += shard_nread;
+            self.cursor.1 += shard_nread;
+
+            if self.cursor.1 > self.shard_len {
+                panic!(
+                    "impossible shard cursor: {} / {}",
+                    self.cursor.1, self.shard_len
+                );
+            }
+            if self.cursor.1 == self.shard_len {
+                // progress shard index
+                self.cursor.0 += 1;
+                self.cursor.1 = 0;
+            }
+        }
+
+        Ok(total_nread)
+    }
+}
+
+#[cfg(test)]
+mod rscoding_tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestData(String);
+
+    #[test]
+    fn new_from_data() -> Result<(), SummersetError> {
+        let data = TestData("interesting_value".into());
+        let mut data_writer = BytesMut::new().writer();
+        encode_write(&mut data_writer, &data)?;
+        let data_len = data_writer.get_ref().len();
+        let shard_len = if data_len % 3 == 0 {
+            data_len / 3
+        } else {
+            (data_len / 3) + 1
+        };
+        // invalid num_data_shards
+        assert!(RSCodeword::from_data(data.clone(), 0, 0).is_err());
+        // valid with num_parity_shards == 0
+        let cw = RSCodeword::from_data(data.clone(), 3, 0)?;
+        assert_eq!(cw.num_data_shards(), 3);
+        assert_eq!(cw.num_parity_shards(), 0);
+        assert_eq!(cw.num_shards(), 3);
+        assert_eq!(cw.avail_data_shards(), 3);
+        assert_eq!(cw.avail_parity_shards(), 0);
+        assert_eq!(cw.avail_shards(), 3);
+        assert_eq!(cw.data_len(), data_len);
+        assert_eq!(cw.shard_len(), shard_len);
+        // valid with num_parity_shards > 0
+        let cw = RSCodeword::from_data(data.clone(), 3, 2)?;
+        assert_eq!(cw.num_data_shards(), 3);
+        assert_eq!(cw.num_parity_shards(), 2);
+        assert_eq!(cw.num_shards(), 5);
+        assert_eq!(cw.avail_data_shards(), 3);
+        assert_eq!(cw.avail_parity_shards(), 0);
+        assert_eq!(cw.avail_shards(), 3);
+        assert_eq!(cw.data_len(), data_len);
+        assert_eq!(cw.shard_len(), shard_len);
+        Ok(())
+    }
+
+    #[test]
+    fn new_from_null() -> Result<(), SummersetError> {
+        // invalid num_data_shards
+        assert!(RSCodeword::<TestData>::from_null(17, 0, 0).is_err());
+        // invalid data_len
+        assert!(RSCodeword::<TestData>::from_null(0, 3, 2).is_err());
+        // valid
+        let cw = RSCodeword::<TestData>::from_null(17, 3, 2)?;
+        assert_eq!(cw.num_data_shards(), 3);
+        assert_eq!(cw.num_parity_shards(), 2);
+        assert_eq!(cw.num_shards(), 5);
+        assert_eq!(cw.avail_data_shards(), 0);
+        assert_eq!(cw.avail_parity_shards(), 0);
+        assert_eq!(cw.avail_shards(), 0);
+        assert_eq!(cw.data_len(), 17);
+        assert_eq!(cw.shard_len(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn subset_absorb() -> Result<(), SummersetError> {
+        let data = TestData("interesting_value".into());
+        let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
+        // invalid subset
+        assert!(cwa.subset_copy(HashSet::from([0, 5])).is_err());
+        // valid subsets
+        let cw01 = cwa.subset_copy(HashSet::from([0, 1]))?;
+        assert_eq!(cw01.avail_data_shards(), 2);
+        let cw02 = cwa.subset_copy(HashSet::from([0, 2]))?;
+        assert_eq!(cw02.avail_data_shards(), 2);
+        // valid absorbing
+        let mut cwb = RSCodeword::<TestData>::from_null(cwa.data_len(), 3, 2)?;
+        cwb.absorb_other(cw02)?;
+        assert_eq!(cwb.avail_shards(), 2);
+        cwb.absorb_other(cw01)?;
+        assert_eq!(cwb.avail_shards(), 3);
+        assert_eq!(cwb.get_data()?, data);
+        // invalid absorbing
+        assert!(cwb.absorb_other(RSCodeword::from_null(100, 3, 2)?).is_err());
+        assert!(cwb
+            .absorb_other(RSCodeword::from_null(cwa.data_len(), 5, 3)?)
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn compute_verify() -> Result<(), SummersetError> {
+        let rs32 = ReedSolomon::new(3, 2)?;
+        // not enough shards
+        let mut cw_null = RSCodeword::<TestData>::from_null(17, 3, 2)?;
+        assert!(cw_null.compute_parity(Some(&rs32)).is_err());
+        assert!(cw_null.verify_parity(Some(&rs32)).is_err());
+        // valid with num_parity_shards == 0
+        let data = TestData("interesting_value".into());
+        let mut cw = RSCodeword::from_data(data.clone(), 3, 0)?;
+        cw.compute_parity(None)?;
+        assert_eq!(cw.avail_parity_shards(), 0);
+        assert!(cw.verify_parity(None)?);
+        // valid with num_parity_shards > 0
+        let mut cw = RSCodeword::from_data(data.clone(), 3, 2)?;
+        cw.compute_parity(Some(&rs32))?;
+        assert_eq!(cw.avail_parity_shards(), 2);
+        assert!(cw.verify_parity(Some(&rs32))?);
+        // shard splits mismatch
+        let rs53 = ReedSolomon::new(5, 3)?;
+        assert!(cw.compute_parity(None).is_err());
+        assert!(cw.compute_parity(Some(&rs53)).is_err());
+        assert!(cw.verify_parity(None).is_err());
+        assert!(cw.verify_parity(Some(&rs53)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn reconstruction() -> Result<(), SummersetError> {
+        let rs32 = ReedSolomon::new(3, 2)?;
+        // not enough shards
+        let mut cw_null = RSCodeword::<TestData>::from_null(17, 3, 2)?;
+        assert!(cw_null.reconstruct_all(Some(&rs32)).is_err());
+        assert!(cw_null.reconstruct_data(Some(&rs32)).is_err());
+        // valid with num_parity_shards == 0
+        let data = TestData("interesting_value".into());
+        let mut cw = RSCodeword::from_data(data.clone(), 3, 0)?;
+        cw.reconstruct_all(None)?;
+        assert_eq!(cw.avail_shards(), 3);
+        cw.shards[1] = None;
+        assert!(cw.reconstruct_all(None).is_err());
+        assert!(cw.reconstruct_data(None).is_err());
+        // valid with num_parity_shards > 0
+        let mut cw = RSCodeword::from_data(data.clone(), 3, 2)?;
+        cw.reconstruct_all(Some(&rs32))?;
+        assert_eq!(cw.avail_shards(), 5);
+        cw.shards[1] = None;
+        cw.shards[3] = None;
+        cw.reconstruct_all(Some(&rs32))?;
+        assert_eq!(cw.avail_shards(), 5);
+        cw.shards[0] = None;
+        cw.shards[2] = None;
+        cw.reconstruct_data(Some(&rs32))?;
+        assert_eq!(cw.avail_data_shards(), 3);
+        cw.shards[0] = None;
+        cw.shards[1] = None;
+        cw.shards[4] = None;
+        assert!(cw.reconstruct_all(Some(&rs32)).is_err());
+        assert!(cw.reconstruct_data(Some(&rs32)).is_err());
+        // shard splits mismatch
+        let rs53 = ReedSolomon::new(5, 3)?;
+        assert!(cw.reconstruct_all(None).is_err());
+        assert!(cw.reconstruct_all(Some(&rs53)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn get_data() -> Result<(), SummersetError> {
+        let rs32 = ReedSolomon::new(3, 2)?;
+        let data = TestData("interesting_value".into());
+        let mut cw = RSCodeword::from_data(data.clone(), 3, 2)?;
+        assert_eq!(cw.get_data()?, data);
+        cw.compute_parity(Some(&rs32))?;
+        cw.shards[0] = None;
+        assert!(cw.get_data().is_err());
+        cw.reconstruct_data(Some(&rs32))?;
+        assert_eq!(cw.get_data()?, data);
+        Ok(())
+    }
+}
