@@ -58,7 +58,12 @@ impl ClientRepl {
     /// Reads in user input and parses into a command.
     fn read_command(&mut self) -> Result<Option<Command>, SummersetError> {
         self.input_buf.clear();
-        io::stdin().read_line(&mut self.input_buf)?;
+        let nread = io::stdin().read_line(&mut self.input_buf)?;
+        if nread == 0 {
+            println!("Exitting...");
+            return Ok(None);
+        }
+
         let line: &str = self.input_buf.trim();
         if line.is_empty() {
             return Err(SummersetError("".into()));
