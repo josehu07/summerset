@@ -32,6 +32,7 @@ PROTOCOL_CONFIGS = {
     "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'+logger_sync=true",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
     "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "RSPaxos": lambda r, n: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'+fault_tolerance={n-(n//2+1)}",
 }
 
 

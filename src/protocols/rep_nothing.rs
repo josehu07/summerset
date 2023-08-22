@@ -244,17 +244,17 @@ impl GenericReplica for RepNothingReplica {
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
                                     batch_interval_us, max_batch_size,
                                     backer_path, logger_sync)?;
+        // connect to the cluster manager and get assigned a server ID
+        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let id = control_hub.me;
+
         if config.batch_interval_us == 0 {
             return logged_err!(
-                "s";
+                id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
             );
         }
-
-        // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
-        let id = control_hub.me;
 
         // tell the manager tha I have joined
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {

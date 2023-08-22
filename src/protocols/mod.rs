@@ -22,12 +22,17 @@ mod multipaxos;
 use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
 pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 
+mod rs_paxos;
+use rs_paxos::{RSPaxosReplica, RSPaxosClient};
+pub use rs_paxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
+
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum SmrProtocol {
     RepNothing,
     SimplePush,
     MultiPaxos,
+    RSPaxos,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -46,6 +51,7 @@ impl SmrProtocol {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
             "MultiPaxos" => Some(Self::MultiPaxos),
+            "RSPaxos" => Some(Self::RSPaxos),
             _ => None,
         }
     }
@@ -94,6 +100,14 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::RSPaxos => {
+                box_if_ok!(
+                    RSPaxosReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
         }
     }
 
@@ -112,6 +126,9 @@ impl SmrProtocol {
             }
             Self::MultiPaxos => {
                 box_if_ok!(MultiPaxosClient::new(manager, config_str))
+            }
+            Self::RSPaxos => {
+                box_if_ok!(RSPaxosClient::new(manager, config_str))
             }
         }
     }
@@ -141,6 +158,7 @@ mod protocols_name_tests {
         valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
         valid_name_test!(MultiPaxos);
+        valid_name_test!(RSPaxos);
     }
 
     #[test]

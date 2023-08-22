@@ -25,6 +25,7 @@ PROTOCOL_CONFIGS = {
     "RepNothing": "",
     "SimplePush": "",
     "MultiPaxos": "",
+    "RSPaxos": "",
 }
 
 
