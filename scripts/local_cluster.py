@@ -115,8 +115,8 @@ if __name__ == "__main__":
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
     # kill all existing server and manager processes
-    os.system("pkill summerset_server")
-    os.system("pkill summerset_manager")
+    os.system("sudo pkill summerset_server")
+    os.system("sudo pkill summerset_manager")
 
     # remove all existing wal files
     for path in Path("/tmp").glob("summerset.*.wal"):

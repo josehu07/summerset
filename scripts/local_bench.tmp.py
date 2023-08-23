@@ -81,9 +81,9 @@ def bench_round(protocol, num_replicas, value_size, put_ratio, length_s):
     print(
         f"{protocol:<10s}  n={num_replicas:1d}  v={value_size:<9d}  w%={put_ratio:<3d}  {length_s:3d}s"
     )
-    os.system("pkill summerset_client")
-    os.system("pkill summerset_server")
-    os.system("pkill summerset_manager")
+    os.system("sudo pkill summerset_client")
+    os.system("sudo pkill summerset_server")
+    os.system("sudo pkill summerset_manager")
 
     proc_cluster = launch_cluster(protocol, num_replicas)
     time.sleep(5)
