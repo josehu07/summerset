@@ -114,8 +114,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0 or args.num_replicas > 9:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
-    # kill all existing server processes
+    # kill all existing server and manager processes
     os.system("pkill summerset_server")
+    os.system("pkill summerset_manager")
 
     # remove all existing wal files
     for path in Path("/tmp").glob("summerset.*.wal"):
@@ -126,7 +127,7 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    time.sleep(0.5)  # 500ms
+    time.sleep(1)
 
     # then launch server replicas
     launch_servers(args.protocol, args.num_replicas, args.release)
