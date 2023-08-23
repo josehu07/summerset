@@ -1,0 +1,12 @@
+#! /usr/bin/bash
+
+echo "4096 131072 33554432" | sudo tee /proc/sys/net/ipv4/tcp_rmem
+echo "4096 131072 33554432" | sudo tee /proc/sys/net/ipv4/tcp_wmem
+
+echo "1538757 16413408 24620112" | sudo tee /proc/sys/net/ipv4/tcp_mem
+
+echo "33554432" | sudo tee /proc/sys/net/core/rmem_max
+echo "33554432" | sudo tee /proc/sys/net/core/wmem_max
+
+echo "131072" | sudo tee /proc/sys/net/core/rmem_default
+echo "131072" | sudo tee /proc/sys/net/core/wmem_default
