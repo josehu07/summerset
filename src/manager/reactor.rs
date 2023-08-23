@@ -360,7 +360,7 @@ impl ClientReactor {
                                 Some(&reply)
                             ) {
                                 pf_error!("m"; "error replying -> {}: {}", id, e);
-                            } else {
+                            } else { // skips `WouldBlock` failure check here
                                 pf_info!("m"; "client {} has left", id);
                             }
                             break;
