@@ -177,7 +177,7 @@ impl ClientBench {
         chunk_cnt: &mut u64,
         chunk_lats: &mut Vec<f64>,
         retrying: &mut bool,
-        slowdown: &mut bool,
+        slowdown: &mut u64,
         ticker: &mut Interval,
     ) -> Result<(), SummersetError> {
         tokio::select! {
@@ -192,14 +192,14 @@ impl ClientBench {
                     let lat_us = lat.as_secs_f64() * 1000000.0;
                     chunk_lats.push(lat_us);
 
-                    if *slowdown {
-                        *slowdown = false;
+                    if *slowdown > 0 {
+                        *slowdown -= 1;
                     }
                 }
             }
 
             // send next request
-            _ = ticker.tick(), if !*slowdown => {
+            _ = ticker.tick(), if *slowdown == 0 => {
                 let req_id = if *retrying {
                     self.driver.issue_retry()?
                 } else {
@@ -207,7 +207,9 @@ impl ClientBench {
                 };
 
                 *retrying = req_id.is_none();
-                *slowdown = *retrying && (*total_cnt > *reply_cnt);
+                if *retrying && (*total_cnt > *reply_cnt) {
+                    *slowdown = 10;
+                }
                 if !*retrying {
                     *total_cnt += 1;
                 }
@@ -246,7 +248,7 @@ impl ClientBench {
         let mut chunk_lats: Vec<f64> = vec![];
 
         // run for specified length
-        let (mut slowdown, mut retrying) = (false, false);
+        let (mut slowdown, mut retrying) = (0, false);
         while now.duration_since(start) < length {
             if self.params.freq_target == 0 {
                 self.closed_loop_iter(
