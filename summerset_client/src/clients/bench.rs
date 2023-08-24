@@ -243,6 +243,10 @@ impl ClientBench {
     /// Drops the current interval ticker and create a new one using the
     /// current frequency.
     fn reset_ticker(&mut self) {
+        if self.curr_freq == 0 {
+            self.curr_freq = 1; // avoid division-by-zero
+        }
+
         let period = Duration::from_nanos(1000000000 / self.curr_freq);
         self.ticker = time::interval(period);
         self.ticker
