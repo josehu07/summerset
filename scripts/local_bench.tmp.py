@@ -17,6 +17,12 @@ def run_process(cmd):
     return proc
 
 
+def kill_all_matching(name):
+    # print("Kill all:", name)
+    assert name.count(" ") == 0
+    os.system(f"sudo pkill -9 -f {name}")
+
+
 def launch_cluster(protocol, num_replicas):
     cmd = [
         "python3",
@@ -81,9 +87,9 @@ def bench_round(protocol, num_replicas, value_size, put_ratio, length_s):
     print(
         f"{protocol:<10s}  n={num_replicas:1d}  v={value_size:<9d}  w%={put_ratio:<3d}  {length_s:3d}s"
     )
-    os.system("sudo pkill summerset_client")
-    os.system("sudo pkill summerset_server")
-    os.system("sudo pkill summerset_manager")
+    kill_all_matching("summerset_client")
+    kill_all_matching("summerset_server")
+    kill_all_matching("summerset_manager")
 
     proc_cluster = launch_cluster(protocol, num_replicas)
     time.sleep(15)

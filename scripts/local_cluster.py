@@ -21,6 +21,12 @@ def run_process(cmd):
     return proc
 
 
+def kill_all_matching(name):
+    print("Kill all:", name)
+    assert name.count(" ") == 0
+    os.system(f"sudo pkill -9 -f {name}")
+
+
 MANAGER_SRV_PORT = 52600
 MANAGER_CLI_PORT = 52601
 
@@ -115,8 +121,8 @@ if __name__ == "__main__":
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
     # kill all existing server and manager processes
-    os.system("sudo pkill summerset_server")
-    os.system("sudo pkill summerset_manager")
+    kill_all_matching("summerset_server")
+    kill_all_matching("summerset_manager")
 
     # remove all existing wal files
     for path in Path("/tmp").glob("summerset.*.wal"):
