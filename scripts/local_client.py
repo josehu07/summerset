@@ -71,7 +71,7 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
 
     # if in benchmarking mode, lower the client's CPU scheduling priority
     if utility == "bench":
-        cmd = ["nice", "-n", "15"] + cmd
+        cmd = ["nice", "-n", "19"] + cmd
 
     return cmd
 

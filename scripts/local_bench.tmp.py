@@ -110,7 +110,7 @@ def bench_round(protocol, num_replicas, value_size, put_ratio, length_s):
 if __name__ == "__main__":
     do_cargo_build()
 
-    for num_replicas in (3, 7):
+    for num_replicas in (3, 5, 7):
         for value_size in (1024, 65536, 4194304):
             for protocol in ("MultiPaxos", "RSPaxos"):
                 bench_round(protocol, num_replicas, value_size, 100, 60)
