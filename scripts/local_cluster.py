@@ -134,7 +134,7 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    time.sleep(1)
+    time.sleep(5)
 
     # then launch server replicas
     launch_servers(args.protocol, args.num_replicas, args.release)
