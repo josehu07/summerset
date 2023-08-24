@@ -117,7 +117,7 @@ impl ClientBench {
         let params = parsed_config!(params_str => ModeParamsBench;
                                      freq_target, length_s, put_ratio,
                                      value_size)?;
-        if params.freq_target > 10000000 {
+        if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
                                    params.freq_target);
         }
@@ -245,6 +245,8 @@ impl ClientBench {
     fn reset_ticker(&mut self) {
         if self.curr_freq == 0 {
             self.curr_freq = 1; // avoid division-by-zero
+        } else if self.curr_freq > 1000000 {
+            self.curr_freq = 1000000; // avoid going too high
         }
 
         let period = Duration::from_nanos(1000000000 / self.curr_freq);
