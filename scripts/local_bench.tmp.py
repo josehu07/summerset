@@ -54,8 +54,8 @@ def parse_output(output):
     assert lines[0].startswith("Elapsed")
     lines = lines[1:]
 
-    warmup = len(lines) // 3
-    lines = lines[warmup:]
+    warmup, tail = len(lines) // 3, len(lines) // 10
+    lines = lines[warmup:-tail]
 
     tpts, lats = [], []
     for line in lines:
@@ -106,7 +106,7 @@ if __name__ == "__main__":
     for num_replicas in (3, 7):
         for value_size in (1024, 65536, 4194304):
             for protocol in ("MultiPaxos", "RSPaxos"):
-                bench_round(protocol, num_replicas, value_size, 100, 45)
+                bench_round(protocol, num_replicas, value_size, 100, 60)
 
-    bench_round("MultiPaxos", 7, 4194304, 10, 45)
-    bench_round("RSPaxos", 7, 4194304, 10, 45)
+    bench_round("MultiPaxos", 7, 4194304, 10, 60)
+    bench_round("RSPaxos", 7, 4194304, 10, 60)
