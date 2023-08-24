@@ -86,7 +86,7 @@ def bench_round(protocol, num_replicas, value_size, put_ratio, length_s):
     os.system("sudo pkill summerset_manager")
 
     proc_cluster = launch_cluster(protocol, num_replicas)
-    time.sleep(5)
+    time.sleep(15)
 
     proc_client = run_bench_client(protocol, value_size, put_ratio, length_s)
     out, err = proc_client.communicate()
