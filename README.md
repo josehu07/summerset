@@ -50,6 +50,7 @@ Summerset is a distributed key-value store supporting a wide range of state mach
 | `RepNothing` | Simplest protocol w/o any replication |
 | `SimplePush` | Pushing to peers w/o any consistency guarantees |
 | `MultiPaxos` | Classic [MultiPaxos](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf) protocol |
+| `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
