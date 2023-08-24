@@ -37,6 +37,12 @@ These design choices make protocol implementation in Summerset surprisingly stra
 
 ## Build
 
+Install the [Rust toolchain](https://rustup.rs/) if haven't. For \*nix:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 Build everything in debug or release (`-r`) mode:
 
 ```bash
@@ -111,7 +117,6 @@ Complete cluster management and benchmarking scripts are available in another re
   - [ ] separate commit vs. exec responses?
   - [ ] membership discovery & view changes
 - [ ] implementation of Raft
-- [ ] implementation of Crossword prototype
 - [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client

@@ -1,5 +1,4 @@
 import sys
-import os
 import argparse
 import subprocess
 import time
@@ -21,6 +20,14 @@ def run_process(cmd):
     return proc
 
 
+def kill_all_matching(name):
+    print("Kill all:", name)
+    assert name.count(" ") == 0
+    cmd = ["pkill", "-9", "-f", name]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc.wait()
+
+
 MANAGER_SRV_PORT = 52600
 MANAGER_CLI_PORT = 52601
 
@@ -29,9 +36,10 @@ SERVER_P2P_PORT = lambda r: 52800 + r
 
 
 PROTOCOL_CONFIGS = {
-    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'+logger_sync=true",
+    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
     "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "RSPaxos": lambda r, n: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'+fault_tolerance={n-(n//2+1)}",
 }
 
 
@@ -113,8 +121,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0 or args.num_replicas > 9:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
-    # kill all existing server processes
-    os.system("pkill summerset_server")
+    # kill all existing server and manager processes
+    kill_all_matching("summerset_server")
+    kill_all_matching("summerset_manager")
 
     # remove all existing wal files
     for path in Path("/tmp").glob("summerset.*.wal"):
@@ -125,7 +134,7 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    time.sleep(0.5)  # 500ms
+    time.sleep(5)
 
     # then launch server replicas
     launch_servers(args.protocol, args.num_replicas, args.release)
