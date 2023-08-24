@@ -400,17 +400,17 @@ impl GenericReplica for SimplePushReplica {
         let config = parsed_config!(config_str => ReplicaConfigSimplePush;
                                     batch_interval_us, max_batch_size,
                                     backer_path, rep_degree)?;
+        // connect to the cluster manager and get assigned a server ID
+        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let id = control_hub.me;
+
         if config.batch_interval_us == 0 {
             return logged_err!(
-                "s";
+                id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
             );
         }
-
-        // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
-        let id = control_hub.me;
 
         // ask for population number and the list of peers to proactively
         // connect to

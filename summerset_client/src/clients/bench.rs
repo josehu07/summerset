@@ -78,6 +78,33 @@ pub struct ClientBench {
 
     /// Fixed value generated according to specified size.
     value: String,
+
+    /// Total number of requests issued.
+    total_cnt: u64,
+
+    /// Total number of replies received.
+    reply_cnt: u64,
+
+    /// Total number of replies received in last print interval.
+    chunk_cnt: u64,
+
+    /// Latencies of requests in last print interval.
+    chunk_lats: Vec<f64>,
+
+    /// True if the next issue should be a retry.
+    retrying: bool,
+
+    /// Number of replies to wait for before allowing the next issue.
+    slowdown: u64,
+
+    /// Current timestamp.
+    now: Instant,
+
+    /// Interval ticker for open-loop.
+    ticker: Interval,
+
+    /// Current frequency in use.
+    curr_freq: u64,
 }
 
 impl ClientBench {
@@ -90,7 +117,7 @@ impl ClientBench {
         let params = parsed_config!(params_str => ModeParamsBench;
                                      freq_target, length_s, put_ratio,
                                      value_size)?;
-        if params.freq_target > 10000000 {
+        if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
                                    params.freq_target);
         }
@@ -118,6 +145,15 @@ impl ClientBench {
             params,
             rng: rand::thread_rng(),
             value,
+            total_cnt: 0,
+            reply_cnt: 0,
+            chunk_cnt: 0,
+            chunk_lats: vec![],
+            retrying: false,
+            slowdown: 0,
+            now: Instant::now(),
+            ticker: time::interval(Duration::MAX),
+            curr_freq: 0,
         })
     }
 
@@ -133,35 +169,28 @@ impl ClientBench {
 
     /// Runs one iteration action of closed-loop style benchmark.
     #[allow(clippy::too_many_arguments)]
-    async fn closed_loop_iter(
-        &mut self,
-        total_cnt: &mut u64,
-        reply_cnt: &mut u64,
-        chunk_cnt: &mut u64,
-        chunk_lats: &mut Vec<f64>,
-        retrying: &mut bool,
-    ) -> Result<(), SummersetError> {
+    async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
         // send next request
-        let req_id = if *retrying {
+        let req_id = if self.retrying {
             self.driver.issue_retry()?
         } else {
             self.issue_rand_cmd()?
         };
 
-        *retrying = req_id.is_none();
-        if !*retrying {
-            *total_cnt += 1;
+        self.retrying = req_id.is_none();
+        if !self.retrying {
+            self.total_cnt += 1;
         }
 
         // wait for the next reply
-        if *total_cnt > *reply_cnt {
+        if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
 
             if let Some((_, _, lat)) = result {
-                *reply_cnt += 1;
-                *chunk_cnt += 1;
+                self.reply_cnt += 1;
+                self.chunk_cnt += 1;
                 let lat_us = lat.as_secs_f64() * 1000000.0;
-                chunk_lats.push(lat_us);
+                self.chunk_lats.push(lat_us);
             }
         }
 
@@ -170,16 +199,7 @@ impl ClientBench {
 
     /// Runs one iteration action of open-loop style benchmark.
     #[allow(clippy::too_many_arguments)]
-    async fn open_loop_iter(
-        &mut self,
-        total_cnt: &mut u64,
-        reply_cnt: &mut u64,
-        chunk_cnt: &mut u64,
-        chunk_lats: &mut Vec<f64>,
-        retrying: &mut bool,
-        slowdown: &mut bool,
-        ticker: &mut Interval,
-    ) -> Result<(), SummersetError> {
+    async fn open_loop_iter(&mut self) -> Result<(), SummersetError> {
         tokio::select! {
             // prioritize receiving reply
             biased;
@@ -187,29 +207,32 @@ impl ClientBench {
             // receive next reply
             result = self.driver.wait_reply() => {
                 if let Some((_, _, lat)) = result? {
-                    *reply_cnt += 1;
-                    *chunk_cnt += 1;
+                    self.reply_cnt += 1;
+                    self.chunk_cnt += 1;
                     let lat_us = lat.as_secs_f64() * 1000000.0;
-                    chunk_lats.push(lat_us);
+                    self.chunk_lats.push(lat_us);
 
-                    if *slowdown {
-                        *slowdown = false;
+                    if self.slowdown > 0 {
+                        self.slowdown -= 1;
                     }
                 }
             }
 
             // send next request
-            _ = ticker.tick(), if !*slowdown => {
-                let req_id = if *retrying {
+            _ = self.ticker.tick(), if self.slowdown == 0 => {
+                let req_id = if self.retrying {
                     self.driver.issue_retry()?
                 } else {
                     self.issue_rand_cmd()?
                 };
 
-                *retrying = req_id.is_none();
-                *slowdown = *retrying && (*total_cnt > *reply_cnt);
-                if !*retrying {
-                    *total_cnt += 1;
+                self.retrying = req_id.is_none();
+                if self.retrying && (self.total_cnt > self.reply_cnt) {
+                    // too many pending requests, pause issuing for a while
+                    self.slowdown = (self.total_cnt - self.reply_cnt) / 2;
+                }
+                if !self.retrying {
+                    self.total_cnt += 1;
                 }
             }
         }
@@ -217,82 +240,138 @@ impl ClientBench {
         Ok(())
     }
 
+    /// Drops the current interval ticker and create a new one using the
+    /// current frequency.
+    fn reset_ticker(&mut self) {
+        if self.curr_freq == 0 {
+            self.curr_freq = 1; // avoid division-by-zero
+        } else if self.curr_freq > 1000000 {
+            self.curr_freq = 1000000; // avoid going too high
+        }
+
+        let period = Duration::from_nanos(1000000000 / self.curr_freq);
+        self.ticker = time::interval(period);
+        self.ticker
+            .set_missed_tick_behavior(MissedTickBehavior::Skip);
+    }
+
     /// Runs the adaptive benchmark for given time length.
     pub async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         println!(
-            "{:^11} | {:^12} | {:^12} | {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Reply", "Total"
+            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
         );
 
-        let mut freq_ticker = if self.params.freq_target > 0 {
-            // open-loop, kick off frequency interval ticker
-            // kick off frequency interval ticker
-            let delay =
-                Duration::from_nanos(1000000000 / self.params.freq_target);
-            let mut ticker = time::interval(delay);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            Some(ticker)
-        } else {
-            None
-        };
-
         let start = Instant::now();
-        let (mut now, mut last_print) = (start, start);
+        self.now = start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let (mut total_cnt, mut reply_cnt) = (0, 0);
-        let mut chunk_cnt = 0;
-        let mut chunk_lats: Vec<f64> = vec![];
+        let mut last_print = start;
+        let (mut printed_1_100, mut printed_1_10) = (false, false);
+
+        if self.params.freq_target > 0 {
+            // is open-loop, set up interval ticker
+            self.curr_freq = self.params.freq_target;
+            self.reset_ticker();
+        }
+
+        self.total_cnt = 0;
+        self.reply_cnt = 0;
+        self.chunk_cnt = 0;
+        self.chunk_lats.clear();
+        self.retrying = false;
+        self.slowdown = 0;
 
         // run for specified length
-        let (mut slowdown, mut retrying) = (false, false);
-        while now.duration_since(start) < length {
+        while self.now.duration_since(start) < length {
             if self.params.freq_target == 0 {
-                self.closed_loop_iter(
-                    &mut total_cnt,
-                    &mut reply_cnt,
-                    &mut chunk_cnt,
-                    &mut chunk_lats,
-                    &mut retrying,
-                )
-                .await?;
+                self.closed_loop_iter().await?;
             } else {
-                self.open_loop_iter(
-                    &mut total_cnt,
-                    &mut reply_cnt,
-                    &mut chunk_cnt,
-                    &mut chunk_lats,
-                    &mut retrying,
-                    &mut slowdown,
-                    freq_ticker.as_mut().unwrap(),
-                )
-                .await?;
+                self.open_loop_iter().await?;
             }
 
-            now = Instant::now();
+            self.now = Instant::now();
 
             // print statistics if print interval passed
-            let elapsed = now.duration_since(start);
-            let print_elapsed = now.duration_since(last_print);
-            if print_elapsed >= *PRINT_INTERVAL {
-                let tpt = (chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if chunk_lats.is_empty() {
+            let elapsed = self.now.duration_since(start);
+            let print_elapsed = self.now.duration_since(last_print);
+            if print_elapsed >= *PRINT_INTERVAL
+                || (!printed_1_100 && elapsed >= *PRINT_INTERVAL / 100)
+                || (!printed_1_10 && elapsed >= *PRINT_INTERVAL / 10)
+            {
+                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let lat = if self.chunk_lats.is_empty() {
                     0.0
                 } else {
-                    chunk_lats.iter().sum::<f64>() / (chunk_lats.len() as f64)
+                    self.chunk_lats.iter().sum::<f64>()
+                        / (self.chunk_lats.len() as f64)
                 };
                 println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} / {:<8}",
+                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} : {:>8} / {:<8}",
                     elapsed.as_secs_f64(),
                     tpt,
                     lat,
-                    reply_cnt,
-                    total_cnt
+                    self.curr_freq,
+                    self.reply_cnt,
+                    self.total_cnt
                 );
-                last_print = now;
-                chunk_cnt = 0;
-                chunk_lats.clear();
+                last_print = self.now;
+                self.chunk_cnt = 0;
+                self.chunk_lats.clear();
+
+                // adaptively adjust issuing frequency according to number of
+                // pending requests; we try to maintain two ranges:
+                //   - curr_freq in (1 ~ 1.25) * tpt
+                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tpt
+                if self.params.freq_target > 0 {
+                    let freq_changed = if self.slowdown > 0
+                        || self.curr_freq as f64 > 1.25 * tpt
+                        || self.reply_cnt as f64 + 0.1 * tpt
+                            < self.total_cnt as f64
+                    {
+                        // frequency too high, ramp down
+                        self.curr_freq -= (0.01 * tpt) as u64;
+                        if self.curr_freq as f64 > 2.0 * tpt {
+                            self.curr_freq /= 2;
+                        } else if self.curr_freq as f64 > 1.5 * tpt {
+                            self.curr_freq =
+                                (0.67 * self.curr_freq as f64) as u64;
+                        } else if self.curr_freq as f64 > 1.25 * tpt {
+                            self.curr_freq =
+                                (0.8 * self.curr_freq as f64) as u64;
+                        }
+                        true
+                    } else if self.curr_freq as f64 <= tpt
+                        || self.reply_cnt as f64 + 0.001 * tpt
+                            >= self.total_cnt as f64
+                    {
+                        // frequency too conservative, ramp up a bit
+                        self.curr_freq += (0.01 * tpt) as u64;
+                        if self.curr_freq as f64 <= tpt {
+                            self.curr_freq = tpt as u64;
+                        }
+                        if self.curr_freq > self.params.freq_target {
+                            self.curr_freq = self.params.freq_target;
+                        }
+                        true
+                    } else {
+                        // roughly appropriate
+                        false
+                    };
+                    if freq_changed {
+                        self.reset_ticker();
+                    }
+                }
+
+                // these two print triggers are for more effecitve adaptive
+                // adjustment of frequency
+                if !printed_1_100 && elapsed >= *PRINT_INTERVAL / 100 {
+                    printed_1_100 = true;
+                }
+                if !printed_1_10 && elapsed >= *PRINT_INTERVAL / 10 {
+                    printed_1_10 = true;
+                }
             }
         }
 

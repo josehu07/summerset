@@ -68,7 +68,7 @@ impl ClientCtrlStub {
         if req.is_none() {
             pf_debug!(self.id; "retrying last unsuccessful send_req");
         }
-        let retrying = safe_tcp_write(
+        let no_retry = safe_tcp_write(
             &mut self.req_buf,
             &mut self.req_buf_cursor,
             &self.conn_write,
@@ -76,10 +76,10 @@ impl ClientCtrlStub {
         )?;
 
         // pf_trace!(self.id; "send req {:?}", req);
-        if retrying {
+        if !no_retry {
             pf_debug!(self.id; "send_req would block; TCP buffer full?");
         }
-        Ok(retrying)
+        Ok(no_retry)
     }
 
     /// Receives a reply from established manager connection.
