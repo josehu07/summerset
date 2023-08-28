@@ -26,6 +26,7 @@ PROTOCOL_CONFIGS = {
     "SimplePush": "",
     "MultiPaxos": "",
     "RSPaxos": "",
+    "Crossword": "",
 }
 
 

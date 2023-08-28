@@ -1,7 +1,7 @@
-//! Replication protocol: RS-Paxos.
+//! Replication protocol: Crossword.
 //!
-//! MultiPaxos with Reed-Solomon erasure coding. References:
-//!   - <https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf>
+//! MultiPaxos with flexible Reed-Solomon erasure coding that supports tunable
+//! shard groups and asymmetric shard assignment.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -27,7 +27,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ReplicaConfigRSPaxos {
+pub struct ReplicaConfigCrossword {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
@@ -42,17 +42,22 @@ pub struct ReplicaConfigRSPaxos {
 
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
+
+    /// Number of shards to assign to each replica.
+    // TODO: proper config options.
+    pub shards_per_replica: u8,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ReplicaConfigRSPaxos {
+impl Default for ReplicaConfigCrossword {
     fn default() -> Self {
-        ReplicaConfigRSPaxos {
+        ReplicaConfigCrossword {
             batch_interval_us: 1000,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
             fault_tolerance: 0,
+            shards_per_replica: 1,
         }
     }
 }
@@ -160,8 +165,8 @@ enum PeerMsg {
     Commit { slot: usize },
 }
 
-/// RSPaxos server replica module.
-pub struct RSPaxosReplica {
+/// Crossword server replica module.
+pub struct CrosswordReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -172,7 +177,7 @@ pub struct RSPaxosReplica {
     quorum_cnt: u8,
 
     /// Configuration parameters struct.
-    config: ReplicaConfigRSPaxos,
+    config: ReplicaConfigCrossword,
 
     /// Address string for client requests API.
     _api_addr: SocketAddr,
@@ -224,7 +229,7 @@ pub struct RSPaxosReplica {
     rs_coder: ReedSolomon,
 }
 
-impl RSPaxosReplica {
+impl CrosswordReplica {
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -272,6 +277,17 @@ impl RSPaxosReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// TODO: maybe remove this.
+    fn shards_for_replica(
+        id: ReplicaId,
+        population: u8,
+        num_shards: u8,
+    ) -> HashSet<usize> {
+        (id..(id + num_shards))
+            .map(|i| (i % population) as usize)
+            .collect()
     }
 
     /// Handler of client request batch chan recv.
@@ -405,9 +421,13 @@ impl RSPaxosReplica {
                     entry: LogEntry::AcceptData {
                         slot,
                         ballot: inst.bal,
-                        // persist only one shard on myself
+                        // persist only some shards on myself
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            HashSet::from([self.id as usize]),
+                            Self::shards_for_replica(
+                                self.id,
+                                self.population,
+                                self.config.shards_per_replica,
+                            ),
                             false,
                         )?,
                     },
@@ -417,7 +437,8 @@ impl RSPaxosReplica {
             pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
                                slot, inst.bal);
 
-            // send Accept messages to all peers, each getting one shard of data
+            // send Accept messages to all peers, each getting its subset of
+            // shards of data
             for peer in 0..self.population {
                 if peer == self.id {
                     continue;
@@ -427,7 +448,11 @@ impl RSPaxosReplica {
                         slot,
                         ballot: inst.bal,
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            HashSet::from([peer as usize]),
+                            Self::shards_for_replica(
+                                peer,
+                                self.population,
+                                self.config.shards_per_replica,
+                            ),
                             false,
                         )?,
                     },
@@ -718,7 +743,11 @@ impl RSPaxosReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                HashSet::from([self.id as usize]),
+                                Self::shards_for_replica(
+                                    self.id,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
                                 false,
                             )?,
                         },
@@ -738,7 +767,11 @@ impl RSPaxosReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                HashSet::from([peer as usize]),
+                                Self::shards_for_replica(
+                                    peer,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
                                 false,
                             )?,
                         },
@@ -1010,16 +1043,17 @@ impl RSPaxosReplica {
 }
 
 #[async_trait]
-impl GenericReplica for RSPaxosReplica {
+impl GenericReplica for CrosswordReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        let config = parsed_config!(config_str => ReplicaConfigRSPaxos;
+        let config = parsed_config!(config_str => ReplicaConfigCrossword;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync, fault_tolerance)?;
+                                    backer_path, logger_sync, fault_tolerance,
+                                    shards_per_replica)?;
         // connect to the cluster manager and get assigned a server ID
         let mut control_hub = ControlHub::new_and_setup(manager).await?;
         let id = control_hub.me;
@@ -1036,7 +1070,7 @@ impl GenericReplica for RSPaxosReplica {
         // connect to
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
-            protocol: SmrProtocol::RSPaxos,
+            protocol: SmrProtocol::Crossword,
             api_addr,
             p2p_addr,
         })?;
@@ -1056,6 +1090,12 @@ impl GenericReplica for RSPaxosReplica {
         if config.fault_tolerance > (population - quorum_cnt) {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
+        }
+        if config.shards_per_replica == 0
+            || config.shards_per_replica > quorum_cnt
+        {
+            return logged_err!(id; "invalid config.shards_per_replica '{}'",
+                                   config.shards_per_replica);
         }
         let rs_coder = ReedSolomon::new(
             quorum_cnt as usize,
@@ -1086,7 +1126,7 @@ impl GenericReplica for RSPaxosReplica {
         )
         .await?;
 
-        Ok(RSPaxosReplica {
+        Ok(CrosswordReplica {
             id,
             population,
             quorum_cnt,
@@ -1185,20 +1225,20 @@ impl GenericReplica for RSPaxosReplica {
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ClientConfigRSPaxos {
+pub struct ClientConfigCrossword {
     /// Which server to pick initially.
     pub init_server_id: ReplicaId,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ClientConfigRSPaxos {
+impl Default for ClientConfigCrossword {
     fn default() -> Self {
-        ClientConfigRSPaxos { init_server_id: 0 }
+        ClientConfigCrossword { init_server_id: 0 }
     }
 }
 
-/// RSPaxos client-side module.
-pub struct RSPaxosClient {
+/// Crossword client-side module.
+pub struct CrosswordClient {
     /// Client ID.
     id: ClientId,
 
@@ -1206,7 +1246,7 @@ pub struct RSPaxosClient {
     manager: SocketAddr,
 
     /// Configuration parameters struct.
-    _config: ClientConfigRSPaxos,
+    _config: ClientConfigCrossword,
 
     /// Cached list of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -1222,16 +1262,16 @@ pub struct RSPaxosClient {
 }
 
 #[async_trait]
-impl GenericEndpoint for RSPaxosClient {
+impl GenericEndpoint for CrosswordClient {
     fn new(
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        let config = parsed_config!(config_str => ClientConfigRSPaxos;
+        let config = parsed_config!(config_str => ClientConfigCrossword;
                                     init_server_id)?;
         let init_server_id = config.init_server_id;
 
-        Ok(RSPaxosClient {
+        Ok(CrosswordClient {
             id: 255, // nil at this time
             manager,
             _config: config,

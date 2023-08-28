@@ -26,6 +26,10 @@ mod rs_paxos;
 use rs_paxos::{RSPaxosReplica, RSPaxosClient};
 pub use rs_paxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
 
+mod crossword;
+use crossword::{CrosswordReplica, CrosswordClient};
+pub use crossword::{ReplicaConfigCrossword, ClientConfigCrossword};
+
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum SmrProtocol {
@@ -33,6 +37,7 @@ pub enum SmrProtocol {
     SimplePush,
     MultiPaxos,
     RSPaxos,
+    Crossword,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -52,6 +57,7 @@ impl SmrProtocol {
             "SimplePush" => Some(Self::SimplePush),
             "MultiPaxos" => Some(Self::MultiPaxos),
             "RSPaxos" => Some(Self::RSPaxos),
+            "Crossword" => Some(Self::Crossword),
             _ => None,
         }
     }
@@ -108,6 +114,14 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::Crossword => {
+                box_if_ok!(
+                    CrosswordReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
         }
     }
 
@@ -129,6 +143,9 @@ impl SmrProtocol {
             }
             Self::RSPaxos => {
                 box_if_ok!(RSPaxosClient::new(manager, config_str))
+            }
+            Self::Crossword => {
+                box_if_ok!(CrosswordClient::new(manager, config_str))
             }
         }
     }
@@ -159,6 +176,7 @@ mod protocols_name_tests {
         valid_name_test!(SimplePush);
         valid_name_test!(MultiPaxos);
         valid_name_test!(RSPaxos);
+        valid_name_test!(Crossword);
     }
 
     #[test]
