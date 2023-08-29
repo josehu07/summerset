@@ -1,7 +1,6 @@
 import sys
 import argparse
 import subprocess
-import time
 from pathlib import Path
 
 
@@ -14,9 +13,13 @@ def do_cargo_build(release):
     proc.wait()
 
 
-def run_process(cmd):
+def run_process(cmd, capture_stderr=False):
     print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd)
+    proc = None
+    if capture_stderr:
+        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+    else:
+        proc = subprocess.Popen(cmd)
     return proc
 
 
@@ -35,13 +38,26 @@ SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 
 
-PROTOCOL_CONFIGS = {
-    "RepNothing": lambda r, n: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
-    "SimplePush": lambda r, n: f"backer_path='/tmp/summerset.simple_push.{r}.wal'+rep_degree={n-1}",
-    "MultiPaxos": lambda r, n: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
-    "RSPaxos": lambda r, n: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'+fault_tolerance={n-(n//2+1)}",
-    "Crossword": lambda r, n: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'+fault_tolerance=0+shards_per_replica=3",
+PROTOCOL_BACKER_PATH = {
+    "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
+    "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
+    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
+
+
+def config_with_backer_path(protocol, config, replica):
+    result_config = PROTOCOL_BACKER_PATH[protocol](replica)
+
+    if config is not None and len(config) > 0:
+        if "backer_path" in config:
+            result_config = config  # use user-supplied path
+        else:
+            result_config += "+"
+            result_config += config
+
+    return result_config
 
 
 def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
@@ -67,7 +83,26 @@ def launch_manager(protocol, num_replicas, release):
         num_replicas,
         release,
     )
-    return run_process(cmd)
+    return run_process(cmd, capture_stderr=True)
+
+
+def wait_manager_setup(proc):
+    accepting_servers, accepting_clients = False, False
+
+    for line in iter(proc.stderr.readline, b""):
+        sys.stderr.buffer.write(line)
+        sys.stderr.flush()
+
+        l = line.decode()
+        if "(m) accepting servers" in l:
+            assert not accepting_servers
+            accepting_servers = True
+        if "(m) accepting clients" in l:
+            assert not accepting_clients
+            accepting_clients = True
+
+        if accepting_servers and accepting_clients:
+            break
 
 
 def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
@@ -82,12 +117,12 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
         "-m",
         manager,
     ]
-    if len(config) > 0:
+    if config is not None and len(config) > 0:
         cmd += ["--config", config]
     return cmd
 
 
-def launch_servers(protocol, num_replicas, release):
+def launch_servers(protocol, num_replicas, release, config):
     server_procs = []
     for replica in range(num_replicas):
         cmd = compose_server_cmd(
@@ -95,7 +130,7 @@ def launch_servers(protocol, num_replicas, release):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            PROTOCOL_CONFIGS[protocol](replica, num_replicas),
+            config_with_backer_path(protocol, config, replica),
             release,
         )
         proc = run_process(cmd)
@@ -115,12 +150,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "-r", "--release", action="store_true", help="if set, run release mode"
     )
+    parser.add_argument(
+        "-c", "--config", type=str, help="protocol-specific TOML config string"
+    )
     args = parser.parse_args()
-
-    if args.protocol not in PROTOCOL_CONFIGS:
-        raise ValueError(f"unknown protocol name '{args.protocol}'")
-    if args.num_replicas <= 0 or args.num_replicas > 9:
-        raise ValueError(f"invalid number of replicas {args.num_replicas}")
 
     # kill all existing server and manager processes
     kill_all_matching("summerset_server")
@@ -135,10 +168,14 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    time.sleep(5)
+    wait_manager_setup(manager_proc)
 
     # then launch server replicas
-    launch_servers(args.protocol, args.num_replicas, args.release)
+    launch_servers(args.protocol, args.num_replicas, args.release, args.config)
+
+    for line in iter(manager_proc.stderr.readline, b""):
+        sys.stderr.buffer.write(line)
+        sys.stderr.flush()
 
     rc = manager_proc.wait()
     sys.exit(rc)
