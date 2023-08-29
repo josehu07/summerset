@@ -89,8 +89,9 @@ struct LeaderBookkeeping {
     /// Max ballot among received Prepare replies.
     prepare_max_bal: Ballot,
 
-    /// Replicas from which I have received Accept confirmations.
-    accept_acks: Bitmap,
+    /// Replicas and their assigned shards which the received Accept
+    /// confirmations cover.
+    accept_acks: HashMap<ReplicaId, Bitmap>,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -284,9 +285,51 @@ impl CrosswordReplica {
         id: ReplicaId,
         population: u8,
         num_shards: u8,
-    ) -> Bitmap {
-        let ones = (id..(id + num_shards)).map(|i| (i % population)).collect();
-        Bitmap::from(population, ones)
+    ) -> Vec<u8> {
+        (id..(id + num_shards)).map(|i| (i % population)).collect()
+    }
+
+    /// TODO: make better impl of this.
+    fn coverage_under_faults(
+        population: u8,
+        acks: &HashMap<ReplicaId, Bitmap>,
+        fault_tolerance: u8,
+    ) -> u8 {
+        if acks.len() <= fault_tolerance as usize {
+            return 0;
+        }
+
+        // enumerate all subsets of acks excluding fault number of replicas
+        let cnt = (acks.len() - fault_tolerance as usize) as u32;
+        let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
+        let mut min_coverage = population;
+
+        for n in (0..2usize.pow(servers.len() as u32))
+            .filter(|n| n.count_ones() == cnt)
+        {
+            let mut coverage = Bitmap::new(population, false);
+            for (_, server) in servers
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| (n >> i) % 2 == 1)
+            {
+                for shard in acks[server].iter().filter_map(|(s, flag)| {
+                    if flag {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }) {
+                    coverage.set(shard, true).expect("impossible shard index");
+                }
+            }
+
+            if coverage.count() < min_coverage {
+                min_coverage = coverage.count();
+            }
+        }
+
+        min_coverage
     }
 
     /// Handler of client request batch chan recv.
@@ -344,7 +387,7 @@ impl CrosswordReplica {
             old_inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
-                accept_acks: Bitmap::new(self.population, false),
+                accept_acks: HashMap::new(),
             });
         } else {
             let new_inst = Instance {
@@ -354,7 +397,7 @@ impl CrosswordReplica {
                 leader_bk: Some(LeaderBookkeeping {
                     prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
+                    accept_acks: HashMap::new(),
                 }),
                 replica_bk: None,
             };
@@ -422,10 +465,13 @@ impl CrosswordReplica {
                         ballot: inst.bal,
                         // persist only some shards on myself
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            Self::shards_for_replica(
-                                self.id,
+                            Bitmap::from(
                                 self.population,
-                                self.config.shards_per_replica,
+                                Self::shards_for_replica(
+                                    self.id,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
                             ),
                             false,
                         )?,
@@ -447,10 +493,13 @@ impl CrosswordReplica {
                         slot,
                         ballot: inst.bal,
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            Self::shards_for_replica(
-                                peer,
+                            Bitmap::from(
                                 self.population,
-                                self.config.shards_per_replica,
+                                Self::shards_for_replica(
+                                    peer,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
                             ),
                             false,
                         )?,
@@ -740,10 +789,13 @@ impl CrosswordReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                Self::shards_for_replica(
-                                    self.id,
+                                Bitmap::from(
                                     self.population,
-                                    self.config.shards_per_replica,
+                                    Self::shards_for_replica(
+                                        self.id,
+                                        self.population,
+                                        self.config.shards_per_replica,
+                                    ),
                                 ),
                                 false,
                             )?,
@@ -764,10 +816,13 @@ impl CrosswordReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                Self::shards_for_replica(
-                                    peer,
+                                Bitmap::from(
                                     self.population,
-                                    self.config.shards_per_replica,
+                                    Self::shards_for_replica(
+                                        peer,
+                                        self.population,
+                                        self.config.shards_per_replica,
+                                    ),
                                 ),
                                 false,
                             )?,
@@ -862,18 +917,31 @@ impl CrosswordReplica {
             assert!(self.bal_max_seen >= ballot);
             assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
-            if leader_bk.accept_acks.get(peer)? {
+            if leader_bk.accept_acks.contains_key(&peer) {
                 return Ok(());
             }
 
             // bookkeep this Accept reply
-            leader_bk.accept_acks.set(peer, true)?;
+            leader_bk.accept_acks.insert(
+                peer,
+                Bitmap::from(
+                    self.population,
+                    Self::shards_for_replica(
+                        peer,
+                        self.population,
+                        self.config.shards_per_replica,
+                    ),
+                ),
+            );
 
             // if quorum size reached AND enough number of shards are
-            // remembered, mark this instance as committed; in RS-Paxos, this
-            // means accept_acks.count() >= self.quorum_cnt + fault_tolerance
-            if leader_bk.accept_acks.count()
-                >= self.quorum_cnt + self.config.fault_tolerance
+            // remembered, mark this instance as committed
+            if leader_bk.accept_acks.len() as u8 >= self.quorum_cnt
+                && Self::coverage_under_faults(
+                    self.population,
+                    &leader_bk.accept_acks,
+                    self.config.fault_tolerance,
+                ) >= self.quorum_cnt
             {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
