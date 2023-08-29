@@ -3,11 +3,11 @@
 //! MultiPaxos with Reed-Solomon erasure coding. References:
 //!   - <https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf>
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, ReplicaMap, RSCodeword};
+use crate::utils::{SummersetError, Bitmap, RSCodeword};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -79,13 +79,13 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
     /// Replicas from which I have received Prepare confirmations.
-    prepare_acks: ReplicaMap,
+    prepare_acks: Bitmap,
 
     /// Max ballot among received Prepare replies.
     prepare_max_bal: Ballot,
 
     /// Replicas from which I have received Accept confirmations.
-    accept_acks: ReplicaMap,
+    accept_acks: Bitmap,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -307,8 +307,8 @@ impl RSPaxosReplica {
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
-            self.quorum_cnt as usize,
-            (self.population - self.quorum_cnt) as usize,
+            self.quorum_cnt,
+            self.population - self.quorum_cnt,
         )?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
@@ -327,9 +327,9 @@ impl RSPaxosReplica {
             assert_eq!(old_inst.status, Status::Null);
             old_inst.reqs_cw = reqs_cw;
             old_inst.leader_bk = Some(LeaderBookkeeping {
-                prepare_acks: ReplicaMap::new(self.population, false),
+                prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
-                accept_acks: ReplicaMap::new(self.population, false),
+                accept_acks: Bitmap::new(self.population, false),
             });
         } else {
             let new_inst = Instance {
@@ -337,9 +337,9 @@ impl RSPaxosReplica {
                 status: Status::Null,
                 reqs_cw,
                 leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: ReplicaMap::new(self.population, false),
+                    prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
-                    accept_acks: ReplicaMap::new(self.population, false),
+                    accept_acks: Bitmap::new(self.population, false),
                 }),
                 replica_bk: None,
             };
@@ -407,7 +407,7 @@ impl RSPaxosReplica {
                         ballot: inst.bal,
                         // persist only one shard on myself
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            HashSet::from([self.id as usize]),
+                            Bitmap::from(self.population, vec![self.id]),
                             false,
                         )?,
                     },
@@ -427,7 +427,7 @@ impl RSPaxosReplica {
                         slot,
                         ballot: inst.bal,
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            HashSet::from([peer as usize]),
+                            Bitmap::from(self.population, vec![peer]),
                             false,
                         )?,
                     },
@@ -530,14 +530,12 @@ impl RSPaxosReplica {
                     break;
                 }
 
-                if inst.reqs_cw.avail_shards() < self.quorum_cnt as usize {
+                if inst.reqs_cw.avail_shards() < self.quorum_cnt {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
                                        slot, inst.reqs_cw.avail_shards(), self.quorum_cnt);
                     break;
-                } else if inst.reqs_cw.avail_data_shards()
-                    < self.quorum_cnt as usize
-                {
+                } else if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -613,8 +611,8 @@ impl RSPaxosReplica {
                     bal: 0,
                     status: Status::Null,
                     reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                        self.quorum_cnt as usize,
-                        (self.population - self.quorum_cnt) as usize,
+                        self.quorum_cnt,
+                        self.population - self.quorum_cnt,
                     )?,
                     leader_bk: None,
                     replica_bk: None,
@@ -655,7 +653,7 @@ impl RSPaxosReplica {
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received PrepareReply <- {} for slot {} bal {} shards {:?}",
                            peer, slot, ballot,
-                           voted.as_ref().map(|(_, cw)| cw.avail_shards_set()));
+                           voted.as_ref().map(|(_, cw)| cw.avail_shards_map()));
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
@@ -695,7 +693,7 @@ impl RSPaxosReplica {
             // instance using the request batch value constructed using shards
             // with the highest ballot number in quorum
             if leader_bk.prepare_acks.count() >= self.quorum_cnt
-                && inst.reqs_cw.avail_data_shards() >= self.quorum_cnt as usize
+                && inst.reqs_cw.avail_data_shards() >= self.quorum_cnt
             {
                 inst.status = Status::Accepting;
                 pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
@@ -706,7 +704,7 @@ impl RSPaxosReplica {
                 self.bal_prepared = ballot;
 
                 // if parity shards not computed yet, compute them now
-                if inst.reqs_cw.avail_shards() < self.population as usize {
+                if inst.reqs_cw.avail_shards() < self.population {
                     inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
                 }
 
@@ -718,7 +716,7 @@ impl RSPaxosReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                HashSet::from([self.id as usize]),
+                                Bitmap::from(self.population, vec![self.id]),
                                 false,
                             )?,
                         },
@@ -738,7 +736,7 @@ impl RSPaxosReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                HashSet::from([peer as usize]),
+                                Bitmap::from(self.population, vec![peer]),
                                 false,
                             )?,
                         },
@@ -762,7 +760,7 @@ impl RSPaxosReplica {
         reqs_cw: RSCodeword<ReqBatch>,
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received Accept <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot, reqs_cw.avail_shards_set());
+                           peer, slot, ballot, reqs_cw.avail_shards_map());
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
@@ -772,8 +770,8 @@ impl RSPaxosReplica {
                     bal: 0,
                     status: Status::Null,
                     reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                        self.quorum_cnt as usize,
-                        (self.population - self.quorum_cnt) as usize,
+                        self.quorum_cnt,
+                        self.population - self.quorum_cnt,
                     )?,
                     leader_bk: None,
                     replica_bk: None,
@@ -886,8 +884,8 @@ impl RSPaxosReplica {
                 bal: 0,
                 status: Status::Null,
                 reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                    self.quorum_cnt as usize,
-                    (self.population - self.quorum_cnt) as usize,
+                    self.quorum_cnt,
+                    self.population - self.quorum_cnt,
                 )?,
                 leader_bk: None,
                 replica_bk: None,

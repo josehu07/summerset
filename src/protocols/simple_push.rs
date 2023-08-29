@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, ReplicaMap};
+use crate::utils::{SummersetError, Bitmap};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -80,7 +80,7 @@ enum PushMsg {
 struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
-    pending_peers: ReplicaMap,
+    pending_peers: Bitmap,
     execed: Vec<bool>,
     from_peer: Option<(ReplicaId, usize)>, // peer ID, peer inst_idx
 }
@@ -148,7 +148,7 @@ impl SimplePushReplica {
         assert!(batch_size > 0);
 
         // target peers to push to
-        let mut target = ReplicaMap::new(self.population, false);
+        let mut target = Bitmap::new(self.population, false);
         let mut peer_cnt = 0;
         for peer in 0..self.population {
             if peer_cnt == self.config.rep_degree {
@@ -262,7 +262,7 @@ impl SimplePushReplica {
         let inst = Instance {
             reqs: req_batch.clone(),
             durable: false,
-            pending_peers: ReplicaMap::new(self.population, false),
+            pending_peers: Bitmap::new(self.population, false),
             execed: vec![false; req_batch.len()],
             from_peer: Some((peer, src_inst_idx)),
         };

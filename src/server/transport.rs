@@ -3,7 +3,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, ReplicaMap, safe_tcp_read, safe_tcp_write};
+use crate::utils::{SummersetError, Bitmap, safe_tcp_read, safe_tcp_write};
 use crate::server::ReplicaId;
 
 use bytes::BytesMut;
@@ -144,10 +144,10 @@ where
         }
     }
 
-    /// Gets a ReplicaMap where currently connected peers are set true.
-    pub fn current_peers(&self) -> Result<ReplicaMap, SummersetError> {
+    /// Gets a bitmap where currently connected peers are set true.
+    pub fn current_peers(&self) -> Result<Bitmap, SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
-        let mut peers = ReplicaMap::new(self.population, false);
+        let mut peers = Bitmap::new(self.population, false);
         for &id in tx_sends_guard.keys() {
             if let Err(e) = peers.set(id, true) {
                 return logged_err!(self.me; "error setting peer {}: {}",
@@ -187,7 +187,7 @@ where
     pub fn bcast_msg(
         &mut self,
         msg: Msg,
-        target: Option<ReplicaMap>,
+        target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
         for &peer in tx_sends_guard.keys() {
@@ -624,7 +624,7 @@ mod transport_tests {
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
         // send another message to 1 only
-        let mut map = ReplicaMap::new(3, false);
+        let mut map = Bitmap::new(3, false);
         map.set(1, true)?;
         hub.bcast_msg(TestMsg("nice".into()), Some(map))?;
         // recv another message from 1

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, ReplicaMap};
+use crate::utils::{SummersetError, Bitmap};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -77,13 +77,13 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
     /// Replicas from which I have received Prepare confirmations.
-    prepare_acks: ReplicaMap,
+    prepare_acks: Bitmap,
 
     /// Max ballot among received Prepare replies.
     prepare_max_bal: Ballot,
 
     /// Replicas from which I have received Accept confirmations.
-    accept_acks: ReplicaMap,
+    accept_acks: Bitmap,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -308,9 +308,9 @@ impl MultiPaxosReplica {
             if old_inst.status == Status::Null {
                 old_inst.reqs = req_batch.clone();
                 old_inst.leader_bk = Some(LeaderBookkeeping {
-                    prepare_acks: ReplicaMap::new(self.population, false),
+                    prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
-                    accept_acks: ReplicaMap::new(self.population, false),
+                    accept_acks: Bitmap::new(self.population, false),
                 });
                 slot = s;
                 break;
@@ -322,9 +322,9 @@ impl MultiPaxosReplica {
                 status: Status::Null,
                 reqs: req_batch.clone(),
                 leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: ReplicaMap::new(self.population, false),
+                    prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
-                    accept_acks: ReplicaMap::new(self.population, false),
+                    accept_acks: Bitmap::new(self.population, false),
                 }),
                 replica_bk: None,
             };
