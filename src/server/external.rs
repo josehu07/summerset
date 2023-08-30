@@ -3,7 +3,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
@@ -115,7 +117,7 @@ impl ExternalApi {
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = TcpListener::bind(api_addr).await?;
+        let client_listener = tcp_bind_with_retry(api_addr, 10).await?;
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
                 me,

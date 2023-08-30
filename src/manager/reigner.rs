@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::ReplicaId;
 use crate::protocols::SmrProtocol;
 
@@ -71,7 +73,7 @@ impl ServerReigner {
         let (server_controller_handles_write, server_controller_handles_read) =
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
-        let server_listener = TcpListener::bind(srv_addr).await?;
+        let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
         let server_acceptor_handle =
             tokio::spawn(Self::server_acceptor_thread(
                 tx_recv,

@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::ReplicaId;
 use crate::client::ClientId;
 
@@ -74,7 +76,7 @@ impl ClientReactor {
         let (client_responder_handles_write, client_responder_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = TcpListener::bind(cli_addr).await?;
+        let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
                 tx_req,

@@ -1,7 +1,9 @@
 //! Safe TCP read/write helpers that provides cancellation safety on the read
-//! side and deadlock avoidance on the write side.
+//! side and deadlock avoidance on the write side. Safe `TcpListener` binding
+//! wrapper that provides a retrying logic.
 
 use std::io::ErrorKind;
+use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
 
@@ -13,7 +15,8 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_read as decode_from_read;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, TcpListener};
+use tokio::time::{self, Duration};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
 /// using `read_buf` as buffer storage for partial reads. Returns:
@@ -140,4 +143,23 @@ where
     Ok(true)
 }
 
-// No unit tests for these two helpers...
+/// Wrapper over tokio `TcpListener::bind()` that provides a retrying logic.
+pub async fn tcp_bind_with_retry(
+    addr: SocketAddr,
+    mut retries: u8,
+) -> Result<TcpListener, SummersetError> {
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) => {
+                if retries == 0 {
+                    return Err(e.into());
+                }
+                retries -= 1;
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+// No unit tests for these helpers...

@@ -3,7 +3,9 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, Bitmap, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::ReplicaId;
 
 use bytes::BytesMut;
@@ -84,7 +86,7 @@ where
         let (tx_connect, rx_connect) = mpsc::unbounded_channel();
         let (tx_connack, rx_connack) = mpsc::unbounded_channel();
 
-        let peer_listener = TcpListener::bind(p2p_addr).await?;
+        let peer_listener = tcp_bind_with_retry(p2p_addr, 10).await?;
         let peer_acceptor_handle = tokio::spawn(Self::peer_acceptor_thread(
             me,
             tx_recv.clone(),
