@@ -26,7 +26,7 @@ git checkout -b <PR_name>
 git branch --set-upstream-to=private/main <PR_name>
 git pull private
 git push origin <PR_name>
-# then, on GitHub, make a PR from <PR_name> branch to main
+# then, on GitHub, make a squashing PR from <PR_name> branch to main
 ```
 
 # Summerset
