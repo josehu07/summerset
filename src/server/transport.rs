@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 
 use crate::utils::{
     SummersetError, Bitmap, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+    tcp_connect_with_retry,
 };
 use crate::server::ReplicaId;
 
@@ -253,7 +254,7 @@ where
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
         pf_debug!(me; "connecting to peer {} '{}'...", id, addr);
-        let mut stream = TcpStream::connect(addr).await?;
+        let mut stream = tcp_connect_with_retry(addr, 10).await?;
         stream.write_u8(me).await?; // send my ID
 
         let mut peer_messenger_handles_guard = peer_messenger_handles.guard();

@@ -1,6 +1,4 @@
-//! Safe TCP read/write helpers that provides cancellation safety on the read
-//! side and deadlock avoidance on the write side. Safe `TcpListener` binding
-//! wrapper that provides a retrying logic.
+//! Safe TCP bind/connect/read/write helper functions.
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -151,6 +149,25 @@ pub async fn tcp_bind_with_retry(
     loop {
         match TcpListener::bind(addr).await {
             Ok(listener) => return Ok(listener),
+            Err(e) => {
+                if retries == 0 {
+                    return Err(e.into());
+                }
+                retries -= 1;
+                time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+/// Wrapper over tokio `TcpStream::connect()` that provides a retrying logic.
+pub async fn tcp_connect_with_retry(
+    addr: SocketAddr,
+    mut retries: u8,
+) -> Result<TcpStream, SummersetError> {
+    loop {
+        match TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
             Err(e) => {
                 if retries == 0 {
                     return Err(e.into());

@@ -2,7 +2,9 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
+};
 use crate::manager::CtrlMsg;
 use crate::server::ReplicaId;
 
@@ -44,7 +46,7 @@ impl ControlHub {
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
         pf_info!("s"; "connecting to manager '{}'...", manager);
-        let mut stream = TcpStream::connect(manager).await?;
+        let mut stream = tcp_connect_with_retry(manager, 10).await?;
         let id = stream.read_u8().await?; // first receive assigned server ID
         let population = stream.read_u8().await?; // then receive population
         pf_debug!(id; "assigned server ID: {} of {}", id, population);

@@ -64,11 +64,12 @@ pub struct ServerReigner {
 // ServerReigner public API implementation
 impl ServerReigner {
     /// Creates a new server-facing controller module. Spawns the server
-    /// acceptor thread. Creates a recv channel for buffering incoming control
-    /// messages.
+    /// acceptor thread. Creates a pair of ID assignment channels. Creates
+    /// a recv channel for buffering incoming control messages.
     pub async fn new_and_setup(
         srv_addr: SocketAddr,
-        population: u8,
+        tx_id_assign: mpsc::UnboundedSender<()>,
+        rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
     ) -> Result<Self, SummersetError> {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
 
@@ -81,7 +82,8 @@ impl ServerReigner {
         let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
         let server_acceptor_handle =
             tokio::spawn(Self::server_acceptor_thread(
-                population,
+                tx_id_assign,
+                rx_id_result,
                 tx_recv,
                 server_listener,
                 tx_sends_write,
@@ -138,8 +140,8 @@ impl ServerReigner {
     async fn accept_new_server(
         mut stream: TcpStream,
         addr: SocketAddr,
-        id: ReplicaId,
-        population: u8,
+        tx_id_assign: &mpsc::UnboundedSender<()>,
+        rx_id_result: &mut mpsc::UnboundedReceiver<(ReplicaId, u8)>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         tx_sends: &mut flashmap::WriteHandle<
             ReplicaId,
@@ -151,6 +153,12 @@ impl ServerReigner {
         >,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
+        // communicate with the manager's main thread to get assigned server ID
+        tx_id_assign.send(())?;
+        let (id, population) = rx_id_result.recv().await.ok_or(
+            SummersetError("failed to get server ID assignment".into()),
+        )?;
+
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
             return logged_err!("m"; "error assigning new server ID: {}", e);
@@ -218,7 +226,8 @@ impl ServerReigner {
 
     /// Server acceptor thread function.
     async fn server_acceptor_thread(
-        population: u8,
+        tx_id_assign: mpsc::UnboundedSender<()>,
+        mut rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         server_listener: TcpListener,
         mut tx_sends: flashmap::WriteHandle<
@@ -234,9 +243,6 @@ impl ServerReigner {
 
         let local_addr = server_listener.local_addr().unwrap();
         pf_info!("m"; "accepting servers on '{}'", local_addr);
-
-        // maintain a monotonically increasing server ID for new servers
-        let mut next_server_id: ReplicaId = 0;
 
         // create an exit mpsc channel for getting notified about termination
         // of server controller threads
@@ -254,16 +260,14 @@ impl ServerReigner {
                     if let Err(e) = Self::accept_new_server(
                         stream,
                         addr,
-                        next_server_id,
-                        population,
+                        &tx_id_assign,
+                        &mut rx_id_result,
                         tx_recv.clone(),
                         &mut tx_sends,
                         &mut server_controller_handles,
                         tx_exit.clone(),
                     ).await {
                         pf_error!("m"; "error accepting new server: {}", e);
-                    } else {
-                        next_server_id += 1;
                     }
                 },
 
@@ -485,10 +489,18 @@ mod reigner_tests {
             Ok::<(), SummersetError>(())
         });
         // manager
-        let mut reigner =
-            ServerReigner::new_and_setup("127.0.0.1:53600".parse()?, 2).await?;
+        let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
+        let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
+        let mut reigner = ServerReigner::new_and_setup(
+            "127.0.0.1:53600".parse()?,
+            tx_id_assign,
+            rx_id_result,
+        )
+        .await?;
         setup_bar.wait().await;
         // recv message from server 0
+        rx_id_assign.recv().await;
+        tx_id_result.send((0, 2))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);
         assert_eq!(
@@ -509,6 +521,8 @@ mod reigner_tests {
             id,
         )?;
         // recv message from server 1
+        rx_id_assign.recv().await;
+        tx_id_result.send((1, 2))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 1);
         assert_eq!(
