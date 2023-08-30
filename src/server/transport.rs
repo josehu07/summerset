@@ -370,7 +370,7 @@ where
                 to_connect = rx_connect.recv() => {
                     if to_connect.is_none() {
                         pf_error!(me; "connect channel closed");
-                        continue;
+                        break; // channel gets closed and no messages remain
                     }
                     let (peer, addr) = to_connect.unwrap();
                     if let Err(e) = Self::connect_new_peer(

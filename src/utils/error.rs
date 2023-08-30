@@ -45,6 +45,7 @@ impl_from_error!(
     tokio::sync::mpsc::error::SendError<(ReplicaId, net::SocketAddr)>
 );
 impl_from_error!(reed_solomon_erasure::Error);
+impl_from_error!(ctrlc::Error);
 
 #[cfg(test)]
 mod error_tests {

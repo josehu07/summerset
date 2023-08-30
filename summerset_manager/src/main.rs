@@ -9,7 +9,7 @@ use env_logger::Env;
 
 use tokio::runtime::Builder;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -113,7 +113,7 @@ fn manager_main() -> Result<(), SummersetError> {
             .new_cluster_manager_setup(srv_addr, cli_addr, args.population)
             .await?;
 
-        manager.run().await;
+        manager.run().await?;
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
@@ -130,6 +130,7 @@ fn main() -> ExitCode {
         pf_error!("m"; "manager_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
+        pf_warn!("m"; "manager_main exitted successfully");
         ExitCode::SUCCESS
     }
 }

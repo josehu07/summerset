@@ -26,6 +26,7 @@ use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
+use tokio::sync::mpsc;
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
@@ -1010,7 +1011,15 @@ impl GenericReplica for MultiPaxosReplica {
         })
     }
 
-    async fn run(&mut self) {
+    async fn run(&mut self) -> Result<bool, SummersetError> {
+        // set up termination signals handler
+        let (tx_term, mut rx_term) = mpsc::unbounded_channel();
+        ctrlc::set_handler(move || {
+            if let Err(e) = tx_term.send(true) {
+                pf_error!("s"; "error sending to term channel: {}", e);
+            }
+        })?;
+
         // TODO: proper leader election
         if self.id == 0 {
             self.is_leader = true;
@@ -1077,6 +1086,12 @@ impl GenericReplica for MultiPaxosReplica {
                     if let Err(e) = self.handle_ctrl_msg(ctrl_msg) {
                         pf_error!(self.id; "error handling ctrl msg: {}", e);
                     }
+                },
+
+                // receiving termination signal
+                _ = rx_term.recv() => {
+                    pf_warn!(self.id; "server caught termination signal");
+                    return Ok(false);
                 }
             }
         }

@@ -11,6 +11,8 @@ use crate::server::ReplicaId;
 use crate::client::ClientId;
 use crate::protocols::SmrProtocol;
 
+use tokio::sync::mpsc;
+
 /// Information about an active server.
 // TODO: maybe add things like leader info, etc.
 #[derive(Debug, Clone)]
@@ -73,8 +75,17 @@ impl ClusterManager {
         })
     }
 
-    /// Main event loop logic of the cluster manager.
-    pub async fn run(&mut self) {
+    /// Main event loop logic of the cluster manager. Breaks out of the loop
+    /// only upon catching termination signals to the process.
+    pub async fn run(&mut self) -> Result<(), SummersetError> {
+        // set up termination signals handler
+        let (tx_term, mut rx_term) = mpsc::unbounded_channel();
+        ctrlc::set_handler(move || {
+            if let Err(e) = tx_term.send(true) {
+                pf_error!("m"; "error sending to term channel: {}", e);
+            }
+        })?;
+
         loop {
             tokio::select! {
                 // receiving server control message
@@ -102,8 +113,16 @@ impl ClusterManager {
                                        client, e);
                     }
                 },
+
+                // receiving termination signal
+                _ = rx_term.recv() => {
+                    pf_warn!("m"; "manager caught termination signal");
+                    break;
+                }
             }
         }
+
+        Ok(())
     }
 }
 

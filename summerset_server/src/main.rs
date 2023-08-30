@@ -2,6 +2,8 @@
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 
@@ -9,7 +11,7 @@ use env_logger::Env;
 
 use tokio::runtime::Builder;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -107,29 +109,44 @@ fn server_main() -> Result<(), SummersetError> {
         Some(&args.config[..])
     };
 
-    // create tokio multi-threaded runtime
-    let runtime = Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(args.threads)
-        .thread_name("tokio-worker-replica")
-        .build()?;
+    let shutdown = Arc::new(AtomicBool::new(false));
+    while !shutdown.load(Ordering::SeqCst) {
+        let sd = shutdown.clone();
 
-    // enter tokio runtime, setup the server replica, and start the main event
-    // loop logic
-    runtime.block_on(async move {
-        let mut replica = protocol
-            .new_server_replica_setup(
-                api_addr,
-                p2p_addr,
-                args.manager,
-                config_str,
-            )
-            .await?;
+        // create tokio multi-threaded runtime
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(args.threads)
+            .thread_name("tokio-worker-replica")
+            .build()?;
 
-        replica.run().await;
+        // enter tokio runtime, setup the server replica, and start the main
+        // event loop logic
+        runtime.block_on(async move {
+            let mut replica = protocol
+                .new_server_replica_setup(
+                    api_addr,
+                    p2p_addr,
+                    args.manager,
+                    config_str,
+                )
+                .await?;
 
-        Ok::<(), SummersetError>(()) // give type hint for this async closure
-    })
+            if replica.run().await? {
+                // event loop terminated but wants to restart (e.g., when
+                // receiving a reset control message); just drop this runtime
+                // and move to the next iteration of loop
+            } else {
+                // event loop terminated and does not want to restart (e.g.,
+                // when receiving a termination signal)
+                sd.store(true, Ordering::SeqCst);
+            }
+
+            Ok::<(), SummersetError>(()) // give type hint for this async closure
+        })?;
+    }
+
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -143,6 +160,7 @@ fn main() -> ExitCode {
         pf_error!("s"; "server_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
+        pf_warn!("s"; "server_main exitted successfully");
         ExitCode::SUCCESS
     }
 }

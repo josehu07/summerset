@@ -24,6 +24,9 @@ pub trait GenericReplica {
     where
         Self: Sized;
 
-    /// Main event loop logic of running this replica.
-    async fn run(&mut self);
+    /// Main event loop logic of running this replica. Returns `Ok(true)` if
+    /// terminated normally and wants to restart (e.g., receiving a reset
+    /// control message) or `Ok(false)` if terminated normally and does not
+    /// want to restart (e.g., receiving a termination signal).
+    async fn run(&mut self) -> Result<bool, SummersetError>;
 }

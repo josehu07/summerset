@@ -16,10 +16,12 @@ def run_process(cmd):
     return proc
 
 
-def kill_all_matching(name):
+def kill_all_matching(name, force=False):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-    os.system(f"killall -9 {name} > /dev/null 2>&1")
+    cmd = "killall -9" if force else "killall"
+    cmd += f" {name} > /dev/null 2>&1"
+    os.system(cmd)
 
 
 def launch_cluster(protocol, num_replicas, config):
@@ -114,9 +116,9 @@ def bench_round(
         + f"s={shards_per_replica if shards_per_replica is not None else 'x':1}  "
         + f"w%={put_ratio:<3d}  {length_s:3d}s"
     )
-    kill_all_matching("summerset_client")
-    kill_all_matching("summerset_server")
-    kill_all_matching("summerset_manager")
+    kill_all_matching("summerset_client", force=True)
+    kill_all_matching("summerset_server", force=True)
+    kill_all_matching("summerset_manager", force=True)
 
     configs = []
     if fault_tolerance is not None:

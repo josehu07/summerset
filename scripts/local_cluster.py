@@ -1,5 +1,6 @@
 import sys
 import os
+import signal
 import argparse
 import subprocess
 from pathlib import Path
@@ -24,10 +25,12 @@ def run_process(cmd, capture_stderr=False):
     return proc
 
 
-def kill_all_matching(name):
+def kill_all_matching(name, force=False):
     print("Kill all:", name)
     assert name.count(" ") == 0
-    os.system(f"killall -9 {name} > /dev/null 2>&1")
+    cmd = "killall -9" if force else "killall"
+    cmd += f" {name} > /dev/null 2>&1"
+    os.system(cmd)
 
 
 MANAGER_SRV_PORT = 52600
@@ -155,8 +158,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # kill all existing server and manager processes
-    kill_all_matching("summerset_server")
-    kill_all_matching("summerset_manager")
+    kill_all_matching("summerset_server", force=True)
+    kill_all_matching("summerset_manager", force=True)
 
     # remove all existing wal files
     for path in Path("/tmp").glob("summerset.*.wal"):
@@ -170,11 +173,27 @@ if __name__ == "__main__":
     wait_manager_setup(manager_proc)
 
     # then launch server replicas
-    launch_servers(args.protocol, args.num_replicas, args.release, args.config)
+    server_procs = launch_servers(
+        args.protocol, args.num_replicas, args.release, args.config
+    )
 
+    # register termination signals handler
+    def kill_spawned_procs(*args):
+        for proc in server_procs:
+            proc.terminate()
+        for proc in server_procs:
+            proc.wait()
+        manager_proc.terminate()
+
+    signal.signal(signal.SIGINT, kill_spawned_procs)
+    signal.signal(signal.SIGTERM, kill_spawned_procs)
+    signal.signal(signal.SIGHUP, kill_spawned_procs)
+
+    # since we piped manager proc's output, re-print it out
     for line in iter(manager_proc.stderr.readline, b""):
         sys.stderr.buffer.write(line)
         sys.stderr.flush()
 
+    # reaches here after manager proc has terminated
     rc = manager_proc.wait()
     sys.exit(rc)

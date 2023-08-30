@@ -10,7 +10,7 @@ use env_logger::Env;
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 
 mod drivers;
 mod clients;
@@ -160,6 +160,7 @@ fn main() -> ExitCode {
         pf_error!("c"; "client_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
+        pf_warn!("c"; "client_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
