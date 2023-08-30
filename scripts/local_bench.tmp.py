@@ -144,7 +144,7 @@ if __name__ == "__main__":
         max_fault_tolerance = num_replicas - quorum_cnt
 
         config_choices = [("MultiPaxos", None, None)]
-        for shards_per_replica in range(quorum_cnt, 0):
+        for shards_per_replica in range(quorum_cnt, 0, -1):
             config_choices.append(
                 ("Crossword", max_fault_tolerance, shards_per_replica)
             )
@@ -152,20 +152,27 @@ if __name__ == "__main__":
 
         return config_choices
 
-    # for num_replicas in (3, 5, 7):
-    #     for value_size in (1024, 65536, 4194304):
-    #         for protocol, fault_tolerance, shards_per_replica in all_protocol_configs(
-    #             num_replicas
-    #         ):
-    #             bench_round(
-    #                 protocol,
-    #                 num_replicas,
-    #                 value_size,
-    #                 100,
-    #                 60,
-    #                 fault_tolerance=fault_tolerance,
-    #                 shards_per_replica=shards_per_replica,
-    #             )
+    for num_replicas in (3, 5, 7):
+        for value_size in (1024, 65536, 4194304):
+            for protocol, fault_tolerance, shards_per_replica in all_protocol_configs(
+                num_replicas
+            ):
+                # print(
+                #     num_replicas,
+                #     value_size,
+                #     protocol,
+                #     fault_tolerance,
+                #     shards_per_replica,
+                # )
+                bench_round(
+                    protocol,
+                    num_replicas,
+                    value_size,
+                    100,
+                    60,
+                    fault_tolerance=fault_tolerance,
+                    shards_per_replica=shards_per_replica,
+                )
 
     bench_round("MultiPaxos", 5, 65536, 0, 60)
-    # bench_round("Crossword", 5, 65536, 0, 60, fault_tolerance=0, shards_per_replica=1)
+    bench_round("Crossword", 5, 65536, 0, 60, fault_tolerance=0, shards_per_replica=1)
