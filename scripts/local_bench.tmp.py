@@ -19,7 +19,7 @@ def run_process(cmd):
 def kill_all_matching(name):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-    os.system(f"sudo pkill -9 -f {name}")
+    os.system(f"killall -9 {name} > /dev/null 2>&1")
 
 
 def launch_cluster(protocol, num_replicas, config):
