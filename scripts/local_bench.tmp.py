@@ -109,8 +109,8 @@ def bench_round(
 ):
     print(
         f"{protocol:<10s}  n={num_replicas:1d}  v={value_size:<9d}  "
-        + f"f={fault_tolerance if fault_tolerance is not None else 'x':1d}  "
-        + f"s={shards_per_replica if shards_per_replica is not None else 'x':1d}  "
+        + f"f={fault_tolerance if fault_tolerance is not None else 'x':1}  "
+        + f"s={shards_per_replica if shards_per_replica is not None else 'x':1}  "
         + f"w%={put_ratio:<3d}  {length_s:3d}s"
     )
     kill_all_matching("summerset_client")
