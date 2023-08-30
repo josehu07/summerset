@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
-// TODO: add reset, pause, resume, server leave, leader change, etc.
+// TODO: add pause, resume, server leave, leader change, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
@@ -38,6 +38,10 @@ pub enum CtrlMsg {
         population: u8,
         to_peers: HashMap<ReplicaId, SocketAddr>,
     },
+
+    /// Manager -> Server: reset to initial state. If durable is false, cleans
+    /// durable storage state as well.
+    ResetState { durable: bool },
 }
 
 /// The server-facing controller API module.

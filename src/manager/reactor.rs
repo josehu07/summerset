@@ -1,6 +1,6 @@
 //! Cluster manager client-facing reactor module implementation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 use crate::utils::{
@@ -26,6 +26,14 @@ pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
 
+    /// Reset the specified server(s) to initial state.
+    ResetServer {
+        /// ID of server to reset. If `None`, resets all active servers.
+        server: Option<ReplicaId>,
+        /// If false, cleans durable storage state as well.
+        durable: bool,
+    },
+
     /// Client leave notification.
     Leave,
 }
@@ -37,6 +45,9 @@ pub enum CtrlReply {
     QueryInfo {
         servers: HashMap<ReplicaId, SocketAddr>,
     },
+
+    /// Reply to server reset request.
+    ResetServer { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,
