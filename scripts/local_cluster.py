@@ -1,4 +1,5 @@
 import sys
+import os
 import argparse
 import subprocess
 from pathlib import Path
@@ -26,9 +27,7 @@ def run_process(cmd, capture_stderr=False):
 def kill_all_matching(name):
     print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = ["sudo", "pkill", "-9", "-f", name]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    proc.wait()
+    os.system(f"sudo pkill -9 -f {name}")
 
 
 MANAGER_SRV_PORT = 52600

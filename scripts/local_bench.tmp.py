@@ -1,5 +1,5 @@
+import os
 import subprocess
-import itertools
 import statistics
 
 
@@ -19,9 +19,7 @@ def run_process(cmd):
 def kill_all_matching(name):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = ["sudo", "pkill", "-9", "-f", name]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    proc.wait()
+    os.system(f"sudo pkill -9 -f {name}")
 
 
 def launch_cluster(protocol, num_replicas, config):
