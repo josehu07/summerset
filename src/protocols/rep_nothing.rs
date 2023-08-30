@@ -242,13 +242,14 @@ impl GenericReplica for RepNothingReplica {
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
         // connect to the cluster manager and get assigned a server ID
         let mut control_hub = ControlHub::new_and_setup(manager).await?;
         let id = control_hub.me;
 
+        // parse protocol-specific configs
+        let config = parsed_config!(config_str => ReplicaConfigRepNothing;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -256,6 +257,16 @@ impl GenericReplica for RepNothingReplica {
                 config.batch_interval_us
             );
         }
+
+        // setup state machine module
+        let state_machine = StateMachine::new_and_setup(id).await?;
+
+        // setup storage hub module
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
+
+        // TransportHub is not needed in RepNothing
 
         // tell the manager tha I have joined
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -266,14 +277,7 @@ impl GenericReplica for RepNothingReplica {
         })?;
         control_hub.recv_ctrl().await?;
 
-        let state_machine = StateMachine::new_and_setup(id).await?;
-
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
-
-        // TransportHub is not needed in RepNothing
-
+        // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,

@@ -61,7 +61,8 @@ impl ClusterManager {
             return logged_err!("m"; "invalid population {}", population);
         }
 
-        let server_reigner = ServerReigner::new_and_setup(srv_addr).await?;
+        let server_reigner =
+            ServerReigner::new_and_setup(srv_addr, population).await?;
         let client_reactor = ClientReactor::new_and_setup(cli_addr).await?;
 
         Ok(ClusterManager {

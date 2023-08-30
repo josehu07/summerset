@@ -931,13 +931,15 @@ impl GenericReplica for MultiPaxosReplica {
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
-                                    batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
         // connect to the cluster manager and get assigned a server ID
         let mut control_hub = ControlHub::new_and_setup(manager).await?;
         let id = control_hub.me;
+        let population = control_hub.population;
 
+        // parse protocol-specific configs
+        let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -946,32 +948,34 @@ impl GenericReplica for MultiPaxosReplica {
             );
         }
 
-        // ask for population number and the list of peers to proactively
-        // connect to
+        // setup state machine module
+        let state_machine = StateMachine::new_and_setup(id).await?;
+
+        // setup storage hub module
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
+
+        // setup transport hub module
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+
+        // ask for the list of peers to proactively connect to. Do this after
+        // transport hub has been set up, so that I will be able to accept
+        // later peer connections
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
             protocol: SmrProtocol::MultiPaxos,
             api_addr,
             p2p_addr,
         })?;
-        let (population, to_peers) = if let CtrlMsg::ConnectToPeers {
-            population,
-            to_peers,
-        } = control_hub.recv_ctrl().await?
+        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+            control_hub.recv_ctrl().await?
         {
-            (population, to_peers)
+            to_peers
         } else {
             return logged_err!(id; "unexpected ctrl msg type received");
         };
-
-        let state_machine = StateMachine::new_and_setup(id).await?;
-
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
-
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -980,6 +984,7 @@ impl GenericReplica for MultiPaxosReplica {
         }
         transport_hub.wait_for_group(population).await?;
 
+        // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,

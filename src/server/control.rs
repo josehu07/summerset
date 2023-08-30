@@ -19,6 +19,9 @@ pub struct ControlHub {
     /// My replica ID.
     pub me: ReplicaId,
 
+    /// Number of replicas in cluster.
+    pub population: u8,
+
     /// Receiver side of the recv channel.
     rx_recv: mpsc::UnboundedReceiver<CtrlMsg>,
 
@@ -42,8 +45,9 @@ impl ControlHub {
         // connect to the cluster manager and receive my assigned server ID
         pf_info!("s"; "connecting to manager '{}'...", manager);
         let mut stream = TcpStream::connect(manager).await?;
-        let id = stream.read_u8().await?; // receive my server ID
-        pf_debug!(id; "assigned server ID: {}", id);
+        let id = stream.read_u8().await?; // first receive assigned server ID
+        let population = stream.read_u8().await?; // then receive population
+        pf_debug!(id; "assigned server ID: {} of {}", id, population);
 
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
@@ -54,6 +58,7 @@ impl ControlHub {
 
         Ok(ControlHub {
             me: id,
+            population,
             rx_recv,
             tx_send,
             _control_messenger_handle: control_messenger_handle,

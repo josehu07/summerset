@@ -64,6 +64,7 @@ impl ServerReigner {
     /// messages.
     pub async fn new_and_setup(
         srv_addr: SocketAddr,
+        population: u8,
     ) -> Result<Self, SummersetError> {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
 
@@ -76,6 +77,7 @@ impl ServerReigner {
         let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
         let server_acceptor_handle =
             tokio::spawn(Self::server_acceptor_thread(
+                population,
                 tx_recv,
                 server_listener,
                 tx_sends_write,
@@ -128,10 +130,12 @@ impl ServerReigner {
 // ServerReigner server_acceptor thread implementation
 impl ServerReigner {
     /// Accepts a new server connection.
+    #[allow(clippy::too_many_arguments)]
     async fn accept_new_server(
         mut stream: TcpStream,
         addr: SocketAddr,
         id: ReplicaId,
+        population: u8,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         tx_sends: &mut flashmap::WriteHandle<
             ReplicaId,
@@ -143,9 +147,14 @@ impl ServerReigner {
         >,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        // send ID assignment
+        // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
             return logged_err!("m"; "error assigning new server ID: {}", e);
+        }
+
+        // then send population
+        if let Err(e) = stream.write_u8(population).await {
+            return logged_err!("m"; "error sending population: {}", e);
         }
 
         let mut tx_sends_guard = tx_sends.guard();
@@ -205,6 +214,7 @@ impl ServerReigner {
 
     /// Server acceptor thread function.
     async fn server_acceptor_thread(
+        population: u8,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         server_listener: TcpListener,
         mut tx_sends: flashmap::WriteHandle<
@@ -241,6 +251,7 @@ impl ServerReigner {
                         stream,
                         addr,
                         next_server_id,
+                        population,
                         tx_recv.clone(),
                         &mut tx_sends,
                         &mut server_controller_handles,
@@ -471,7 +482,7 @@ mod reigner_tests {
         });
         // manager
         let mut reigner =
-            ServerReigner::new_and_setup("127.0.0.1:53600".parse()?).await?;
+            ServerReigner::new_and_setup("127.0.0.1:53600".parse()?, 2).await?;
         setup_bar.wait().await;
         // recv message from server 0
         let (id, msg) = reigner.recv_ctrl().await?;
