@@ -142,6 +142,9 @@ def bench_round(
     wait_cluster_setup(proc_cluster, num_replicas)
 
     proc_client = run_bench_client(protocol, value_size, put_ratio, length_s)
+    for line in iter(proc_client.stderr.readline, b""):
+        l = line.decode()
+        print(l, end="", file=sys.stderr)
     out, err = proc_client.communicate()
 
     proc_cluster.terminate()
