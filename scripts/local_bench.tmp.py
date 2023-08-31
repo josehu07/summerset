@@ -1,3 +1,4 @@
+import sys
 import os
 import subprocess
 import statistics
@@ -50,7 +51,7 @@ def wait_cluster_setup(proc, num_replicas):
 
     for line in iter(proc.stderr.readline, b""):
         l = line.decode()
-        # print(l, end="")
+        # print(l, end="", file=sys.stderr)
         if "manager" not in l and "accepting clients" in l:
             replica = int(l[l.find("(") + 1 : l.find(")")])
             assert not accepting_clients[replica]

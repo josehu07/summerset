@@ -181,8 +181,6 @@ if __name__ == "__main__":
     def kill_spawned_procs(*args):
         for proc in server_procs:
             proc.terminate()
-        for proc in server_procs:
-            proc.wait()
         manager_proc.terminate()
 
     signal.signal(signal.SIGINT, kill_spawned_procs)
