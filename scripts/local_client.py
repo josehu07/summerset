@@ -21,14 +21,6 @@ def run_process(cmd):
 MANAGER_CLI_PORT = 52601
 
 
-PROTOCOL_CONFIGS = {
-    "RepNothing": "",
-    "SimplePush": "",
-    "MultiPaxos": "",
-    "RSPaxos": "",
-}
-
-
 UTILITY_PARAM_NAMES = {
     "repl": [],
     "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
@@ -62,7 +54,7 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
         "-m",
         manager,
     ]
-    if len(config) > 0:
+    if config is not None and len(config) > 0:
         cmd += ["--config", config]
 
     cmd += ["-u", utility]
@@ -71,16 +63,16 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
 
     # if in benchmarking mode, lower the client's CPU scheduling priority
     if utility == "bench":
-        cmd = ["nice", "-n", "15"] + cmd
+        cmd = ["nice", "-n", "19"] + cmd
 
     return cmd
 
 
-def run_client(protocol, utility, params, release):
+def run_client(protocol, utility, params, release, config):
     cmd = compose_client_cmd(
         protocol,
         f"127.0.0.1:{MANAGER_CLI_PORT}",
-        PROTOCOL_CONFIGS[protocol],
+        config,
         utility,
         params,
         release,
@@ -96,6 +88,9 @@ if __name__ == "__main__":
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
+    parser.add_argument(
+        "-c", "--config", type=str, help="protocol-specific TOML config string"
+    )
 
     subparsers = parser.add_subparsers(
         required=True,
@@ -128,9 +123,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.protocol not in PROTOCOL_CONFIGS:
-        raise ValueError(f"unknown protocol name '{args.protocol}'")
-
     # build everything
     do_cargo_build(args.release)
 
@@ -140,6 +132,7 @@ if __name__ == "__main__":
         args.utility,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
+        args.config,
     )
 
     rc = client_proc.wait()

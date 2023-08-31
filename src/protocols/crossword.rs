@@ -1,17 +1,13 @@
-//! Replication protocol: MultiPaxos.
+//! Replication protocol: Crossword.
 //!
-//! Multi-decree Paxos protocol. References:
-//!   - <https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf>
-//!   - <https://dl.acm.org/doi/pdf/10.1145/1281100.1281103>
-//!   - <https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf>
-//!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
-//!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
+//! MultiPaxos with flexible Reed-Solomon erasure coding that supports tunable
+//! shard groups and asymmetric shard assignment.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap};
+use crate::utils::{SummersetError, Bitmap, RSCodeword};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -28,9 +24,11 @@ use serde::{Serialize, Deserialize};
 use tokio::time::Duration;
 use tokio::sync::watch;
 
+use reed_solomon_erasure::galois_8::ReedSolomon;
+
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ReplicaConfigMultiPaxos {
+pub struct ReplicaConfigCrossword {
     /// Client request batching interval in microsecs.
     pub batch_interval_us: u64,
 
@@ -42,16 +40,25 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
+
+    /// Fault-tolerance level.
+    pub fault_tolerance: u8,
+
+    /// Number of shards to assign to each replica.
+    // TODO: proper config options.
+    pub shards_per_replica: u8,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ReplicaConfigMultiPaxos {
+impl Default for ReplicaConfigCrossword {
     fn default() -> Self {
-        ReplicaConfigMultiPaxos {
+        ReplicaConfigCrossword {
             batch_interval_us: 1000,
             max_batch_size: 5000,
-            backer_path: "/tmp/summerset.multipaxos.wal".into(),
+            backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
+            fault_tolerance: 0,
+            shards_per_replica: 1,
         }
     }
 }
@@ -83,8 +90,9 @@ struct LeaderBookkeeping {
     /// Max ballot among received Prepare replies.
     prepare_max_bal: Ballot,
 
-    /// Replicas from which I have received Accept confirmations.
-    accept_acks: Bitmap,
+    /// Replicas and their assigned shards which the received Accept
+    /// confirmations cover.
+    accept_acks: HashMap<ReplicaId, Bitmap>,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -94,7 +102,7 @@ struct ReplicaBookkeeping {
     source: ReplicaId,
 }
 
-/// In-memory instance containing a commands batch.
+/// In-memory instance containing a complete commands batch.
 #[derive(Debug, Clone)]
 struct Instance {
     /// Ballot number.
@@ -103,8 +111,8 @@ struct Instance {
     /// Instance status.
     status: Status,
 
-    /// Batch of client requests.
-    reqs: ReqBatch,
+    /// Shards of a batch of client requests.
+    reqs_cw: RSCodeword<ReqBatch>,
 
     /// Leader-side bookkeeping info.
     leader_bk: Option<LeaderBookkeeping>,
@@ -119,11 +127,11 @@ enum LogEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
-    /// Records a newly accepted request batch data at slot index.
+    /// Records a newly accepted request batch data shards at slot index.
     AcceptData {
         slot: usize,
         ballot: Ballot,
-        reqs: ReqBatch,
+        reqs_cw: RSCodeword<ReqBatch>,
     },
 
     /// Records an event of committing the instance at index.
@@ -140,16 +148,16 @@ enum PeerMsg {
     PrepareReply {
         slot: usize,
         ballot: Ballot,
-        /// Map from slot index -> the accepted ballot number for that
-        /// instance and the corresponding request batch value.
-        voted: Option<(Ballot, ReqBatch)>,
+        /// The accepted ballot number for that instance and the corresponding
+        /// request batch value shards known by replica.
+        voted: Option<(Ballot, RSCodeword<ReqBatch>)>,
     },
 
     /// Accept message from leader to replicas.
     Accept {
         slot: usize,
         ballot: Ballot,
-        reqs: ReqBatch,
+        reqs_cw: RSCodeword<ReqBatch>,
     },
 
     /// Accept reply from replica to leader.
@@ -159,8 +167,8 @@ enum PeerMsg {
     Commit { slot: usize },
 }
 
-/// MultiPaxos server replica module.
-pub struct MultiPaxosReplica {
+/// Crossword server replica module.
+pub struct CrosswordReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -171,7 +179,7 @@ pub struct MultiPaxosReplica {
     quorum_cnt: u8,
 
     /// Configuration parameters struct.
-    config: ReplicaConfigMultiPaxos,
+    config: ReplicaConfigCrossword,
 
     /// Address string for client requests API.
     _api_addr: SocketAddr,
@@ -218,9 +226,12 @@ pub struct MultiPaxosReplica {
 
     /// Current durable log file offset.
     log_offset: usize,
+
+    /// Fixed Reed-Solomon coder.
+    rs_coder: ReedSolomon,
 }
 
-impl MultiPaxosReplica {
+impl CrosswordReplica {
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -270,6 +281,58 @@ impl MultiPaxosReplica {
         (slot, cmd_idx)
     }
 
+    /// TODO: maybe remove this.
+    fn shards_for_replica(
+        id: ReplicaId,
+        population: u8,
+        num_shards: u8,
+    ) -> Vec<u8> {
+        (id..(id + num_shards)).map(|i| (i % population)).collect()
+    }
+
+    /// TODO: make better impl of this.
+    fn coverage_under_faults(
+        population: u8,
+        acks: &HashMap<ReplicaId, Bitmap>,
+        fault_tolerance: u8,
+    ) -> u8 {
+        if acks.len() <= fault_tolerance as usize {
+            return 0;
+        }
+
+        // enumerate all subsets of acks excluding fault number of replicas
+        let cnt = (acks.len() - fault_tolerance as usize) as u32;
+        let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
+        let mut min_coverage = population;
+
+        for n in (0..2usize.pow(servers.len() as u32))
+            .filter(|n| n.count_ones() == cnt)
+        {
+            let mut coverage = Bitmap::new(population, false);
+            for (_, server) in servers
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| (n >> i) % 2 == 1)
+            {
+                for shard in acks[server].iter().filter_map(|(s, flag)| {
+                    if flag {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }) {
+                    coverage.set(shard, true).expect("impossible shard index");
+                }
+            }
+
+            if coverage.count() < min_coverage {
+                min_coverage = coverage.count();
+            }
+        }
+
+        min_coverage
+    }
+
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -300,32 +363,42 @@ impl MultiPaxosReplica {
             return Ok(());
         }
 
+        // compute the complete Reed-Solomon codeword for the batch data
+        let mut reqs_cw = RSCodeword::from_data(
+            req_batch,
+            self.quorum_cnt,
+            self.population - self.quorum_cnt,
+        )?;
+        reqs_cw.compute_parity(Some(&self.rs_coder))?;
+
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
         // TODO: maybe use a null_idx variable to better keep track of this
         let mut slot = self.insts.len();
         for s in self.commit_bar..self.insts.len() {
-            let old_inst = &mut self.insts[s];
-            if old_inst.status == Status::Null {
-                old_inst.reqs = req_batch.clone();
-                old_inst.leader_bk = Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                });
+            if self.insts[s].status == Status::Null {
                 slot = s;
                 break;
             }
         }
-        if slot == self.insts.len() {
+        if slot < self.insts.len() {
+            let old_inst = &mut self.insts[slot];
+            assert_eq!(old_inst.status, Status::Null);
+            old_inst.reqs_cw = reqs_cw;
+            old_inst.leader_bk = Some(LeaderBookkeeping {
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: HashMap::new(),
+            });
+        } else {
             let new_inst = Instance {
                 bal: 0,
                 status: Status::Null,
-                reqs: req_batch.clone(),
+                reqs_cw,
                 leader_bk: Some(LeaderBookkeeping {
                     prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
+                    accept_acks: HashMap::new(),
                 }),
                 replica_bk: None,
             };
@@ -391,7 +464,18 @@ impl MultiPaxosReplica {
                     entry: LogEntry::AcceptData {
                         slot,
                         ballot: inst.bal,
-                        reqs: req_batch.clone(),
+                        // persist only some shards on myself
+                        reqs_cw: inst.reqs_cw.subset_copy(
+                            Bitmap::from(
+                                self.population,
+                                Self::shards_for_replica(
+                                    self.id,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
+                            ),
+                            false,
+                        )?,
                     },
                     sync: self.config.logger_sync,
                 },
@@ -399,15 +483,31 @@ impl MultiPaxosReplica {
             pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
                                slot, inst.bal);
 
-            // send Accept messages to all peers
-            self.transport_hub.bcast_msg(
-                PeerMsg::Accept {
-                    slot,
-                    ballot: inst.bal,
-                    reqs: req_batch,
-                },
-                None,
-            )?;
+            // send Accept messages to all peers, each getting its subset of
+            // shards of data
+            for peer in 0..self.population {
+                if peer == self.id {
+                    continue;
+                }
+                self.transport_hub.send_msg(
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: inst.bal,
+                        reqs_cw: inst.reqs_cw.subset_copy(
+                            Bitmap::from(
+                                self.population,
+                                Self::shards_for_replica(
+                                    peer,
+                                    self.population,
+                                    self.config.shards_per_replica,
+                                ),
+                            ),
+                            false,
+                        )?,
+                    },
+                    peer,
+                )?;
+            }
             pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                slot, inst.bal);
         }
@@ -424,7 +524,7 @@ impl MultiPaxosReplica {
                            slot, self.insts[slot].bal);
         let inst = &self.insts[slot];
         let voted = if inst.status >= Status::Accepting {
-            Some((inst.bal, inst.reqs.clone()))
+            Some((inst.bal, inst.reqs_cw.clone()))
         } else {
             None
         };
@@ -493,7 +593,7 @@ impl MultiPaxosReplica {
         slot: usize,
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
-                           slot, self.insts[slot].bal);
+                                   slot, self.insts[slot].bal);
         assert!(self.insts[slot].status >= Status::Committed);
 
         // update index of the first non-committed instance
@@ -504,12 +604,23 @@ impl MultiPaxosReplica {
                     break;
                 }
 
+                if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                    // can't execute if I don't have the complete request batch
+                    pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
+                                       slot, inst.reqs_cw.avail_shards(), self.quorum_cnt);
+                    break;
+                } else if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                    // have enough shards but need reconstruction
+                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                }
+                let reqs = inst.reqs_cw.get_data()?;
+
                 // submit commands in committed instance to the state machine
                 // for execution
-                if inst.reqs.is_empty() {
+                if reqs.is_empty() {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
-                    for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
+                    for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
                                 Self::make_command_id(self.commit_bar, cmd_idx),
@@ -520,7 +631,7 @@ impl MultiPaxosReplica {
                         }
                     }
                     pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       inst.reqs.len(), self.commit_bar);
+                                       reqs.len(), self.commit_bar);
                 }
 
                 self.commit_bar += 1;
@@ -573,7 +684,10 @@ impl MultiPaxosReplica {
                 self.insts.push(Instance {
                     bal: 0,
                     status: Status::Null,
-                    reqs: Vec::new(),
+                    reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                        self.quorum_cnt,
+                        self.population - self.quorum_cnt,
+                    )?,
                     leader_bk: None,
                     replica_bk: None,
                 });
@@ -609,10 +723,11 @@ impl MultiPaxosReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
-        voted: Option<(Ballot, ReqBatch)>,
+        voted: Option<(Ballot, RSCodeword<ReqBatch>)>,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received PrepareReply <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(self.id; "received PrepareReply <- {} for slot {} bal {} shards {:?}",
+                           peer, slot, ballot,
+                           voted.as_ref().map(|(_, cw)| cw.avail_shards_map()));
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
@@ -634,16 +749,26 @@ impl MultiPaxosReplica {
             // bookkeep this Prepare reply
             leader_bk.prepare_acks.set(peer, true)?;
             if let Some((bal, val)) = voted {
+                #[allow(clippy::comparison_chain)]
                 if bal > leader_bk.prepare_max_bal {
+                    // is of ballot > current maximum, so discard the current
+                    // codeword and take the replied codeword
                     leader_bk.prepare_max_bal = bal;
-                    inst.reqs = val;
+                    inst.reqs_cw = val;
+                } else if bal == leader_bk.prepare_max_bal {
+                    // is of ballot == the one currently taken, so merge the
+                    // replied codeword into the current one
+                    inst.reqs_cw.absorb_other(val)?;
                 }
             }
 
-            // if quorum size reached, enter Accept phase for this instance
-            // using the request batch value with the highest ballot number
-            // in quorum
-            if leader_bk.prepare_acks.count() >= self.quorum_cnt {
+            // if quorum size reached AND enough shards are known to
+            // reconstruct the original data, enter Accept phase for this
+            // instance using the request batch value constructed using shards
+            // with the highest ballot number in quorum
+            if leader_bk.prepare_acks.count() >= self.quorum_cnt
+                && inst.reqs_cw.avail_data_shards() >= self.quorum_cnt
+            {
                 inst.status = Status::Accepting;
                 pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
                                    slot, inst.bal);
@@ -652,6 +777,11 @@ impl MultiPaxosReplica {
                 assert!(self.bal_prepared <= ballot);
                 self.bal_prepared = ballot;
 
+                // if parity shards not computed yet, compute them now
+                if inst.reqs_cw.avail_shards() < self.population {
+                    inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
+                }
+
                 // record update to largest accepted ballot and corresponding data
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
@@ -659,7 +789,17 @@ impl MultiPaxosReplica {
                         entry: LogEntry::AcceptData {
                             slot,
                             ballot,
-                            reqs: inst.reqs.clone(),
+                            reqs_cw: inst.reqs_cw.subset_copy(
+                                Bitmap::from(
+                                    self.population,
+                                    Self::shards_for_replica(
+                                        self.id,
+                                        self.population,
+                                        self.config.shards_per_replica,
+                                    ),
+                                ),
+                                false,
+                            )?,
                         },
                         sync: self.config.logger_sync,
                     },
@@ -668,14 +808,29 @@ impl MultiPaxosReplica {
                                    slot, ballot);
 
                 // send Accept messages to all peers
-                self.transport_hub.bcast_msg(
-                    PeerMsg::Accept {
-                        slot,
-                        ballot,
-                        reqs: inst.reqs.clone(),
-                    },
-                    None,
-                )?;
+                for peer in 0..self.population {
+                    if peer == self.id {
+                        continue;
+                    }
+                    self.transport_hub.send_msg(
+                        PeerMsg::Accept {
+                            slot,
+                            ballot,
+                            reqs_cw: inst.reqs_cw.subset_copy(
+                                Bitmap::from(
+                                    self.population,
+                                    Self::shards_for_replica(
+                                        peer,
+                                        self.population,
+                                        self.config.shards_per_replica,
+                                    ),
+                                ),
+                                false,
+                            )?,
+                        },
+                        peer,
+                    )?;
+                }
                 pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                    slot, ballot);
             }
@@ -690,10 +845,10 @@ impl MultiPaxosReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
-        reqs: ReqBatch,
+        reqs_cw: RSCodeword<ReqBatch>,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received Accept <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(self.id; "received Accept <- {} for slot {} bal {} shards {:?}",
+                           peer, slot, ballot, reqs_cw.avail_shards_map());
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
@@ -702,7 +857,10 @@ impl MultiPaxosReplica {
                 self.insts.push(Instance {
                     bal: 0,
                     status: Status::Null,
-                    reqs: Vec::new(),
+                    reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                        self.quorum_cnt,
+                        self.population - self.quorum_cnt,
+                    )?,
                     leader_bk: None,
                     replica_bk: None,
                 });
@@ -712,7 +870,7 @@ impl MultiPaxosReplica {
 
             inst.bal = ballot;
             inst.status = Status::Accepting;
-            inst.reqs = reqs.clone();
+            inst.reqs_cw = reqs_cw;
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // update largest ballot seen
@@ -722,7 +880,11 @@ impl MultiPaxosReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: LogEntry::AcceptData { slot, ballot, reqs },
+                    entry: LogEntry::AcceptData {
+                        slot,
+                        ballot,
+                        reqs_cw: inst.reqs_cw.clone(),
+                    },
                     sync: self.config.logger_sync,
                 },
             )?;
@@ -756,15 +918,32 @@ impl MultiPaxosReplica {
             assert!(self.bal_max_seen >= ballot);
             assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
-            if leader_bk.accept_acks.get(peer)? {
+            if leader_bk.accept_acks.contains_key(&peer) {
                 return Ok(());
             }
 
             // bookkeep this Accept reply
-            leader_bk.accept_acks.set(peer, true)?;
+            leader_bk.accept_acks.insert(
+                peer,
+                Bitmap::from(
+                    self.population,
+                    Self::shards_for_replica(
+                        peer,
+                        self.population,
+                        self.config.shards_per_replica,
+                    ),
+                ),
+            );
 
-            // if quorum size reached, mark this instance as committed
-            if leader_bk.accept_acks.count() >= self.quorum_cnt {
+            // if quorum size reached AND enough number of shards are
+            // remembered, mark this instance as committed
+            if leader_bk.accept_acks.len() as u8 >= self.quorum_cnt
+                && Self::coverage_under_faults(
+                    self.population,
+                    &leader_bk.accept_acks,
+                    self.config.fault_tolerance,
+                ) >= self.quorum_cnt
+            {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
                                    slot, inst.bal);
@@ -805,7 +984,10 @@ impl MultiPaxosReplica {
             self.insts.push(Instance {
                 bal: 0,
                 status: Status::Null,
-                reqs: Vec::new(),
+                reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                    self.quorum_cnt,
+                    self.population - self.quorum_cnt,
+                )?,
                 leader_bk: None,
                 replica_bk: None,
             });
@@ -851,9 +1033,11 @@ impl MultiPaxosReplica {
                 ballot,
                 voted,
             } => self.handle_msg_prepare_reply(peer, slot, ballot, voted),
-            PeerMsg::Accept { slot, ballot, reqs } => {
-                self.handle_msg_accept(peer, slot, ballot, reqs)
-            }
+            PeerMsg::Accept {
+                slot,
+                ballot,
+                reqs_cw,
+            } => self.handle_msg_accept(peer, slot, ballot, reqs_cw),
             PeerMsg::AcceptReply { slot, ballot } => {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
@@ -873,8 +1057,9 @@ impl MultiPaxosReplica {
                            slot, cmd_idx);
 
         let inst = &mut self.insts[slot];
-        assert!(cmd_idx < inst.reqs.len());
-        let (client, ref req) = inst.reqs[cmd_idx];
+        let reqs = inst.reqs_cw.get_data()?;
+        assert!(cmd_idx < reqs.len());
+        let (client, ref req) = reqs[cmd_idx];
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
@@ -896,7 +1081,7 @@ impl MultiPaxosReplica {
 
         // if all commands in this instance have been executed, set status to
         // Executed and update `exec_bar`
-        if cmd_idx == inst.reqs.len() - 1 {
+        if cmd_idx == reqs.len() - 1 {
             inst.status = Status::Executed;
             pf_debug!(self.id; "executed all cmds in instance at slot {}",
                                slot);
@@ -974,7 +1159,7 @@ impl MultiPaxosReplica {
 }
 
 #[async_trait]
-impl GenericReplica for MultiPaxosReplica {
+impl GenericReplica for CrosswordReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -987,9 +1172,10 @@ impl GenericReplica for MultiPaxosReplica {
         let population = control_hub.population;
 
         // parse protocol-specific configs
-        let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
+        let config = parsed_config!(config_str => ReplicaConfigCrossword;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
+                                    backer_path, logger_sync, fault_tolerance,
+                                    shards_per_replica)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -1015,7 +1201,7 @@ impl GenericReplica for MultiPaxosReplica {
         // later peer connections
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
-            protocol: SmrProtocol::MultiPaxos,
+            protocol: SmrProtocol::Crossword,
             api_addr,
             p2p_addr,
         })?;
@@ -1026,6 +1212,24 @@ impl GenericReplica for MultiPaxosReplica {
         } else {
             return logged_err!(id; "unexpected ctrl msg type received");
         };
+
+        // create a Reed-Solomon coder with num_data_shards == quorum size and
+        // num_parity shards == population - quorum
+        let quorum_cnt = (population / 2) + 1;
+        if config.fault_tolerance > (population - quorum_cnt) {
+            return logged_err!(id; "invalid config.fault_tolerance '{}'",
+                                   config.fault_tolerance);
+        }
+        if config.shards_per_replica == 0
+            || config.shards_per_replica > quorum_cnt
+        {
+            return logged_err!(id; "invalid config.shards_per_replica '{}'",
+                                   config.shards_per_replica);
+        }
+        let rs_coder = ReedSolomon::new(
+            quorum_cnt as usize,
+            (population - quorum_cnt) as usize,
+        )?;
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -1043,10 +1247,10 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
-        Ok(MultiPaxosReplica {
+        Ok(CrosswordReplica {
             id,
             population,
-            quorum_cnt: (population / 2) + 1,
+            quorum_cnt,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
@@ -1063,6 +1267,7 @@ impl GenericReplica for MultiPaxosReplica {
             commit_bar: 0,
             exec_bar: 0,
             log_offset: 0,
+            rs_coder,
         })
     }
 
@@ -1165,25 +1370,25 @@ impl GenericReplica for MultiPaxosReplica {
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ClientConfigMultiPaxos {
+pub struct ClientConfigCrossword {
     /// Which server to pick initially.
     pub init_server_id: ReplicaId,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ClientConfigMultiPaxos {
+impl Default for ClientConfigCrossword {
     fn default() -> Self {
-        ClientConfigMultiPaxos { init_server_id: 0 }
+        ClientConfigCrossword { init_server_id: 0 }
     }
 }
 
-/// MultiPaxos client-side module.
-pub struct MultiPaxosClient {
+/// Crossword client-side module.
+pub struct CrosswordClient {
     /// Client ID.
     id: ClientId,
 
     /// Configuration parameters struct.
-    _config: ClientConfigMultiPaxos,
+    _config: ClientConfigCrossword,
 
     /// Cached list of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -1199,7 +1404,7 @@ pub struct MultiPaxosClient {
 }
 
 #[async_trait]
-impl GenericEndpoint for MultiPaxosClient {
+impl GenericEndpoint for CrosswordClient {
     async fn new_and_setup(
         manager: SocketAddr,
         config_str: Option<&str>,
@@ -1209,11 +1414,11 @@ impl GenericEndpoint for MultiPaxosClient {
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
-        let config = parsed_config!(config_str => ClientConfigMultiPaxos;
+        let config = parsed_config!(config_str => ClientConfigCrossword;
                                     init_server_id)?;
         let init_server_id = config.init_server_id;
 
-        Ok(MultiPaxosClient {
+        Ok(CrosswordClient {
             id,
             _config: config,
             servers: HashMap::new(),

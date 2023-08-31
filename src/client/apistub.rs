@@ -2,13 +2,14 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
+};
 use crate::server::{ApiRequest, ApiReply};
 use crate::client::ClientId;
 
 use bytes::BytesMut;
 
-use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncWriteExt;
 
@@ -40,7 +41,7 @@ impl ClientApiStub {
         addr: SocketAddr,
     ) -> Result<Self, SummersetError> {
         pf_info!(id; "connecting to server '{}'...", addr);
-        let mut stream = TcpStream::connect(addr).await?;
+        let mut stream = tcp_connect_with_retry(addr, 10).await?;
         stream.write_u64(id).await?; // send my client ID
         let (read_half, write_half) = stream.into_split();
 

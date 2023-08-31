@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
+use tokio::sync::watch;
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
@@ -226,10 +227,57 @@ impl RepNothingReplica {
         Ok(())
     }
 
-    /// Synthesized handler of manager control messages.
-    fn handle_ctrl_msg(&mut self, _msg: CtrlMsg) -> Result<(), SummersetError> {
-        // TODO: fill this when more control message types added
+    /// Handler of ResetState control message.
+    async fn handle_ctrl_reset_state(
+        &mut self,
+        durable: bool,
+    ) -> Result<(), SummersetError> {
+        // send leave notification to manager and wait for its reply
+        self.control_hub.send_ctrl(CtrlMsg::Leave)?;
+        while self.control_hub.recv_ctrl().await? != CtrlMsg::LeaveReply {}
+
+        // if `durable` is false, truncate backer file
+        if !durable {
+            // use 0 as a special log action ID here
+            self.storage_hub
+                .submit_action(0, LogAction::Truncate { offset: 0 })?;
+            loop {
+                let (action_id, log_result) =
+                    self.storage_hub.get_result().await?;
+                if action_id == 0 {
+                    if log_result
+                        != (LogResult::Truncate {
+                            offset_ok: true,
+                            now_size: 0,
+                        })
+                    {
+                        return logged_err!(self.id; "failed to truncate log to 0");
+                    } else {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         Ok(())
+    }
+
+    /// Synthesized handler of manager control messages. If ok, returns
+    /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
+    /// decides to shutdown completely, and `None` if not terminating.
+    async fn handle_ctrl_msg(
+        &mut self,
+        msg: CtrlMsg,
+    ) -> Result<Option<bool>, SummersetError> {
+        // TODO: fill this when more control message types added
+        match msg {
+            CtrlMsg::ResetState { durable } => {
+                self.handle_ctrl_reset_state(durable).await?;
+                Ok(Some(true))
+            }
+
+            _ => Ok(None), // ignore all other types
+        }
     }
 }
 
@@ -241,13 +289,14 @@ impl GenericReplica for RepNothingReplica {
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
-        let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
         // connect to the cluster manager and get assigned a server ID
         let mut control_hub = ControlHub::new_and_setup(manager).await?;
         let id = control_hub.me;
 
+        // parse protocol-specific configs
+        let config = parsed_config!(config_str => ReplicaConfigRepNothing;
+                                    batch_interval_us, max_batch_size,
+                                    backer_path, logger_sync)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -255,6 +304,16 @@ impl GenericReplica for RepNothingReplica {
                 config.batch_interval_us
             );
         }
+
+        // setup state machine module
+        let state_machine = StateMachine::new_and_setup(id).await?;
+
+        // setup storage hub module
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
+
+        // TransportHub is not needed in RepNothing
 
         // tell the manager tha I have joined
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -265,14 +324,7 @@ impl GenericReplica for RepNothingReplica {
         })?;
         control_hub.recv_ctrl().await?;
 
-        let state_machine = StateMachine::new_and_setup(id).await?;
-
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
-
-        // TransportHub is not needed in RepNothing
-
+        // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,
@@ -295,7 +347,10 @@ impl GenericReplica for RepNothingReplica {
         })
     }
 
-    async fn run(&mut self) {
+    async fn run(
+        &mut self,
+        mut rx_term: watch::Receiver<bool>,
+    ) -> Result<bool, SummersetError> {
         loop {
             tokio::select! {
                 // client request batch
@@ -341,12 +396,33 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
-                    if let Err(e) = self.handle_ctrl_msg(ctrl_msg) {
-                        pf_error!(self.id; "error handling ctrl msg: {}", e);
+                    match self.handle_ctrl_msg(ctrl_msg).await {
+                        Ok(terminate) => {
+                            if let Some(restart) = terminate {
+                                pf_warn!(
+                                    self.id;
+                                    "server got {} req",
+                                    if restart { "restart" } else { "shutdown" });
+                                return Ok(restart);
+                            }
+                        },
+                        Err(e) => {
+                            pf_error!(self.id; "error handling ctrl msg: {}", e);
+                        }
                     }
+                },
+
+                // receiving termination signal
+                _ = rx_term.changed() => {
+                    pf_warn!(self.id; "server caught termination signal");
+                    return Ok(false);
                 }
             }
         }
+    }
+
+    fn id(&self) -> ReplicaId {
+        self.id
     }
 }
 
@@ -369,14 +445,11 @@ pub struct RepNothingClient {
     /// Client ID.
     id: ClientId,
 
-    /// Address of the cluster manager oracle.
-    manager: SocketAddr,
-
     /// Configuration parameters struct.
     config: ClientConfigRepNothing,
 
     /// Control API stub to the cluster manager.
-    ctrl_stub: Option<ClientCtrlStub>,
+    ctrl_stub: ClientCtrlStub,
 
     /// API stubs for communicating with servers.
     api_stub: Option<ClientApiStub>,
@@ -384,44 +457,40 @@ pub struct RepNothingClient {
 
 #[async_trait]
 impl GenericEndpoint for RepNothingClient {
-    fn new(
+    async fn new_and_setup(
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
+        // connect to the cluster manager and get assigned a client ID
+        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        let id = ctrl_stub.id;
+
+        // parse protocol-specific configs
         let config = parsed_config!(config_str => ClientConfigRepNothing;
                                     server_id)?;
 
         Ok(RepNothingClient {
-            id: 255, // nil at this time
-            manager,
+            id,
             config,
-            ctrl_stub: None,
+            ctrl_stub,
             api_stub: None,
         })
     }
 
-    async fn connect(&mut self) -> Result<ClientId, SummersetError> {
+    async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
         if self.api_stub.is_some() {
             return logged_err!(self.id; "reconnecting without leaving");
         }
 
-        // if ctrl_stubs not established yet, connect to the manager
-        if self.ctrl_stub.is_none() {
-            let ctrl_stub =
-                ClientCtrlStub::new_by_connect(self.manager).await?;
-            self.id = ctrl_stub.id;
-            self.ctrl_stub = Some(ctrl_stub);
-        }
-        let ctrl_stub = self.ctrl_stub.as_mut().unwrap();
-
         // ask the manager about the list of active servers
-        let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent =
+            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
-            sent = ctrl_stub.send_req(None)?;
+            sent = self.ctrl_stub.send_req(None)?;
         }
 
-        let reply = ctrl_stub.recv_reply().await?;
+        let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
             CtrlReply::QueryInfo { servers } => {
                 // connect to the one with server ID in config
@@ -431,7 +500,7 @@ impl GenericEndpoint for RepNothingClient {
                 )
                 .await?;
                 self.api_stub = Some(api_stub);
-                Ok(self.id)
+                Ok(())
             }
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
@@ -459,26 +528,19 @@ impl GenericEndpoint for RepNothingClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            // disallow multiple permanent leaving
-            if self.ctrl_stub.is_none() {
-                return logged_err!(self.id; "repeated permanent leaving");
+            let mut sent =
+                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            while !sent {
+                sent = self.ctrl_stub.send_req(None)?;
             }
 
-            if let Some(mut ctrl_stub) = self.ctrl_stub.take() {
-                let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-                while !sent {
-                    sent = ctrl_stub.send_req(None)?;
+            let reply = self.ctrl_stub.recv_reply().await?;
+            match reply {
+                CtrlReply::Leave => {
+                    pf_info!(self.id; "left current manager connection");
                 }
-
-                let reply = ctrl_stub.recv_reply().await?;
-                match reply {
-                    CtrlReply::Leave => {
-                        pf_info!(self.id; "left current manager connection");
-                        ctrl_stub.forget();
-                    }
-                    _ => {
-                        return logged_err!(self.id; "unexpected reply type received");
-                    }
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
                 }
             }
         }
@@ -501,5 +563,13 @@ impl GenericEndpoint for RepNothingClient {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
             None => logged_err!(self.id; "client is not set up"),
         }
+    }
+
+    fn id(&self) -> ClientId {
+        self.id
+    }
+
+    fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
+        &mut self.ctrl_stub
     }
 }

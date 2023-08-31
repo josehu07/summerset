@@ -10,7 +10,7 @@ use env_logger::Env;
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 
 mod drivers;
 mod clients;
@@ -113,8 +113,9 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        let endpoint =
-            protocol.new_client_endpoint(args.manager, config_str)?;
+        let endpoint = protocol
+            .new_client_endpoint(args.manager, config_str)
+            .await?;
 
         match mode {
             ClientMode::Repl => {
@@ -160,6 +161,7 @@ fn main() -> ExitCode {
         pf_error!("c"; "client_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
+        pf_warn!("c"; "client_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
