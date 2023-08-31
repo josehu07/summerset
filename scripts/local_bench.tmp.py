@@ -26,17 +26,18 @@ def run_process(cmd):
 def kill_all_matching(name, force=False):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-
     pgrep_cmd = ["sudo", "pgrep", "-f", name]
-    pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
-
-    pids = pids.strip().split("\n")
-    for pid in pids:
-        pid = pid.strip()
-        if len(pid) > 0:
-            kill_cmd = f"sudo kill -9" if force else "sudo kill"
-            kill_cmd += f" {int(pid)} > /dev/null 2>&1"
-            os.system(kill_cmd)
+    try:
+        pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
+        pids = pids.strip().split("\n")
+        for pid in pids:
+            pid = pid.strip()
+            if len(pid) > 0:
+                kill_cmd = f"sudo kill -9" if force else "sudo kill"
+                kill_cmd += f" {int(pid)} > /dev/null 2>&1"
+                os.system(kill_cmd)
+    except subprocess.CalledProcessError:
+        pass
 
 
 def launch_cluster(protocol, num_replicas, config):
