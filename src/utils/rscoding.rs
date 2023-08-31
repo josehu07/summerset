@@ -2,10 +2,9 @@
 
 use std::fmt;
 use std::io;
-use std::collections::HashSet;
 use std::marker::PhantomData;
 
-use crate::utils::SummersetError;
+use crate::utils::{SummersetError, Bitmap};
 
 use bytes::{BytesMut, BufMut};
 
@@ -20,10 +19,10 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct RSCodeword<T> {
     /// Number of data shards.
-    num_data_shards: usize,
+    num_data_shards: u8,
 
     /// Number of parity shards.
-    num_parity_shards: usize,
+    num_parity_shards: u8,
 
     /// Exact length of original data in bytes.
     data_len: usize,
@@ -53,13 +52,13 @@ where
         data_copy: Option<T>,
         data_bytes: Option<BytesMut>,
         data_len: usize,
-        num_data_shards: usize,
-        num_parity_shards: usize,
+        num_data_shards: u8,
+        num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
         if num_data_shards == 0 {
             return Err(SummersetError("num_data_shards is zero".into()));
         }
-        if data_len != 0 && data_len < num_data_shards {
+        if data_len != 0 && data_len < num_data_shards as usize {
             return Err(SummersetError(format!(
                 "data length too small: {}",
                 data_len
@@ -67,10 +66,10 @@ where
         }
 
         let num_total_shards = num_data_shards + num_parity_shards;
-        let shard_len = if data_len % num_data_shards == 0 {
-            data_len / num_data_shards
+        let shard_len = if data_len % num_data_shards as usize == 0 {
+            data_len / num_data_shards as usize
         } else {
-            (data_len / num_data_shards) + 1
+            (data_len / num_data_shards as usize) + 1
         };
 
         let shards = if let Some(mut data_bytes) = data_bytes {
@@ -78,11 +77,11 @@ where
             assert_eq!(data_bytes.len(), data_len);
 
             // pad length to multiple of num_data_shards and compute shard size
-            let padded_len = shard_len * num_data_shards;
+            let padded_len = shard_len * num_data_shards as usize;
             data_bytes.resize(padded_len, 0);
 
             // split the bytes representation into contiguously stored shards
-            let mut shards = Vec::with_capacity(num_data_shards);
+            let mut shards = Vec::with_capacity(num_data_shards as usize);
             for _ in 0..(num_data_shards - 1) {
                 let shard = data_bytes.split_to(shard_len);
                 assert_eq!(shard.len(), shard_len);
@@ -90,15 +89,15 @@ where
             }
             assert_eq!(data_bytes.len(), shard_len);
             shards.push(Some(data_bytes)); // the last shard
-            assert_eq!(shards.len(), num_data_shards);
+            assert_eq!(shards.len(), num_data_shards as usize);
             for _ in num_data_shards..num_total_shards {
                 shards.push(None);
             }
-            assert_eq!(shards.len(), num_total_shards);
+            assert_eq!(shards.len(), num_total_shards as usize);
             shards
         } else {
             // if newing from empty
-            vec![None; num_total_shards]
+            vec![None; num_total_shards as usize]
         };
 
         Ok(RSCodeword {
@@ -115,8 +114,8 @@ where
     /// Creates a new RSCodeword from original data.
     pub fn from_data(
         data: T,
-        num_data_shards: usize,
-        num_parity_shards: usize,
+        num_data_shards: u8,
+        num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
         // serialize original data into bytes
         let mut data_writer = BytesMut::new().writer();
@@ -133,8 +132,8 @@ where
 
     /// Creates a new RSCodeword from empty bytes.
     pub fn from_null(
-        num_data_shards: usize,
-        num_parity_shards: usize,
+        num_data_shards: u8,
+        num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
         Self::new(None, None, 0, num_data_shards, num_parity_shards)
     }
@@ -143,15 +142,25 @@ where
     /// shards, and a complete copy of the original data if required.
     pub fn subset_copy(
         &self,
-        subset: HashSet<usize>,
+        subset: Bitmap,
         copy_data: bool,
     ) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
             return Err(SummersetError("codeword is null".into()));
         }
 
-        let mut shards = vec![None; self.num_shards()];
-        for i in subset {
+        let mut shards = vec![None; self.num_shards() as usize];
+        for i in
+            subset.iter().filter_map(
+                |(i, flag)| {
+                    if flag {
+                        Some(i as usize)
+                    } else {
+                        None
+                    }
+                },
+            )
+        {
             if i >= shards.len() {
                 return Err(SummersetError(format!(
                     "shard index {} out-of-bound",
@@ -231,60 +240,71 @@ where
     }
 
     /// Gets number of data shards.
-    pub fn num_data_shards(&self) -> usize {
+    #[inline]
+    pub fn num_data_shards(&self) -> u8 {
         self.num_data_shards
     }
 
     /// Gets number of parity shards.
     #[allow(dead_code)]
-    pub fn num_parity_shards(&self) -> usize {
+    #[inline]
+    pub fn num_parity_shards(&self) -> u8 {
         self.num_parity_shards
     }
 
     /// Gets total number of shards.
-    pub fn num_shards(&self) -> usize {
-        self.shards.len()
+    #[inline]
+    pub fn num_shards(&self) -> u8 {
+        self.shards.len() as u8
     }
 
     /// Gets number of currently available data shards.
-    pub fn avail_data_shards(&self) -> usize {
+    #[inline]
+    pub fn avail_data_shards(&self) -> u8 {
         self.shards
             .iter()
-            .take(self.num_data_shards)
+            .take(self.num_data_shards as usize)
             .filter(|s| s.is_some())
-            .count()
+            .count() as u8
     }
 
     /// Gets number of currently available parity shards.
     #[allow(dead_code)]
-    pub fn avail_parity_shards(&self) -> usize {
+    #[inline]
+    pub fn avail_parity_shards(&self) -> u8 {
         self.shards
             .iter()
-            .skip(self.num_data_shards)
+            .skip(self.num_data_shards as usize)
             .filter(|s| s.is_some())
-            .count()
+            .count() as u8
     }
 
     /// Gets total number of currently available shards.
-    pub fn avail_shards(&self) -> usize {
-        self.shards.iter().filter(|s| s.is_some()).count()
+    #[inline]
+    pub fn avail_shards(&self) -> u8 {
+        self.shards.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    /// Gets the set of available shard indexes.
-    pub fn avail_shards_set(&self) -> HashSet<usize> {
-        self.shards
+    /// Gets a bitmap of available shard indexes set true.
+    #[inline]
+    pub fn avail_shards_map(&self) -> Bitmap {
+        let ones: Vec<u8> = self
+            .shards
             .iter()
             .enumerate()
-            .filter_map(|(i, s)| if s.is_some() { Some(i) } else { None })
-            .collect()
+            .filter_map(|(i, s)| if s.is_some() { Some(i as u8) } else { None })
+            .collect();
+        Bitmap::from(self.num_shards(), ones)
     }
 
     /// Gets length of original data in bytes.
+    #[inline]
     pub fn data_len(&self) -> usize {
         self.data_len
     }
 
     /// Gets length of a shard in bytes.
+    #[inline]
     pub fn shard_len(&self) -> usize {
         self.shard_len
     }
@@ -295,13 +315,13 @@ where
         &self,
         rs: &ReedSolomon,
     ) -> Result<(), SummersetError> {
-        if rs.data_shard_count() != self.num_data_shards {
+        if rs.data_shard_count() != self.num_data_shards as usize {
             Err(SummersetError(format!(
                 "num_data_shards mismatch: expected {}, rs {}",
                 self.num_data_shards,
                 rs.data_shard_count()
             )))
-        } else if rs.parity_shard_count() != self.num_parity_shards {
+        } else if rs.parity_shard_count() != self.num_parity_shards as usize {
             Err(SummersetError(format!(
                 "num_parity_shards mismatch: expected {}, rs {}",
                 self.num_parity_shards,
@@ -339,7 +359,8 @@ where
         }
 
         // allocate space for parity shards if haven't
-        for shard in self.shards.iter_mut().skip(self.num_data_shards) {
+        for shard in self.shards.iter_mut().skip(self.num_data_shards as usize)
+        {
             if shard.is_none() {
                 *shard = Some(BytesMut::zeroed(self.shard_len));
             }
@@ -473,23 +494,23 @@ struct ShardsReader<'a> {
     shards: &'a Vec<Option<BytesMut>>,
 
     /// Number of data shards in vec.
-    num_data_shards: usize,
+    num_data_shards: u8,
 
     /// Length in bytes of a shard.
     shard_len: usize,
 
     /// Composite cursor: (shard_idx, byte_idx).
-    cursor: (usize, usize),
+    cursor: (u8, usize),
 }
 
 impl<'a> ShardsReader<'a> {
     /// Creates a new temporary reader.
     fn new(
         shards: &'a Vec<Option<BytesMut>>,
-        num_data_shards: usize,
+        num_data_shards: u8,
         shard_len: usize,
     ) -> Result<Self, SummersetError> {
-        for shard in shards.iter().take(num_data_shards) {
+        for shard in shards.iter().take(num_data_shards as usize) {
             if shard.is_none() {
                 return Err(SummersetError("some data shard is None".into()));
             }
@@ -510,8 +531,9 @@ impl<'a> io::Read for ShardsReader<'a> {
         let mut total_nread = 0;
 
         while self.cursor.0 < self.num_data_shards {
-            let mut slice = &(self.shards[self.cursor.0].as_ref().unwrap())
-                [self.cursor.1..];
+            let mut slice = &(self.shards[self.cursor.0 as usize]
+                .as_ref()
+                .unwrap())[self.cursor.1..];
             let (_, buf_tail) = buf.split_at_mut(total_nread);
 
             let shard_nread = slice.read(buf_tail).unwrap();
@@ -569,7 +591,7 @@ mod rscoding_tests {
         assert_eq!(cw.avail_data_shards(), 3);
         assert_eq!(cw.avail_parity_shards(), 0);
         assert_eq!(cw.avail_shards(), 3);
-        assert_eq!(cw.avail_shards_set(), HashSet::from([0, 1, 2]));
+        assert_eq!(cw.avail_shards_map(), Bitmap::from(3, vec![0, 1, 2]));
         assert_eq!(cw.data_len(), data_len);
         assert_eq!(cw.shard_len(), shard_len);
         // valid with num_parity_shards > 0
@@ -580,7 +602,7 @@ mod rscoding_tests {
         assert_eq!(cw.avail_data_shards(), 3);
         assert_eq!(cw.avail_parity_shards(), 0);
         assert_eq!(cw.avail_shards(), 3);
-        assert_eq!(cw.avail_shards_set(), HashSet::from([0, 1, 2]));
+        assert_eq!(cw.avail_shards_map(), Bitmap::from(5, vec![0, 1, 2]));
         assert_eq!(cw.data_len(), data_len);
         assert_eq!(cw.shard_len(), shard_len);
         Ok(())
@@ -598,7 +620,7 @@ mod rscoding_tests {
         assert_eq!(cw.avail_data_shards(), 0);
         assert_eq!(cw.avail_parity_shards(), 0);
         assert_eq!(cw.avail_shards(), 0);
-        assert_eq!(cw.avail_shards_set(), HashSet::new());
+        assert_eq!(cw.avail_shards_map(), Bitmap::new(5, false));
         assert_eq!(cw.data_len(), 0);
         assert_eq!(cw.shard_len(), 0);
         Ok(())
@@ -609,21 +631,21 @@ mod rscoding_tests {
         let data = TestData("interesting_value".into());
         let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
         // invalid subset
-        assert!(cwa.subset_copy(HashSet::from([0, 5]), false).is_err());
+        assert!(cwa.subset_copy(Bitmap::from(6, vec![0, 5]), false).is_err());
         // valid subsets
-        let cw01 = cwa.subset_copy(HashSet::from([0, 1]), false)?;
+        let cw01 = cwa.subset_copy(Bitmap::from(5, vec![0, 1]), false)?;
         assert_eq!(cw01.avail_data_shards(), 2);
-        let cw02 = cwa.subset_copy(HashSet::from([0, 2]), true)?;
+        let cw02 = cwa.subset_copy(Bitmap::from(5, vec![0, 2]), true)?;
         assert_eq!(cw02.avail_data_shards(), 2);
         assert!(cw02.data_copy.is_some());
         // valid absorbing
         let mut cwb = RSCodeword::<TestData>::from_null(3, 2)?;
         cwb.absorb_other(cw02)?;
         assert_eq!(cwb.avail_shards(), 2);
-        assert_eq!(cwb.avail_shards_set(), HashSet::from([0, 2]));
+        assert_eq!(cwb.avail_shards_map(), Bitmap::from(5, vec![0, 2]));
         cwb.absorb_other(cw01)?;
         assert_eq!(cwb.avail_shards(), 3);
-        assert_eq!(cwb.avail_shards_set(), HashSet::from([0, 1, 2]));
+        assert_eq!(cwb.avail_shards_map(), Bitmap::from(5, vec![0, 1, 2]));
         assert_eq!(*cwb.get_data()?, data);
         // invalid absorbing
         assert!(cwb

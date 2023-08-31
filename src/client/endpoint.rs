@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
 use crate::server::{ApiRequest, ApiReply};
+use crate::client::ClientCtrlStub;
 
 use async_trait::async_trait;
 
@@ -14,8 +15,9 @@ pub type ClientId = u64;
 /// Client trait to be implement by all protocol-specific client structs.
 #[async_trait]
 pub trait GenericEndpoint {
-    /// Creates a new client stub.
-    fn new(
+    /// Creates a new client stub and sets up required functionality modules
+    /// according to protocol-specific logic.
+    async fn new_and_setup(
         manager: SocketAddr, // remote address of manager oracle
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
@@ -23,9 +25,8 @@ pub trait GenericEndpoint {
         Self: Sized;
 
     /// Establishes connection to the service (or re-joins the service)
-    /// according to protocol-specific logic. Returns the assigned client ID
-    /// on success.
-    async fn connect(&mut self) -> Result<ClientId, SummersetError>;
+    /// according to protocol-specific logic.
+    async fn connect(&mut self) -> Result<(), SummersetError>;
 
     /// Leaves the service: forgets about the current TCP connections and send
     /// leave notifications according to protocol-specific logic. If `permanent`
@@ -40,4 +41,11 @@ pub trait GenericEndpoint {
 
     /// Receives a reply from the service according to protocol-specific logic.
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError>;
+
+    /// Gets my client ID.
+    fn id(&self) -> ClientId;
+
+    /// Gets a mutable reference to the control stub for sending control
+    /// requests and receiving control replies for testing purposes.
+    fn ctrl_stub(&mut self) -> &mut ClientCtrlStub;
 }

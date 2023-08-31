@@ -18,8 +18,8 @@ use serde::Deserialize;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericEndpoint, CommandResult, RequestId, SummersetError, pf_error,
-    logged_err, parsed_config,
+    GenericEndpoint, CommandResult, RequestId, CtrlRequest, CtrlReply,
+    SummersetError, pf_error, logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -215,13 +215,35 @@ impl ClientTester {
         }
     }
 
+    /// Resets all servers in the cluster to initial empty state.
+    async fn reset_cluster(&mut self) -> Result<(), SummersetError> {
+        let ctrl_stub = self.driver.ctrl_stub();
+
+        // send ResetServer request to manager
+        let req = CtrlRequest::ResetServer {
+            server: None,
+            durable: false,
+        };
+        let mut sent = ctrl_stub.send_req(Some(&req))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        // wait for reply from manager
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::ResetServer { .. } => Ok(()),
+            _ => logged_err!("c"; "unexpected control reply type"),
+        }
+    }
+
     /// Runs the individual correctness test.
     async fn do_test_by_name(
         &mut self,
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        // TODO: reset service state here
+        self.reset_cluster().await?;
         self.driver.connect().await?;
         self.cached_replies.clear();
 

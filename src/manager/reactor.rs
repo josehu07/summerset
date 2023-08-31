@@ -1,9 +1,11 @@
 //! Cluster manager client-facing reactor module implementation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::ReplicaId;
 use crate::client::ClientId;
 
@@ -24,6 +26,14 @@ pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
 
+    /// Reset the specified server(s) to initial state.
+    ResetServer {
+        /// ID of server to reset. If `None`, resets all active servers.
+        server: Option<ReplicaId>,
+        /// If false, cleans durable storage state as well.
+        durable: bool,
+    },
+
     /// Client leave notification.
     Leave,
 }
@@ -35,6 +45,9 @@ pub enum CtrlReply {
     QueryInfo {
         servers: HashMap<ReplicaId, SocketAddr>,
     },
+
+    /// Reply to server reset request.
+    ResetServer { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,
@@ -74,7 +87,7 @@ impl ClientReactor {
         let (client_responder_handles_write, client_responder_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = TcpListener::bind(cli_addr).await?;
+        let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
                 tx_req,
@@ -428,9 +441,11 @@ mod reactor_tests {
                 ClientReactor::new_and_setup("127.0.0.1:53601".parse()?)
                     .await?;
             barrier2.wait().await;
+            // recv request from client
             let (client, req) = reactor.recv_req().await?;
             assert!(reactor.has_client(client));
             assert_eq!(req, CtrlRequest::QueryInfo);
+            // send reply to client
             reactor.send_reply(
                 CtrlReply::QueryInfo {
                     servers: HashMap::<ReplicaId, SocketAddr>::from([
@@ -446,7 +461,9 @@ mod reactor_tests {
         barrier.wait().await;
         let mut ctrl_stub =
             ClientCtrlStub::new_by_connect("127.0.0.1:53601".parse()?).await?;
+        // send request to manager
         ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        // recv reply from manager
         assert_eq!(
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
@@ -469,7 +486,9 @@ mod reactor_tests {
             let mut ctrl_stub =
                 ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
                     .await?;
+            // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+            // recv reply from manager
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
@@ -479,14 +498,17 @@ mod reactor_tests {
                     ]),
                 }
             );
+            // leave and come back as new client
             ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             assert_eq!(ctrl_stub.recv_reply().await?, CtrlReply::Leave);
             ctrl_stub.forget();
-            time::sleep(Duration::from_millis(10)).await;
+            time::sleep(Duration::from_millis(100)).await;
             let mut ctrl_stub =
                 ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
                     .await?;
+            // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+            // recv reply from manager
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
@@ -502,9 +524,11 @@ mod reactor_tests {
         let mut reactor =
             ClientReactor::new_and_setup("127.0.0.1:54601".parse()?).await?;
         barrier.wait().await;
+        // recv request from client
         let (client, req) = reactor.recv_req().await?;
         assert!(reactor.has_client(client));
         assert_eq!(req, CtrlRequest::QueryInfo);
+        // send reply to client
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 servers: HashMap::<ReplicaId, SocketAddr>::from([
@@ -514,10 +538,12 @@ mod reactor_tests {
             },
             client,
         )?;
+        // recv request from new client
         let (client2, req2) = reactor.recv_req().await?;
         assert!(reactor.has_client(client2));
         assert!(!reactor.has_client(client));
         assert_eq!(req2, CtrlRequest::QueryInfo);
+        // send reply to new client
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 servers: HashMap::<ReplicaId, SocketAddr>::from([

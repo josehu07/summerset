@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 use crate::server::ReplicaId;
 use crate::protocols::SmrProtocol;
 
@@ -19,7 +21,7 @@ use tokio::task::JoinHandle;
 
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
-// TODO: add reset, pause, resume, server leave, leader change, etc.
+// TODO: add pause, resume, leader change, membership change, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
@@ -36,6 +38,16 @@ pub enum CtrlMsg {
         population: u8,
         to_peers: HashMap<ReplicaId, SocketAddr>,
     },
+
+    /// Manager -> Server: reset to initial state. If durable is false, cleans
+    /// durable storage state as well.
+    ResetState { durable: bool },
+
+    /// Server -> Manager: leave notification.
+    Leave,
+
+    /// Manager -> Server: dummy leave reply.
+    LeaveReply,
 }
 
 /// The server-facing controller API module.
@@ -58,10 +70,12 @@ pub struct ServerReigner {
 // ServerReigner public API implementation
 impl ServerReigner {
     /// Creates a new server-facing controller module. Spawns the server
-    /// acceptor thread. Creates a recv channel for buffering incoming control
-    /// messages.
+    /// acceptor thread. Creates a pair of ID assignment channels. Creates
+    /// a recv channel for buffering incoming control messages.
     pub async fn new_and_setup(
         srv_addr: SocketAddr,
+        tx_id_assign: mpsc::UnboundedSender<()>,
+        rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
     ) -> Result<Self, SummersetError> {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
 
@@ -71,9 +85,11 @@ impl ServerReigner {
         let (server_controller_handles_write, server_controller_handles_read) =
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
-        let server_listener = TcpListener::bind(srv_addr).await?;
+        let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
         let server_acceptor_handle =
             tokio::spawn(Self::server_acceptor_thread(
+                tx_id_assign,
+                rx_id_result,
                 tx_recv,
                 server_listener,
                 tx_sends_write,
@@ -86,6 +102,13 @@ impl ServerReigner {
             _server_acceptor_handle: server_acceptor_handle,
             _server_controller_handles: server_controller_handles_read,
         })
+    }
+
+    /// Returns whether a server ID is connected to me.
+    #[allow(dead_code)]
+    pub fn has_server(&self, server: ReplicaId) -> bool {
+        let tx_sends_guard = self.tx_sends.guard();
+        tx_sends_guard.contains_key(&server)
     }
 
     /// Waits for the next control event message from some server.
@@ -126,10 +149,12 @@ impl ServerReigner {
 // ServerReigner server_acceptor thread implementation
 impl ServerReigner {
     /// Accepts a new server connection.
+    #[allow(clippy::too_many_arguments)]
     async fn accept_new_server(
         mut stream: TcpStream,
         addr: SocketAddr,
-        id: ReplicaId,
+        tx_id_assign: &mpsc::UnboundedSender<()>,
+        rx_id_result: &mut mpsc::UnboundedReceiver<(ReplicaId, u8)>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         tx_sends: &mut flashmap::WriteHandle<
             ReplicaId,
@@ -141,9 +166,20 @@ impl ServerReigner {
         >,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        // send ID assignment
+        // communicate with the manager's main thread to get assigned server ID
+        tx_id_assign.send(())?;
+        let (id, population) = rx_id_result.recv().await.ok_or(
+            SummersetError("failed to get server ID assignment".into()),
+        )?;
+
+        // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
             return logged_err!("m"; "error assigning new server ID: {}", e);
+        }
+
+        // then send population
+        if let Err(e) = stream.write_u8(population).await {
+            return logged_err!("m"; "error sending population: {}", e);
         }
 
         let mut tx_sends_guard = tx_sends.guard();
@@ -203,6 +239,8 @@ impl ServerReigner {
 
     /// Server acceptor thread function.
     async fn server_acceptor_thread(
+        tx_id_assign: mpsc::UnboundedSender<()>,
+        mut rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         server_listener: TcpListener,
         mut tx_sends: flashmap::WriteHandle<
@@ -218,9 +256,6 @@ impl ServerReigner {
 
         let local_addr = server_listener.local_addr().unwrap();
         pf_info!("m"; "accepting servers on '{}'", local_addr);
-
-        // maintain a monotonically increasing server ID for new servers
-        let mut next_server_id: ReplicaId = 0;
 
         // create an exit mpsc channel for getting notified about termination
         // of server controller threads
@@ -238,15 +273,14 @@ impl ServerReigner {
                     if let Err(e) = Self::accept_new_server(
                         stream,
                         addr,
-                        next_server_id,
+                        &tx_id_assign,
+                        &mut rx_id_result,
                         tx_recv.clone(),
                         &mut tx_sends,
                         &mut server_controller_handles,
                         tx_exit.clone(),
                     ).await {
                         pf_error!("m"; "error accepting new server: {}", e);
-                    } else {
-                        next_server_id += 1;
                     }
                 },
 
@@ -338,6 +372,22 @@ impl ServerReigner {
                 // receives control message from server
                 msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
                     match msg {
+                        Ok(CtrlMsg::Leave) => {
+                            // server leaving, send dummy reply and break
+                            let msg = CtrlMsg::LeaveReply;
+                            if let Err(e) = Self::write_ctrl(
+                                &mut write_buf,
+                                &mut write_buf_cursor,
+                                &conn_write,
+                                Some(&msg)
+                            ) {
+                                pf_error!("m"; "error replying -> {}: {}", id, e);
+                            } else { // skips `WouldBlock` failure check here
+                                pf_info!("m"; "server {} has left", id);
+                            }
+                            break;
+                        },
+
                         Ok(CtrlMsg::NewServerJoin {
                             id,
                             protocol,
@@ -359,7 +409,7 @@ impl ServerReigner {
                             if let Err(e) = tx_recv.send((id, msg)) {
                                 pf_error!("m"; "error sending to tx_recv for {}: {}", id, e);
                             }
-                        }
+                        },
 
                         Ok(msg) => {
                             // pf_trace!("m"; "recv <- {} ctrl {:?}", id, msg);
@@ -411,6 +461,7 @@ mod reigner_tests {
     use std::sync::Arc;
     use crate::server::ControlHub;
     use tokio::sync::Barrier;
+    use tokio::time::{self, Duration};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_send_recv() -> Result<(), SummersetError> {
@@ -468,10 +519,18 @@ mod reigner_tests {
             Ok::<(), SummersetError>(())
         });
         // manager
-        let mut reigner =
-            ServerReigner::new_and_setup("127.0.0.1:53600".parse()?).await?;
+        let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
+        let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
+        let mut reigner = ServerReigner::new_and_setup(
+            "127.0.0.1:53600".parse()?,
+            tx_id_assign,
+            rx_id_result,
+        )
+        .await?;
         setup_bar.wait().await;
         // recv message from server 0
+        rx_id_assign.recv().await;
+        tx_id_result.send((0, 2))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);
         assert_eq!(
@@ -492,6 +551,8 @@ mod reigner_tests {
             id,
         )?;
         // recv message from server 1
+        rx_id_assign.recv().await;
+        tx_id_result.send((1, 2))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 1);
         assert_eq!(
@@ -508,6 +569,112 @@ mod reigner_tests {
             CtrlMsg::ConnectToPeers {
                 population: 2,
                 to_peers: HashMap::from([(0, "127.0.0.1:53800".parse()?)]),
+            },
+            id,
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_server_leave() -> Result<(), SummersetError> {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        tokio::spawn(async move {
+            // replica 0
+            barrier2.wait().await;
+            let mut hub =
+                ControlHub::new_and_setup("127.0.0.1:54600".parse()?).await?;
+            assert_eq!(hub.me, 0);
+            // send a message to manager
+            hub.send_ctrl(CtrlMsg::NewServerJoin {
+                id: hub.me,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:54700".parse()?,
+                p2p_addr: "127.0.0.1:54800".parse()?,
+            })?;
+            // recv a message from manager
+            assert_eq!(
+                hub.recv_ctrl().await?,
+                CtrlMsg::ConnectToPeers {
+                    population: 1,
+                    to_peers: HashMap::new(),
+                }
+            );
+            // leave and re-join as 0
+            hub.send_ctrl(CtrlMsg::Leave)?;
+            assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
+            time::sleep(Duration::from_millis(100)).await;
+            let mut hub =
+                ControlHub::new_and_setup("127.0.0.1:54600".parse()?).await?;
+            assert_eq!(hub.me, 0);
+            // send a message to manager
+            hub.send_ctrl(CtrlMsg::NewServerJoin {
+                id: hub.me,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:54700".parse()?,
+                p2p_addr: "127.0.0.1:54800".parse()?,
+            })?;
+            // recv a message from manager
+            assert_eq!(
+                hub.recv_ctrl().await?,
+                CtrlMsg::ConnectToPeers {
+                    population: 1,
+                    to_peers: HashMap::new(),
+                }
+            );
+            Ok::<(), SummersetError>(())
+        });
+        // manager
+        let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
+        let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
+        let mut reigner = ServerReigner::new_and_setup(
+            "127.0.0.1:54600".parse()?,
+            tx_id_assign,
+            rx_id_result,
+        )
+        .await?;
+        barrier.wait().await;
+        // recv message from server 0
+        rx_id_assign.recv().await;
+        tx_id_result.send((0, 1))?;
+        let (id, msg) = reigner.recv_ctrl().await?;
+        assert_eq!(id, 0);
+        assert_eq!(
+            msg,
+            CtrlMsg::NewServerJoin {
+                id: 0,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:54700".parse()?,
+                p2p_addr: "127.0.0.1:54800".parse()?
+            }
+        );
+        // send reply to server 0
+        reigner.send_ctrl(
+            CtrlMsg::ConnectToPeers {
+                population: 1,
+                to_peers: HashMap::new(),
+            },
+            id,
+        )?;
+        rx_id_assign.recv().await;
+        tx_id_result.send((0, 1))?;
+        // recv message from server 0
+        let (id, msg) = reigner.recv_ctrl().await?;
+        assert_eq!(id, 0);
+        assert_eq!(
+            msg,
+            CtrlMsg::NewServerJoin {
+                id: 0,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:54700".parse()?,
+                p2p_addr: "127.0.0.1:54800".parse()?
+            }
+        );
+        // send reply to server 0
+        reigner.send_ctrl(
+            CtrlMsg::ConnectToPeers {
+                population: 1,
+                to_peers: HashMap::new(),
             },
             id,
         )?;

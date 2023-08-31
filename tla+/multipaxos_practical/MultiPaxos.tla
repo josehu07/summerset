@@ -32,7 +32,7 @@ ASSUME /\ ReplicasAssumption
        /\ SlotsAssumption
        /\ BallotsAssumption
 
-(*--algorithm Crossword
+(*--algorithm MultiPaxos
 variable msgs = {},
          lBallot = [r \in Replicas |-> -1],
          lStatus = [r \in Replicas |->
@@ -170,7 +170,7 @@ begin
 end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "18ddaafd" /\ chksum(tla) = "c40b8299")
+\* BEGIN TRANSLATION (chksum(pcal) = "88c9342c" /\ chksum(tla) = "c40b8299")
 VARIABLES msgs, lBallot, lStatus, rBallot, rVoted, proposed, learned
 
 (* define statement *)
