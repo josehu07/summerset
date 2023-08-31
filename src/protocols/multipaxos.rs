@@ -23,6 +23,8 @@ use crate::protocols::SmrProtocol;
 
 use async_trait::async_trait;
 
+use get_size::GetSize;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
@@ -42,6 +44,12 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
+
+    // Performance simulation params (all zeros means no perf simulation):
+    pub perf_storage_a: u64,
+    pub perf_storage_b: u64,
+    pub perf_network_a: u64,
+    pub perf_network_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -52,6 +60,10 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
+            perf_storage_a: 0,
+            perf_storage_b: 0,
+            perf_network_a: 0,
+            perf_network_b: 0,
         }
     }
 }
@@ -114,7 +126,7 @@ struct Instance {
 }
 
 /// Stable storage log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum LogEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -131,7 +143,7 @@ enum LogEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare { slot: usize, ballot: Ballot },
@@ -989,7 +1001,9 @@ impl GenericReplica for MultiPaxosReplica {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
+                                    backer_path, logger_sync,
+                                    perf_storage_a, perf_storage_b,
+                                    perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -1002,13 +1016,29 @@ impl GenericReplica for MultiPaxosReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.backer_path),
+            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
+                None
+            } else {
+                Some((config.perf_storage_a, config.perf_storage_b))
+            },
+        )
+        .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            if config.perf_network_a == 0 && config.perf_network_b == 0 {
+                None
+            } else {
+                Some((config.perf_network_a, config.perf_network_b))
+            },
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept

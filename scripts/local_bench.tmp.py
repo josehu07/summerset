@@ -3,6 +3,12 @@ import subprocess
 import statistics
 
 
+PERF_STORAGE_ALPHA = 0
+PERF_STORAGE_BETA = 0
+PERF_NETWORK_ALPHA = 10000
+PERF_NETWORK_BETA = 100
+
+
 def do_cargo_build():
     print("Building everything...")
     cmd = ["cargo", "build", "--workspace", "-r"]
@@ -125,6 +131,12 @@ def bench_round(
         configs.append(f"fault_tolerance={fault_tolerance}")
     if shards_per_replica is not None:
         configs.append(f"shards_per_replica={shards_per_replica}")
+
+    configs.append(f"perf_storage_a={PERF_STORAGE_ALPHA}")
+    configs.append(f"perf_storage_b={PERF_STORAGE_BETA}")
+    configs.append(f"perf_network_a={PERF_NETWORK_ALPHA}")
+    configs.append(f"perf_network_b={PERF_NETWORK_BETA}")
+
     proc_cluster = launch_cluster(protocol, num_replicas, "+".join(configs))
     wait_cluster_setup(proc_cluster, num_replicas)
 

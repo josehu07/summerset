@@ -9,6 +9,8 @@ use crate::utils::{
 use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
 
+use get_size::GetSize;
+
 use bytes::BytesMut;
 
 use serde::{Serialize, Deserialize};
@@ -26,7 +28,7 @@ pub type RequestId = u64;
 
 /// Request received from client.
 // TODO: add information fields such as read-only flag...
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum ApiRequest {
     /// Regular request.
     Req {
@@ -42,7 +44,7 @@ pub enum ApiRequest {
 }
 
 /// Reply back to client.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum ApiReply {
     /// Reply to regular request.
     Reply {

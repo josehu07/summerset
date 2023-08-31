@@ -19,6 +19,8 @@ use crate::protocols::SmrProtocol;
 
 use async_trait::async_trait;
 
+use get_size::GetSize;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
@@ -47,6 +49,12 @@ pub struct ReplicaConfigCrossword {
     /// Number of shards to assign to each replica.
     // TODO: proper config options.
     pub shards_per_replica: u8,
+
+    // Performance simulation params (all zeros means no perf simulation):
+    pub perf_storage_a: u64,
+    pub perf_storage_b: u64,
+    pub perf_network_a: u64,
+    pub perf_network_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -59,6 +67,10 @@ impl Default for ReplicaConfigCrossword {
             logger_sync: false,
             fault_tolerance: 0,
             shards_per_replica: 1,
+            perf_storage_a: 0,
+            perf_storage_b: 0,
+            perf_network_a: 0,
+            perf_network_b: 0,
         }
     }
 }
@@ -122,7 +134,7 @@ struct Instance {
 }
 
 /// Stable storage log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum LogEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -139,7 +151,7 @@ enum LogEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare { slot: usize, ballot: Ballot },
@@ -1174,8 +1186,10 @@ impl GenericReplica for CrosswordReplica {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigCrossword;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync, fault_tolerance,
-                                    shards_per_replica)?;
+                                    backer_path, logger_sync,
+                                    fault_tolerance, shards_per_replica,
+                                    perf_storage_a, perf_storage_b,
+                                    perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -1188,13 +1202,29 @@ impl GenericReplica for CrosswordReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.backer_path),
+            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
+                None
+            } else {
+                Some((config.perf_storage_a, config.perf_storage_b))
+            },
+        )
+        .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            if config.perf_network_a == 0 && config.perf_network_b == 0 {
+                None
+            } else {
+                Some((config.perf_network_a, config.perf_network_b))
+            },
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
