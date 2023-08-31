@@ -45,7 +45,6 @@ PROTOCOL_BACKER_PATH = {
     "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
     "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
     "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
-    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
 
 

@@ -36,4 +36,3 @@ pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
 pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 pub use crate::protocols::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 pub use crate::protocols::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
-pub use crate::protocols::{ReplicaConfigCrossword, ClientConfigCrossword};
