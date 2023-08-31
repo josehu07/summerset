@@ -28,6 +28,7 @@ def kill_all_matching(name, force=False):
     assert name.count(" ") == 0
     pgrep_cmd = ["sudo", "pgrep", "-f", name]
     try:
+        print("AAA")
         pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
         pids = pids.strip().split("\n")
         for pid in pids:
@@ -35,6 +36,7 @@ def kill_all_matching(name, force=False):
             if len(pid) > 0:
                 kill_cmd = f"sudo kill -9" if force else "sudo kill"
                 kill_cmd += f" {int(pid)} > /dev/null 2>&1"
+                print("BBB", kill_cmd)
                 os.system(kill_cmd)
     except subprocess.CalledProcessError:
         pass
