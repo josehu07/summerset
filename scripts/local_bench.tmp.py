@@ -19,16 +19,24 @@ def do_cargo_build():
 
 def run_process(cmd):
     # print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return proc
 
 
 def kill_all_matching(name, force=False):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = "killall -9" if force else "killall"
-    cmd += f" {name} > /dev/null 2>&1"
-    os.system(cmd)
+
+    pgrep_cmd = ["sudo", "pgrep", "-f", name]
+    pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
+
+    pids = pids.strip().split("\n")
+    for pid in pids:
+        pid = pid.strip()
+        if len(pid) > 0:
+            kill_cmd = f"sudo kill -9" if force else "sudo kill"
+            kill_cmd += f" {int(pid)} > /dev/null 2>&1"
+            os.system(kill_cmd)
 
 
 def launch_cluster(protocol, num_replicas, config):
@@ -49,9 +57,9 @@ def launch_cluster(protocol, num_replicas, config):
 def wait_cluster_setup(proc, num_replicas):
     accepting_clients = [False for _ in range(num_replicas)]
 
-    for line in iter(proc.stdout.readline, b""):
+    for line in iter(proc.stderr.readline, b""):
         l = line.decode()
-        # print(l, end="", file=sys.stderr)
+        print(l, end="", file=sys.stderr)
         if "manager" not in l and "accepting clients" in l:
             replica = int(l[l.find("(") + 1 : l.find(")")])
             assert not accepting_clients[replica]
@@ -123,6 +131,8 @@ def bench_round(
         + f"s={shards_per_replica if shards_per_replica is not None else 'x':1}  "
         + f"w%={put_ratio:<3d}  {length_s:3d}s"
     )
+
+    kill_all_matching("local_cluster.py", force=True)
     kill_all_matching("summerset_client", force=True)
     kill_all_matching("summerset_server", force=True)
     kill_all_matching("summerset_manager", force=True)
@@ -142,9 +152,6 @@ def bench_round(
     wait_cluster_setup(proc_cluster, num_replicas)
 
     proc_client = run_bench_client(protocol, value_size, put_ratio, length_s)
-    for line in iter(proc_client.stdout.readline, b""):
-        l = line.decode()
-        print(l, end="", file=sys.stderr)
     out, err = proc_client.communicate()
 
     proc_cluster.terminate()
