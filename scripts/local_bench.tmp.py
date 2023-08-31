@@ -28,7 +28,7 @@ def kill_all_matching(name, force=False):
     assert name.count(" ") == 0
     pgrep_cmd = ["sudo", "pgrep", "-f", name]
     try:
-        print("AAA")
+        print("AAA", pgrep_cmd)
         pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
         pids = pids.strip().split("\n")
         for pid in pids:
