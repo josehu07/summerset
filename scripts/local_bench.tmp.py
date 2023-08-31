@@ -19,7 +19,7 @@ def do_cargo_build():
 
 def run_process(cmd):
     # print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return proc
 
 
@@ -49,7 +49,7 @@ def launch_cluster(protocol, num_replicas, config):
 def wait_cluster_setup(proc, num_replicas):
     accepting_clients = [False for _ in range(num_replicas)]
 
-    for line in iter(proc.stderr.readline, b""):
+    for line in iter(proc.stdout.readline, b""):
         l = line.decode()
         # print(l, end="", file=sys.stderr)
         if "manager" not in l and "accepting clients" in l:
@@ -142,7 +142,7 @@ def bench_round(
     wait_cluster_setup(proc_cluster, num_replicas)
 
     proc_client = run_bench_client(protocol, value_size, put_ratio, length_s)
-    for line in iter(proc_client.stderr.readline, b""):
+    for line in iter(proc_client.stdout.readline, b""):
         l = line.decode()
         print(l, end="", file=sys.stderr)
     out, err = proc_client.communicate()
