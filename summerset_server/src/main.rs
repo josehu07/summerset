@@ -7,11 +7,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 
+use log::{self, LevelFilter};
+
 use env_logger::Env;
 
 use tokio::runtime::Builder;
+use tokio::sync::watch;
 
-use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_error};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -109,9 +112,21 @@ fn server_main() -> Result<(), SummersetError> {
         Some(&args.config[..])
     };
 
+    // set up termination signals handler
+    let (tx_term, rx_term) = watch::channel(false);
+    ctrlc::set_handler(move || {
+        if let Err(e) = tx_term.send(true) {
+            pf_error!("s"; "error sending to term channel: {}", e);
+        }
+    })?;
+
+    let log_level = log::max_level();
     let shutdown = Arc::new(AtomicBool::new(false));
+
     while !shutdown.load(Ordering::SeqCst) {
-        let sd = shutdown.clone();
+        log::set_max_level(log_level);
+        let shutdown_clone = shutdown.clone();
+        let rx_term_clone = rx_term.clone();
 
         // create tokio multi-threaded runtime
         let runtime = Builder::new_multi_thread()
@@ -132,20 +147,25 @@ fn server_main() -> Result<(), SummersetError> {
                 )
                 .await?;
 
-            if replica.run().await? {
+            if replica.run(rx_term_clone).await? {
                 // event loop terminated but wants to restart (e.g., when
                 // receiving a reset control message); just drop this runtime
                 // and move to the next iteration of loop
             } else {
                 // event loop terminated and does not want to restart (e.g.,
                 // when receiving a termination signal)
-                sd.store(true, Ordering::SeqCst);
+                shutdown_clone.store(true, Ordering::SeqCst);
             }
+
+            // suppress logging before dropping the runtime to avoid spurious
+            // error messages
+            log::set_max_level(LevelFilter::Off);
 
             Ok::<(), SummersetError>(()) // give type hint for this async closure
         })?;
     }
 
+    log::set_max_level(log_level);
     Ok(())
 }
 
@@ -160,7 +180,7 @@ fn main() -> ExitCode {
         pf_error!("s"; "server_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("s"; "server_main exitted successfully");
+        // pf_warn!("s"; "server_main exitted successfully");
         ExitCode::SUCCESS
     }
 }

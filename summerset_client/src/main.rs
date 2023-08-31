@@ -113,8 +113,9 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        let endpoint =
-            protocol.new_client_endpoint(args.manager, config_str)?;
+        let endpoint = protocol
+            .new_client_endpoint(args.manager, config_str)
+            .await?;
 
         match mode {
             ClientMode::Repl => {

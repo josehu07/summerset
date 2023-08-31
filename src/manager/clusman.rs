@@ -11,7 +11,7 @@ use crate::server::ReplicaId;
 use crate::client::ClientId;
 use crate::protocols::SmrProtocol;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// Information about an active server.
 // TODO: maybe add things like leader info, etc.
@@ -107,15 +107,10 @@ impl ClusterManager {
 
     /// Main event loop logic of the cluster manager. Breaks out of the loop
     /// only upon catching termination signals to the process.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
-        // set up termination signals handler
-        let (tx_term, mut rx_term) = mpsc::unbounded_channel();
-        ctrlc::set_handler(move || {
-            if let Err(e) = tx_term.send(true) {
-                pf_error!("m"; "error sending to term channel: {}", e);
-            }
-        })?;
-
+    pub async fn run(
+        &mut self,
+        mut rx_term: watch::Receiver<bool>,
+    ) -> Result<(), SummersetError> {
         loop {
             tokio::select! {
                 // receiving server ID assignment request
@@ -132,7 +127,7 @@ impl ClusterManager {
                         continue;
                     }
                     let (server, msg) = ctrl_msg.unwrap();
-                    if let Err(e) = self.handle_ctrl_msg(server, msg) {
+                    if let Err(e) = self.handle_ctrl_msg(server, msg).await {
                         pf_error!("m"; "error handling ctrl msg <- {}: {}",
                                        server, e);
                     }
@@ -145,14 +140,14 @@ impl ClusterManager {
                         continue;
                     }
                     let (client, req) = ctrl_req.unwrap();
-                    if let Err(e) = self.handle_ctrl_req(client, req) {
+                    if let Err(e) = self.handle_ctrl_req(client, req).await {
                         pf_error!("m"; "error handling ctrl req <- {}: {}",
                                        client, e);
                     }
                 },
 
                 // receiving termination signal
-                _ = rx_term.recv() => {
+                _ = rx_term.changed() => {
                     pf_warn!("m"; "manager caught termination signal");
                     break;
                 }
@@ -203,7 +198,7 @@ impl ClusterManager {
     }
 
     /// Synthesized handler of server-initiated control messages.
-    fn handle_ctrl_msg(
+    async fn handle_ctrl_msg(
         &mut self,
         server: ReplicaId,
         msg: CtrlMsg,
@@ -249,8 +244,62 @@ impl ClusterManager {
             .send_reply(CtrlReply::QueryInfo { servers }, client)
     }
 
+    /// Handler of client ResetServer request.
+    async fn handle_client_reset_server(
+        &mut self,
+        client: ClientId,
+        server: Option<ReplicaId>,
+        durable: bool,
+    ) -> Result<(), SummersetError> {
+        let num_replicas = self.server_info.len();
+        let mut servers: Vec<ReplicaId> = if server.is_none() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            vec![server.unwrap()]
+        };
+
+        // reset specified server(s)
+        let mut reset_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            // send reset server control message to server
+            self.server_reigner
+                .send_ctrl(CtrlMsg::ResetState { durable }, s)?;
+
+            // remove information about this server
+            assert!(self.assigned_ids.contains(&s));
+            assert!(self.server_info.contains_key(&s));
+            self.assigned_ids.remove(&s);
+            self.server_info.remove(&s);
+
+            // wait for the new server ID assignment request from it
+            self.rx_id_assign.recv().await;
+            if let Err(e) = self.assign_server_id() {
+                return logged_err!("m"; "error assigning new server ID: {}", e);
+            }
+
+            reset_done.insert(s);
+        }
+
+        // now the reset servers should be sending NewServerJoin messages to
+        // me. Process them until all servers joined
+        while self.server_info.len() < num_replicas {
+            let (s, msg) = self.server_reigner.recv_ctrl().await?;
+            if let Err(e) = self.handle_ctrl_msg(s, msg).await {
+                pf_error!("m"; "error handling ctrl msg <- {}: {}", s, e);
+            }
+        }
+
+        self.client_reactor.send_reply(
+            CtrlReply::ResetServer {
+                servers: reset_done,
+            },
+            client,
+        )
+    }
+
     /// Synthesized handler of client-initiated control requests.
-    fn handle_ctrl_req(
+    async fn handle_ctrl_req(
         &mut self,
         client: ClientId,
         req: CtrlRequest,
@@ -259,6 +308,11 @@ impl ClusterManager {
         match req {
             CtrlRequest::QueryInfo => {
                 self.handle_client_query_info(client)?;
+            }
+
+            CtrlRequest::ResetServer { server, durable } => {
+                self.handle_client_reset_server(client, server, durable)
+                    .await?;
             }
 
             _ => {} // ignore all other types

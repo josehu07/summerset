@@ -5,11 +5,14 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+use log::{self, LevelFilter};
+
 use env_logger::Env;
 
 use tokio::runtime::Builder;
+use tokio::sync::watch;
 
-use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
+use summerset::{SmrProtocol, SummersetError, pf_error};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -99,24 +102,43 @@ fn manager_main() -> Result<(), SummersetError> {
         ))
     })?;
 
-    // create tokio multi-threaded runtime
-    let runtime = Builder::new_multi_thread()
-        .enable_all()
-        .worker_threads(args.threads)
-        .thread_name("tokio-worker-manager")
-        .build()?;
+    // set up termination signals handler
+    let (tx_term, rx_term) = watch::channel(false);
+    ctrlc::set_handler(move || {
+        if let Err(e) = tx_term.send(true) {
+            pf_error!("m"; "error sending to term channel: {}", e);
+        }
+    })?;
 
-    // enter tokio runtime, setup the cluster manager, and start the main
-    // event loop logic
-    runtime.block_on(async move {
-        let mut manager = protocol
-            .new_cluster_manager_setup(srv_addr, cli_addr, args.population)
-            .await?;
+    let log_level = log::max_level();
 
-        manager.run().await?;
+    {
+        // create tokio multi-threaded runtime
+        let runtime = Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(args.threads)
+            .thread_name("tokio-worker-manager")
+            .build()?;
 
-        Ok::<(), SummersetError>(()) // give type hint for this async closure
-    })
+        // enter tokio runtime, setup the cluster manager, and start the main
+        // event loop logic
+        runtime.block_on(async move {
+            let mut manager = protocol
+                .new_cluster_manager_setup(srv_addr, cli_addr, args.population)
+                .await?;
+
+            manager.run(rx_term).await?;
+
+            // suppress logging before dropping the runtime to avoid spurious
+            // error messages
+            log::set_max_level(LevelFilter::Off);
+
+            Ok::<(), SummersetError>(()) // give type hint for this async closure
+        })?;
+    }
+
+    log::set_max_level(log_level);
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -130,7 +152,7 @@ fn main() -> ExitCode {
         pf_error!("m"; "manager_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("m"; "manager_main exitted successfully");
+        // pf_warn!("m"; "manager_main exitted successfully");
         ExitCode::SUCCESS
     }
 }

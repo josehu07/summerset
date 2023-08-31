@@ -4,13 +4,14 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, Timer, SummersetError, pf_debug, pf_error, logged_err,
+    RequestId, ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error,
+    logged_err,
 };
 
 /// Closed-loop driver struct.
 pub struct DriverClosedLoop {
     /// Client ID.
-    id: ClientId,
+    pub id: ClientId,
 
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
@@ -29,7 +30,7 @@ impl DriverClosedLoop {
     /// Creates a new closed-loop client.
     pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         DriverClosedLoop {
-            id: 255, // nil at this time
+            id: endpoint.id(),
             endpoint,
             next_req: 0,
             timer: Timer::new(),
@@ -39,9 +40,7 @@ impl DriverClosedLoop {
 
     /// Establishes connection with the service.
     pub async fn connect(&mut self) -> Result<(), SummersetError> {
-        let id = self.endpoint.connect().await?;
-        self.id = id;
-        Ok(())
+        self.endpoint.connect().await
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
@@ -184,5 +183,11 @@ impl DriverClosedLoop {
 
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
+    }
+
+    /// Gets a mutable reference to the endpoint's control stub.
+    #[allow(dead_code)]
+    pub fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
+        self.endpoint.ctrl_stub()
     }
 }

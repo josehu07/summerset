@@ -126,26 +126,36 @@ impl SmrProtocol {
     }
 
     /// Create a client endpoint instance of this protocol on heap.
-    pub fn new_client_endpoint(
+    pub async fn new_client_endpoint(
         &self,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericEndpoint>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(RepNothingClient::new(manager, config_str))
+                box_if_ok!(
+                    RepNothingClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::SimplePush => {
-                box_if_ok!(SimplePushClient::new(manager, config_str))
+                box_if_ok!(
+                    SimplePushClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::MultiPaxos => {
-                box_if_ok!(MultiPaxosClient::new(manager, config_str))
+                box_if_ok!(
+                    MultiPaxosClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::RSPaxos => {
-                box_if_ok!(RSPaxosClient::new(manager, config_str))
+                box_if_ok!(
+                    RSPaxosClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::Crossword => {
-                box_if_ok!(CrosswordClient::new(manager, config_str))
+                box_if_ok!(
+                    CrosswordClient::new_and_setup(manager, config_str).await
+                )
             }
         }
     }

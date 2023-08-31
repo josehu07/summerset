@@ -519,6 +519,7 @@ mod external_tests {
             )
             .await?;
             barrier2.wait().await;
+            // recv requests from client
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.len() < 3 {
                 let mut req_batch = api.get_req_batch().await?;
@@ -551,6 +552,7 @@ mod external_tests {
                     cmd: Command::Get { key: "Jose".into() },
                 }
             );
+            // send replies to client
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
@@ -584,6 +586,7 @@ mod external_tests {
         let mut api_stub =
             ClientApiStub::new_by_connect(2857, "127.0.0.1:53700".parse()?)
                 .await?;
+        // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
@@ -599,6 +602,7 @@ mod external_tests {
             id: 1,
             cmd: Command::Get { key: "Jose".into() },
         }))?;
+        // recv replies from server
         assert_eq!(
             api_stub.recv_reply().await?,
             ApiReply::Reply {
@@ -642,6 +646,7 @@ mod external_tests {
             )
             .await?;
             barrier2.wait().await;
+            // recv request from client
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
             while reqs.is_empty() {
                 let mut req_batch = api.get_req_batch().await?;
@@ -660,6 +665,7 @@ mod external_tests {
                     },
                 }
             );
+            // send reply to client
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
@@ -668,6 +674,7 @@ mod external_tests {
                 },
                 client,
             )?;
+            // recv request from new client
             reqs.clear();
             while reqs.is_empty() {
                 let mut req_batch = api.get_req_batch().await?;
@@ -687,6 +694,7 @@ mod external_tests {
                     },
                 }
             );
+            // send reply to new client
             api.send_reply(
                 ApiReply::Reply {
                     id: 0,
@@ -704,6 +712,7 @@ mod external_tests {
         let mut api_stub =
             ClientApiStub::new_by_connect(2857, "127.0.0.1:54700".parse()?)
                 .await?;
+        // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
@@ -711,6 +720,7 @@ mod external_tests {
                 value: "123".into(),
             },
         }))?;
+        // recv reply from server
         assert_eq!(
             api_stub.recv_reply().await?,
             ApiReply::Reply {
@@ -719,13 +729,15 @@ mod external_tests {
                 redirect: None,
             }
         );
+        // leave and come back as new client
         api_stub.send_req(Some(&ApiRequest::Leave))?;
         assert_eq!(api_stub.recv_reply().await?, ApiReply::Leave);
         api_stub.forget();
-        time::sleep(Duration::from_millis(1)).await;
+        time::sleep(Duration::from_millis(100)).await;
         let mut api_stub =
             ClientApiStub::new_by_connect(2858, "127.0.0.1:54700".parse()?)
                 .await?;
+        // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
             cmd: Command::Put {
@@ -733,6 +745,7 @@ mod external_tests {
                 value: "456".into(),
             },
         }))?;
+        // recv reply from server
         assert_eq!(
             api_stub.recv_reply().await?,
             ApiReply::Reply {
