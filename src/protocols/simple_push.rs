@@ -560,6 +560,7 @@ impl GenericReplica for SimplePushReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
+        // main event loop
         loop {
             tokio::select! {
                 // client request batch

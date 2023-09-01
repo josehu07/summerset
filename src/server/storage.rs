@@ -52,7 +52,10 @@ pub enum LogAction<Ent> {
 #[derive(Debug, Serialize, Deserialize, PartialEq, GetSize)]
 pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
-    Read { entry: Option<Ent> },
+    Read {
+        entry: Option<Ent>,
+        end_offset: usize,
+    },
 
     /// `ok` is true if offset is valid, else false. `now_size` is the size
     /// of file after this.
@@ -198,7 +201,7 @@ where
         backer: &mut File,
         file_size: usize,
         offset: usize,
-    ) -> Result<Option<Ent>, SummersetError> {
+    ) -> Result<(Option<Ent>, usize), SummersetError> {
         if offset + 8 > file_size {
             pf_warn!(
                 me;
@@ -206,7 +209,7 @@ where
                 offset + 8,
                 file_size
             );
-            return Ok(None);
+            return Ok((None, offset));
         }
 
         // read entry length header
@@ -216,7 +219,7 @@ where
         if offset_e > file_size {
             pf_warn!(me; "read entry invalid length {}", entry_len);
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
-            return Ok(None);
+            return Ok((None, offset));
         }
 
         // read entry content
@@ -224,7 +227,7 @@ where
         backer.read_exact(&mut entry_buf[..]).await?;
         let entry = decode_from_slice(&entry_buf)?;
         backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
-        Ok(Some(entry))
+        Ok((Some(entry), offset_e))
     }
 
     /// Write given entry to given offset.
@@ -366,9 +369,9 @@ where
     ) -> Result<LogResult<Ent>, SummersetError> {
         match action {
             LogAction::Read { offset } => {
-                Self::read_entry(me, backer, *file_size, offset)
-                    .await
-                    .map(|entry| LogResult::Read { entry })
+                Self::read_entry(me, backer, *file_size, offset).await.map(
+                    |(entry, end_offset)| LogResult::Read { entry, end_offset },
+                )
             }
             LogAction::Write {
                 entry,
@@ -543,40 +546,45 @@ mod storage_tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-2.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let now_size =
+        let mid_size =
             StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        let now_size = StorageHub::append_entry(
+        let end_size = StorageHub::append_entry(
             0,
             &mut backer_file,
-            now_size,
+            mid_size,
             &entry,
             true,
         )
         .await?;
         assert_eq!(
-            StorageHub::read_entry(0, &mut backer_file, now_size, 0).await?,
-            Some(TestEntry("test-entry-dummy-string".into()))
+            StorageHub::read_entry(0, &mut backer_file, end_size, mid_size)
+                .await?,
+            (Some(TestEntry("test-entry-dummy-string".into())), end_size)
+        );
+        assert_eq!(
+            StorageHub::read_entry(0, &mut backer_file, end_size, 0).await?,
+            (Some(TestEntry("test-entry-dummy-string".into())), mid_size)
         );
         assert_eq!(
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_size,
-                now_size + 10
+                end_size,
+                mid_size + 10
             )
             .await?,
-            None
+            (None, mid_size + 10)
         );
         assert_eq!(
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_size,
-                now_size - 4
+                mid_size,
+                mid_size - 4
             )
             .await?,
-            None
+            (None, mid_size - 4)
         );
         Ok(())
     }
@@ -703,7 +711,8 @@ mod storage_tests {
             (
                 1,
                 LogResult::Read {
-                    entry: Some(TestEntry("abcdefgh".into()))
+                    entry: Some(TestEntry("abcdefgh".into())),
+                    end_offset: 8 + entry_bytes.len(),
                 }
             )
         );

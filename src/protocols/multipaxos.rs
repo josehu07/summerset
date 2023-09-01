@@ -1105,6 +1105,7 @@ impl GenericReplica for MultiPaxosReplica {
             self.is_leader = true;
         }
 
+        // main event loop
         loop {
             tokio::select! {
                 // client request batch
