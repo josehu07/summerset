@@ -15,6 +15,24 @@ use summerset::{
 /// Prompt string at the start of line.
 const PROMPT: &str = ">>>>> ";
 
+/// Recognizable command types.
+enum ReplCommand {
+    /// Normal state machine replication command.
+    Normal(Command),
+
+    /// Reconnect to the service.
+    Reconnect,
+
+    /// Print help message.
+    PrintHelp,
+
+    /// Client exit.
+    Exit,
+
+    /// Nothing read.
+    Nothing,
+}
+
 /// Interactive REPL-style client struct.
 pub struct ClientRepl {
     /// Closed-loop request driver.
@@ -47,6 +65,7 @@ impl ClientRepl {
         println!("HELP: Supported commands are:");
         println!("        get <key>");
         println!("        put <key> <value>");
+        println!("        reconnect");
         println!("        help");
         println!("        exit");
         println!(
@@ -56,17 +75,16 @@ impl ClientRepl {
     }
 
     /// Reads in user input and parses into a command.
-    fn read_command(&mut self) -> Result<Option<Command>, SummersetError> {
+    fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
         self.input_buf.clear();
         let nread = io::stdin().read_line(&mut self.input_buf)?;
         if nread == 0 {
-            println!("Exitting...");
-            return Ok(None);
+            return Ok(ReplCommand::Exit);
         }
 
         let line: &str = self.input_buf.trim();
         if line.is_empty() {
-            return Err(SummersetError("".into()));
+            return Ok(ReplCommand::Nothing);
         }
 
         // split input line by whitespaces, getting an iterator of segments
@@ -86,7 +104,7 @@ impl ClientRepl {
                 }
 
                 // keys and values are kept as-is, no case conversions
-                Ok(Some(Command::Get {
+                Ok(ReplCommand::Normal(Command::Get {
                     key: key.unwrap().into(),
                 }))
             }
@@ -105,21 +123,17 @@ impl ClientRepl {
                     return Err(err);
                 }
 
-                Ok(Some(Command::Put {
+                Ok(ReplCommand::Normal(Command::Put {
                     key: key.unwrap().into(),
                     value: value.unwrap().into(),
                 }))
             }
 
-            "help" => {
-                self.print_help(None);
-                Err(SummersetError("".into()))
-            }
+            "help" => Ok(ReplCommand::PrintHelp),
 
-            "exit" => {
-                println!("Exitting...");
-                Ok(None)
-            }
+            "reconnect" => Ok(ReplCommand::Reconnect),
+
+            "exit" => Ok(ReplCommand::Exit),
 
             _ => {
                 let err = SummersetError(format!(
@@ -174,14 +188,32 @@ impl ClientRepl {
         self.print_prompt();
 
         let cmd = self.read_command()?;
-        if cmd.is_none() {
-            return Ok(false);
+        match cmd {
+            ReplCommand::Exit => {
+                println!("Exitting...");
+                Ok(false)
+            }
+
+            ReplCommand::Nothing => Ok(true),
+
+            ReplCommand::Reconnect => {
+                println!("Reconnecting...");
+                self.driver.leave(false).await?;
+                self.driver.connect().await?;
+                Ok(true)
+            }
+
+            ReplCommand::PrintHelp => {
+                self.print_help(None);
+                Ok(true)
+            }
+
+            ReplCommand::Normal(cmd) => {
+                let result = self.eval_command(cmd).await?;
+                self.print_result(result);
+                Ok(true)
+            }
         }
-
-        let result = self.eval_command(cmd.unwrap()).await?;
-
-        self.print_result(result);
-        Ok(true)
     }
 
     /// Runs the infinite REPL loop.

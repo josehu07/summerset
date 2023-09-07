@@ -18,8 +18,8 @@ use serde::Deserialize;
 use tokio::time::Duration;
 
 use summerset::{
-    GenericEndpoint, CommandResult, RequestId, CtrlRequest, CtrlReply,
-    SummersetError, pf_error, logged_err, parsed_config,
+    ReplicaId, GenericEndpoint, CommandResult, RequestId, CtrlRequest,
+    CtrlReply, SummersetError, pf_error, logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -215,15 +215,16 @@ impl ClientTester {
         }
     }
 
-    /// Resets all servers in the cluster to initial empty state.
-    async fn reset_cluster(&mut self) -> Result<(), SummersetError> {
+    /// Resets some server(s) in the cluster.
+    async fn reset_server(
+        &mut self,
+        server: Option<ReplicaId>,
+        durable: bool,
+    ) -> Result<(), SummersetError> {
         let ctrl_stub = self.driver.ctrl_stub();
 
         // send ResetServer request to manager
-        let req = CtrlRequest::ResetServer {
-            server: None,
-            durable: false,
-        };
+        let req = CtrlRequest::ResetServer { server, durable };
         let mut sent = ctrl_stub.send_req(Some(&req))?;
         while !sent {
             sent = ctrl_stub.send_req(None)?;
@@ -243,7 +244,7 @@ impl ClientTester {
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        self.reset_cluster().await?;
+        self.reset_server(None, false).await?;
         self.driver.connect().await?;
         self.cached_replies.clear();
 
@@ -330,18 +331,31 @@ impl ClientTester {
 
     /// Client leaves and reconnects.
     async fn test_reconnect(&mut self) -> Result<(), SummersetError> {
-        let v0 = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v0)?;
+        let v = Self::gen_rand_string(8);
+        let mut req_id = self.issue_put("Jose", &v)?;
         self.expect_put_reply(req_id, Some(None), 1).await?;
         self.driver.leave(false).await?;
         self.driver.connect().await?;
         req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v0)), 1).await?;
+        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
         Ok(())
     }
 
     /// Replica node crashes and restarts.
     async fn test_crash_restart(&mut self) -> Result<(), SummersetError> {
-        todo!("TODO")
+        let v = Self::gen_rand_string(8);
+        let mut req_id = self.issue_put("Jose", &v)?;
+        self.expect_put_reply(req_id, Some(None), 1).await?;
+        self.driver.leave(false).await?;
+        self.reset_server(Some(1), true).await?;
+        self.driver.connect().await?;
+        req_id = self.issue_get("Jose")?;
+        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        self.driver.leave(false).await?;
+        self.reset_server(Some(0), true).await?;
+        self.driver.connect().await?;
+        req_id = self.issue_get("Jose")?;
+        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        Ok(())
     }
 }
