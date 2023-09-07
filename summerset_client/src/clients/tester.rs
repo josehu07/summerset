@@ -255,15 +255,15 @@ impl ClientTester {
             _ => return logged_err!("c"; "unrecognized test name '{}'", name),
         };
 
-        // send leave notification and forget about the TCP connections at the
-        // end of each test
-        self.driver.leave(false).await?;
-
         if let Err(ref e) = result {
             cprintln!("{:>16} | <red>{:^6}</> | {}", name, "FAIL", e);
         } else {
             cprintln!("{:>16} | <green>{:^6}</> | --", name, "PASS");
         }
+
+        // send leave notification and forget about the TCP connections at the
+        // end of each test
+        self.driver.leave(false).await?;
         result
     }
 

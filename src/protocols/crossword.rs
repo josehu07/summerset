@@ -1168,6 +1168,166 @@ impl CrosswordReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+
+    /// Apply a durable storage log entry for recovery.
+    async fn recover_apply_entry(
+        &mut self,
+        entry: LogEntry,
+    ) -> Result<(), SummersetError> {
+        match entry {
+            LogEntry::PrepareBal { slot, ballot } => {
+                // locate instance in memory, filling in null instances if needed
+                while self.insts.len() <= slot {
+                    self.insts.push(Instance {
+                        bal: 0,
+                        status: Status::Null,
+                        reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                            self.quorum_cnt,
+                            self.population - self.quorum_cnt,
+                        )?,
+                        leader_bk: None,
+                        replica_bk: None,
+                    });
+                }
+                // update instance state
+                let inst = &mut self.insts[slot];
+                inst.bal = ballot;
+                inst.status = Status::Preparing;
+                // update bal_prep_sent and bal_max_seen, reset bal_prepared
+                if self.bal_prep_sent < ballot {
+                    self.bal_prep_sent = ballot;
+                }
+                if self.bal_max_seen < ballot {
+                    self.bal_max_seen = ballot;
+                }
+                self.bal_prepared = 0;
+            }
+
+            LogEntry::AcceptData {
+                slot,
+                ballot,
+                reqs_cw,
+            } => {
+                // locate instance in memory, filling in null instances if needed
+                while self.insts.len() <= slot {
+                    self.insts.push(Instance {
+                        bal: 0,
+                        status: Status::Null,
+                        reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                            self.quorum_cnt,
+                            self.population - self.quorum_cnt,
+                        )?,
+                        leader_bk: None,
+                        replica_bk: None,
+                    });
+                }
+                // update instance state
+                let inst = &mut self.insts[slot];
+                inst.bal = ballot;
+                inst.status = Status::Accepting;
+                inst.reqs_cw = reqs_cw;
+                // update bal_prepared and bal_max_seen
+                if self.bal_prepared < ballot {
+                    self.bal_prepared = ballot;
+                }
+                if self.bal_max_seen < ballot {
+                    self.bal_max_seen = ballot;
+                }
+                assert!(self.bal_prepared <= self.bal_prep_sent);
+            }
+
+            LogEntry::CommitSlot { slot } => {
+                assert!(slot < self.insts.len());
+                // update instance state
+                self.insts[slot].status = Status::Committed;
+                // submit commands in contiguously committed instance to the
+                // state machine
+                if slot == self.commit_bar {
+                    while self.commit_bar < self.insts.len() {
+                        let inst = &mut self.insts[self.commit_bar];
+                        if inst.status < Status::Committed {
+                            break;
+                        }
+                        // check number of available shards
+                        if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                            // can't execute if I don't have the complete request batch
+                            break;
+                        } else if inst.reqs_cw.avail_data_shards()
+                            < self.quorum_cnt
+                        {
+                            // have enough shards but need reconstruction
+                            inst.reqs_cw
+                                .reconstruct_data(Some(&self.rs_coder))?;
+                        }
+                        // execute all commands in this instance on state machine
+                        // synchronously
+                        for (_, req) in inst.reqs_cw.get_data()?.clone() {
+                            if let ApiRequest::Req { cmd, .. } = req {
+                                // using 0 as a special command ID
+                                self.state_machine.submit_cmd(0, cmd)?;
+                                let _ = self.state_machine.get_result().await?;
+                            }
+                        }
+                        // update commit_bar and exec_bar
+                        self.commit_bar += 1;
+                        self.exec_bar += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recover state from durable storage log.
+    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.log_offset, 0);
+        loop {
+            // using 0 as a special log action ID
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Read {
+                    offset: self.log_offset,
+                },
+            )?;
+            let (_, log_result) = self.storage_hub.get_result().await?;
+
+            match log_result {
+                LogResult::Read {
+                    entry: Some(entry),
+                    end_offset,
+                } => {
+                    self.recover_apply_entry(entry).await?;
+                    // update log offset
+                    self.log_offset = end_offset;
+                }
+                LogResult::Read { entry: None, .. } => {
+                    // end of log reached
+                    break;
+                }
+                _ => {
+                    return logged_err!(self.id; "unexpected log result type");
+                }
+            }
+        }
+
+        // do an extra Truncate to remove paritial entry at the end if any
+        self.storage_hub.submit_action(
+            0,
+            LogAction::Truncate {
+                offset: self.log_offset,
+            },
+        )?;
+        let (_, log_result) = self.storage_hub.get_result().await?;
+        if let LogResult::Truncate {
+            offset_ok: true, ..
+        } = log_result
+        {
+            Ok(())
+        } else {
+            logged_err!(self.id; "unexpected log result type")
+        }
+    }
 }
 
 #[async_trait]
@@ -1305,6 +1465,9 @@ impl GenericReplica for CrosswordReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
+        // recover state from durable storage log
+        self.recover_from_log().await?;
+
         // TODO: proper leader election
         if self.id == 0 {
             self.is_leader = true;

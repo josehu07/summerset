@@ -11,8 +11,8 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error,
-    logged_err,
+    RequestId, ClientCtrlStub, Timer, SummersetError, pf_trace, pf_debug,
+    pf_error, logged_err,
 };
 
 /// Open-loop driver struct.
@@ -68,9 +68,12 @@ impl DriverOpenLoop {
     ) -> Result<(), SummersetError> {
         // loop until all pending replies have been received
         while self.should_retry {
+            pf_trace!(self.id; "retrying last issue at leave");
             self.issue_retry()?;
         }
         while !self.pending_reqs.is_empty() {
+            pf_trace!(self.id; "pending {} requests at leave",
+                               self.pending_reqs.len());
             self.wait_reply().await?;
         }
 

@@ -487,7 +487,7 @@ impl SimplePushReplica {
                             let _ = self.state_machine.get_result().await?;
                         }
                     }
-                    // rebuild in-memory log
+                    // rebuild in-memory log entry
                     let num_reqs = reqs.len();
                     self.insts.push(Instance {
                         reqs,
