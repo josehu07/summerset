@@ -147,7 +147,7 @@ Complete cluster management and benchmarking scripts are available in another re
 - [x] cluster manager oracle impl.
 - [x] implementation of MultiPaxos
   - [x] client-side timeout/retry logic
-  - [ ] state persistence & restart check
+  - [x] state persistence & restart check
   - [ ] automatic leader election, backoffs
   - [ ] snapshotting & garbage collection
   - [ ] specialize read-only commands?
