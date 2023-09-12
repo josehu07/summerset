@@ -314,7 +314,6 @@ impl MultiPaxosReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
-        // TODO: maybe use a null_idx variable to better keep track of this
         let mut slot = self.insts.len();
         for s in self.commit_bar..self.insts.len() {
             let old_inst = &mut self.insts[s];

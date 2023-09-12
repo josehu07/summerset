@@ -1,6 +1,6 @@
 //! Correctness testing client using open-loop driver.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::drivers::DriverOpenLoop;
 
@@ -25,9 +25,11 @@ use summerset::{
 lazy_static! {
     /// List of all tests. If the flag is true, the test is marked as basic.
     static ref ALL_TESTS: Vec<(&'static str, bool)> = vec![
-        ("primitives", true),
-        ("reconnect", true),
-        ("crash_restart", false),
+        ("primitive_ops", true),
+        ("client_reconnect", true),
+        ("node_1_crash", true),
+        ("node_0_crash", true),
+        ("two_nodes_crash", false)
     ];
 }
 
@@ -216,15 +218,15 @@ impl ClientTester {
     }
 
     /// Resets some server(s) in the cluster.
-    async fn reset_server(
+    async fn reset_servers(
         &mut self,
-        server: Option<ReplicaId>,
+        servers: HashSet<ReplicaId>,
         durable: bool,
     ) -> Result<(), SummersetError> {
         let ctrl_stub = self.driver.ctrl_stub();
 
         // send ResetServer request to manager
-        let req = CtrlRequest::ResetServer { server, durable };
+        let req = CtrlRequest::ResetServers { servers, durable };
         let mut sent = ctrl_stub.send_req(Some(&req))?;
         while !sent {
             sent = ctrl_stub.send_req(None)?;
@@ -233,7 +235,7 @@ impl ClientTester {
         // wait for reply from manager
         let reply = ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::ResetServer { .. } => Ok(()),
+            CtrlReply::ResetServers { .. } => Ok(()),
             _ => logged_err!("c"; "unexpected control reply type"),
         }
     }
@@ -244,21 +246,23 @@ impl ClientTester {
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        self.reset_server(None, false).await?;
+        self.reset_servers(HashSet::new(), false).await?;
         self.driver.connect().await?;
         self.cached_replies.clear();
 
         let result = match name {
-            "primitives" => self.test_primitives().await,
-            "reconnect" => self.test_reconnect().await,
-            "crash_restart" => self.test_crash_restart().await,
+            "primitive_ops" => self.test_primitive_ops().await,
+            "client_reconnect" => self.test_client_reconnect().await,
+            "node_1_crash" => self.test_node_1_crash().await,
+            "node_0_crash" => self.test_node_0_crash().await,
+            "two_nodes_crash" => self.test_two_nodes_crash().await,
             _ => return logged_err!("c"; "unrecognized test name '{}'", name),
         };
 
         if let Err(ref e) = result {
-            cprintln!("{:>16} | <red>{:^6}</> | {}", name, "FAIL", e);
+            cprintln!("{:>20} | <red>{:^6}</> | {}", name, "FAIL", e);
         } else {
-            cprintln!("{:>16} | <green>{:^6}</> | --", name, "PASS");
+            cprintln!("{:>20} | <green>{:^6}</> | --", name, "PASS");
         }
 
         // send leave notification and forget about the TCP connections at the
@@ -272,7 +276,7 @@ impl ClientTester {
         let test_name = self.params.test_name.clone();
         let mut all_pass = true;
 
-        println!("{:^16} | {:^6} | Notes", "Test Case", "Result");
+        println!("{:^20} | {:^6} | Notes", "Test Case", "Result");
         match &test_name[..] {
             "basic" => {
                 for (name, basic) in ALL_TESTS.iter() {
@@ -313,7 +317,7 @@ impl ClientTester {
 // List of tests:
 impl ClientTester {
     /// Basic primitive operations.
-    async fn test_primitives(&mut self) -> Result<(), SummersetError> {
+    async fn test_primitive_ops(&mut self) -> Result<(), SummersetError> {
         let mut req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(None), 1).await?;
         let v0 = Self::gen_rand_string(8);
@@ -330,7 +334,7 @@ impl ClientTester {
     }
 
     /// Client leaves and reconnects.
-    async fn test_reconnect(&mut self) -> Result<(), SummersetError> {
+    async fn test_client_reconnect(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
         let mut req_id = self.issue_put("Jose", &v)?;
         self.expect_put_reply(req_id, Some(None), 1).await?;
@@ -341,18 +345,39 @@ impl ClientTester {
         Ok(())
     }
 
-    /// Replica node crashes and restarts.
-    async fn test_crash_restart(&mut self) -> Result<(), SummersetError> {
+    /// Replica node 1 crashes and restarts.
+    async fn test_node_1_crash(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
         let mut req_id = self.issue_put("Jose", &v)?;
         self.expect_put_reply(req_id, Some(None), 1).await?;
         self.driver.leave(false).await?;
-        self.reset_server(Some(1), true).await?;
+        self.reset_servers(HashSet::from([1]), true).await?;
         self.driver.connect().await?;
         req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        Ok(())
+    }
+
+    /// Replica node 0 crashes and restarts.
+    async fn test_node_0_crash(&mut self) -> Result<(), SummersetError> {
+        let v = Self::gen_rand_string(8);
+        let mut req_id = self.issue_put("Jose", &v)?;
+        self.expect_put_reply(req_id, Some(None), 1).await?;
         self.driver.leave(false).await?;
-        self.reset_server(Some(0), true).await?;
+        self.reset_servers(HashSet::from([0]), true).await?;
+        self.driver.connect().await?;
+        req_id = self.issue_get("Jose")?;
+        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        Ok(())
+    }
+
+    /// Two replica nodes crashes and restarts.
+    async fn test_two_nodes_crash(&mut self) -> Result<(), SummersetError> {
+        let v = Self::gen_rand_string(8);
+        let mut req_id = self.issue_put("Jose", &v)?;
+        self.expect_put_reply(req_id, Some(None), 1).await?;
+        self.driver.leave(false).await?;
+        self.reset_servers(HashSet::from([0, 1]), true).await?;
         self.driver.connect().await?;
         req_id = self.issue_get("Jose")?;
         self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;

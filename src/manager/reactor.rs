@@ -27,9 +27,9 @@ pub enum CtrlRequest {
     QueryInfo,
 
     /// Reset the specified server(s) to initial state.
-    ResetServer {
-        /// ID of server to reset. If `None`, resets all active servers.
-        server: Option<ReplicaId>,
+    ResetServers {
+        /// IDs of servers to reset. If empty, resets all active servers.
+        servers: HashSet<ReplicaId>,
         /// If false, cleans durable storage state as well.
         durable: bool,
     },
@@ -47,7 +47,7 @@ pub enum CtrlReply {
     },
 
     /// Reply to server reset request.
-    ResetServer { servers: HashSet<ReplicaId> },
+    ResetServers { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,

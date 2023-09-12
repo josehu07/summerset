@@ -244,19 +244,19 @@ impl ClusterManager {
             .send_reply(CtrlReply::QueryInfo { servers }, client)
     }
 
-    /// Handler of client ResetServer request.
-    async fn handle_client_reset_server(
+    /// Handler of client ResetServers request.
+    async fn handle_client_reset_servers(
         &mut self,
         client: ClientId,
-        server: Option<ReplicaId>,
+        servers: HashSet<ReplicaId>,
         durable: bool,
     ) -> Result<(), SummersetError> {
         let num_replicas = self.server_info.len();
-        let mut servers: Vec<ReplicaId> = if server.is_none() {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
             self.server_info.keys().copied().collect()
         } else {
-            vec![server.unwrap()]
+            servers.into_iter().collect()
         };
 
         // reset specified server(s)
@@ -291,7 +291,7 @@ impl ClusterManager {
         }
 
         self.client_reactor.send_reply(
-            CtrlReply::ResetServer {
+            CtrlReply::ResetServers {
                 servers: reset_done,
             },
             client,
@@ -310,8 +310,8 @@ impl ClusterManager {
                 self.handle_client_query_info(client)?;
             }
 
-            CtrlRequest::ResetServer { server, durable } => {
-                self.handle_client_reset_server(client, server, durable)
+            CtrlRequest::ResetServers { servers, durable } => {
+                self.handle_client_reset_servers(client, servers, durable)
                     .await?;
             }
 
