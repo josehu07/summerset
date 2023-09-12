@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap};
+use crate::utils::{SummersetError, Bitmap, Timer};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -21,13 +21,15 @@ use crate::server::{
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
 
+use rand::prelude::*;
+
 use async_trait::async_trait;
 
 use get_size::GetSize;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::time::Duration;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
@@ -45,6 +47,15 @@ pub struct ReplicaConfigMultiPaxos {
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 
+    /// Min timeout of not hearing any heartbeat from leader in millisecs.
+    pub hb_hear_timeout_min: u64,
+
+    /// Max timeout of not hearing any heartbeat from leader in millisecs.
+    pub hb_hear_timeout_max: u64,
+
+    /// Interval of leader sending heartbeats to followers.
+    pub hb_send_interval_ms: u64,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -60,6 +71,9 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
+            hb_hear_timeout_min: 300,
+            hb_hear_timeout_max: 600,
+            hb_send_interval_ms: 50,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -169,6 +183,9 @@ enum PeerMsg {
 
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
+
+    /// Leader activity heartbeat.
+    Heartbeat { ballot: Ballot },
 }
 
 /// MultiPaxos server replica module.
@@ -205,6 +222,12 @@ pub struct MultiPaxosReplica {
 
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
+
+    /// Timer for hearing heartbeat from leader.
+    hb_hear_timer: Timer,
+
+    /// Interval for sending heartbeat to followers.
+    hb_send_interval: Interval,
 
     /// Do I think I am the leader?
     is_leader: bool,
@@ -344,9 +367,6 @@ impl MultiPaxosReplica {
         }
 
         // decide whether we can enter fast path for this instance
-        // TODO: remember to reset bal_prepared to 0, update bal_max_seen,
-        //       and re-handle all Preparing & Accepting instances in autonomous
-        //       Prepare initiation
         if self.bal_prepared == 0 {
             // slow case: Prepare phase not done yet. Initiate a Prepare round
             // if none is on the fly, or just wait for some Prepare reply to
@@ -869,6 +889,7 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
+            PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
         }
     }
 
@@ -924,6 +945,111 @@ impl MultiPaxosReplica {
             }
         }
 
+        Ok(())
+    }
+
+    /// Becomes a leader, sends self-initiated Prepare messages to followers
+    /// for all in-progress instances, and starts broadcasting heartbeats.
+    fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+        assert!(!self.is_leader);
+        self.is_leader = true; // this starts broadcasting heartbeats
+        pf_warn!(self.id; "becoming a leader...");
+
+        // broadcast a heartbeat right now
+        self.bcast_heartbeats()?;
+
+        // make a greater ballot number and invalidate all in-progress instances
+        self.bal_prepared = 0;
+        self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
+        self.bal_max_seen = self.bal_prep_sent;
+
+        // redo Prepare phase for all in-progress instances
+        for (slot, inst) in self.insts.iter_mut().enumerate() {
+            if inst.status < Status::Committed {
+                inst.bal = self.bal_prep_sent;
+                inst.status = Status::Preparing;
+                pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
+                                   slot, inst.bal);
+
+                // record update to largest prepare ballot
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogAction::Append {
+                        entry: LogEntry::PrepareBal {
+                            slot,
+                            ballot: self.bal_prep_sent,
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
+                                   slot, inst.bal);
+
+                // send Prepare messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Prepare {
+                        slot,
+                        ballot: self.bal_prep_sent,
+                    },
+                    None,
+                )?;
+                pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
+                                   slot, inst.bal);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Broadcasts heartbeats to all replicas.
+    fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        self.transport_hub.bcast_msg(
+            PeerMsg::Heartbeat {
+                ballot: self.bal_prep_sent,
+            },
+            None,
+        )?;
+        self.heard_heartbeat(self.id, self.bal_prep_sent)?;
+
+        // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
+        Ok(())
+    }
+
+    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
+    /// the hb_hear_timer.
+    fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+        let timeout_ms = thread_rng().gen_range(
+            self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
+        );
+
+        // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+        self.hb_hear_timer
+            .kickoff(Duration::from_millis(timeout_ms))?;
+        Ok(())
+    }
+
+    /// Heard a heartbeat from some other replica. If the heartbeat carries a
+    /// high enough ballot number, refreshes my hearing timer and clears my
+    /// leader status if I currently think I'm a leader.
+    fn heard_heartbeat(
+        &mut self,
+        _peer: ReplicaId,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        // ignore outdated hearbeat
+        if ballot < self.bal_max_seen {
+            return Ok(());
+        }
+
+        // reset hearing timer
+        self.kickoff_hb_hear_timer()?;
+
+        // clear my leader status if it carries a higher ballot number
+        if self.is_leader && ballot > self.bal_max_seen {
+            self.is_leader = false;
+        }
+
+        // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
 
@@ -1140,6 +1266,8 @@ impl GenericReplica for MultiPaxosReplica {
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, max_batch_size,
                                     backer_path, logger_sync,
+                                    hb_hear_timeout_min, hb_hear_timeout_max,
+                                    hb_send_interval_ms,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
@@ -1147,6 +1275,27 @@ impl GenericReplica for MultiPaxosReplica {
                 id;
                 "invalid config.batch_interval_us '{}'",
                 config.batch_interval_us
+            );
+        }
+        if config.hb_hear_timeout_min < 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_min '{}'",
+                config.hb_hear_timeout_min
+            );
+        }
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_max '{}'",
+                config.hb_hear_timeout_max
+            );
+        }
+        if config.hb_send_interval_ms == 0 {
+            return logged_err!(
+                id;
+                "invalid config.hb_send_interval_ms '{}'",
+                config.hb_send_interval_ms
             );
         }
 
@@ -1211,6 +1360,10 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
+        let mut hb_send_interval =
+            time::interval(Duration::from_millis(config.hb_send_interval_ms));
+        hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -1223,6 +1376,8 @@ impl GenericReplica for MultiPaxosReplica {
             state_machine,
             storage_hub,
             transport_hub,
+            hb_hear_timer: Timer::new(),
+            hb_send_interval,
             is_leader: false,
             insts: vec![],
             bal_prep_sent: 0,
@@ -1241,10 +1396,8 @@ impl GenericReplica for MultiPaxosReplica {
         // recover state from durable storage log
         self.recover_from_log().await?;
 
-        // TODO: proper leader election
-        if self.id == 0 {
-            self.is_leader = true;
-        }
+        // kick off leader activity hearing timer
+        self.kickoff_hb_hear_timer()?;
 
         // main event loop
         loop {
@@ -1297,6 +1450,16 @@ impl GenericReplica for MultiPaxosReplica {
                         pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
+
+                // leader inactivity timeout
+                _ = self.hb_hear_timer.timeout() => {
+                    self.become_a_leader()?;
+                },
+
+                // leader sending heartbeat
+                _ = self.hb_send_interval.tick(), if self.is_leader => {
+                    self.bcast_heartbeats()?;
+                }
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {

@@ -169,7 +169,7 @@ impl ClientTester {
         &mut self,
         req_id: RequestId,
         expect_value: Option<Option<&str>>,
-        // maximum number of tries if repeatedly getting `WouldBlock` failure
+        // maximum number of tries if repeatedly getting `Ok(None)` reply
         max_tries: u8,
     ) -> Result<(), SummersetError> {
         let cmd_result = self.wait_reply(req_id, max_tries).await?;
@@ -196,7 +196,7 @@ impl ClientTester {
         &mut self,
         req_id: RequestId,
         expect_old_value: Option<Option<&str>>,
-        // maximum number of tries if repeatedly getting `WouldBlock` failure
+        // maximum number of tries if repeatedly getting `Ok(None)` reply
         max_tries: u8,
     ) -> Result<(), SummersetError> {
         let cmd_result = self.wait_reply(req_id, max_tries).await?;
