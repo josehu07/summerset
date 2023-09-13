@@ -1,8 +1,8 @@
-//! Correctness testing client using open-loop driver.
+//! Correctness testing client using closed-loop driver.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use crate::drivers::DriverOpenLoop;
+use crate::drivers::{DriverReply, DriverClosedLoop};
 
 use color_print::cprintln;
 
@@ -15,11 +15,11 @@ use rand::distributions::Alphanumeric;
 
 use serde::Deserialize;
 
-use tokio::time::Duration;
+use tokio::time::{self, Duration};
 
 use summerset::{
-    ReplicaId, GenericEndpoint, CommandResult, RequestId, CtrlRequest,
-    CtrlReply, SummersetError, pf_error, logged_err, parsed_config,
+    ReplicaId, GenericEndpoint, CommandResult, CtrlRequest, CtrlReply,
+    SummersetError, pf_error, logged_err, parsed_config,
 };
 
 lazy_static! {
@@ -27,9 +27,8 @@ lazy_static! {
     static ref ALL_TESTS: Vec<(&'static str, bool)> = vec![
         ("primitive_ops", true),
         ("client_reconnect", true),
-        ("node_1_crash", true),
-        ("node_0_crash", true),
-        ("two_nodes_crash", false)
+        ("one_node_reset", true),
+        ("two_nodes_reset", false)
     ];
 }
 
@@ -60,14 +59,14 @@ impl Default for ModeParamsTester {
 
 /// Correctness testing client struct.
 pub struct ClientTester {
-    /// Open-loop request driver.
-    driver: DriverOpenLoop,
+    /// Closed-loop request driver.
+    driver: DriverClosedLoop,
+
+    /// Timeout duration setting.
+    timeout: Duration,
 
     /// Mode parameters struct.
     params: ModeParamsTester,
-
-    /// Replies received but not yet used.
-    cached_replies: HashMap<RequestId, CommandResult>,
 }
 
 impl ClientTester {
@@ -86,9 +85,9 @@ impl ClientTester {
         }
 
         Ok(ClientTester {
-            driver: DriverOpenLoop::new(endpoint, timeout),
+            driver: DriverClosedLoop::new(endpoint, timeout),
+            timeout,
             params,
-            cached_replies: HashMap::new(),
         })
     }
 
@@ -106,114 +105,128 @@ impl ClientTester {
         s.as_deref() == *expect
     }
 
-    /// Issues a Get request, retrying immediately on `WouldBlock` failures.
-    fn issue_get(&mut self, key: &str) -> Result<RequestId, SummersetError> {
-        let mut req_id = self.driver.issue_get(key)?;
-        while req_id.is_none() {
-            req_id = self.driver.issue_retry()?;
+    /// Issues a Get request and checks its reply value against given one if
+    /// not `None`. Retries immediately upon getting redirection error.
+    async fn checked_get(
+        &mut self,
+        key: &str,
+        expect_value: Option<Option<&str>>,
+    ) -> Result<(), SummersetError> {
+        loop {
+            let result = self.driver.get(key).await?;
+            match result {
+                DriverReply::Success { cmd_result, .. } => {
+                    if let CommandResult::Get { ref value } = cmd_result {
+                        if let Some(ref expect_value) = expect_value {
+                            if !Self::strings_match(value, expect_value) {
+                                return logged_err!(
+                                    self.driver.id;
+                                    "Get value mismatch: expect {:?}, got {:?}",
+                                    expect_value, value
+                                );
+                            }
+                        }
+                        return Ok(());
+                    } else {
+                        return logged_err!(
+                            self.driver.id;
+                            "CommandResult type mismatch: expect Get"
+                        );
+                    }
+                }
+
+                DriverReply::Failure => {
+                    return logged_err!(
+                        self.driver.id;
+                        "service replied unknown error"
+                    );
+                }
+
+                DriverReply::Redirect { .. } => {} // re-issue immediately
+
+                DriverReply::Timeout => {
+                    return logged_err!(
+                        self.driver.id;
+                        "client-side timeout {} ms",
+                        self.timeout.as_millis()
+                    )
+                }
+            }
         }
-        Ok(req_id.unwrap())
     }
 
-    /// Issues a Put request, retrying immediately on `WouldBlock` failures.
-    fn issue_put(
+    /// Issues a Put request and checks its reply old_value against given one
+    /// if not `None`. Retries immediately upon getting redirection error.
+    async fn checked_put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<RequestId, SummersetError> {
-        let mut req_id = self.driver.issue_put(key, value)?;
-        while req_id.is_none() {
-            req_id = self.driver.issue_retry()?;
-        }
-        Ok(req_id.unwrap())
-    }
-
-    /// Waits for the next reply from service with the given request ID. If
-    /// non-match replies received, cache them up for future references.
-    async fn wait_reply(
-        &mut self,
-        req_id: RequestId,
-        // maximum number of tries if repeatedly getting `Ok(None)` reply
-        max_tries: u8,
-    ) -> Result<CommandResult, SummersetError> {
-        assert!(max_tries > 0);
-        let mut num_tries = 0;
-
-        // look up cached_replies first
-        if let Some(cmd_result) = self.cached_replies.remove(&req_id) {
-            return Ok(cmd_result);
-        }
-
-        let mut result = self.driver.wait_reply().await?;
-        while result.is_none() || result.as_ref().unwrap().0 != req_id {
-            if let Some((id, cmd_result, _)) = result {
-                self.cached_replies.insert(id, cmd_result);
-            } else {
-                num_tries += 1;
-                if num_tries == max_tries {
-                    return Err(SummersetError(format!(
-                        "exhausted {} tries expecting req {}",
-                        max_tries, req_id,
-                    )));
-                }
-            }
-            result = self.driver.wait_reply().await?;
-        }
-
-        Ok(result.unwrap().1)
-    }
-
-    /// Waits for the reply of given request ID, expecting the given Get value
-    /// if not `None`.
-    async fn expect_get_reply(
-        &mut self,
-        req_id: RequestId,
-        expect_value: Option<Option<&str>>,
-        // maximum number of tries if repeatedly getting `Ok(None)` reply
-        max_tries: u8,
-    ) -> Result<(), SummersetError> {
-        let cmd_result = self.wait_reply(req_id, max_tries).await?;
-        if let CommandResult::Get { ref value } = cmd_result {
-            if let Some(ref expect_value) = expect_value {
-                if !Self::strings_match(value, expect_value) {
-                    return Err(SummersetError(format!(
-                        "Get value mismatch: expect {:?}, got {:?}",
-                        expect_value, value
-                    )));
-                }
-            }
-            Ok(())
-        } else {
-            Err(SummersetError(
-                "CommandResult type mismatch: expect Get".into(),
-            ))
-        }
-    }
-
-    /// Waits for the reply of given request ID, expecting the given Put
-    /// old_value if not `None`.
-    async fn expect_put_reply(
-        &mut self,
-        req_id: RequestId,
         expect_old_value: Option<Option<&str>>,
-        // maximum number of tries if repeatedly getting `Ok(None)` reply
-        max_tries: u8,
     ) -> Result<(), SummersetError> {
-        let cmd_result = self.wait_reply(req_id, max_tries).await?;
-        if let CommandResult::Put { ref old_value } = cmd_result {
-            if let Some(ref expect_old_value) = expect_old_value {
-                if !Self::strings_match(old_value, expect_old_value) {
-                    return Err(SummersetError(format!(
-                        "Put old_value mismatch: expect {:?}, got {:?}",
-                        expect_old_value, old_value
-                    )));
+        loop {
+            let result = self.driver.put(key, value).await?;
+            match result {
+                DriverReply::Success { cmd_result, .. } => {
+                    if let CommandResult::Put { ref old_value } = cmd_result {
+                        if let Some(ref expect_old_value) = expect_old_value {
+                            if !Self::strings_match(old_value, expect_old_value)
+                            {
+                                return logged_err!(
+                                    self.driver.id;
+                                    "Put old_value mismatch: expect {:?}, got {:?}",
+                                    expect_old_value, old_value
+                                );
+                            }
+                        }
+                        return Ok(());
+                    } else {
+                        return logged_err!(
+                            self.driver.id;
+                            "CommandResult type mismatch: expect Put"
+                        );
+                    }
+                }
+
+                DriverReply::Failure => {
+                    return logged_err!(
+                        self.driver.id;
+                        "service replied unknown error"
+                    );
+                }
+
+                DriverReply::Redirect { .. } => {} // re-issue immediately
+
+                DriverReply::Timeout => {
+                    return logged_err!(
+                        self.driver.id;
+                        "client-side timeout {} ms",
+                        self.timeout.as_millis()
+                    )
                 }
             }
-            Ok(())
-        } else {
-            Err(SummersetError(
-                "CommandResult type mismatch: expect Put".into(),
-            ))
+        }
+    }
+
+    /// Query the list of servers in the cluster.
+    async fn query_servers(
+        &mut self,
+    ) -> Result<HashSet<ReplicaId>, SummersetError> {
+        let ctrl_stub = self.driver.ctrl_stub();
+
+        // send QueryInfo request to manager
+        let req = CtrlRequest::QueryInfo;
+        let mut sent = ctrl_stub.send_req(Some(&req))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        // wait for reply from manager
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::QueryInfo { servers } => {
+                Ok(servers.keys().copied().collect())
+            }
+            _ => logged_err!(self.driver.id; ""),
         }
     }
 
@@ -236,7 +249,7 @@ impl ClientTester {
         let reply = ctrl_stub.recv_reply().await?;
         match reply {
             CtrlReply::ResetServers { .. } => Ok(()),
-            _ => logged_err!("c"; "unexpected control reply type"),
+            _ => logged_err!(self.driver.id; "unexpected control reply type"),
         }
     }
 
@@ -248,15 +261,16 @@ impl ClientTester {
         // reset everything to initial state at the start of each test
         self.reset_servers(HashSet::new(), false).await?;
         self.driver.connect().await?;
-        self.cached_replies.clear();
 
         let result = match name {
             "primitive_ops" => self.test_primitive_ops().await,
             "client_reconnect" => self.test_client_reconnect().await,
-            "node_1_crash" => self.test_node_1_crash().await,
-            "node_0_crash" => self.test_node_0_crash().await,
-            "two_nodes_crash" => self.test_two_nodes_crash().await,
-            _ => return logged_err!("c"; "unrecognized test name '{}'", name),
+            "one_node_reset" => self.test_one_node_reset().await,
+            "two_nodes_reset" => self.test_two_nodes_reset().await,
+            _ => {
+                return logged_err!(self.driver.id; "unrecognized test name '{}'",
+                                                   name);
+            }
         };
 
         if let Err(ref e) = result {
@@ -318,69 +332,49 @@ impl ClientTester {
 impl ClientTester {
     /// Basic primitive operations.
     async fn test_primitive_ops(&mut self) -> Result<(), SummersetError> {
-        let mut req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(None), 1).await?;
+        self.checked_get("Jose", Some(None)).await?;
         let v0 = Self::gen_rand_string(8);
-        req_id = self.issue_put("Jose", &v0)?;
-        self.expect_put_reply(req_id, Some(None), 1).await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v0)), 1).await?;
+        self.checked_put("Jose", &v0, Some(None)).await?;
+        self.checked_get("Jose", Some(Some(&v0))).await?;
         let v1 = Self::gen_rand_string(16);
-        req_id = self.issue_put("Jose", &v1)?;
-        self.expect_put_reply(req_id, Some(Some(&v0)), 1).await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v1)), 1).await?;
+        self.checked_put("Jose", &v1, Some(Some(&v0))).await?;
+        self.checked_get("Jose", Some(Some(&v1))).await?;
         Ok(())
     }
 
     /// Client leaves and reconnects.
     async fn test_client_reconnect(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v)?;
-        self.expect_put_reply(req_id, Some(None), 1).await?;
+        self.checked_put("Jose", &v, Some(None)).await?;
         self.driver.leave(false).await?;
         self.driver.connect().await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        self.checked_get("Jose", Some(Some(&v))).await?;
         Ok(())
     }
 
-    /// Replica node 1 crashes and restarts.
-    async fn test_node_1_crash(&mut self) -> Result<(), SummersetError> {
+    /// Single replica node crashes and restarts.
+    async fn test_one_node_reset(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v)?;
-        self.expect_put_reply(req_id, Some(None), 1).await?;
-        self.driver.leave(false).await?;
-        self.reset_servers(HashSet::from([1]), true).await?;
-        self.driver.connect().await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        self.checked_put("Jose", &v, Some(None)).await?;
+        for s in self.query_servers().await? {
+            self.driver.leave(false).await?;
+            self.reset_servers(HashSet::from([s]), true).await?;
+            time::sleep(Duration::from_millis(100)).await;
+            self.driver.connect().await?;
+            self.checked_get("Jose", Some(Some(&v))).await?;
+        }
         Ok(())
     }
 
-    /// Replica node 0 crashes and restarts.
-    async fn test_node_0_crash(&mut self) -> Result<(), SummersetError> {
+    /// Two replica nodes crash and restart.
+    async fn test_two_nodes_reset(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v)?;
-        self.expect_put_reply(req_id, Some(None), 1).await?;
-        self.driver.leave(false).await?;
-        self.reset_servers(HashSet::from([0]), true).await?;
-        self.driver.connect().await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
-        Ok(())
-    }
-
-    /// Two replica nodes crashes and restarts.
-    async fn test_two_nodes_crash(&mut self) -> Result<(), SummersetError> {
-        let v = Self::gen_rand_string(8);
-        let mut req_id = self.issue_put("Jose", &v)?;
-        self.expect_put_reply(req_id, Some(None), 1).await?;
+        self.checked_put("Jose", &v, Some(None)).await?;
         self.driver.leave(false).await?;
         self.reset_servers(HashSet::from([0, 1]), true).await?;
+        time::sleep(Duration::from_millis(100)).await;
         self.driver.connect().await?;
-        req_id = self.issue_get("Jose")?;
-        self.expect_get_reply(req_id, Some(Some(&v)), 1).await?;
+        self.checked_get("Jose", Some(Some(&v))).await?;
         Ok(())
     }
 }

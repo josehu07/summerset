@@ -2,15 +2,13 @@
 
 use std::io::{self, Write};
 
-use crate::drivers::DriverClosedLoop;
+use crate::drivers::{DriverReply, DriverClosedLoop};
 
-use color_print::cprint;
+use color_print::{cprint, cprintln};
 
 use tokio::time::Duration;
 
-use summerset::{
-    GenericEndpoint, Command, CommandResult, RequestId, SummersetError,
-};
+use summerset::{GenericEndpoint, Command, SummersetError};
 
 /// Prompt string at the start of line.
 const PROMPT: &str = ">>>>> ";
@@ -38,6 +36,9 @@ pub struct ClientRepl {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
+    /// Timeout duration setting.
+    timeout: Duration,
+
     /// User input buffer.
     input_buf: String,
 }
@@ -47,6 +48,7 @@ impl ClientRepl {
     pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         ClientRepl {
             driver: DriverClosedLoop::new(endpoint, timeout),
+            timeout,
             input_buf: String::new(),
         }
     }
@@ -60,7 +62,7 @@ impl ClientRepl {
     /// Prints (optionally) an error message and the help message.
     fn print_help(&mut self, err: Option<&SummersetError>) {
         if let Some(e) = err {
-            println!("ERROR: {}", e);
+            cprintln!("<bright-red>✗</> {}", e);
         }
         println!("HELP: Supported commands are:");
         println!("        get <key>");
@@ -150,36 +152,51 @@ impl ClientRepl {
     async fn eval_command(
         &mut self,
         cmd: Command,
-    ) -> Result<Option<(RequestId, CommandResult, Duration)>, SummersetError>
-    {
+    ) -> Result<DriverReply, SummersetError> {
         match cmd {
-            Command::Get { key } => {
-                Ok(self.driver.get(&key).await?.map(|(req_id, value, lat)| {
-                    (req_id, CommandResult::Get { value }, lat)
-                }))
-            }
-
+            Command::Get { key } => Ok(self.driver.get(&key).await?),
             Command::Put { key, value } => {
-                Ok(self.driver.put(&key, &value).await?.map(
-                    |(req_id, old_value, lat)| {
-                        (req_id, CommandResult::Put { old_value }, lat)
-                    },
-                ))
+                Ok(self.driver.put(&key, &value).await?)
             }
         }
     }
 
     /// Prints command execution result.
-    fn print_result(
-        &mut self,
-        result: Option<(RequestId, CommandResult, Duration)>,
-    ) {
-        if let Some((req_id, cmd_result, lat)) = result {
-            let lat_ms = lat.as_secs_f64() * 1000.0;
-            println!("({}) {:?} <took {:.2} ms>", req_id, cmd_result, lat_ms);
-        } else {
-            println!("Unsuccessful: wrong leader or timeout?");
+    fn print_result(&mut self, result: DriverReply) {
+        match result {
+            DriverReply::Success {
+                req_id,
+                cmd_result,
+                latency,
+            } => {
+                let lat_ms = latency.as_secs_f64() * 1000.0;
+                cprintln!(
+                    "<bright-green>✓</> ({}) {:?} <<took {:.2} ms>>",
+                    req_id,
+                    cmd_result,
+                    lat_ms
+                );
+            }
+
+            DriverReply::Failure => {
+                cprintln!("<bright-red>✗</> service replied unknown error");
+            }
+
+            DriverReply::Redirect { server } => {
+                cprintln!(
+                    "<bright-cyan>✗</> service redirected me to server {}",
+                    server
+                );
+            }
+
+            DriverReply::Timeout => {
+                cprintln!(
+                    "<bright-red>✗</> client-side timeout {} ms",
+                    self.timeout.as_millis()
+                );
+            }
         }
+
         io::stdout().flush().unwrap();
     }
 

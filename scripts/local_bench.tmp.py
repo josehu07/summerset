@@ -133,6 +133,7 @@ def bench_round(
         + f"w%={put_ratio:<3d}  {length_s:3d}s"
     )
 
+    kill_all_matching("local_client.py", force=True)
     kill_all_matching("local_cluster.py", force=True)
     kill_all_matching("summerset_client", force=True)
     kill_all_matching("summerset_server", force=True)

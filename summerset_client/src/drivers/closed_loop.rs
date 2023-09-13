@@ -1,5 +1,7 @@
 //! Closed-loop client-side driver implementation.
 
+use crate::drivers::DriverReply;
+
 use tokio::time::{Duration, Instant};
 
 use summerset::{
@@ -83,16 +85,11 @@ impl DriverClosedLoop {
         }
     }
 
-    /// Send a Get request and wait for its reply. Returns:
-    ///   - `Ok(Some((id, Some(value), latency)))` if successful and key exists
-    ///   - `Ok(Some((id, None, latency)))` if successful and key does not exist
-    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
-    ///   - `Err(err)` if any unexpected error occurs
+    /// Send a Get request and wait for its reply.
     pub async fn get(
         &mut self,
         key: &str,
-    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
-    {
+    ) -> Result<DriverReply, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -107,18 +104,31 @@ impl DriverClosedLoop {
             Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
-                ..
+                redirect,
             }) => {
                 if reply_id != req_id {
                     logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
                                          req_id, reply_id)
                 } else {
                     match cmd_result {
-                        None => Ok(None),
-                        Some(CommandResult::Get { value }) => {
-                            let lat = Instant::now().duration_since(issue_ts);
-                            Ok(Some((req_id, value, lat)))
+                        None => {
+                            if let Some(server) = redirect {
+                                Ok(DriverReply::Redirect { server })
+                            } else {
+                                Ok(DriverReply::Failure)
+                            }
                         }
+
+                        Some(CommandResult::Get { value }) => {
+                            let latency =
+                                Instant::now().duration_since(issue_ts);
+                            Ok(DriverReply::Success {
+                                req_id,
+                                cmd_result: CommandResult::Get { value },
+                                latency,
+                            })
+                        }
+
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Get")
                         }
@@ -126,23 +136,18 @@ impl DriverClosedLoop {
                 }
             }
 
-            None => Ok(None), // timed-out
+            None => Ok(DriverReply::Timeout),
 
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 
-    /// Send a Put request and wait for its reply. Returns:
-    ///   - `Ok(Some((id, Some(old_value), latency)))` if successful and key exists
-    ///   - `Ok(Some((id, None, latency)))` if successful and key did not exist
-    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
-    ///   - `Err(err)` if any unexpected error occurs
+    /// Send a Put request and wait for its reply.
     pub async fn put(
         &mut self,
         key: &str,
         value: &str,
-    ) -> Result<Option<(RequestId, Option<String>, Duration)>, SummersetError>
-    {
+    ) -> Result<DriverReply, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -160,18 +165,31 @@ impl DriverClosedLoop {
             Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
-                ..
+                redirect,
             }) => {
                 if reply_id != req_id {
                     logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
                                          req_id, reply_id)
                 } else {
                     match cmd_result {
-                        None => Ok(None),
-                        Some(CommandResult::Put { old_value }) => {
-                            let lat = Instant::now().duration_since(issue_ts);
-                            Ok(Some((req_id, old_value, lat)))
+                        None => {
+                            if let Some(server) = redirect {
+                                Ok(DriverReply::Redirect { server })
+                            } else {
+                                Ok(DriverReply::Failure)
+                            }
                         }
+
+                        Some(CommandResult::Put { old_value }) => {
+                            let latency =
+                                Instant::now().duration_since(issue_ts);
+                            Ok(DriverReply::Success {
+                                req_id,
+                                cmd_result: CommandResult::Put { old_value },
+                                latency,
+                            })
+                        }
+
                         _ => {
                             logged_err!(self.id; "command type mismatch: expected Put")
                         }
@@ -179,7 +197,7 @@ impl DriverClosedLoop {
                 }
             }
 
-            None => Ok(None), // timed-out
+            None => Ok(DriverReply::Timeout),
 
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
