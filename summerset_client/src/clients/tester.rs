@@ -226,7 +226,7 @@ impl ClientTester {
             CtrlReply::QueryInfo { servers } => {
                 Ok(servers.keys().copied().collect())
             }
-            _ => logged_err!(self.driver.id; ""),
+            _ => logged_err!(self.driver.id; "unexpected control reply type"),
         }
     }
 
