@@ -1,4 +1,4 @@
-#! /usr/bin/bash
+#! /bin/bash
 
 echo "Per-socket TCP send/receive buffer:"
 echo "min default max"
