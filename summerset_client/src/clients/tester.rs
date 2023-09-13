@@ -106,7 +106,7 @@ impl ClientTester {
     }
 
     /// Issues a Get request and checks its reply value against given one if
-    /// not `None`. Retries immediately upon getting redirection error.
+    /// not `None`. Retries in-place upon getting redirection error.
     async fn checked_get(
         &mut self,
         key: &str,
@@ -142,7 +142,10 @@ impl ClientTester {
                     );
                 }
 
-                DriverReply::Redirect { .. } => {} // re-issue immediately
+                DriverReply::Redirect { .. } => {
+                    time::sleep(Duration::from_millis(500)).await;
+                    // retry
+                }
 
                 DriverReply::Timeout => {
                     return logged_err!(
@@ -156,7 +159,7 @@ impl ClientTester {
     }
 
     /// Issues a Put request and checks its reply old_value against given one
-    /// if not `None`. Retries immediately upon getting redirection error.
+    /// if not `None`. Retries in-place upon getting redirection error.
     async fn checked_put(
         &mut self,
         key: &str,
@@ -194,7 +197,10 @@ impl ClientTester {
                     );
                 }
 
-                DriverReply::Redirect { .. } => {} // re-issue immediately
+                DriverReply::Redirect { .. } => {
+                    time::sleep(Duration::from_millis(500)).await;
+                    // retry
+                }
 
                 DriverReply::Timeout => {
                     return logged_err!(
@@ -359,7 +365,7 @@ impl ClientTester {
         for s in self.query_servers().await? {
             self.driver.leave(false).await?;
             self.reset_servers(HashSet::from([s]), true).await?;
-            time::sleep(Duration::from_millis(100)).await;
+            time::sleep(Duration::from_millis(500)).await;
             self.driver.connect().await?;
             self.checked_get("Jose", Some(Some(&v))).await?;
         }
@@ -370,11 +376,18 @@ impl ClientTester {
     async fn test_two_nodes_reset(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
         self.checked_put("Jose", &v, Some(None)).await?;
-        self.driver.leave(false).await?;
-        self.reset_servers(HashSet::from([0, 1]), true).await?;
-        time::sleep(Duration::from_millis(100)).await;
-        self.driver.connect().await?;
-        self.checked_get("Jose", Some(Some(&v))).await?;
+        let servers = self.query_servers().await?;
+        for &s in &servers {
+            self.driver.leave(false).await?;
+            self.reset_servers(
+                HashSet::from([s, (s + 1) % (servers.len() as u8)]),
+                true,
+            )
+            .await?;
+            time::sleep(Duration::from_millis(500)).await;
+            self.driver.connect().await?;
+            self.checked_get("Jose", Some(Some(&v))).await?;
+        }
         Ok(())
     }
 }
