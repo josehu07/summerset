@@ -809,10 +809,10 @@ impl GenericEndpoint for SimplePushClient {
             CtrlReply::QueryInfo { servers } => {
                 // connect to the one with server ID in config
                 pf_info!(self.id; "connecting to server {} '{}'...",
-                                  self.config.server_id, servers[&self.config.server_id]);
+                                  self.config.server_id, servers[&self.config.server_id].0);
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
-                    servers[&self.config.server_id],
+                    servers[&self.config.server_id].0,
                 )
                 .await?;
                 self.api_stub = Some(api_stub);

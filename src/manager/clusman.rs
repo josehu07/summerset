@@ -14,7 +14,6 @@ use crate::protocols::SmrProtocol;
 use tokio::sync::{mpsc, watch};
 
 /// Information about an active server.
-// TODO: maybe add things like leader info, etc.
 #[derive(Debug, Clone)]
 struct ServerInfo {
     /// The server's client-facing API address.
@@ -22,6 +21,9 @@ struct ServerInfo {
 
     /// The server's internal peer-peer API address.
     p2p_addr: SocketAddr,
+
+    /// This server is a leader (leader could be non-unique).
+    is_leader: bool,
 }
 
 /// Standalone cluster manager oracle.
@@ -192,9 +194,37 @@ impl ClusterManager {
         )?;
 
         // save new server's info
-        self.server_info
-            .insert(server, ServerInfo { api_addr, p2p_addr });
+        self.server_info.insert(
+            server,
+            ServerInfo {
+                api_addr,
+                p2p_addr,
+                is_leader: false,
+            },
+        );
         Ok(())
+    }
+
+    /// Handler of LeaderStatus message.
+    fn handle_leader_status(
+        &mut self,
+        server: ReplicaId,
+        step_up: bool,
+    ) -> Result<(), SummersetError> {
+        if !self.server_info.contains_key(&server) {
+            return logged_err!("m"; "leader status got unknown ID: {}", server);
+        }
+
+        // update this server's info
+        let info = self.server_info.get_mut(&server).unwrap();
+        if step_up && info.is_leader {
+            logged_err!("m"; "server {} is already marked as leader", server)
+        } else if !step_up && !info.is_leader {
+            logged_err!("m"; "server {} is already marked as non-leader", server)
+        } else {
+            info.is_leader = step_up;
+            Ok(())
+        }
     }
 
     /// Synthesized handler of server-initiated control messages.
@@ -220,6 +250,10 @@ impl ClusterManager {
                 )?;
             }
 
+            CtrlMsg::LeaderStatus { step_up } => {
+                self.handle_leader_status(server, step_up)?;
+            }
+
             _ => {} // ignore all other types
         }
 
@@ -235,10 +269,10 @@ impl ClusterManager {
         client: ClientId,
     ) -> Result<(), SummersetError> {
         // gather public addresses of all active servers
-        let servers: HashMap<ReplicaId, SocketAddr> = self
+        let servers: HashMap<ReplicaId, (SocketAddr, bool)> = self
             .server_info
             .iter()
-            .map(|(&server, info)| (server, info.api_addr))
+            .map(|(&server, info)| (server, (info.api_addr, info.is_leader)))
             .collect();
         self.client_reactor
             .send_reply(CtrlReply::QueryInfo { servers }, client)

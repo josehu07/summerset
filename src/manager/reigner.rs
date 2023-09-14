@@ -39,6 +39,9 @@ pub enum CtrlMsg {
         to_peers: HashMap<ReplicaId, SocketAddr>,
     },
 
+    /// Server -> Manager: tell the manager that I steped-up/down as leader.
+    LeaderStatus { step_up: bool },
+
     /// Manager -> Server: reset to initial state. If durable is false, cleans
     /// durable storage state as well.
     ResetState { durable: bool },

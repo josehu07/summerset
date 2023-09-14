@@ -20,7 +20,6 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Control event request from client.
-// TODO: maybe add things like leader info, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlRequest {
     /// Query the set of active servers and their info.
@@ -43,7 +42,8 @@ pub enum CtrlRequest {
 pub enum CtrlReply {
     /// Reply to server info query.
     QueryInfo {
-        servers: HashMap<ReplicaId, SocketAddr>,
+        /// Map from replica ID -> (addr, is_leader).
+        servers: HashMap<ReplicaId, (SocketAddr, bool)>,
     },
 
     /// Reply to server reset request.
@@ -448,9 +448,9 @@ mod reactor_tests {
             // send reply to client
             reactor.send_reply(
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:53700".parse()?),
-                        (1, "127.0.0.1:53701".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:53700".parse()?, true)),
+                        (1, ("127.0.0.1:53701".parse()?, false)),
                     ]),
                 },
                 client,
@@ -467,9 +467,9 @@ mod reactor_tests {
         assert_eq!(
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:53700".parse()?),
-                    (1, "127.0.0.1:53701".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:53700".parse()?, true)),
+                    (1, ("127.0.0.1:53701".parse()?, false)),
                 ]),
             }
         );
@@ -492,9 +492,9 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:54700".parse()?),
-                        (1, "127.0.0.1:54701".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:54700".parse()?, true)),
+                        (1, ("127.0.0.1:54701".parse()?, false)),
                     ]),
                 }
             );
@@ -512,9 +512,9 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:54710".parse()?),
-                        (1, "127.0.0.1:54711".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:54710".parse()?, true)),
+                        (1, ("127.0.0.1:54711".parse()?, false)),
                     ]),
                 }
             );
@@ -531,9 +531,9 @@ mod reactor_tests {
         // send reply to client
         reactor.send_reply(
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:54700".parse()?),
-                    (1, "127.0.0.1:54701".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:54700".parse()?, true)),
+                    (1, ("127.0.0.1:54701".parse()?, false)),
                 ]),
             },
             client,
@@ -546,9 +546,9 @@ mod reactor_tests {
         // send reply to new client
         reactor.send_reply(
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:54710".parse()?),
-                    (1, "127.0.0.1:54711".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:54710".parse()?, true)),
+                    (1, ("127.0.0.1:54711".parse()?, false)),
                 ]),
             },
             client2,

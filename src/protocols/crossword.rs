@@ -1145,6 +1145,8 @@ impl CrosswordReplica {
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         assert!(!self.is_leader);
         self.is_leader = true; // this starts broadcasting heartbeats
+        self.control_hub
+            .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_warn!(self.id; "becoming a leader...");
 
         // broadcast a heartbeat right now
@@ -1239,6 +1241,8 @@ impl CrosswordReplica {
         // clear my leader status if it carries a higher ballot number
         if self.is_leader && ballot > self.bal_max_seen {
             self.is_leader = false;
+            self.control_hub
+                .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
@@ -1811,13 +1815,16 @@ impl GenericEndpoint for CrosswordClient {
         match reply {
             CtrlReply::QueryInfo { servers } => {
                 // establish connection to all servers
-                for (&id, &server) in &servers {
+                self.servers = servers
+                    .into_iter()
+                    .map(|(id, info)| (id, info.0))
+                    .collect();
+                for (&id, &server) in &self.servers {
                     pf_info!(self.id; "connecting to server {} '{}'...", id, server);
                     let api_stub =
                         ClientApiStub::new_by_connect(self.id, server).await?;
                     self.api_stubs.insert(id, api_stub);
                 }
-                self.servers = servers;
                 Ok(())
             }
             _ => logged_err!(self.id; "unexpected reply type received"),
