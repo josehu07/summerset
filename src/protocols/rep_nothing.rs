@@ -218,14 +218,16 @@ impl RepNothingReplica {
         let (client, req) = &inst.reqs[cmd_idx];
         match req {
             ApiRequest::Req { id: req_id, .. } => {
-                self.external_api.send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
-                    *client,
-                )?;
+                if self.external_api.has_client(*client) {
+                    self.external_api.send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(cmd_result),
+                            redirect: None,
+                        },
+                        *client,
+                    )?;
+                }
             }
             _ => {
                 return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
@@ -535,7 +537,7 @@ pub struct RepNothingClient {
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
-    /// API stubs for communicating with servers.
+    /// API stub for communicating with the current server.
     api_stub: Option<ClientApiStub>,
 }
 
@@ -546,6 +548,7 @@ impl GenericEndpoint for RepNothingClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
+        pf_info!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -578,6 +581,8 @@ impl GenericEndpoint for RepNothingClient {
         match reply {
             CtrlReply::QueryInfo { servers } => {
                 // connect to the one with server ID in config
+                pf_info!(self.id; "connecting to server {} '{}'...",
+                                  self.config.server_id, servers[&self.config.server_id]);
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
                     servers[&self.config.server_id],
@@ -598,16 +603,9 @@ impl GenericEndpoint for RepNothingClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            let reply = api_stub.recv_reply().await?;
-            match reply {
-                ApiReply::Leave => {
-                    pf_info!(self.id; "left current server connection");
-                    api_stub.forget();
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            pf_info!(self.id; "left current server connection");
+            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -618,15 +616,8 @@ impl GenericEndpoint for RepNothingClient {
                 sent = self.ctrl_stub.send_req(None)?;
             }
 
-            let reply = self.ctrl_stub.recv_reply().await?;
-            match reply {
-                CtrlReply::Leave => {
-                    pf_info!(self.id; "left current manager connection");
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
+            pf_info!(self.id; "left manager connection");
         }
 
         Ok(())
@@ -638,14 +629,14 @@ impl GenericEndpoint for RepNothingClient {
     ) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
-            None => logged_err!(self.id; "client is not set up"),
+            None => Err(SummersetError("client not set up".into())),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
-            None => logged_err!(self.id; "client is not set up"),
+            None => Err(SummersetError("client not set up".into())),
         }
     }
 

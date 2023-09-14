@@ -554,7 +554,7 @@ where
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) {
-        pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
+        pf_debug!(me; "peer_messenger thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::with_capacity(8 + 1024);
@@ -680,7 +680,7 @@ where
         if let Err(e) = tx_exit.send(id) {
             pf_error!(me; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!(me; "peer_messenger thread for {} ({}) exitted", id, addr);
+        pf_debug!(me; "peer_messenger thread for {} '{}' exitted", id, addr);
     }
 }
 

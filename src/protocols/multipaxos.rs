@@ -137,6 +137,9 @@ struct Instance {
 
     /// Follower-side bookkeeping info.
     replica_bk: Option<ReplicaBookkeeping>,
+
+    /// True if from external client, else false.
+    external: bool,
 }
 
 /// Stable storage log entry type.
@@ -362,6 +365,7 @@ impl MultiPaxosReplica {
                     accept_acks: Bitmap::new(self.population, false),
                 }),
                 replica_bk: None,
+                external: true,
             };
             self.insts.push(new_inst);
         }
@@ -607,6 +611,7 @@ impl MultiPaxosReplica {
                     reqs: Vec::new(),
                     leader_bk: None,
                     replica_bk: None,
+                    external: false,
                 });
             }
             let inst = &mut self.insts[slot];
@@ -736,6 +741,7 @@ impl MultiPaxosReplica {
                     reqs: Vec::new(),
                     leader_bk: None,
                     replica_bk: None,
+                    external: false,
                 });
             }
             let inst = &mut self.insts[slot];
@@ -839,6 +845,7 @@ impl MultiPaxosReplica {
                 reqs: Vec::new(),
                 leader_bk: None,
                 replica_bk: None,
+                external: false,
             });
         }
         let inst = &mut self.insts[slot];
@@ -910,7 +917,7 @@ impl MultiPaxosReplica {
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
-            if self.external_api.has_client(client) {
+            if inst.external && self.external_api.has_client(client) {
                 self.external_api.send_reply(
                     ApiReply::Reply {
                         id: *req_id,
@@ -1124,6 +1131,7 @@ impl MultiPaxosReplica {
                         reqs: Vec::new(),
                         leader_bk: None,
                         replica_bk: None,
+                        external: false,
                     });
                 }
                 // update instance state
@@ -1149,6 +1157,7 @@ impl MultiPaxosReplica {
                         reqs: Vec::new(),
                         leader_bk: None,
                         replica_bk: None,
+                        external: false,
                     });
                 }
                 // update instance state
@@ -1520,17 +1529,17 @@ pub struct MultiPaxosClient {
     /// Configuration parameters struct.
     _config: ClientConfigMultiPaxos,
 
-    /// Cached list of active servers information.
+    /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
 
-    /// Current server ID to connect to.
+    /// Current server ID to talk to.
     server_id: ReplicaId,
 
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
     /// API stubs for communicating with servers.
-    api_stub: Option<ClientApiStub>,
+    api_stubs: HashMap<ReplicaId, ClientApiStub>,
 }
 
 #[async_trait]
@@ -1540,6 +1549,7 @@ impl GenericEndpoint for MultiPaxosClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
+        pf_info!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -1554,13 +1564,13 @@ impl GenericEndpoint for MultiPaxosClient {
             servers: HashMap::new(),
             server_id: init_server_id,
             ctrl_stub,
-            api_stub: None,
+            api_stubs: HashMap::new(),
         })
     }
 
     async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
-        if self.api_stub.is_some() {
+        if !self.api_stubs.is_empty() {
             return logged_err!(self.id; "reconnecting without leaving");
         }
 
@@ -1574,13 +1584,13 @@ impl GenericEndpoint for MultiPaxosClient {
         let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
             CtrlReply::QueryInfo { servers } => {
-                // connect to the one with server ID in config
-                let api_stub = ClientApiStub::new_by_connect(
-                    self.id,
-                    servers[&self.server_id],
-                )
-                .await?;
-                self.api_stub = Some(api_stub);
+                // establish connection to all servers
+                for (&id, &server) in &servers {
+                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
+                    let api_stub =
+                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    self.api_stubs.insert(id, api_stub);
+                }
                 self.servers = servers;
                 Ok(())
             }
@@ -1589,23 +1599,16 @@ impl GenericEndpoint for MultiPaxosClient {
     }
 
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
-        // send leave notification to current connected server
-        if let Some(mut api_stub) = self.api_stub.take() {
+        // send leave notification to all servers
+        for (id, mut api_stub) in self.api_stubs.drain() {
             let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
             while !sent {
                 sent = api_stub.send_req(None)?;
             }
 
-            let reply = api_stub.recv_reply().await?;
-            match reply {
-                ApiReply::Leave => {
-                    pf_info!(self.id; "left current server connection");
-                    api_stub.forget();
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            pf_info!(self.id; "left server connection {}", id);
+            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -1616,15 +1619,8 @@ impl GenericEndpoint for MultiPaxosClient {
                 sent = self.ctrl_stub.send_req(None)?;
             }
 
-            let reply = self.ctrl_stub.recv_reply().await?;
-            match reply {
-                CtrlReply::Leave => {
-                    pf_info!(self.id; "left current manager connection");
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
+            pf_info!(self.id; "left manager connection");
         }
 
         Ok(())
@@ -1634,38 +1630,44 @@ impl GenericEndpoint for MultiPaxosClient {
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        match self.api_stub {
-            Some(ref mut api_stub) => api_stub.send_req(req),
-            None => logged_err!(self.id; "client is not set up"),
+        if self.api_stubs.contains_key(&self.server_id) {
+            self.api_stubs
+                .get_mut(&self.server_id)
+                .unwrap()
+                .send_req(req)
+        } else {
+            Err(SummersetError("client not set up".into()))
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        match self.api_stub {
-            Some(ref mut api_stub) => {
-                let reply = api_stub.recv_reply().await?;
+        if self.api_stubs.contains_key(&self.server_id) {
+            let reply = self
+                .api_stubs
+                .get_mut(&self.server_id)
+                .unwrap()
+                .recv_reply()
+                .await?;
 
-                if let ApiReply::Reply {
-                    ref result,
-                    ref redirect,
-                    ..
-                } = reply
-                {
-                    // if the current server redirects me to a different server
-                    if result.is_none() && redirect.is_some() {
-                        let redirect_id = redirect.unwrap();
-                        assert!(self.servers.contains_key(&redirect_id));
-                        self.leave(false).await?;
-                        self.server_id = redirect_id;
-                        self.connect().await?;
-                        pf_debug!(self.id; "redirected to replica {} '{}'",
-                                           redirect_id, self.servers[&redirect_id]);
-                    }
+            if let ApiReply::Reply {
+                ref result,
+                ref redirect,
+                ..
+            } = reply
+            {
+                // if the current server redirects me to a different server
+                if result.is_none() && redirect.is_some() {
+                    let redirect_id = redirect.unwrap();
+                    assert!(self.servers.contains_key(&redirect_id));
+                    self.server_id = redirect_id;
+                    pf_debug!(self.id; "redirected to replica {} '{}'",
+                                       redirect_id, self.servers[&redirect_id]);
                 }
-
-                Ok(reply)
             }
-            None => logged_err!(self.id; "client is not set up"),
+
+            Ok(reply)
+        } else {
+            Err(SummersetError("client not set up".into()))
         }
     }
 

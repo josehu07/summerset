@@ -148,13 +148,15 @@ Complete cluster management and benchmarking scripts are available in another re
 - [x] implementation of MultiPaxos
   - [x] client-side timeout/retry logic
   - [x] state persistence & restart check
-  - [ ] automatic leader election, backoffs
+  - [x] automatic leader election, backoffs
   - [ ] snapshotting & garbage collection
   - [ ] specialize read-only commands?
   - [ ] separate commit vs. exec responses?
   - [ ] membership discovery & view changes
 - [ ] implementation of Raft
 - [ ] implementation of Crossword prototype
+  - [ ] fault recovery reads
+  - [ ] follower gossiping
 - [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client

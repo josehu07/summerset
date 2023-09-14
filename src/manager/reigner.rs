@@ -333,7 +333,7 @@ impl ServerReigner {
         mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) {
-        pf_debug!("m"; "server_controller thread for {} ({}) spawned", id, addr);
+        pf_debug!("m"; "server_controller thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::new();
@@ -451,7 +451,7 @@ impl ServerReigner {
         if let Err(e) = tx_exit.send(id) {
             pf_error!("m"; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!("m"; "server_controller thread for {} ({}) exitted", id, addr);
+        pf_debug!("m"; "server_controller thread for {} '{}' exitted", id, addr);
     }
 }
 

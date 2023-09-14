@@ -378,7 +378,7 @@ impl ExternalApi {
         mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
         tx_exit: mpsc::UnboundedSender<ClientId>,
     ) {
-        pf_debug!(me; "client_servant thread for {} ({}) spawned", id, addr);
+        pf_debug!(me; "client_servant thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
@@ -477,7 +477,7 @@ impl ExternalApi {
         if let Err(e) = tx_exit.send(id) {
             pf_error!(me; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!(me; "client_servant thread for {} ({}) exitted", id, addr);
+        pf_debug!(me; "client_servant thread for {} '{}' exitted", id, addr);
     }
 }
 
