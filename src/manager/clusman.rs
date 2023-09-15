@@ -22,8 +22,11 @@ struct ServerInfo {
     /// The server's internal peer-peer API address.
     p2p_addr: SocketAddr,
 
-    /// This server is a leader (leader could be non-unique).
+    /// This server is a leader? (leader could be non-unique)
     is_leader: bool,
+
+    /// This server is currently paused?
+    is_paused: bool,
 }
 
 /// Standalone cluster manager oracle.
@@ -200,6 +203,7 @@ impl ClusterManager {
                 api_addr,
                 p2p_addr,
                 is_leader: false,
+                is_paused: false,
             },
         );
         Ok(())
@@ -332,6 +336,86 @@ impl ClusterManager {
         )
     }
 
+    /// Handler of client PauseServers request.
+    async fn handle_client_pause_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // pause specified server(s)
+        let mut pause_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            // send puase server control message to server
+            self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
+
+            // set the is_paused flag
+            assert!(self.server_info.contains_key(&s));
+            self.server_info.get_mut(&s).unwrap().is_paused = true;
+
+            // wait for dummy reply
+            let (_, reply) = self.server_reigner.recv_ctrl().await?;
+            if reply != CtrlMsg::PauseReply {
+                return logged_err!("m"; "unexpected reply type received");
+            }
+
+            pause_done.insert(s);
+        }
+
+        self.client_reactor.send_reply(
+            CtrlReply::PauseServers {
+                servers: pause_done,
+            },
+            client,
+        )
+    }
+
+    /// Handler of client ResumeServers request.
+    async fn handle_client_resume_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // resume specified server(s)
+        let mut resume_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            // send puase server control message to server
+            self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
+
+            // clear the is_paused flag
+            assert!(self.server_info.contains_key(&s));
+            self.server_info.get_mut(&s).unwrap().is_paused = false;
+
+            // wait for dummy reply
+            let (_, reply) = self.server_reigner.recv_ctrl().await?;
+            if reply != CtrlMsg::ResumeReply {
+                return logged_err!("m"; "unexpected reply type received");
+            }
+
+            resume_done.insert(s);
+        }
+
+        self.client_reactor.send_reply(
+            CtrlReply::ResumeServers {
+                servers: resume_done,
+            },
+            client,
+        )
+    }
+
     /// Synthesized handler of client-initiated control requests.
     async fn handle_ctrl_req(
         &mut self,
@@ -347,6 +431,14 @@ impl ClusterManager {
             CtrlRequest::ResetServers { servers, durable } => {
                 self.handle_client_reset_servers(client, servers, durable)
                     .await?;
+            }
+
+            CtrlRequest::PauseServers { servers } => {
+                self.handle_client_pause_servers(client, servers).await?;
+            }
+
+            CtrlRequest::ResumeServers { servers } => {
+                self.handle_client_resume_servers(client, servers).await?;
             }
 
             _ => {} // ignore all other types

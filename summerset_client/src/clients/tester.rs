@@ -27,9 +27,11 @@ lazy_static! {
     static ref ALL_TESTS: Vec<(&'static str, bool)> = vec![
         ("primitive_ops", true),
         ("client_reconnect", true),
-        ("leader_node_reset", true),
         ("non_leader_reset", true),
-        ("two_nodes_reset", false)
+        ("leader_node_reset", true),
+        ("two_nodes_reset", false),
+        ("non_leader_pause", false),
+        ("leader_node_pause", false),
     ];
 }
 
@@ -246,7 +248,7 @@ impl ClientTester {
     ) -> Result<(), SummersetError> {
         let ctrl_stub = self.driver.ctrl_stub();
 
-        // send ResetServer request to manager
+        // send ResetServers request to manager
         let req = CtrlRequest::ResetServers { servers, durable };
         let mut sent = ctrl_stub.send_req(Some(&req))?;
         while !sent {
@@ -261,21 +263,69 @@ impl ClientTester {
         }
     }
 
+    /// Pauses some server(s) in the cluster.
+    async fn pause_servers(
+        &mut self,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let ctrl_stub = self.driver.ctrl_stub();
+
+        // send PauseServers request to manager
+        let req = CtrlRequest::PauseServers { servers };
+        let mut sent = ctrl_stub.send_req(Some(&req))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        // wait for reply from manager
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::PauseServers { .. } => Ok(()),
+            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+        }
+    }
+
+    /// Resume some server(s) in the cluster.
+    #[allow(dead_code)]
+    async fn resume_servers(
+        &mut self,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let ctrl_stub = self.driver.ctrl_stub();
+
+        // send ResumeServers request to manager
+        let req = CtrlRequest::ResumeServers { servers };
+        let mut sent = ctrl_stub.send_req(Some(&req))?;
+        while !sent {
+            sent = ctrl_stub.send_req(None)?;
+        }
+
+        // wait for reply from manager
+        let reply = ctrl_stub.recv_reply().await?;
+        match reply {
+            CtrlReply::ResumeServers { .. } => Ok(()),
+            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+        }
+    }
+
     /// Runs the individual correctness test.
     async fn do_test_by_name(
         &mut self,
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        self.reset_servers(HashSet::new(), false).await?;
+        // self.reset_servers(HashSet::new(), false).await?;
+        // time::sleep(Duration::from_secs(1)).await;
         self.driver.connect().await?;
 
         let result = match name {
             "primitive_ops" => self.test_primitive_ops().await,
             "client_reconnect" => self.test_client_reconnect().await,
-            "leader_node_reset" => self.test_leader_node_reset().await,
             "non_leader_reset" => self.test_non_leader_reset().await,
+            "leader_node_reset" => self.test_leader_node_reset().await,
             "two_nodes_reset" => self.test_two_nodes_reset().await,
+            "non_leader_pause" => self.test_non_leader_pause().await,
+            "leader_node_pause" => self.test_leader_node_pause().await,
             _ => {
                 return logged_err!(self.driver.id; "unrecognized test name '{}'",
                                                    name);
@@ -361,12 +411,12 @@ impl ClientTester {
         Ok(())
     }
 
-    /// Single leader replica node crashes and restarts.
-    async fn test_leader_node_reset(&mut self) -> Result<(), SummersetError> {
+    /// Single non-leader replica node crashes and restarts.
+    async fn test_non_leader_reset(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
         self.checked_put("Jose", &v, Some(None)).await?;
         for (s, is_leader) in self.query_servers().await? {
-            if is_leader {
+            if !is_leader {
                 self.driver.leave(false).await?;
                 self.reset_servers(HashSet::from([s]), true).await?;
                 time::sleep(Duration::from_millis(500)).await;
@@ -379,11 +429,11 @@ impl ClientTester {
     }
 
     /// Single leader replica node crashes and restarts.
-    async fn test_non_leader_reset(&mut self) -> Result<(), SummersetError> {
+    async fn test_leader_node_reset(&mut self) -> Result<(), SummersetError> {
         let v = Self::gen_rand_string(8);
         self.checked_put("Jose", &v, Some(None)).await?;
         for (s, is_leader) in self.query_servers().await? {
-            if !is_leader {
+            if is_leader {
                 self.driver.leave(false).await?;
                 self.reset_servers(HashSet::from([s]), true).await?;
                 time::sleep(Duration::from_millis(500)).await;
@@ -420,6 +470,46 @@ impl ClientTester {
             time::sleep(Duration::from_millis(500)).await;
             self.driver.connect().await?;
             self.checked_get("Jose", Some(Some(&v))).await?;
+        }
+        Ok(())
+    }
+
+    /// Single non-leader replica node paused.
+    async fn test_non_leader_pause(&mut self) -> Result<(), SummersetError> {
+        let v0 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v0, Some(None)).await?;
+        time::sleep(Duration::from_millis(300)).await;
+        for (s, is_leader) in self.query_servers().await? {
+            if !is_leader {
+                self.driver.leave(false).await?;
+                self.pause_servers(HashSet::from([s])).await?;
+                time::sleep(Duration::from_secs(1)).await;
+                self.driver.connect().await?;
+                self.checked_get("Jose", Some(Some(&v0))).await?;
+                let v1 = Self::gen_rand_string(8);
+                self.checked_put("Jose", &v1, Some(Some(&v0))).await?;
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Single leader replica node paused.
+    async fn test_leader_node_pause(&mut self) -> Result<(), SummersetError> {
+        let v0 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v0, Some(None)).await?;
+        time::sleep(Duration::from_millis(300)).await;
+        for (s, is_leader) in self.query_servers().await? {
+            if is_leader {
+                self.driver.leave(false).await?;
+                self.pause_servers(HashSet::from([s])).await?;
+                time::sleep(Duration::from_secs(1)).await;
+                self.driver.connect().await?;
+                self.checked_get("Jose", Some(Some(&v0))).await?;
+                let v1 = Self::gen_rand_string(8);
+                self.checked_put("Jose", &v1, Some(Some(&v0))).await?;
+                break;
+            }
         }
         Ok(())
     }

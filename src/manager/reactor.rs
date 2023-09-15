@@ -33,6 +33,18 @@ pub enum CtrlRequest {
         durable: bool,
     },
 
+    /// Pause the specified server(s)' event loop execution.
+    PauseServers {
+        /// IDs of servers to pause. If empty, pauses all active servers.
+        servers: HashSet<ReplicaId>,
+    },
+
+    /// Resume the specified server(s)' event loop execution.
+    ResumeServers {
+        /// IDs of servers to resume. If empty, resumes all active servers.
+        servers: HashSet<ReplicaId>,
+    },
+
     /// Client leave notification.
     Leave,
 }
@@ -48,6 +60,12 @@ pub enum CtrlReply {
 
     /// Reply to server reset request.
     ResetServers { servers: HashSet<ReplicaId> },
+
+    /// Reply to server pause request.
+    PauseServers { servers: HashSet<ReplicaId> },
+
+    /// Reply to server resume request.
+    ResumeServers { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,

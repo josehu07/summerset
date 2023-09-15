@@ -437,18 +437,50 @@ impl SimplePushReplica {
         Ok(())
     }
 
+    /// Handler of Pause control message.
+    fn handle_ctrl_pause(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got pause req");
+        *paused = true;
+        self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
+        Ok(())
+    }
+
+    /// Handler of Resume control message.
+    fn handle_ctrl_resume(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got resume req");
+        *paused = false;
+        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
+        Ok(())
+    }
+
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
     async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
+        paused: &mut bool,
     ) -> Result<Option<bool>, SummersetError> {
-        // TODO: fill this when more control message types added
         match msg {
             CtrlMsg::ResetState { durable } => {
                 self.handle_ctrl_reset_state(durable).await?;
                 Ok(Some(true))
+            }
+
+            CtrlMsg::Pause => {
+                self.handle_ctrl_pause(paused)?;
+                Ok(None)
+            }
+
+            CtrlMsg::Resume => {
+                self.handle_ctrl_resume(paused)?;
+                Ok(None)
             }
 
             _ => Ok(None), // ignore all other types
@@ -642,10 +674,11 @@ impl GenericReplica for SimplePushReplica {
         self.recover_from_log().await?;
 
         // main event loop
+        let mut paused = false;
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.get_req_batch() => {
+                req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -657,7 +690,7 @@ impl GenericReplica for SimplePushReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.get_result() => {
+                log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -669,7 +702,7 @@ impl GenericReplica for SimplePushReplica {
                 },
 
                 // message from peer
-                msg = self.transport_hub.recv_msg() => {
+                msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(e) = msg {
                         pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
@@ -691,7 +724,7 @@ impl GenericReplica for SimplePushReplica {
                 }
 
                 // state machine execution result
-                cmd_result = self.state_machine.get_result() => {
+                cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;
@@ -709,7 +742,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
-                    match self.handle_ctrl_msg(ctrl_msg).await {
+                    match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
                                 pf_warn!(
