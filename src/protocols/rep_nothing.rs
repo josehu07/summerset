@@ -18,6 +18,8 @@ use crate::protocols::SmrProtocol;
 
 use async_trait::async_trait;
 
+use get_size::GetSize;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::time::Duration;
@@ -37,6 +39,10 @@ pub struct ReplicaConfigRepNothing {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
+
+    // Performance simulation params (all zeros means no perf simulation):
+    pub perf_storage_a: u64,
+    pub perf_storage_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -47,12 +53,14 @@ impl Default for ReplicaConfigRepNothing {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,
+            perf_storage_a: 0,
+            perf_storage_b: 0,
         }
     }
 }
 
 /// Log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 struct LogEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
@@ -210,14 +218,16 @@ impl RepNothingReplica {
         let (client, req) = &inst.reqs[cmd_idx];
         match req {
             ApiRequest::Req { id: req_id, .. } => {
-                self.external_api.send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
-                    *client,
-                )?;
+                if self.external_api.has_client(*client) {
+                    self.external_api.send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(cmd_result),
+                            redirect: None,
+                        },
+                        *client,
+                    )?;
+                }
             }
             _ => {
                 return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
@@ -262,21 +272,117 @@ impl RepNothingReplica {
         Ok(())
     }
 
+    /// Handler of Pause control message.
+    fn handle_ctrl_pause(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got pause req");
+        *paused = true;
+        self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
+        Ok(())
+    }
+
+    /// Handler of Resume control message.
+    fn handle_ctrl_resume(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got resume req");
+        *paused = false;
+        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
+        Ok(())
+    }
+
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
     async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
+        paused: &mut bool,
     ) -> Result<Option<bool>, SummersetError> {
-        // TODO: fill this when more control message types added
         match msg {
             CtrlMsg::ResetState { durable } => {
                 self.handle_ctrl_reset_state(durable).await?;
                 Ok(Some(true))
             }
 
+            CtrlMsg::Pause => {
+                self.handle_ctrl_pause(paused)?;
+                Ok(None)
+            }
+
+            CtrlMsg::Resume => {
+                self.handle_ctrl_resume(paused)?;
+                Ok(None)
+            }
+
             _ => Ok(None), // ignore all other types
+        }
+    }
+
+    /// Recover state from durable storage log.
+    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.log_offset, 0);
+        loop {
+            // using 0 as a special log action ID
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Read {
+                    offset: self.log_offset,
+                },
+            )?;
+            let (_, log_result) = self.storage_hub.get_result().await?;
+
+            match log_result {
+                LogResult::Read {
+                    entry: Some(entry),
+                    end_offset,
+                } => {
+                    // execute all commands on state machine synchronously
+                    for (_, req) in entry.reqs.clone() {
+                        if let ApiRequest::Req { cmd, .. } = req {
+                            // using 0 as a special command ID
+                            self.state_machine.submit_cmd(0, cmd)?;
+                            let _ = self.state_machine.get_result().await?;
+                        }
+                    }
+                    // rebuild in-memory log entry
+                    let num_reqs = entry.reqs.len();
+                    self.insts.push(Instance {
+                        reqs: entry.reqs,
+                        durable: true,
+                        execed: vec![true; num_reqs],
+                    });
+                    // update log offset
+                    self.log_offset = end_offset;
+                }
+                LogResult::Read { entry: None, .. } => {
+                    // end of log reached
+                    break;
+                }
+                _ => {
+                    return logged_err!(self.id; "unexpected log result type");
+                }
+            }
+        }
+
+        // do an extra Truncate to remove paritial entry at the end if any
+        self.storage_hub.submit_action(
+            0,
+            LogAction::Truncate {
+                offset: self.log_offset,
+            },
+        )?;
+        let (_, log_result) = self.storage_hub.get_result().await?;
+        if let LogResult::Truncate {
+            offset_ok: true, ..
+        } = log_result
+        {
+            Ok(())
+        } else {
+            logged_err!(self.id; "unexpected log result type")
         }
     }
 }
@@ -296,7 +402,8 @@ impl GenericReplica for RepNothingReplica {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
+                                    backer_path, logger_sync,
+                                    perf_storage_a, perf_storage_b)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -309,9 +416,16 @@ impl GenericReplica for RepNothingReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.backer_path),
+            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
+                None
+            } else {
+                Some((config.perf_storage_a, config.perf_storage_b))
+            },
+        )
+        .await?;
 
         // TransportHub is not needed in RepNothing
 
@@ -351,10 +465,15 @@ impl GenericReplica for RepNothingReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
+        // recover state from durable storage log
+        self.recover_from_log().await?;
+
+        // main event loop
+        let mut paused = false;
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.get_req_batch() => {
+                req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -366,7 +485,7 @@ impl GenericReplica for RepNothingReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.get_result() => {
+                log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -378,7 +497,7 @@ impl GenericReplica for RepNothingReplica {
                 },
 
                 // state machine execution result
-                cmd_result = self.state_machine.get_result() => {
+                cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;
@@ -396,7 +515,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
-                    match self.handle_ctrl_msg(ctrl_msg).await {
+                    match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
                                 pf_warn!(
@@ -451,7 +570,7 @@ pub struct RepNothingClient {
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
-    /// API stubs for communicating with servers.
+    /// API stub for communicating with the current server.
     api_stub: Option<ClientApiStub>,
 }
 
@@ -462,6 +581,7 @@ impl GenericEndpoint for RepNothingClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
+        pf_info!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -494,9 +614,11 @@ impl GenericEndpoint for RepNothingClient {
         match reply {
             CtrlReply::QueryInfo { servers } => {
                 // connect to the one with server ID in config
+                pf_info!(self.id; "connecting to server {} '{}'...",
+                                  self.config.server_id, servers[&self.config.server_id].0);
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
-                    servers[&self.config.server_id],
+                    servers[&self.config.server_id].0,
                 )
                 .await?;
                 self.api_stub = Some(api_stub);
@@ -514,16 +636,9 @@ impl GenericEndpoint for RepNothingClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            let reply = api_stub.recv_reply().await?;
-            match reply {
-                ApiReply::Leave => {
-                    pf_info!(self.id; "left current server connection");
-                    api_stub.forget();
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            pf_info!(self.id; "left current server connection");
+            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -534,15 +649,8 @@ impl GenericEndpoint for RepNothingClient {
                 sent = self.ctrl_stub.send_req(None)?;
             }
 
-            let reply = self.ctrl_stub.recv_reply().await?;
-            match reply {
-                CtrlReply::Leave => {
-                    pf_info!(self.id; "left current manager connection");
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
+            pf_info!(self.id; "left manager connection");
         }
 
         Ok(())
@@ -554,14 +662,14 @@ impl GenericEndpoint for RepNothingClient {
     ) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
-            None => logged_err!(self.id; "client is not set up"),
+            None => Err(SummersetError("client not set up".into())),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
-            None => logged_err!(self.id; "client is not set up"),
+            None => Err(SummersetError("client not set up".into())),
         }
     }
 

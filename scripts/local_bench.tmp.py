@@ -1,6 +1,13 @@
+import sys
 import os
 import subprocess
 import statistics
+
+
+PERF_STORAGE_ALPHA = 0
+PERF_STORAGE_BETA = 0
+PERF_NETWORK_ALPHA = 1000
+PERF_NETWORK_BETA = 10
 
 
 def do_cargo_build():
@@ -19,9 +26,18 @@ def run_process(cmd):
 def kill_all_matching(name, force=False):
     # print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = "killall -9" if force else "killall"
-    cmd += f" {name} > /dev/null 2>&1"
-    os.system(cmd)
+    try:
+        pgrep_cmd = f"sudo pgrep -f {name}"
+        pids = subprocess.check_output(pgrep_cmd, shell=True).decode()
+        pids = pids.strip().split("\n")
+        for pid in pids:
+            pid = pid.strip()
+            if len(pid) > 0:
+                kill_cmd = f"sudo kill -9" if force else "sudo kill"
+                kill_cmd += f" {int(pid)} > /dev/null 2>&1"
+                os.system(kill_cmd)
+    except subprocess.CalledProcessError:
+        pass
 
 
 def launch_cluster(protocol, num_replicas, config):
@@ -44,7 +60,7 @@ def wait_cluster_setup(proc, num_replicas):
 
     for line in iter(proc.stderr.readline, b""):
         l = line.decode()
-        # print(l, end="")
+        print(l, end="", file=sys.stderr)
         if "manager" not in l and "accepting clients" in l:
             replica = int(l[l.find("(") + 1 : l.find(")")])
             assert not accepting_clients[replica]
@@ -116,6 +132,9 @@ def bench_round(
         + f"s={shards_per_replica if shards_per_replica is not None else 'x':1}  "
         + f"w%={put_ratio:<3d}  {length_s:3d}s"
     )
+
+    kill_all_matching("local_client.py", force=True)
+    kill_all_matching("local_cluster.py", force=True)
     kill_all_matching("summerset_client", force=True)
     kill_all_matching("summerset_server", force=True)
     kill_all_matching("summerset_manager", force=True)
@@ -125,6 +144,12 @@ def bench_round(
         configs.append(f"fault_tolerance={fault_tolerance}")
     if shards_per_replica is not None:
         configs.append(f"shards_per_replica={shards_per_replica}")
+
+    configs.append(f"perf_storage_a={PERF_STORAGE_ALPHA}")
+    configs.append(f"perf_storage_b={PERF_STORAGE_BETA}")
+    configs.append(f"perf_network_a={PERF_NETWORK_ALPHA}")
+    configs.append(f"perf_network_b={PERF_NETWORK_BETA}")
+
     proc_cluster = launch_cluster(protocol, num_replicas, "+".join(configs))
     wait_cluster_setup(proc_cluster, num_replicas)
 

@@ -20,18 +20,29 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Control event request from client.
-// TODO: maybe add things like leader info, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
 
     /// Reset the specified server(s) to initial state.
-    ResetServer {
-        /// ID of server to reset. If `None`, resets all active servers.
-        server: Option<ReplicaId>,
+    ResetServers {
+        /// IDs of servers to reset. If empty, resets all active servers.
+        servers: HashSet<ReplicaId>,
         /// If false, cleans durable storage state as well.
         durable: bool,
+    },
+
+    /// Pause the specified server(s)' event loop execution.
+    PauseServers {
+        /// IDs of servers to pause. If empty, pauses all active servers.
+        servers: HashSet<ReplicaId>,
+    },
+
+    /// Resume the specified server(s)' event loop execution.
+    ResumeServers {
+        /// IDs of servers to resume. If empty, resumes all active servers.
+        servers: HashSet<ReplicaId>,
     },
 
     /// Client leave notification.
@@ -43,11 +54,18 @@ pub enum CtrlRequest {
 pub enum CtrlReply {
     /// Reply to server info query.
     QueryInfo {
-        servers: HashMap<ReplicaId, SocketAddr>,
+        /// Map from replica ID -> (addr, is_leader).
+        servers: HashMap<ReplicaId, (SocketAddr, bool)>,
     },
 
     /// Reply to server reset request.
-    ResetServer { servers: HashSet<ReplicaId> },
+    ResetServers { servers: HashSet<ReplicaId> },
+
+    /// Reply to server pause request.
+    PauseServers { servers: HashSet<ReplicaId> },
+
+    /// Reply to server resume request.
+    ResumeServers { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,
@@ -324,7 +342,7 @@ impl ClientReactor {
         mut rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
         tx_exit: mpsc::UnboundedSender<ClientId>,
     ) {
-        pf_debug!("m"; "client_responder thread for {} ({}) spawned", id, addr);
+        pf_debug!("m"; "client_responder thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
@@ -419,7 +437,7 @@ impl ClientReactor {
         if let Err(e) = tx_exit.send(id) {
             pf_error!("m"; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!("m"; "client_responder thread for {} ({}) exitted", id, addr);
+        pf_debug!("m"; "client_responder thread for {} '{}' exitted", id, addr);
     }
 }
 
@@ -448,9 +466,9 @@ mod reactor_tests {
             // send reply to client
             reactor.send_reply(
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:53700".parse()?),
-                        (1, "127.0.0.1:53701".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:53700".parse()?, true)),
+                        (1, ("127.0.0.1:53701".parse()?, false)),
                     ]),
                 },
                 client,
@@ -467,9 +485,9 @@ mod reactor_tests {
         assert_eq!(
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:53700".parse()?),
-                    (1, "127.0.0.1:53701".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:53700".parse()?, true)),
+                    (1, ("127.0.0.1:53701".parse()?, false)),
                 ]),
             }
         );
@@ -492,9 +510,9 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:54700".parse()?),
-                        (1, "127.0.0.1:54701".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:54700".parse()?, true)),
+                        (1, ("127.0.0.1:54701".parse()?, false)),
                     ]),
                 }
             );
@@ -512,9 +530,9 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
-                    servers: HashMap::<ReplicaId, SocketAddr>::from([
-                        (0, "127.0.0.1:54710".parse()?),
-                        (1, "127.0.0.1:54711".parse()?),
+                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                        (0, ("127.0.0.1:54710".parse()?, true)),
+                        (1, ("127.0.0.1:54711".parse()?, false)),
                     ]),
                 }
             );
@@ -531,9 +549,9 @@ mod reactor_tests {
         // send reply to client
         reactor.send_reply(
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:54700".parse()?),
-                    (1, "127.0.0.1:54701".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:54700".parse()?, true)),
+                    (1, ("127.0.0.1:54701".parse()?, false)),
                 ]),
             },
             client,
@@ -546,9 +564,9 @@ mod reactor_tests {
         // send reply to new client
         reactor.send_reply(
             CtrlReply::QueryInfo {
-                servers: HashMap::<ReplicaId, SocketAddr>::from([
-                    (0, "127.0.0.1:54710".parse()?),
-                    (1, "127.0.0.1:54711".parse()?),
+                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
+                    (0, ("127.0.0.1:54710".parse()?, true)),
+                    (1, ("127.0.0.1:54711".parse()?, false)),
                 ]),
             },
             client2,

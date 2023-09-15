@@ -155,7 +155,7 @@ mod bitmap_tests {
 
     #[test]
     fn bitmap_iter() {
-        let ref_map = vec![true, true, false, true, true];
+        let ref_map = [true, true, false, true, true];
         let mut map = Bitmap::new(5, true);
         assert!(map.set(2, false).is_ok());
         for (id, flag) in map.iter() {
