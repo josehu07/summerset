@@ -1008,7 +1008,6 @@ impl CrosswordReplica {
     }
 
     /// Handler of Commit message from leader.
-    /// TODO: take care of missing/lost Commit messages
     fn handle_msg_commit(
         &mut self,
         peer: ReplicaId,
@@ -1143,7 +1142,10 @@ impl CrosswordReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
-        assert!(!self.is_leader);
+        if self.is_leader {
+            return Ok(());
+        }
+
         self.is_leader = true; // this starts broadcasting heartbeats
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
@@ -1851,7 +1853,15 @@ impl GenericEndpoint for CrosswordClient {
 
         let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::QueryInfo { servers } => {
+            CtrlReply::QueryInfo {
+                population,
+                servers,
+            } => {
+                // shift to a new server_id if current one not active
+                assert!(!servers.is_empty());
+                while !servers.contains_key(&self.server_id) {
+                    self.server_id = (self.server_id + 1) % population;
+                }
                 // establish connection to all servers
                 self.servers = servers
                     .into_iter()
@@ -1907,7 +1917,10 @@ impl GenericEndpoint for CrosswordClient {
                 .unwrap()
                 .send_req(req)
         } else {
-            Err(SummersetError("client not set up".into()))
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 
@@ -1938,7 +1951,10 @@ impl GenericEndpoint for CrosswordClient {
 
             Ok(reply)
         } else {
-            Err(SummersetError("client not set up".into()))
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 

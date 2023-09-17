@@ -203,12 +203,16 @@ where
         offset: usize,
     ) -> Result<(Option<Ent>, usize), SummersetError> {
         if offset + 8 > file_size {
-            pf_warn!(
-                me;
-                "read header end offset {} out of file bound {}",
-                offset + 8,
-                file_size
-            );
+            if offset < file_size {
+                // suppress warning if offset == file_size to avoid excessive
+                // log lines during recovery
+                pf_warn!(
+                    me;
+                    "read header end offset {} out of file bound {}",
+                    offset + 8,
+                    file_size
+                );
+            }
             return Ok((None, offset));
         }
 

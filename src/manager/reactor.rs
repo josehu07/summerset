@@ -54,6 +54,8 @@ pub enum CtrlRequest {
 pub enum CtrlReply {
     /// Reply to server info query.
     QueryInfo {
+        /// Number of replicas in cluster.
+        population: u8,
         /// Map from replica ID -> (addr, is_leader).
         servers: HashMap<ReplicaId, (SocketAddr, bool)>,
     },
@@ -466,6 +468,7 @@ mod reactor_tests {
             // send reply to client
             reactor.send_reply(
                 CtrlReply::QueryInfo {
+                    population: 2,
                     servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
                         (0, ("127.0.0.1:53700".parse()?, true)),
                         (1, ("127.0.0.1:53701".parse()?, false)),
@@ -485,6 +488,7 @@ mod reactor_tests {
         assert_eq!(
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
+                population: 2,
                 servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
                     (0, ("127.0.0.1:53700".parse()?, true)),
                     (1, ("127.0.0.1:53701".parse()?, false)),
@@ -510,6 +514,7 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
+                    population: 2,
                     servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
                         (0, ("127.0.0.1:54700".parse()?, true)),
                         (1, ("127.0.0.1:54701".parse()?, false)),
@@ -530,9 +535,10 @@ mod reactor_tests {
             assert_eq!(
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
+                    population: 2,
                     servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:54710".parse()?, true)),
-                        (1, ("127.0.0.1:54711".parse()?, false)),
+                        (0, ("127.0.0.1:54700".parse()?, true)),
+                        (1, ("127.0.0.1:54701".parse()?, false)),
                     ]),
                 }
             );
@@ -549,6 +555,7 @@ mod reactor_tests {
         // send reply to client
         reactor.send_reply(
             CtrlReply::QueryInfo {
+                population: 2,
                 servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
                     (0, ("127.0.0.1:54700".parse()?, true)),
                     (1, ("127.0.0.1:54701".parse()?, false)),
@@ -564,9 +571,10 @@ mod reactor_tests {
         // send reply to new client
         reactor.send_reply(
             CtrlReply::QueryInfo {
+                population: 2,
                 servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:54710".parse()?, true)),
-                    (1, ("127.0.0.1:54711".parse()?, false)),
+                    (0, ("127.0.0.1:54700".parse()?, true)),
+                    (1, ("127.0.0.1:54701".parse()?, false)),
                 ]),
             },
             client2,

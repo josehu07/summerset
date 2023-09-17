@@ -839,8 +839,17 @@ impl GenericEndpoint for SimplePushClient {
 
         let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::QueryInfo { servers } => {
-                // connect to the one with server ID in config
+            CtrlReply::QueryInfo {
+                population,
+                servers,
+            } => {
+                // find a server to connect to, starting from provided server_id
+                assert!(!servers.is_empty());
+                while !servers.contains_key(&self.config.server_id) {
+                    self.config.server_id =
+                        (self.config.server_id + 1) % population;
+                }
+                // connect to that server
                 pf_info!(self.id; "connecting to server {} '{}'...",
                                   self.config.server_id, servers[&self.config.server_id].0);
                 let api_stub = ClientApiStub::new_by_connect(

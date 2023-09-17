@@ -276,10 +276,22 @@ impl ClusterManager {
         let servers: HashMap<ReplicaId, (SocketAddr, bool)> = self
             .server_info
             .iter()
-            .map(|(&server, info)| (server, (info.api_addr, info.is_leader)))
+            .filter_map(|(&server, info)| {
+                if info.is_paused {
+                    None // ignore paused servers
+                } else {
+                    Some((server, (info.api_addr, info.is_leader)))
+                }
+            })
             .collect();
-        self.client_reactor
-            .send_reply(CtrlReply::QueryInfo { servers }, client)
+
+        self.client_reactor.send_reply(
+            CtrlReply::QueryInfo {
+                population: self.population,
+                servers,
+            },
+            client,
+        )
     }
 
     /// Handler of client ResetServers request.
