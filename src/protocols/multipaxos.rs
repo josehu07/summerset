@@ -262,6 +262,19 @@ pub struct MultiPaxosReplica {
 }
 
 impl MultiPaxosReplica {
+    /// Create an empty null instance.
+    fn null_instance(&self) -> Instance {
+        Instance {
+            bal: 0,
+            status: Status::Null,
+            reqs: Vec::new(),
+            voted: (0, Vec::new()),
+            leader_bk: None,
+            replica_bk: None,
+            external: false,
+        }
+    }
+
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -358,19 +371,14 @@ impl MultiPaxosReplica {
             }
         }
         if slot == self.insts.len() {
-            let new_inst = Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: req_batch.clone(),
-                voted: (0, Vec::new()),
-                leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                }),
-                replica_bk: None,
-                external: true,
-            };
+            let mut new_inst = self.null_instance();
+            new_inst.reqs = req_batch.clone();
+            new_inst.leader_bk = Some(LeaderBookkeeping {
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: Bitmap::new(self.population, false),
+            });
+            new_inst.external = true;
             self.insts.push(new_inst);
         }
 
@@ -610,15 +618,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    voted: (0, Vec::new()),
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -741,15 +741,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    voted: (0, Vec::new()),
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -846,15 +838,7 @@ impl MultiPaxosReplica {
 
         // locate instance in memory, filling in null instances if needed
         while self.insts.len() <= slot {
-            self.insts.push(Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: Vec::new(),
-                voted: (0, Vec::new()),
-                leader_bk: None,
-                replica_bk: None,
-                external: false,
-            });
+            self.insts.push(self.null_instance());
         }
         let inst = &mut self.insts[slot];
 
@@ -1177,15 +1161,7 @@ impl MultiPaxosReplica {
             LogEntry::PrepareBal { slot, ballot } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs: Vec::new(),
-                        voted: (0, Vec::new()),
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];
@@ -1204,15 +1180,7 @@ impl MultiPaxosReplica {
             LogEntry::AcceptData { slot, ballot, reqs } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs: Vec::new(),
-                        voted: (0, Vec::new()),
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];

@@ -140,6 +140,9 @@ struct Instance {
     /// Shards of a batch of client requests.
     reqs_cw: RSCodeword<ReqBatch>,
 
+    /// Highest ballot and associated value I have accepted.
+    voted: (Ballot, RSCodeword<ReqBatch>),
+
     /// Leader-side bookkeeping info.
     leader_bk: Option<LeaderBookkeeping>,
 
@@ -270,6 +273,28 @@ pub struct CrosswordReplica {
 }
 
 impl CrosswordReplica {
+    /// Create an empty null instance.
+    fn null_instance(&self) -> Result<Instance, SummersetError> {
+        Ok(Instance {
+            bal: 0,
+            status: Status::Null,
+            reqs_cw: RSCodeword::<ReqBatch>::from_null(
+                self.quorum_cnt,
+                self.population - self.quorum_cnt,
+            )?,
+            voted: (
+                0,
+                RSCodeword::<ReqBatch>::from_null(
+                    self.quorum_cnt,
+                    self.population - self.quorum_cnt,
+                )?,
+            ),
+            leader_bk: None,
+            replica_bk: None,
+            external: false,
+        })
+    }
+
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -428,18 +453,14 @@ impl CrosswordReplica {
                 accept_acks: HashMap::new(),
             });
         } else {
-            let new_inst = Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs_cw,
-                leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: HashMap::new(),
-                }),
-                replica_bk: None,
-                external: true,
-            };
+            let mut new_inst = self.null_instance()?;
+            new_inst.reqs_cw = reqs_cw;
+            new_inst.leader_bk = Some(LeaderBookkeeping {
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: HashMap::new(),
+            });
+            new_inst.external = true;
             self.insts.push(new_inst);
         }
 
@@ -493,6 +514,18 @@ impl CrosswordReplica {
                                slot, inst.bal);
 
             // record update to largest accepted ballot and corresponding data
+            let subset_copy = inst.reqs_cw.subset_copy(
+                Bitmap::from(
+                    self.population,
+                    Self::shards_for_replica(
+                        self.id,
+                        self.population,
+                        self.config.shards_per_replica,
+                    ),
+                ),
+                false,
+            )?;
+            inst.voted = (inst.bal, subset_copy.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -500,17 +533,7 @@ impl CrosswordReplica {
                         slot,
                         ballot: inst.bal,
                         // persist only some shards on myself
-                        reqs_cw: inst.reqs_cw.subset_copy(
-                            Bitmap::from(
-                                self.population,
-                                Self::shards_for_replica(
-                                    self.id,
-                                    self.population,
-                                    self.config.shards_per_replica,
-                                ),
-                            ),
-                            false,
-                        )?,
+                        reqs_cw: subset_copy,
                     },
                     sync: self.config.logger_sync,
                 },
@@ -558,8 +581,8 @@ impl CrosswordReplica {
         pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
                            slot, self.insts[slot].bal);
         let inst = &self.insts[slot];
-        let voted = if inst.status >= Status::Accepting {
-            Some((inst.bal, inst.reqs_cw.clone()))
+        let voted = if inst.voted.0 > 0 {
+            Some(inst.voted.clone())
         } else {
             None
         };
@@ -716,17 +739,7 @@ impl CrosswordReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                        self.quorum_cnt,
-                        self.population - self.quorum_cnt,
-                    )?,
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance()?);
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -819,23 +832,25 @@ impl CrosswordReplica {
                 }
 
                 // record update to largest accepted ballot and corresponding data
+                let subset_copy = inst.reqs_cw.subset_copy(
+                    Bitmap::from(
+                        self.population,
+                        Self::shards_for_replica(
+                            self.id,
+                            self.population,
+                            self.config.shards_per_replica,
+                        ),
+                    ),
+                    false,
+                )?;
+                inst.voted = (ballot, subset_copy.clone());
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
                         entry: LogEntry::AcceptData {
                             slot,
                             ballot,
-                            reqs_cw: inst.reqs_cw.subset_copy(
-                                Bitmap::from(
-                                    self.population,
-                                    Self::shards_for_replica(
-                                        self.id,
-                                        self.population,
-                                        self.config.shards_per_replica,
-                                    ),
-                                ),
-                                false,
-                            )?,
+                            reqs_cw: subset_copy,
                         },
                         sync: self.config.logger_sync,
                     },
@@ -890,17 +905,7 @@ impl CrosswordReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                        self.quorum_cnt,
-                        self.population - self.quorum_cnt,
-                    )?,
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance()?);
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -914,6 +919,7 @@ impl CrosswordReplica {
             self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
+            inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -1017,17 +1023,7 @@ impl CrosswordReplica {
 
         // locate instance in memory, filling in null instances if needed
         while self.insts.len() <= slot {
-            self.insts.push(Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                    self.quorum_cnt,
-                    self.population - self.quorum_cnt,
-                )?,
-                leader_bk: None,
-                replica_bk: None,
-                external: false,
-            });
+            self.insts.push(self.null_instance()?);
         }
         let inst = &mut self.insts[slot];
 
@@ -1307,12 +1303,12 @@ impl CrosswordReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got resume req");
-        *paused = false;
-        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
 
         // reset leader heartbeat timer
         self.kickoff_hb_hear_timer()?;
 
+        *paused = false;
+        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
         Ok(())
     }
 
@@ -1353,17 +1349,7 @@ impl CrosswordReplica {
             LogEntry::PrepareBal { slot, ballot } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                            self.quorum_cnt,
-                            self.population - self.quorum_cnt,
-                        )?,
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance()?);
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];
@@ -1386,23 +1372,14 @@ impl CrosswordReplica {
             } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                            self.quorum_cnt,
-                            self.population - self.quorum_cnt,
-                        )?,
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance()?);
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
-                inst.reqs_cw = reqs_cw;
+                inst.reqs_cw = reqs_cw.clone();
+                inst.voted = (ballot, reqs_cw);
                 // update bal_prepared and bal_max_seen
                 if self.bal_prepared < ballot {
                     self.bal_prepared = ballot;
