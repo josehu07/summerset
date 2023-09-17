@@ -198,6 +198,16 @@ enum PeerMsg {
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
 
+    /// Recovery read from new leader to replicas.
+    Recover { slot: usize },
+
+    /// Recovery read reply from replica to leader.
+    RecoverReply {
+        slot: usize,
+        ballot: Ballot,
+        reqs_cw: RSCodeword<ReqBatch>,
+    },
+
     /// Leader activity heartbeat.
     Heartbeat { ballot: Ballot },
 }
@@ -816,8 +826,13 @@ impl CrosswordReplica {
             // instance using the request batch value constructed using shards
             // with the highest ballot number in quorum
             if leader_bk.prepare_acks.count() >= self.quorum_cnt
-                && inst.reqs_cw.avail_data_shards() >= self.quorum_cnt
+                && inst.reqs_cw.avail_shards() >= self.quorum_cnt
             {
+                if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                    // have enough shards but need reconstruction
+                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                }
+
                 inst.status = Status::Accepting;
                 pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
                                    slot, inst.bal);
@@ -1051,6 +1066,105 @@ impl CrosswordReplica {
         Ok(())
     }
 
+    /// Handler of Recover message from leader.
+    fn handle_msg_recover(
+        &mut self,
+        peer: ReplicaId,
+        slot: usize,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "received Recover <- {} for slot {}", peer, slot);
+
+        // locate instance in memory, filling in null instances if needed
+        while self.insts.len() <= slot {
+            self.insts.push(self.null_instance()?);
+        }
+        let inst = &mut self.insts[slot];
+
+        // ignore spurious duplications; also ignore if I have nothing to send back
+        if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
+            return Ok(());
+        }
+
+        // send back my ballot for this slot and the available shards
+        self.transport_hub.send_msg(
+            PeerMsg::RecoverReply {
+                slot,
+                ballot: inst.bal,
+                reqs_cw: inst.reqs_cw.clone(),
+            },
+            peer,
+        )?;
+        pf_trace!(self.id; "sent RecoverReply message for slot {} bal {}", slot, inst.bal);
+
+        Ok(())
+    }
+
+    /// Handler of Recover reply from replica.
+    fn handle_msg_recover_reply(
+        &mut self,
+        peer: ReplicaId,
+        slot: usize,
+        ballot: Ballot,
+        reqs_cw: RSCodeword<ReqBatch>,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "received RecoverReply <- {} for slot {} bal {} shards {:?}",
+                           peer, slot, ballot, reqs_cw.avail_shards_map());
+        assert!(slot < self.insts.len());
+        assert!(self.insts[slot].status >= Status::Committed);
+        let num_insts = self.insts.len();
+        let inst = &mut self.insts[slot];
+
+        // if reply not outdated and ballot is up-to-date
+        if inst.status < Status::Executed && ballot >= inst.bal {
+            // absorb the shards from this replica
+            inst.reqs_cw.absorb_other(reqs_cw)?;
+
+            // if enough shards have been gathered, can push execution forward
+            if slot == self.commit_bar {
+                while self.commit_bar < num_insts {
+                    let inst = &mut self.insts[self.commit_bar];
+                    if inst.status < Status::Committed
+                        || inst.reqs_cw.avail_shards() < self.quorum_cnt
+                    {
+                        break;
+                    }
+
+                    if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                        // have enough shards but need reconstruction
+                        inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                    }
+                    let reqs = inst.reqs_cw.get_data()?;
+
+                    // submit commands in committed instance to the state machine
+                    // for execution
+                    if reqs.is_empty() {
+                        inst.status = Status::Executed;
+                    } else {
+                        for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
+                            if let ApiRequest::Req { cmd, .. } = req {
+                                self.state_machine.submit_cmd(
+                                    Self::make_command_id(
+                                        self.commit_bar,
+                                        cmd_idx,
+                                    ),
+                                    cmd.clone(),
+                                )?;
+                            } else {
+                                continue; // ignore other types of requests
+                            }
+                        }
+                        pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                           reqs.len(), self.commit_bar);
+                    }
+
+                    self.commit_bar += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Synthesized handler of receiving message from peer.
     fn handle_msg_recv(
         &mut self,
@@ -1075,6 +1189,12 @@ impl CrosswordReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
+            PeerMsg::Recover { slot } => self.handle_msg_recover(peer, slot),
+            PeerMsg::RecoverReply {
+                slot,
+                ballot,
+                reqs_cw,
+            } => self.handle_msg_recover_reply(peer, slot, ballot, reqs_cw),
             PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
         }
     }
@@ -1155,8 +1275,8 @@ impl CrosswordReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
-        // redo Prepare phase for all in-progress instances
         for (slot, inst) in self.insts.iter_mut().enumerate() {
+            // redo Prepare phase for all in-progress instances
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
@@ -1187,6 +1307,17 @@ impl CrosswordReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+            }
+
+            // do recovery reads for all committed instances that do not
+            // hold enough available shards for reconstruction
+            if inst.status == Status::Committed
+                && inst.reqs_cw.avail_shards() < self.quorum_cnt
+            {
+                self.transport_hub
+                    .bcast_msg(PeerMsg::Recover { slot }, None)?;
+                pf_trace!(self.id; "broadcast Recover messages for slot {} bal {} shards {:?}",
+                                   slot, inst.bal, inst.reqs_cw.avail_shards_map());
             }
         }
 

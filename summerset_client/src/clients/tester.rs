@@ -235,7 +235,7 @@ impl ClientTester {
             self.driver.id;
             "client-side timeout {} ms {} times",
             self.timeout.as_millis(),
-            max_timeouts
+            max_timeouts + 1
         )
     }
 
