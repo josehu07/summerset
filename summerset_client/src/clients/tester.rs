@@ -314,8 +314,8 @@ impl ClientTester {
         name: &str,
     ) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
-        // self.reset_servers(HashSet::new(), false).await?;
-        // time::sleep(Duration::from_secs(1)).await;
+        self.reset_servers(HashSet::new(), false).await?;
+        time::sleep(Duration::from_secs(1)).await;
         self.driver.connect().await?;
 
         let result = match name {
