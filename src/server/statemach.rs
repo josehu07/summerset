@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
 
+use get_size::GetSize;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::sync::mpsc;
@@ -14,7 +16,7 @@ use tokio::task::JoinHandle;
 pub type CommandId = u64;
 
 /// Command to the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum Command {
     /// Get the value of given key.
     Get { key: String },
@@ -24,7 +26,7 @@ pub enum Command {
 }
 
 /// Command execution result returned by the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum CommandResult {
     /// `Some(value)` if key is found in state machine, else `None`.
     Get { value: Option<String> },

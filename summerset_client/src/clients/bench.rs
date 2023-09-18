@@ -1,6 +1,6 @@
 //! Benchmarking client using open-loop driver.
 
-use crate::drivers::DriverOpenLoop;
+use crate::drivers::{DriverReply, DriverOpenLoop};
 
 use lazy_static::lazy_static;
 
@@ -168,7 +168,6 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of closed-loop style benchmark.
-    #[allow(clippy::too_many_arguments)]
     async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
         // send next request
         let req_id = if self.retrying {
@@ -186,10 +185,10 @@ impl ClientBench {
         if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
 
-            if let Some((_, _, lat)) = result {
+            if let DriverReply::Success { latency, .. } = result {
                 self.reply_cnt += 1;
                 self.chunk_cnt += 1;
-                let lat_us = lat.as_secs_f64() * 1000000.0;
+                let lat_us = latency.as_secs_f64() * 1000000.0;
                 self.chunk_lats.push(lat_us);
             }
         }
@@ -198,7 +197,6 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of open-loop style benchmark.
-    #[allow(clippy::too_many_arguments)]
     async fn open_loop_iter(&mut self) -> Result<(), SummersetError> {
         tokio::select! {
             // prioritize receiving reply
@@ -206,10 +204,10 @@ impl ClientBench {
 
             // receive next reply
             result = self.driver.wait_reply() => {
-                if let Some((_, _, lat)) = result? {
+                if let DriverReply::Success { latency, .. } = result? {
                     self.reply_cnt += 1;
                     self.chunk_cnt += 1;
-                    let lat_us = lat.as_secs_f64() * 1000000.0;
+                    let lat_us = latency.as_secs_f64() * 1000000.0;
                     self.chunk_lats.push(lat_us);
 
                     if self.slowdown > 0 {

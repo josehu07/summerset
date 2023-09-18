@@ -7,12 +7,13 @@
 
 use std::collections::HashMap;
 
+use crate::drivers::DriverReply;
+
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error,
-    logged_err,
+    GenericEndpoint, ClientId, Command, ApiRequest, ApiReply, RequestId,
+    ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error, logged_err,
 };
 
 /// Open-loop driver struct.
@@ -59,21 +60,11 @@ impl DriverOpenLoop {
         self.endpoint.connect().await
     }
 
-    /// Waits for all pending replies to be received, then sends leave
-    /// notification and forgets about the current TCP connections. The leave
-    /// action is left synchronous.
+    /// Sends leave notification and forgets about the current TCP connections.
     pub async fn leave(
         &mut self,
         permanent: bool,
     ) -> Result<(), SummersetError> {
-        // loop until all pending replies have been received
-        while self.should_retry {
-            self.issue_retry()?;
-        }
-        while !self.pending_reqs.is_empty() {
-            self.wait_reply().await?;
-        }
-
         self.endpoint.leave(permanent).await
     }
 
@@ -175,43 +166,44 @@ impl DriverOpenLoop {
         }
     }
 
-    /// Waits for the next reply. Returns the request ID and:
-    ///   - `Ok(Some((id, cmd_result, latency)))` if request successful
-    ///   - `Ok(None)` if request unsuccessful, e.g., wrong leader or timeout
-    ///   - `Err(err)` if any unexpected error occurs
-    pub async fn wait_reply(
-        &mut self,
-    ) -> Result<Option<(RequestId, CommandResult, Duration)>, SummersetError>
-    {
+    /// Waits for the next reply.
+    pub async fn wait_reply(&mut self) -> Result<DriverReply, SummersetError> {
         let reply = self.recv_reply_with_timeout().await?;
         match reply {
             Some(ApiReply::Reply {
                 id: reply_id,
                 result: cmd_result,
-                ..
+                redirect,
             }) => {
                 if !self.pending_reqs.contains_key(&reply_id) {
                     logged_err!(self.id; "request ID {} not in pending set",
                                          reply_id)
                 } else {
                     let issue_ts = self.pending_reqs.remove(&reply_id).unwrap();
-                    let lat = Instant::now().duration_since(issue_ts);
+                    let latency = Instant::now().duration_since(issue_ts);
 
                     if let Some(res) = cmd_result {
-                        Ok(Some((reply_id, res, lat)))
+                        Ok(DriverReply::Success {
+                            req_id: reply_id,
+                            cmd_result: res,
+                            latency,
+                        })
+                    } else if let Some(server) = redirect {
+                        Ok(DriverReply::Redirect { server })
                     } else {
-                        Ok(None)
+                        Ok(DriverReply::Failure)
                     }
                 }
             }
 
-            None => Ok(None), // timed-out
+            None => Ok(DriverReply::Timeout),
 
             _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 
     /// Gets a mutable reference to the endpoint's control stub.
+    #[allow(dead_code)]
     pub fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         self.endpoint.ctrl_stub()
     }
