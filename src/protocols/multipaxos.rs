@@ -1359,21 +1359,6 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
-<<<<<<< HEAD
-        // setup state machine module
-        let state_machine = StateMachine::new_and_setup(id).await?;
-
-        // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
-
-        // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
-
-=======
->>>>>>> f3e7aa032ddc510296fa2bdd78ea951ee58a98c8
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
         // later peer connections

@@ -428,60 +428,6 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client ResetServer request.
-    async fn handle_client_reset_server(
-        &mut self,
-        client: ClientId,
-        server: Option<ReplicaId>,
-        durable: bool,
-    ) -> Result<(), SummersetError> {
-        let num_replicas = self.server_info.len();
-        let mut servers: Vec<ReplicaId> = if server.is_none() {
-            // all active servers
-            self.server_info.keys().copied().collect()
-        } else {
-            vec![server.unwrap()]
-        };
-
-        // reset specified server(s)
-        let mut reset_done = HashSet::new();
-        while let Some(s) = servers.pop() {
-            // send reset server control message to server
-            self.server_reigner
-                .send_ctrl(CtrlMsg::ResetState { durable }, s)?;
-
-            // remove information about this server
-            assert!(self.assigned_ids.contains(&s));
-            assert!(self.server_info.contains_key(&s));
-            self.assigned_ids.remove(&s);
-            self.server_info.remove(&s);
-
-            // wait for the new server ID assignment request from it
-            self.rx_id_assign.recv().await;
-            if let Err(e) = self.assign_server_id() {
-                return logged_err!("m"; "error assigning new server ID: {}", e);
-            }
-
-            reset_done.insert(s);
-        }
-
-        // now the reset servers should be sending NewServerJoin messages to
-        // me. Process them until all servers joined
-        while self.server_info.len() < num_replicas {
-            let (s, msg) = self.server_reigner.recv_ctrl().await?;
-            if let Err(e) = self.handle_ctrl_msg(s, msg).await {
-                pf_error!("m"; "error handling ctrl msg <- {}: {}", s, e);
-            }
-        }
-
-        self.client_reactor.send_reply(
-            CtrlReply::ResetServer {
-                servers: reset_done,
-            },
-            client,
-        )
-    }
-
     /// Synthesized handler of client-initiated control requests.
     async fn handle_ctrl_req(
         &mut self,

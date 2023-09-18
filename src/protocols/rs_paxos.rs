@@ -1776,10 +1776,6 @@ impl GenericReplica for RSPaxosReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
-
-    fn id(&self) -> ReplicaId {
-        self.id
-    }
 }
 
 /// Configuration parameters struct.
