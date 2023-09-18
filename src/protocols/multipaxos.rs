@@ -132,6 +132,9 @@ struct Instance {
     /// Batch of client requests.
     reqs: ReqBatch,
 
+    /// Highest ballot and associated value I have accepted.
+    voted: (Ballot, ReqBatch),
+
     /// Leader-side bookkeeping info.
     leader_bk: Option<LeaderBookkeeping>,
 
@@ -259,6 +262,19 @@ pub struct MultiPaxosReplica {
 }
 
 impl MultiPaxosReplica {
+    /// Create an empty null instance.
+    fn null_instance(&self) -> Instance {
+        Instance {
+            bal: 0,
+            status: Status::Null,
+            reqs: Vec::new(),
+            voted: (0, Vec::new()),
+            leader_bk: None,
+            replica_bk: None,
+            external: false,
+        }
+    }
+
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -355,18 +371,14 @@ impl MultiPaxosReplica {
             }
         }
         if slot == self.insts.len() {
-            let new_inst = Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: req_batch.clone(),
-                leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                }),
-                replica_bk: None,
-                external: true,
-            };
+            let mut new_inst = self.null_instance();
+            new_inst.reqs = req_batch.clone();
+            new_inst.leader_bk = Some(LeaderBookkeeping {
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: Bitmap::new(self.population, false),
+            });
+            new_inst.external = true;
             self.insts.push(new_inst);
         }
 
@@ -420,6 +432,7 @@ impl MultiPaxosReplica {
                                slot, inst.bal);
 
             // record update to largest accepted ballot and corresponding data
+            inst.voted = (inst.bal, req_batch.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -458,8 +471,8 @@ impl MultiPaxosReplica {
         pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
                            slot, self.insts[slot].bal);
         let inst = &self.insts[slot];
-        let voted = if inst.status >= Status::Accepting {
-            Some((inst.bal, inst.reqs.clone()))
+        let voted = if inst.voted.0 > 0 {
+            Some(inst.voted.clone())
         } else {
             None
         };
@@ -605,14 +618,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -735,14 +741,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    leader_bk: None,
-                    replica_bk: None,
-                    external: false,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -756,6 +755,7 @@ impl MultiPaxosReplica {
             self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
+            inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -829,7 +829,6 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Commit message from leader.
-    /// TODO: take care of missing/lost Commit messages
     fn handle_msg_commit(
         &mut self,
         peer: ReplicaId,
@@ -839,14 +838,7 @@ impl MultiPaxosReplica {
 
         // locate instance in memory, filling in null instances if needed
         while self.insts.len() <= slot {
-            self.insts.push(Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: Vec::new(),
-                leader_bk: None,
-                replica_bk: None,
-                external: false,
-            });
+            self.insts.push(self.null_instance());
         }
         let inst = &mut self.insts[slot];
 
@@ -958,7 +950,10 @@ impl MultiPaxosReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
-        assert!(!self.is_leader);
+        if self.is_leader {
+            return Ok(());
+        }
+
         self.is_leader = true; // this starts broadcasting heartbeats
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
@@ -1120,12 +1115,12 @@ impl MultiPaxosReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got resume req");
-        *paused = false;
-        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
 
         // reset leader heartbeat timer
         self.kickoff_hb_hear_timer()?;
 
+        *paused = false;
+        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
         Ok(())
     }
 
@@ -1166,14 +1161,7 @@ impl MultiPaxosReplica {
             LogEntry::PrepareBal { slot, ballot } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs: Vec::new(),
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];
@@ -1192,20 +1180,14 @@ impl MultiPaxosReplica {
             LogEntry::AcceptData { slot, ballot, reqs } => {
                 // locate instance in memory, filling in null instances if needed
                 while self.insts.len() <= slot {
-                    self.insts.push(Instance {
-                        bal: 0,
-                        status: Status::Null,
-                        reqs: Vec::new(),
-                        leader_bk: None,
-                        replica_bk: None,
-                        external: false,
-                    });
+                    self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot];
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
-                inst.reqs = reqs;
+                inst.reqs = reqs.clone();
+                inst.voted = (ballot, reqs);
                 // update bal_prepared and bal_max_seen
                 if self.bal_prepared < ballot {
                     self.bal_prepared = ballot;
@@ -1625,7 +1607,15 @@ impl GenericEndpoint for MultiPaxosClient {
 
         let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::QueryInfo { servers } => {
+            CtrlReply::QueryInfo {
+                population,
+                servers,
+            } => {
+                // shift to a new server_id if current one not active
+                assert!(!servers.is_empty());
+                while !servers.contains_key(&self.server_id) {
+                    self.server_id = (self.server_id + 1) % population;
+                }
                 // establish connection to all servers
                 self.servers = servers
                     .into_iter()
@@ -1681,7 +1671,10 @@ impl GenericEndpoint for MultiPaxosClient {
                 .unwrap()
                 .send_req(req)
         } else {
-            Err(SummersetError("client not set up".into()))
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 
@@ -1712,7 +1705,10 @@ impl GenericEndpoint for MultiPaxosClient {
 
             Ok(reply)
         } else {
-            Err(SummersetError("client not set up".into()))
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 
