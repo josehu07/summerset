@@ -2,7 +2,8 @@ This is a private mirror of [Summerset](https://github.com/josehu07/summerset). 
 
 [![Format check](https://github.com/josehu07/summerset-private/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Aformat)
 [![Build status](https://github.com/josehu07/summerset-private/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Abuild)
-[![Tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests)
+[![Unit tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_unit.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_unit)
+[![Proc tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_proc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 To create a branch to track public repo `main`, pull new things from it, and merge into the private `main`:
@@ -155,7 +156,7 @@ Complete cluster management and benchmarking scripts are available in another re
   - [ ] membership discovery & view changes
 - [ ] implementation of Raft
 - [ ] implementation of Crossword prototype
-  - [ ] fault recovery reads
+  - [x] fault recovery reads
   - [ ] follower gossiping
 - [x] client-side utilities
   - [x] REPL-style client
