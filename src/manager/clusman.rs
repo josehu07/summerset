@@ -14,7 +14,6 @@ use crate::protocols::SmrProtocol;
 use tokio::sync::{mpsc, watch};
 
 /// Information about an active server.
-// TODO: maybe add things like leader info, etc.
 #[derive(Debug, Clone)]
 struct ServerInfo {
     /// The server's client-facing API address.
@@ -22,6 +21,12 @@ struct ServerInfo {
 
     /// The server's internal peer-peer API address.
     p2p_addr: SocketAddr,
+
+    /// This server is a leader? (leader could be non-unique)
+    is_leader: bool,
+
+    /// This server is currently paused?
+    is_paused: bool,
 }
 
 /// Standalone cluster manager oracle.
@@ -192,9 +197,38 @@ impl ClusterManager {
         )?;
 
         // save new server's info
-        self.server_info
-            .insert(server, ServerInfo { api_addr, p2p_addr });
+        self.server_info.insert(
+            server,
+            ServerInfo {
+                api_addr,
+                p2p_addr,
+                is_leader: false,
+                is_paused: false,
+            },
+        );
         Ok(())
+    }
+
+    /// Handler of LeaderStatus message.
+    fn handle_leader_status(
+        &mut self,
+        server: ReplicaId,
+        step_up: bool,
+    ) -> Result<(), SummersetError> {
+        if !self.server_info.contains_key(&server) {
+            return logged_err!("m"; "leader status got unknown ID: {}", server);
+        }
+
+        // update this server's info
+        let info = self.server_info.get_mut(&server).unwrap();
+        if step_up && info.is_leader {
+            logged_err!("m"; "server {} is already marked as leader", server)
+        } else if !step_up && !info.is_leader {
+            logged_err!("m"; "server {} is already marked as non-leader", server)
+        } else {
+            info.is_leader = step_up;
+            Ok(())
+        }
     }
 
     /// Synthesized handler of server-initiated control messages.
@@ -220,6 +254,10 @@ impl ClusterManager {
                 )?;
             }
 
+            CtrlMsg::LeaderStatus { step_up } => {
+                self.handle_leader_status(server, step_up)?;
+            }
+
             _ => {} // ignore all other types
         }
 
@@ -235,28 +273,40 @@ impl ClusterManager {
         client: ClientId,
     ) -> Result<(), SummersetError> {
         // gather public addresses of all active servers
-        let servers: HashMap<ReplicaId, SocketAddr> = self
+        let servers: HashMap<ReplicaId, (SocketAddr, bool)> = self
             .server_info
             .iter()
-            .map(|(&server, info)| (server, info.api_addr))
+            .filter_map(|(&server, info)| {
+                if info.is_paused {
+                    None // ignore paused servers
+                } else {
+                    Some((server, (info.api_addr, info.is_leader)))
+                }
+            })
             .collect();
-        self.client_reactor
-            .send_reply(CtrlReply::QueryInfo { servers }, client)
+
+        self.client_reactor.send_reply(
+            CtrlReply::QueryInfo {
+                population: self.population,
+                servers,
+            },
+            client,
+        )
     }
 
-    /// Handler of client ResetServer request.
-    async fn handle_client_reset_server(
+    /// Handler of client ResetServers request.
+    async fn handle_client_reset_servers(
         &mut self,
         client: ClientId,
-        server: Option<ReplicaId>,
+        servers: HashSet<ReplicaId>,
         durable: bool,
     ) -> Result<(), SummersetError> {
         let num_replicas = self.server_info.len();
-        let mut servers: Vec<ReplicaId> = if server.is_none() {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
             self.server_info.keys().copied().collect()
         } else {
-            vec![server.unwrap()]
+            servers.into_iter().collect()
         };
 
         // reset specified server(s)
@@ -291,8 +341,88 @@ impl ClusterManager {
         }
 
         self.client_reactor.send_reply(
-            CtrlReply::ResetServer {
+            CtrlReply::ResetServers {
                 servers: reset_done,
+            },
+            client,
+        )
+    }
+
+    /// Handler of client PauseServers request.
+    async fn handle_client_pause_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // pause specified server(s)
+        let mut pause_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            // send puase server control message to server
+            self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
+
+            // set the is_paused flag
+            assert!(self.server_info.contains_key(&s));
+            self.server_info.get_mut(&s).unwrap().is_paused = true;
+
+            // wait for dummy reply
+            let (_, reply) = self.server_reigner.recv_ctrl().await?;
+            if reply != CtrlMsg::PauseReply {
+                return logged_err!("m"; "unexpected reply type received");
+            }
+
+            pause_done.insert(s);
+        }
+
+        self.client_reactor.send_reply(
+            CtrlReply::PauseServers {
+                servers: pause_done,
+            },
+            client,
+        )
+    }
+
+    /// Handler of client ResumeServers request.
+    async fn handle_client_resume_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // resume specified server(s)
+        let mut resume_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            // send puase server control message to server
+            self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
+
+            // clear the is_paused flag
+            assert!(self.server_info.contains_key(&s));
+            self.server_info.get_mut(&s).unwrap().is_paused = false;
+
+            // wait for dummy reply
+            let (_, reply) = self.server_reigner.recv_ctrl().await?;
+            if reply != CtrlMsg::ResumeReply {
+                return logged_err!("m"; "unexpected reply type received");
+            }
+
+            resume_done.insert(s);
+        }
+
+        self.client_reactor.send_reply(
+            CtrlReply::ResumeServers {
+                servers: resume_done,
             },
             client,
         )
@@ -310,9 +440,17 @@ impl ClusterManager {
                 self.handle_client_query_info(client)?;
             }
 
-            CtrlRequest::ResetServer { server, durable } => {
-                self.handle_client_reset_server(client, server, durable)
+            CtrlRequest::ResetServers { servers, durable } => {
+                self.handle_client_reset_servers(client, servers, durable)
                     .await?;
+            }
+
+            CtrlRequest::PauseServers { servers } => {
+                self.handle_client_pause_servers(client, servers).await?;
+            }
+
+            CtrlRequest::ResumeServers { servers } => {
+                self.handle_client_resume_servers(client, servers).await?;
             }
 
             _ => {} // ignore all other types

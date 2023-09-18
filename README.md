@@ -2,7 +2,8 @@
 
 [![Format check](https://github.com/josehu07/summerset/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Aformat)
 [![Build status](https://github.com/josehu07/summerset/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Abuild)
-[![Tests status](https://github.com/josehu07/summerset/actions/workflows/tests.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests)
+[![Unit tests status](https://github.com/josehu07/summerset/actions/workflows/tests_unit.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests_unit)
+[![Proc tests status](https://github.com/josehu07/summerset/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests_proc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
 Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
@@ -110,13 +111,6 @@ Complete cluster management and benchmarking scripts are available in another re
 - [x] event-based programming structure
 - [x] cluster manager oracle impl.
 - [x] implementation of MultiPaxos
-  - [x] client-side timeout/retry logic
-  - [ ] state persistence & restart check
-  - [ ] automatic leader election, backoffs
-  - [ ] snapshotting & garbage collection
-  - [ ] specialize read-only commands?
-  - [ ] separate commit vs. exec responses?
-  - [ ] membership discovery & view changes
 - [ ] implementation of Raft
 - [x] client-side utilities
   - [x] REPL-style client

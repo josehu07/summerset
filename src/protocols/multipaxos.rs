@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap};
+use crate::utils::{SummersetError, Bitmap, Timer};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
@@ -21,11 +21,15 @@ use crate::server::{
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
 
+use rand::prelude::*;
+
 use async_trait::async_trait;
+
+use get_size::GetSize;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::time::Duration;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
@@ -42,6 +46,21 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
+
+    /// Min timeout of not hearing any heartbeat from leader in millisecs.
+    pub hb_hear_timeout_min: u64,
+
+    /// Max timeout of not hearing any heartbeat from leader in millisecs.
+    pub hb_hear_timeout_max: u64,
+
+    /// Interval of leader sending heartbeats to followers.
+    pub hb_send_interval_ms: u64,
+
+    // Performance simulation params (all zeros means no perf simulation):
+    pub perf_storage_a: u64,
+    pub perf_storage_b: u64,
+    pub perf_network_a: u64,
+    pub perf_network_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -52,6 +71,13 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
+            hb_hear_timeout_min: 300,
+            hb_hear_timeout_max: 600,
+            hb_send_interval_ms: 50,
+            perf_storage_a: 0,
+            perf_storage_b: 0,
+            perf_network_a: 0,
+            perf_network_b: 0,
         }
     }
 }
@@ -106,15 +132,21 @@ struct Instance {
     /// Batch of client requests.
     reqs: ReqBatch,
 
+    /// Highest ballot and associated value I have accepted.
+    voted: (Ballot, ReqBatch),
+
     /// Leader-side bookkeeping info.
     leader_bk: Option<LeaderBookkeeping>,
 
     /// Follower-side bookkeeping info.
     replica_bk: Option<ReplicaBookkeeping>,
+
+    /// True if from external client, else false.
+    external: bool,
 }
 
 /// Stable storage log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum LogEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -131,7 +163,7 @@ enum LogEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare { slot: usize, ballot: Ballot },
@@ -157,6 +189,9 @@ enum PeerMsg {
 
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
+
+    /// Leader activity heartbeat.
+    Heartbeat { ballot: Ballot },
 }
 
 /// MultiPaxos server replica module.
@@ -194,6 +229,12 @@ pub struct MultiPaxosReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Timer for hearing heartbeat from leader.
+    hb_hear_timer: Timer,
+
+    /// Interval for sending heartbeat to followers.
+    hb_send_interval: Interval,
+
     /// Do I think I am the leader?
     is_leader: bool,
 
@@ -221,6 +262,19 @@ pub struct MultiPaxosReplica {
 }
 
 impl MultiPaxosReplica {
+    /// Create an empty null instance.
+    fn null_instance(&self) -> Instance {
+        Instance {
+            bal: 0,
+            status: Status::Null,
+            reqs: Vec::new(),
+            voted: (0, Vec::new()),
+            leader_bk: None,
+            replica_bk: None,
+            external: false,
+        }
+    }
+
     /// Compose a unique ballot number from base.
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
@@ -302,7 +356,6 @@ impl MultiPaxosReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
-        // TODO: maybe use a null_idx variable to better keep track of this
         let mut slot = self.insts.len();
         for s in self.commit_bar..self.insts.len() {
             let old_inst = &mut self.insts[s];
@@ -318,24 +371,18 @@ impl MultiPaxosReplica {
             }
         }
         if slot == self.insts.len() {
-            let new_inst = Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: req_batch.clone(),
-                leader_bk: Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                }),
-                replica_bk: None,
-            };
+            let mut new_inst = self.null_instance();
+            new_inst.reqs = req_batch.clone();
+            new_inst.leader_bk = Some(LeaderBookkeeping {
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: Bitmap::new(self.population, false),
+            });
+            new_inst.external = true;
             self.insts.push(new_inst);
         }
 
         // decide whether we can enter fast path for this instance
-        // TODO: remember to reset bal_prepared to 0, update bal_max_seen,
-        //       and re-handle all Preparing & Accepting instances in autonomous
-        //       Prepare initiation
         if self.bal_prepared == 0 {
             // slow case: Prepare phase not done yet. Initiate a Prepare round
             // if none is on the fly, or just wait for some Prepare reply to
@@ -385,6 +432,7 @@ impl MultiPaxosReplica {
                                slot, inst.bal);
 
             // record update to largest accepted ballot and corresponding data
+            inst.voted = (inst.bal, req_batch.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -423,8 +471,8 @@ impl MultiPaxosReplica {
         pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
                            slot, self.insts[slot].bal);
         let inst = &self.insts[slot];
-        let voted = if inst.status >= Status::Accepting {
-            Some((inst.bal, inst.reqs.clone()))
+        let voted = if inst.voted.0 > 0 {
+            Some(inst.voted.clone())
         } else {
             None
         };
@@ -570,13 +618,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    leader_bk: None,
-                    replica_bk: None,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -699,13 +741,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
             while self.insts.len() <= slot {
-                self.insts.push(Instance {
-                    bal: 0,
-                    status: Status::Null,
-                    reqs: Vec::new(),
-                    leader_bk: None,
-                    replica_bk: None,
-                });
+                self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot];
             assert!(inst.bal <= ballot);
@@ -719,6 +755,7 @@ impl MultiPaxosReplica {
             self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
+            inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
@@ -792,7 +829,6 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Commit message from leader.
-    /// TODO: take care of missing/lost Commit messages
     fn handle_msg_commit(
         &mut self,
         peer: ReplicaId,
@@ -802,13 +838,7 @@ impl MultiPaxosReplica {
 
         // locate instance in memory, filling in null instances if needed
         while self.insts.len() <= slot {
-            self.insts.push(Instance {
-                bal: 0,
-                status: Status::Null,
-                reqs: Vec::new(),
-                leader_bk: None,
-                replica_bk: None,
-            });
+            self.insts.push(self.null_instance());
         }
         let inst = &mut self.insts[slot];
 
@@ -858,6 +888,7 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
+            PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
         }
     }
 
@@ -878,7 +909,7 @@ impl MultiPaxosReplica {
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
-            if self.external_api.has_client(client) {
+            if inst.external && self.external_api.has_client(client) {
                 self.external_api.send_reply(
                     ApiReply::Reply {
                         id: *req_id,
@@ -913,6 +944,119 @@ impl MultiPaxosReplica {
             }
         }
 
+        Ok(())
+    }
+
+    /// Becomes a leader, sends self-initiated Prepare messages to followers
+    /// for all in-progress instances, and starts broadcasting heartbeats.
+    fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+        if self.is_leader {
+            return Ok(());
+        }
+
+        self.is_leader = true; // this starts broadcasting heartbeats
+        self.control_hub
+            .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
+        pf_info!(self.id; "becoming a leader...");
+
+        // broadcast a heartbeat right now
+        self.bcast_heartbeats()?;
+
+        // make a greater ballot number and invalidate all in-progress instances
+        self.bal_prepared = 0;
+        self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
+        self.bal_max_seen = self.bal_prep_sent;
+
+        // redo Prepare phase for all in-progress instances
+        for (slot, inst) in self.insts.iter_mut().enumerate() {
+            if inst.status < Status::Committed {
+                inst.bal = self.bal_prep_sent;
+                inst.status = Status::Preparing;
+                pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
+                                   slot, inst.bal);
+
+                // record update to largest prepare ballot
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogAction::Append {
+                        entry: LogEntry::PrepareBal {
+                            slot,
+                            ballot: self.bal_prep_sent,
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
+                                   slot, inst.bal);
+
+                // send Prepare messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Prepare {
+                        slot,
+                        ballot: self.bal_prep_sent,
+                    },
+                    None,
+                )?;
+                pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
+                                   slot, inst.bal);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Broadcasts heartbeats to all replicas.
+    fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        self.transport_hub.bcast_msg(
+            PeerMsg::Heartbeat {
+                ballot: self.bal_prep_sent,
+            },
+            None,
+        )?;
+        self.heard_heartbeat(self.id, self.bal_prep_sent)?;
+
+        // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
+        Ok(())
+    }
+
+    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
+    /// the hb_hear_timer.
+    fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+        let timeout_ms = thread_rng().gen_range(
+            self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
+        );
+
+        // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+        self.hb_hear_timer
+            .kickoff(Duration::from_millis(timeout_ms))?;
+        Ok(())
+    }
+
+    /// Heard a heartbeat from some other replica. If the heartbeat carries a
+    /// high enough ballot number, refreshes my hearing timer and clears my
+    /// leader status if I currently think I'm a leader.
+    fn heard_heartbeat(
+        &mut self,
+        _peer: ReplicaId,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        // ignore outdated hearbeat
+        if ballot < self.bal_max_seen {
+            return Ok(());
+        }
+
+        // reset hearing timer
+        self.kickoff_hb_hear_timer()?;
+
+        // clear my leader status if it carries a higher ballot number
+        if self.is_leader && ballot > self.bal_max_seen {
+            self.is_leader = false;
+            self.control_hub
+                .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+            pf_info!(self.id; "no longer a leader...");
+        }
+
+        // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
 
@@ -954,21 +1098,185 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
+    /// Handler of Pause control message.
+    fn handle_ctrl_pause(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got pause req");
+        *paused = true;
+        self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
+        Ok(())
+    }
+
+    /// Handler of Resume control message.
+    fn handle_ctrl_resume(
+        &mut self,
+        paused: &mut bool,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got resume req");
+
+        // reset leader heartbeat timer
+        self.kickoff_hb_hear_timer()?;
+
+        *paused = false;
+        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
+        Ok(())
+    }
+
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
     async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
+        paused: &mut bool,
     ) -> Result<Option<bool>, SummersetError> {
-        // TODO: fill this when more control message types added
         match msg {
             CtrlMsg::ResetState { durable } => {
                 self.handle_ctrl_reset_state(durable).await?;
                 Ok(Some(true))
             }
 
+            CtrlMsg::Pause => {
+                self.handle_ctrl_pause(paused)?;
+                Ok(None)
+            }
+
+            CtrlMsg::Resume => {
+                self.handle_ctrl_resume(paused)?;
+                Ok(None)
+            }
+
             _ => Ok(None), // ignore all other types
+        }
+    }
+
+    /// Apply a durable storage log entry for recovery.
+    async fn recover_apply_entry(
+        &mut self,
+        entry: LogEntry,
+    ) -> Result<(), SummersetError> {
+        match entry {
+            LogEntry::PrepareBal { slot, ballot } => {
+                // locate instance in memory, filling in null instances if needed
+                while self.insts.len() <= slot {
+                    self.insts.push(self.null_instance());
+                }
+                // update instance state
+                let inst = &mut self.insts[slot];
+                inst.bal = ballot;
+                inst.status = Status::Preparing;
+                // update bal_prep_sent and bal_max_seen, reset bal_prepared
+                if self.bal_prep_sent < ballot {
+                    self.bal_prep_sent = ballot;
+                }
+                if self.bal_max_seen < ballot {
+                    self.bal_max_seen = ballot;
+                }
+                self.bal_prepared = 0;
+            }
+
+            LogEntry::AcceptData { slot, ballot, reqs } => {
+                // locate instance in memory, filling in null instances if needed
+                while self.insts.len() <= slot {
+                    self.insts.push(self.null_instance());
+                }
+                // update instance state
+                let inst = &mut self.insts[slot];
+                inst.bal = ballot;
+                inst.status = Status::Accepting;
+                inst.reqs = reqs.clone();
+                inst.voted = (ballot, reqs);
+                // update bal_prepared and bal_max_seen
+                if self.bal_prepared < ballot {
+                    self.bal_prepared = ballot;
+                }
+                if self.bal_max_seen < ballot {
+                    self.bal_max_seen = ballot;
+                }
+                assert!(self.bal_prepared <= self.bal_prep_sent);
+            }
+
+            LogEntry::CommitSlot { slot } => {
+                assert!(slot < self.insts.len());
+                // update instance state
+                self.insts[slot].status = Status::Committed;
+                // submit commands in contiguously committed instance to the
+                // state machine
+                if slot == self.commit_bar {
+                    while self.commit_bar < self.insts.len() {
+                        let inst = &mut self.insts[self.commit_bar];
+                        if inst.status < Status::Committed {
+                            break;
+                        }
+                        // execute all commands in this instance on state machine
+                        // synchronously
+                        for (_, req) in inst.reqs.clone() {
+                            if let ApiRequest::Req { cmd, .. } = req {
+                                // using 0 as a special command ID
+                                self.state_machine.submit_cmd(0, cmd)?;
+                                let _ = self.state_machine.get_result().await?;
+                            }
+                        }
+                        // update commit_bar and exec_bar
+                        self.commit_bar += 1;
+                        self.exec_bar += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recover state from durable storage log.
+    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.log_offset, 0);
+        loop {
+            // using 0 as a special log action ID
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Read {
+                    offset: self.log_offset,
+                },
+            )?;
+            let (_, log_result) = self.storage_hub.get_result().await?;
+
+            match log_result {
+                LogResult::Read {
+                    entry: Some(entry),
+                    end_offset,
+                } => {
+                    self.recover_apply_entry(entry).await?;
+                    // update log offset
+                    self.log_offset = end_offset;
+                }
+                LogResult::Read { entry: None, .. } => {
+                    // end of log reached
+                    break;
+                }
+                _ => {
+                    return logged_err!(self.id; "unexpected log result type");
+                }
+            }
+        }
+
+        // do an extra Truncate to remove paritial entry at the end if any
+        self.storage_hub.submit_action(
+            0,
+            LogAction::Truncate {
+                offset: self.log_offset,
+            },
+        )?;
+        let (_, log_result) = self.storage_hub.get_result().await?;
+        if let LogResult::Truncate {
+            offset_ok: true, ..
+        } = log_result
+        {
+            Ok(())
+        } else {
+            logged_err!(self.id; "unexpected log result type")
         }
     }
 }
@@ -989,7 +1297,11 @@ impl GenericReplica for MultiPaxosReplica {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
                                     batch_interval_us, max_batch_size,
-                                    backer_path, logger_sync)?;
+                                    backer_path, logger_sync,
+                                    hb_hear_timeout_min, hb_hear_timeout_max,
+                                    hb_send_interval_ms,
+                                    perf_storage_a, perf_storage_b,
+                                    perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
             return logged_err!(
                 id;
@@ -997,18 +1309,55 @@ impl GenericReplica for MultiPaxosReplica {
                 config.batch_interval_us
             );
         }
+        if config.hb_hear_timeout_min < 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_min '{}'",
+                config.hb_hear_timeout_min
+            );
+        }
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_max '{}'",
+                config.hb_hear_timeout_max
+            );
+        }
+        if config.hb_send_interval_ms == 0 {
+            return logged_err!(
+                id;
+                "invalid config.hb_send_interval_ms '{}'",
+                config.hb_send_interval_ms
+            );
+        }
 
         // setup state machine module
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.backer_path),
+            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
+                None
+            } else {
+                Some((config.perf_storage_a, config.perf_storage_b))
+            },
+        )
+        .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            if config.perf_network_a == 0 && config.perf_network_b == 0 {
+                None
+            } else {
+                Some((config.perf_network_a, config.perf_network_b))
+            },
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -1043,6 +1392,10 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
+        let mut hb_send_interval =
+            time::interval(Duration::from_millis(config.hb_send_interval_ms));
+        hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -1055,6 +1408,8 @@ impl GenericReplica for MultiPaxosReplica {
             state_machine,
             storage_hub,
             transport_hub,
+            hb_hear_timer: Timer::new(),
+            hb_send_interval,
             is_leader: false,
             insts: vec![],
             bal_prep_sent: 0,
@@ -1070,15 +1425,18 @@ impl GenericReplica for MultiPaxosReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
-        // TODO: proper leader election
-        if self.id == 0 {
-            self.is_leader = true;
-        }
+        // recover state from durable storage log
+        self.recover_from_log().await?;
 
+        // kick off leader activity hearing timer
+        self.kickoff_hb_hear_timer()?;
+
+        // main event loop
+        let mut paused = false;
         loop {
             tokio::select! {
                 // client request batch
-                req_batch = self.external_api.get_req_batch() => {
+                req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
                         pf_error!(self.id; "error getting req batch: {}", e);
                         continue;
@@ -1090,7 +1448,7 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // durable logging result
-                log_result = self.storage_hub.get_result() => {
+                log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
                         pf_error!(self.id; "error getting log result: {}", e);
                         continue;
@@ -1103,7 +1461,7 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // message from peer
-                msg = self.transport_hub.recv_msg() => {
+                msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(e) = msg {
                         pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
@@ -1115,7 +1473,7 @@ impl GenericReplica for MultiPaxosReplica {
                 }
 
                 // state machine execution result
-                cmd_result = self.state_machine.get_result() => {
+                cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
                         pf_error!(self.id; "error getting cmd result: {}", e);
                         continue;
@@ -1126,6 +1484,16 @@ impl GenericReplica for MultiPaxosReplica {
                     }
                 },
 
+                // leader inactivity timeout
+                _ = self.hb_hear_timer.timeout(), if !paused => {
+                    self.become_a_leader()?;
+                },
+
+                // leader sending heartbeat
+                _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
+                    self.bcast_heartbeats()?;
+                }
+
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
                     if let Err(e) = ctrl_msg {
@@ -1133,7 +1501,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
-                    match self.handle_ctrl_msg(ctrl_msg).await {
+                    match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
                                 pf_warn!(
@@ -1185,17 +1553,17 @@ pub struct MultiPaxosClient {
     /// Configuration parameters struct.
     _config: ClientConfigMultiPaxos,
 
-    /// Cached list of active servers information.
+    /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
 
-    /// Current server ID to connect to.
+    /// Current server ID to talk to.
     server_id: ReplicaId,
 
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
     /// API stubs for communicating with servers.
-    api_stub: Option<ClientApiStub>,
+    api_stubs: HashMap<ReplicaId, ClientApiStub>,
 }
 
 #[async_trait]
@@ -1205,6 +1573,7 @@ impl GenericEndpoint for MultiPaxosClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
+        pf_info!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -1219,13 +1588,13 @@ impl GenericEndpoint for MultiPaxosClient {
             servers: HashMap::new(),
             server_id: init_server_id,
             ctrl_stub,
-            api_stub: None,
+            api_stubs: HashMap::new(),
         })
     }
 
     async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
-        if self.api_stub.is_some() {
+        if !self.api_stubs.is_empty() {
             return logged_err!(self.id; "reconnecting without leaving");
         }
 
@@ -1238,15 +1607,26 @@ impl GenericEndpoint for MultiPaxosClient {
 
         let reply = self.ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::QueryInfo { servers } => {
-                // connect to the one with server ID in config
-                let api_stub = ClientApiStub::new_by_connect(
-                    self.id,
-                    servers[&self.server_id],
-                )
-                .await?;
-                self.api_stub = Some(api_stub);
-                self.servers = servers;
+            CtrlReply::QueryInfo {
+                population,
+                servers,
+            } => {
+                // shift to a new server_id if current one not active
+                assert!(!servers.is_empty());
+                while !servers.contains_key(&self.server_id) {
+                    self.server_id = (self.server_id + 1) % population;
+                }
+                // establish connection to all servers
+                self.servers = servers
+                    .into_iter()
+                    .map(|(id, info)| (id, info.0))
+                    .collect();
+                for (&id, &server) in &self.servers {
+                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
+                    let api_stub =
+                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    self.api_stubs.insert(id, api_stub);
+                }
                 Ok(())
             }
             _ => logged_err!(self.id; "unexpected reply type received"),
@@ -1254,23 +1634,16 @@ impl GenericEndpoint for MultiPaxosClient {
     }
 
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
-        // send leave notification to current connected server
-        if let Some(mut api_stub) = self.api_stub.take() {
+        // send leave notification to all servers
+        for (id, mut api_stub) in self.api_stubs.drain() {
             let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
             while !sent {
                 sent = api_stub.send_req(None)?;
             }
 
-            let reply = api_stub.recv_reply().await?;
-            match reply {
-                ApiReply::Leave => {
-                    pf_info!(self.id; "left current server connection");
-                    api_stub.forget();
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            pf_info!(self.id; "left server connection {}", id);
+            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -1281,15 +1654,8 @@ impl GenericEndpoint for MultiPaxosClient {
                 sent = self.ctrl_stub.send_req(None)?;
             }
 
-            let reply = self.ctrl_stub.recv_reply().await?;
-            match reply {
-                CtrlReply::Leave => {
-                    pf_info!(self.id; "left current manager connection");
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
-                }
-            }
+            while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
+            pf_info!(self.id; "left manager connection");
         }
 
         Ok(())
@@ -1299,38 +1665,50 @@ impl GenericEndpoint for MultiPaxosClient {
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        match self.api_stub {
-            Some(ref mut api_stub) => api_stub.send_req(req),
-            None => logged_err!(self.id; "client is not set up"),
+        if self.api_stubs.contains_key(&self.server_id) {
+            self.api_stubs
+                .get_mut(&self.server_id)
+                .unwrap()
+                .send_req(req)
+        } else {
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        match self.api_stub {
-            Some(ref mut api_stub) => {
-                let reply = api_stub.recv_reply().await?;
+        if self.api_stubs.contains_key(&self.server_id) {
+            let reply = self
+                .api_stubs
+                .get_mut(&self.server_id)
+                .unwrap()
+                .recv_reply()
+                .await?;
 
-                if let ApiReply::Reply {
-                    ref result,
-                    ref redirect,
-                    ..
-                } = reply
-                {
-                    // if the current server redirects me to a different server
-                    if result.is_none() && redirect.is_some() {
-                        let redirect_id = redirect.unwrap();
-                        assert!(self.servers.contains_key(&redirect_id));
-                        self.leave(false).await?;
-                        self.server_id = redirect_id;
-                        self.connect().await?;
-                        pf_debug!(self.id; "redirected to replica {} '{}'",
-                                           redirect_id, self.servers[&redirect_id]);
-                    }
+            if let ApiReply::Reply {
+                ref result,
+                ref redirect,
+                ..
+            } = reply
+            {
+                // if the current server redirects me to a different server
+                if result.is_none() && redirect.is_some() {
+                    let redirect_id = redirect.unwrap();
+                    assert!(self.servers.contains_key(&redirect_id));
+                    self.server_id = redirect_id;
+                    pf_debug!(self.id; "redirected to replica {} '{}'",
+                                       redirect_id, self.servers[&redirect_id]);
                 }
-
-                Ok(reply)
             }
-            None => logged_err!(self.id; "client is not set up"),
+
+            Ok(reply)
+        } else {
+            Err(SummersetError(format!(
+                "server_id {} not in api_stubs",
+                self.server_id
+            )))
         }
     }
 

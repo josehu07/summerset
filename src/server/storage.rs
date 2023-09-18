@@ -3,9 +3,12 @@
 use std::fmt;
 use std::path::Path;
 use std::io::SeekFrom;
+use std::sync::Arc;
 
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
+
+use get_size::GetSize;
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 
@@ -16,13 +19,14 @@ use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time::{self, Duration};
 
 /// Log action ID type.
 pub type LogActionId = u64;
 
 /// Action command to the logger. File cursor will be positioned at EOF after
 /// every action.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, GetSize)]
 pub enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
@@ -45,10 +49,13 @@ pub enum LogAction<Ent> {
 }
 
 /// Action result returned by the logger.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, GetSize)]
 pub enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
-    Read { entry: Option<Ent> },
+    Read {
+        entry: Option<Ent>,
+        end_offset: usize,
+    },
 
     /// `ok` is true if offset is valid, else false. `now_size` is the size
     /// of file after this.
@@ -88,6 +95,7 @@ where
         + Clone
         + Serialize
         + DeserializeOwned
+        + GetSize
         + Send
         + Sync
         + 'static,
@@ -99,6 +107,7 @@ where
     pub async fn new_and_setup(
         me: ReplicaId,
         path: &Path,
+        perf_a_b: Option<(u64, u64)>, // performance simulation params
     ) -> Result<Self, SummersetError> {
         // prepare backing file
         if !fs::try_exists(path).await? {
@@ -111,11 +120,39 @@ where
             OpenOptions::new().read(true).write(true).open(path).await?;
         backer_file.seek(SeekFrom::End(0)).await?; // seek to EOF
 
-        let (tx_log, rx_log) = mpsc::unbounded_channel();
+        let (tx_log, mut rx_log) =
+            mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
-        let logger_handle =
-            tokio::spawn(Self::logger_thread(me, backer_file, rx_log, tx_ack));
+        // if doing performance delay simulation, add on-the-fly delay to
+        // each message received
+        let rx_log_true = if let Some((perf_a, perf_b)) = perf_a_b {
+            let (tx_log_delayed, rx_log_delayed) = mpsc::unbounded_channel();
+            let tx_log_delayed_arc = Arc::new(tx_log_delayed);
+
+            tokio::spawn(async move {
+                while let Some((id, log_action)) = rx_log.recv().await {
+                    let tx_log_delayed_clone = tx_log_delayed_arc.clone();
+                    tokio::spawn(async move {
+                        let approx_size = log_action.get_size() as u64;
+                        let delay_ns = perf_a + approx_size * perf_b;
+                        time::sleep(Duration::from_nanos(delay_ns)).await;
+                        tx_log_delayed_clone.send((id, log_action)).unwrap();
+                    });
+                }
+            });
+
+            rx_log_delayed
+        } else {
+            rx_log
+        };
+
+        let logger_handle = tokio::spawn(Self::logger_thread(
+            me,
+            backer_file,
+            rx_log_true,
+            tx_ack,
+        ));
 
         Ok(StorageHub {
             me,
@@ -164,15 +201,19 @@ where
         backer: &mut File,
         file_size: usize,
         offset: usize,
-    ) -> Result<Option<Ent>, SummersetError> {
+    ) -> Result<(Option<Ent>, usize), SummersetError> {
         if offset + 8 > file_size {
-            pf_warn!(
-                me;
-                "read header end offset {} out of file bound {}",
-                offset + 8,
-                file_size
-            );
-            return Ok(None);
+            if offset < file_size {
+                // suppress warning if offset == file_size to avoid excessive
+                // log lines during recovery
+                pf_warn!(
+                    me;
+                    "read header end offset {} out of file bound {}",
+                    offset + 8,
+                    file_size
+                );
+            }
+            return Ok((None, offset));
         }
 
         // read entry length header
@@ -182,7 +223,7 @@ where
         if offset_e > file_size {
             pf_warn!(me; "read entry invalid length {}", entry_len);
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
-            return Ok(None);
+            return Ok((None, offset));
         }
 
         // read entry content
@@ -190,7 +231,7 @@ where
         backer.read_exact(&mut entry_buf[..]).await?;
         let entry = decode_from_slice(&entry_buf)?;
         backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
-        Ok(Some(entry))
+        Ok((Some(entry), offset_e))
     }
 
     /// Write given entry to given offset.
@@ -332,9 +373,9 @@ where
     ) -> Result<LogResult<Ent>, SummersetError> {
         match action {
             LogAction::Read { offset } => {
-                Self::read_entry(me, backer, *file_size, offset)
-                    .await
-                    .map(|entry| LogResult::Read { entry })
+                Self::read_entry(me, backer, *file_size, offset).await.map(
+                    |(entry, end_offset)| LogResult::Read { entry, end_offset },
+                )
             }
             LogAction::Write {
                 entry,
@@ -426,7 +467,7 @@ mod storage_tests {
     use super::*;
     use rmp_serde::encode::to_vec as encode_to_vec;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
     struct TestEntry(String);
 
     async fn prepare_test_file(path: &str) -> Result<File, SummersetError> {
@@ -509,40 +550,45 @@ mod storage_tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-2.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let now_size =
+        let mid_size =
             StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        let now_size = StorageHub::append_entry(
+        let end_size = StorageHub::append_entry(
             0,
             &mut backer_file,
-            now_size,
+            mid_size,
             &entry,
             true,
         )
         .await?;
         assert_eq!(
-            StorageHub::read_entry(0, &mut backer_file, now_size, 0).await?,
-            Some(TestEntry("test-entry-dummy-string".into()))
+            StorageHub::read_entry(0, &mut backer_file, end_size, mid_size)
+                .await?,
+            (Some(TestEntry("test-entry-dummy-string".into())), end_size)
+        );
+        assert_eq!(
+            StorageHub::read_entry(0, &mut backer_file, end_size, 0).await?,
+            (Some(TestEntry("test-entry-dummy-string".into())), mid_size)
         );
         assert_eq!(
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_size,
-                now_size + 10
+                end_size,
+                mid_size + 10
             )
             .await?,
-            None
+            (None, mid_size + 10)
         );
         assert_eq!(
             StorageHub::<TestEntry>::read_entry(
                 0,
                 &mut backer_file,
-                now_size,
-                now_size - 4
+                mid_size,
+                mid_size - 4
             )
             .await?,
-            None
+            (None, mid_size - 4)
         );
         Ok(())
     }
@@ -649,7 +695,7 @@ mod storage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_log_ack() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-6.log");
-        let mut hub = StorageHub::new_and_setup(0, path).await?;
+        let mut hub = StorageHub::new_and_setup(0, path, None).await?;
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = encode_to_vec(&entry)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
@@ -669,7 +715,8 @@ mod storage_tests {
             (
                 1,
                 LogResult::Read {
-                    entry: Some(TestEntry("abcdefgh".into()))
+                    entry: Some(TestEntry("abcdefgh".into())),
+                    end_offset: 8 + entry_bytes.len(),
                 }
             )
         );
