@@ -128,7 +128,7 @@ struct ReplicaBookkeeping {
     source: ReplicaId,
 }
 
-/// In-memory instance containing a complete commands batch.
+/// In-memory instance containing a (possibly partial) commands batch.
 #[derive(Debug, Clone)]
 struct Instance {
     /// Ballot number.
@@ -2013,7 +2013,7 @@ impl GenericEndpoint for CrosswordClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left current manager connection");
+            pf_info!(self.id; "left manager connection");
         }
 
         Ok(())

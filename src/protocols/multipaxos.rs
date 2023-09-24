@@ -638,7 +638,7 @@ impl MultiPaxosReplica {
             assert!(now_size >= self.log_offset);
             // update first log_offset of slot
             let inst = &mut self.insts[slot - self.start_slot];
-            if inst.log_offset == 0 {
+            if inst.log_offset == 0 || inst.log_offset > self.log_offset {
                 inst.log_offset = self.log_offset;
             }
             assert!(inst.log_offset <= self.log_offset);
