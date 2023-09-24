@@ -12,7 +12,7 @@ def do_cargo_build(release):
     if release:
         cmd.append("-r")
     proc = subprocess.Popen(cmd)
-    proc.wait()
+    return proc.wait()
 
 
 def run_process(cmd, capture_stderr=False):
@@ -169,12 +169,17 @@ if __name__ == "__main__":
     kill_all_matching("summerset_server", force=True)
     kill_all_matching("summerset_manager", force=True)
 
-    # remove all existing wal files
+    # remove all existing wal log & snapshot files
     for path in Path("/tmp").glob("summerset.*.wal"):
+        path.unlink()
+    for path in Path("/tmp").glob("summerset.*.snap"):
         path.unlink()
 
     # build everything
-    do_cargo_build(args.release)
+    rc = do_cargo_build(args.release)
+    if rc != 0:
+        print("ERROR: cargo build failed")
+        sys.exit(rc)
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)

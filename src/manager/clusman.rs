@@ -12,6 +12,7 @@ use crate::client::ClientId;
 use crate::protocols::SmrProtocol;
 
 use tokio::sync::{mpsc, watch};
+use tokio::time::{self, Duration};
 
 /// Information about an active server.
 #[derive(Debug, Clone)]
@@ -357,6 +358,9 @@ impl ClusterManager {
             if let Err(e) = self.assign_server_id() {
                 return logged_err!("m"; "error assigning new server ID: {}", e);
             }
+
+            // wait a while to ensure the server's transport hub is setup
+            time::sleep(Duration::from_millis(300)).await;
 
             reset_done.insert(s);
         }

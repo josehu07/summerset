@@ -78,8 +78,8 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 300,
-            hb_hear_timeout_max: 600,
+            hb_hear_timeout_min: 600,
+            hb_hear_timeout_max: 900,
             hb_send_interval_ms: 50,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
@@ -152,6 +152,9 @@ struct Instance {
 
     /// True if from external client, else false.
     external: bool,
+
+    /// Offset of first durable WAL log entry related to this instance.
+    log_offset: usize,
 }
 
 /// Stable storage log entry type.
@@ -178,8 +181,8 @@ enum SnapEntry {
     /// this snapshot file == the start slot index of in-mem log.
     StartSlot { slot: usize },
 
-    /// Key-value pair entry to apply to the state.
-    NewKVPair { key: String, value: String },
+    /// Set of key-value pairs to apply to the state.
+    KVPairSet { pairs: HashMap<String, String> },
 }
 
 /// Peer-peer message type.
@@ -268,7 +271,7 @@ pub struct MultiPaxosReplica {
     start_slot: usize,
 
     /// Timer for taking a new autonomous snapshot.
-    snapshot_interval: Option<Interval>,
+    snapshot_interval: Interval,
 
     /// Largest ballot number that a leader has sent Prepare messages in.
     bal_prep_sent: Ballot,
@@ -304,6 +307,7 @@ impl MultiPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
+            log_offset: 0,
         }
     }
 
@@ -520,18 +524,18 @@ impl MultiPaxosReplica {
         } else {
             // on follower replica, finishing the logging of a
             // PrepareBal entry leads to sending back a Prepare reply
-            assert!(inst.replica_bk.is_some());
-            let source = inst.replica_bk.as_ref().unwrap().source;
-            self.transport_hub.send_msg(
-                PeerMsg::PrepareReply {
-                    slot,
-                    ballot: inst.bal,
-                    voted,
-                },
-                source,
-            )?;
-            pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
-                               source, slot, inst.bal);
+            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+                self.transport_hub.send_msg(
+                    PeerMsg::PrepareReply {
+                        slot,
+                        ballot: inst.bal,
+                        voted,
+                    },
+                    source,
+                )?;
+                pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
+                                   source, slot, inst.bal);
+            }
         }
 
         Ok(())
@@ -557,17 +561,17 @@ impl MultiPaxosReplica {
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            assert!(inst.replica_bk.is_some());
-            let source = inst.replica_bk.as_ref().unwrap().source;
-            self.transport_hub.send_msg(
-                PeerMsg::AcceptReply {
-                    slot,
-                    ballot: inst.bal,
-                },
-                source,
-            )?;
-            pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
-                               source, slot, inst.bal);
+            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+                self.transport_hub.send_msg(
+                    PeerMsg::AcceptReply {
+                        slot,
+                        ballot: inst.bal,
+                    },
+                    source,
+                )?;
+                pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
+                                   source, slot, inst.bal);
+            }
         }
 
         Ok(())
@@ -583,7 +587,6 @@ impl MultiPaxosReplica {
         }
         pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
                            slot, self.insts[slot - self.start_slot].bal);
-        assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
@@ -633,6 +636,13 @@ impl MultiPaxosReplica {
 
         if let LogResult::Append { now_size } = log_result {
             assert!(now_size >= self.log_offset);
+            // update first log_offset of slot
+            let inst = &mut self.insts[slot - self.start_slot];
+            if inst.log_offset == 0 {
+                inst.log_offset = self.log_offset;
+            }
+            assert!(inst.log_offset <= self.log_offset);
+            // then update self.log_offset
             self.log_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
@@ -712,7 +722,10 @@ impl MultiPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if (inst.status != Status::Preparing) || (ballot < inst.bal) {
+            if !self.is_leader
+                || (inst.status != Status::Preparing)
+                || (ballot < inst.bal)
+            {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
@@ -842,7 +855,10 @@ impl MultiPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if (inst.status != Status::Accepting) || (ballot < inst.bal) {
+            if !self.is_leader
+                || (inst.status != Status::Accepting)
+                || (ballot < inst.bal)
+            {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
@@ -1039,6 +1055,11 @@ impl MultiPaxosReplica {
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
+                inst.leader_bk = Some(LeaderBookkeeping {
+                    prepare_acks: Bitmap::new(self.population, false),
+                    prepare_max_bal: 0,
+                    accept_acks: Bitmap::new(self.population, false),
+                });
                 pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
                                    slot, inst.bal);
 
@@ -1132,6 +1153,8 @@ impl MultiPaxosReplica {
         &mut self,
         durable: bool,
     ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got restart req");
+
         // send leave notification to peers and wait for their replies
         self.transport_hub.leave().await?;
 
@@ -1273,6 +1296,11 @@ impl MultiPaxosReplica {
                 inst.status = Status::Accepting;
                 inst.reqs = reqs.clone();
                 inst.voted = (ballot, reqs);
+                // it could be the case that the PrepareBal action for this
+                // ballot has been snapshotted
+                if self.bal_prep_sent < ballot {
+                    self.bal_prep_sent = ballot;
+                }
                 // update bal_prepared and bal_max_seen
                 if self.bal_prepared < ballot {
                     self.bal_prepared = ballot;
@@ -1367,123 +1395,9 @@ impl MultiPaxosReplica {
     }
 
     /// Dump a new key-value pair to snapshot file.
-    async fn snapshot_dump_kv_pair(
-        &mut self,
-        key: String,
-        value: String,
-    ) -> Result<(), SummersetError> {
-        self.snapshot_hub.submit_action(
-            0, // using 0 as dummy log action ID
-            LogAction::Append {
-                entry: SnapEntry::NewKVPair { key, value },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        let (_, log_result) = self.snapshot_hub.get_result().await?;
-        if let LogResult::Write {
-            offset_ok: true,
-            now_size,
-        } = log_result
-        {
-            self.snap_offset = now_size;
-            Ok(())
-        } else {
-            logged_err!(
-                self.id;
-                "unexpected log result type or failed write"
-            )
-        }
-    }
-
-    /// Squash the durable WAL log, discarding everything older than start_slot.
-    async fn snapshot_squash_log(&mut self) -> Result<(), SummersetError> {
-        // read entries until one >= start_slot found
-        let mut cut_offset = 0;
-        loop {
-            self.storage_hub.submit_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Read { offset: cut_offset },
-            )?;
-
-            let mut found = false;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id != 0 {
-                    // normal log action previously in queue; process it
-                    self.handle_log_result(action_id, log_result)?;
-                } else {
-                    match log_result {
-                        LogResult::Read {
-                            entry: Some(entry),
-                            end_offset,
-                        } => {
-                            let slot = match entry {
-                                LogEntry::PrepareBal { slot, .. } => slot,
-                                LogEntry::AcceptData { slot, .. } => slot,
-                                LogEntry::CommitSlot { slot } => slot,
-                            };
-                            if slot >= self.start_slot {
-                                // first entry >= start_slot found
-                                found = true;
-                            } else {
-                                // not found yet
-                                cut_offset = end_offset;
-                            }
-                        }
-                        LogResult::Read { entry: None, .. } => {
-                            // end of WAL log
-                            found = true;
-                        }
-                        _ => {
-                            return logged_err!(self.id; "unexpected log result type");
-                        }
-                    }
-                    break;
-                }
-            }
-
-            if found {
-                break;
-            }
-        }
-
-        // discard the log before cut_offset
-        if cut_offset > 0 {
-            self.storage_hub
-                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
-            let (_, log_result) = self.storage_hub.get_result().await?;
-            if let LogResult::Discard {
-                offset_ok: true,
-                now_size,
-            } = log_result
-            {
-                assert_eq!(self.log_offset - cut_offset, now_size);
-                self.log_offset = now_size;
-            } else {
-                return logged_err!(
-                    self.id;
-                    "unexpected log result type or failed discard"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
-    /// to that index, and squash the durable WAL log file.
-    ///
-    /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot.
-    async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking a new snapshot: start {} exec {}",
-                           self.start_slot, self.exec_bar);
-        assert!(self.exec_bar >= self.start_slot);
-        if self.exec_bar == self.start_slot {
-            return Ok(());
-        }
-
-        // dump all Puts in executed instances
+    async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
+        // collect all key-value pairs put up to exec_bar
+        let mut pairs = HashMap::new();
         for slot in self.start_slot..self.exec_bar {
             let inst = &self.insts[slot - self.start_slot];
             for (_, req) in inst.reqs.clone() {
@@ -1492,19 +1406,114 @@ impl MultiPaxosReplica {
                     ..
                 } = req
                 {
-                    self.snapshot_dump_kv_pair(key, value).await?;
+                    pairs.insert(key, value);
                 }
             }
         }
+
+        // write the collection to snapshot file
+        self.snapshot_hub.submit_action(
+            0, // using 0 as dummy log action ID
+            LogAction::Append {
+                entry: SnapEntry::KVPairSet { pairs },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+        if let LogResult::Append { now_size } = log_result {
+            self.snap_offset = now_size;
+            Ok(())
+        } else {
+            logged_err!(
+                self.id;
+                "unexpected log result type"
+            )
+        }
+    }
+
+    /// Discard everything older than start_slot in durable WAL log.
+    async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
+        let cut_offset = if !self.insts.is_empty() {
+            self.insts[0].log_offset
+        } else {
+            self.log_offset
+        };
+
+        // discard the log before cut_offset
+        if cut_offset > 0 {
+            self.storage_hub
+                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
+            loop {
+                let (action_id, log_result) =
+                    self.storage_hub.get_result().await?;
+                if action_id != 0 {
+                    // normal log action previously in queue; process it
+                    self.handle_log_result(action_id, log_result)?;
+                } else {
+                    if let LogResult::Discard {
+                        offset_ok: true,
+                        now_size,
+                    } = log_result
+                    {
+                        assert_eq!(self.log_offset - cut_offset, now_size);
+                        self.log_offset = now_size;
+                    } else {
+                        return logged_err!(
+                            self.id;
+                            "unexpected log result type or failed discard"
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        // update inst.log_offset for all remaining in-mem instances
+        for inst in &mut self.insts {
+            if inst.log_offset > 0 {
+                assert!(inst.log_offset >= cut_offset);
+                inst.log_offset -= cut_offset;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
+    /// to that index as well as outdate entries in the durable WAL log file.
+    ///
+    /// NOTE: the current implementation does not guard against crashes in the
+    /// middle of taking a snapshot.
+    async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
+                           self.start_slot, self.exec_bar);
+        assert!(self.exec_bar >= self.start_slot);
+        if self.exec_bar == self.start_slot {
+            return Ok(());
+        }
+
+        // collect and dump all Puts in executed instances
+        if self.is_leader {
+            // NOTE: broadcast heartbeats here to appease followers
+            self.bcast_heartbeats()?;
+        }
+        self.snapshot_dump_kv_pairs().await?;
 
         // update start_slot and discard all in-memory log instances up to exec_bar
         self.insts.drain(0..(self.exec_bar - self.start_slot));
         self.start_slot = self.exec_bar;
 
-        // squash the durable WAL log, discarding everything older than start_slot
-        self.snapshot_squash_log().await?;
+        // discarding everything older than start_slot in WAL log
+        if self.is_leader {
+            // NOTE: broadcast heartbeats here to appease followers
+            self.bcast_heartbeats()?;
+        }
+        self.snapshot_discard_log().await?;
 
-        pf_debug!(self.id; "took new snapshot up to: start {}", self.start_slot);
+        // reset the leader heartbeat hear timer
+        self.kickoff_hb_hear_timer()?;
+
+        pf_info!(self.id; "took snapshot up to: start {}", self.start_slot);
         Ok(())
     }
 
@@ -1539,13 +1548,17 @@ impl MultiPaxosReplica {
 
                     match log_result {
                         LogResult::Read {
-                            entry: Some(SnapEntry::NewKVPair { key, value }),
+                            entry: Some(SnapEntry::KVPairSet { pairs }),
                             end_offset,
                         } => {
-                            // execute a Put command on state machine
-                            self.state_machine
-                                .submit_cmd(0, Command::Put { key, value })?;
-                            let _ = self.state_machine.get_result().await?;
+                            // execute Put commands on state machine
+                            for (key, value) in pairs {
+                                self.state_machine.submit_cmd(
+                                    0,
+                                    Command::Put { key, value },
+                                )?;
+                                let _ = self.state_machine.get_result().await?;
+                            }
                             // update snapshot file offset
                             self.snap_offset = end_offset;
                         }
@@ -1615,6 +1628,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
+                                    snapshot_path, snapshot_interval_s,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
@@ -1719,14 +1733,14 @@ impl GenericReplica for MultiPaxosReplica {
             time::interval(Duration::from_millis(config.hb_send_interval_ms));
         hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let snapshot_interval = if config.snapshot_interval_s == 0 {
-            None
-        } else {
-            let mut si =
-                time::interval(Duration::from_secs(config.snapshot_interval_s));
-            si.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            Some(si)
-        };
+        let mut snapshot_interval = time::interval(Duration::from_secs(
+            if config.snapshot_interval_s > 0 {
+                config.snapshot_interval_s
+            } else {
+                60 // dummy non-zero value to make `time::interval` happy
+            },
+        ));
+        snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         Ok(MultiPaxosReplica {
             id,
@@ -1838,8 +1852,8 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // autonomous snapshot taking timeout
-                _ = self.snapshot_interval.as_mut().unwrap().tick(), if !paused
-                        && self.snapshot_interval.is_some() => {
+                _ = self.snapshot_interval.tick(), if !paused
+                        && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
                         pf_error!(self.id; "error taking a new snapshot: {}", e);
                     } else {
@@ -1859,10 +1873,6 @@ impl GenericReplica for MultiPaxosReplica {
                     match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
-                                pf_warn!(
-                                    self.id;
-                                    "server got {} req",
-                                    if restart { "restart" } else { "shutdown" });
                                 return Ok(restart);
                             }
                         },
