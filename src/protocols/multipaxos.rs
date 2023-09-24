@@ -14,9 +14,9 @@ use std::net::SocketAddr;
 use crate::utils::{SummersetError, Bitmap, Timer};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
-    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
-    TransportHub, GenericReplica,
+    ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
+    ExternalApi, ApiRequest, ApiReply, StorageHub, LogAction, LogResult,
+    LogActionId, TransportHub, GenericReplica,
 };
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
@@ -41,7 +41,7 @@ pub struct ReplicaConfigMultiPaxos {
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
 
-    /// Path to backing file.
+    /// Path to backing log file.
     pub backer_path: String,
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
@@ -55,6 +55,13 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Interval of leader sending heartbeats to followers.
     pub hb_send_interval_ms: u64,
+
+    /// Path to snapshot file.
+    pub snapshot_path: String,
+
+    /// Snapshot self-triggering interval in secs. 0 means never trigger
+    /// snapshotting autonomously.
+    pub snapshot_interval_s: u64,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -74,6 +81,8 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_hear_timeout_min: 300,
             hb_hear_timeout_max: 600,
             hb_send_interval_ms: 50,
+            snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
+            snapshot_interval_s: 0,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -162,6 +171,17 @@ enum LogEntry {
     CommitSlot { slot: usize },
 }
 
+/// Snapshot file entry type.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+enum SnapEntry {
+    /// First entry at the start of file: number of log instances covered by
+    /// this snapshot file == the start slot index of in-mem log.
+    StartSlot { slot: usize },
+
+    /// Key-value pair entry to apply to the state.
+    NewKVPair { key: String, value: String },
+}
+
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
@@ -226,6 +246,9 @@ pub struct MultiPaxosReplica {
     /// StorageHub module.
     storage_hub: StorageHub<LogEntry>,
 
+    /// StorageHub module for the snapshot file.
+    snapshot_hub: StorageHub<SnapEntry>,
+
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
@@ -240,6 +263,12 @@ pub struct MultiPaxosReplica {
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
+
+    /// Start slot index of in-mem log after latest snapshot.
+    start_slot: usize,
+
+    /// Timer for taking a new autonomous snapshot.
+    snapshot_interval: Option<Interval>,
 
     /// Largest ballot number that a leader has sent Prepare messages in.
     bal_prep_sent: Ballot,
@@ -259,6 +288,9 @@ pub struct MultiPaxosReplica {
 
     /// Current durable log file offset.
     log_offset: usize,
+
+    /// Current durable snapshot file offset.
+    snap_offset: usize,
 }
 
 impl MultiPaxosReplica {
@@ -1124,6 +1156,19 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
+    /// Handler of TakeSnapshot control message.
+    async fn handle_ctrl_take_snapshot(
+        &mut self,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server told to take snapshot");
+        self.take_new_snapshot().await?;
+
+        self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
+            new_start: self.start_slot,
+        })?;
+        Ok(())
+    }
+
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
@@ -1145,6 +1190,11 @@ impl MultiPaxosReplica {
 
             CtrlMsg::Resume => {
                 self.handle_ctrl_resume(paused)?;
+                Ok(None)
+            }
+
+            CtrlMsg::TakeSnapshot => {
+                self.handle_ctrl_take_snapshot().await?;
                 Ok(None)
             }
 
@@ -1276,7 +1326,154 @@ impl MultiPaxosReplica {
         {
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type")
+            logged_err!(self.id; "unexpected log result type or failed truncate")
+        }
+    }
+
+    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
+    /// to that index, and squash the durable WAL log file.
+    ///
+    /// NOTE: the current implementation does not guard against crashes in the
+    /// middle of taking a snapshot.
+    async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+        pf_debug!(self.id; "taking a new snapshot: start {} exec {}",
+                           self.start_slot, self.exec_bar);
+        assert!(self.exec_bar >= self.start_slot);
+        if self.exec_bar == self.start_slot {
+            return Ok(());
+        }
+
+        // dump all Puts in executed instances
+        for slot in self.start_slot..self.exec_bar {
+            let inst = &self.insts[slot - self.start_slot];
+            for (_, req) in &inst.reqs {
+                if let ApiRequest::Req {
+                    cmd: Command::Put { key, value },
+                    ..
+                } = req
+                {
+                    self.snapshot_hub.submit_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Append {
+                            entry: SnapEntry::NewKVPair {
+                                key: key.clone(),
+                                value: value.clone(),
+                            },
+                            sync: self.config.logger_sync,
+                        },
+                    )?;
+                    let (_, log_result) =
+                        self.snapshot_hub.get_result().await?;
+                    if let LogResult::Write {
+                        offset_ok: true,
+                        now_size,
+                    } = log_result
+                    {
+                        self.snap_offset = now_size;
+                    } else {
+                        return logged_err!(
+                            self.id;
+                            "unexpected log result type or failed write"
+                        );
+                    }
+                }
+            }
+        }
+
+        // update start_slot and discard all in-memory log instances up to exec_bar
+        self.insts.drain(0..(self.exec_bar - self.start_slot));
+        self.start_slot = self.exec_bar;
+
+        // TODO: squash the durable WAL log
+
+        pf_debug!(self.id; "took new snapshot up to: start {}", self.start_slot);
+        Ok(())
+    }
+
+    /// Recover initial state from durable storage snapshot file.
+    async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.snap_offset, 0);
+
+        // first, try to read the first several bytes, which should record the
+        // start_slot index
+        self.snapshot_hub
+            .submit_action(0, LogAction::Read { offset: 0 })?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+
+        match log_result {
+            LogResult::Read {
+                entry: Some(SnapEntry::StartSlot { slot }),
+                end_offset,
+            } => {
+                self.snap_offset = end_offset;
+                self.start_slot = slot; // get start slot index of in-mem log
+
+                // repeatedly apply key-value pairs
+                loop {
+                    self.snapshot_hub.submit_action(
+                        0,
+                        LogAction::Read {
+                            offset: self.snap_offset,
+                        },
+                    )?;
+                    let (_, log_result) =
+                        self.snapshot_hub.get_result().await?;
+
+                    match log_result {
+                        LogResult::Read {
+                            entry: Some(SnapEntry::NewKVPair { key, value }),
+                            end_offset,
+                        } => {
+                            // execute a Put command on state machine
+                            self.state_machine
+                                .submit_cmd(0, Command::Put { key, value })?;
+                            let _ = self.state_machine.get_result().await?;
+                            // update snapshot file offset
+                            self.snap_offset = end_offset;
+                        }
+                        LogResult::Read { entry: None, .. } => {
+                            // end of log reached
+                            break;
+                        }
+                        _ => {
+                            return logged_err!(self.id; "unexpected log result type");
+                        }
+                    }
+                }
+
+                // tell manager about my start_slot index
+                self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
+                    new_start: self.start_slot,
+                })?;
+                Ok(())
+            }
+
+            LogResult::Read { entry: None, .. } => {
+                // snapshot file is empty. Write a 0 as start_slot and return
+                self.snapshot_hub.submit_action(
+                    0,
+                    LogAction::Write {
+                        entry: SnapEntry::StartSlot { slot: 0 },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                let (_, log_result) = self.snapshot_hub.get_result().await?;
+                if let LogResult::Write {
+                    offset_ok: true,
+                    now_size,
+                } = log_result
+                {
+                    self.snap_offset = now_size;
+                    Ok(())
+                } else {
+                    logged_err!(self.id; "unexpected log result type or failed truncate")
+                }
+            }
+
+            _ => {
+                logged_err!(self.id; "unexpected log result type")
+            }
         }
     }
 }
@@ -1383,6 +1580,14 @@ impl GenericReplica for MultiPaxosReplica {
         }
         transport_hub.wait_for_group(population).await?;
 
+        // setup snapshot hub module
+        let snapshot_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.snapshot_path),
+            None,
+        )
+        .await?;
+
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
             id,
@@ -1396,6 +1601,15 @@ impl GenericReplica for MultiPaxosReplica {
             time::interval(Duration::from_millis(config.hb_send_interval_ms));
         hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let snapshot_interval = if config.snapshot_interval_s == 0 {
+            None
+        } else {
+            let mut si =
+                time::interval(Duration::from_secs(config.snapshot_interval_s));
+            si.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            Some(si)
+        };
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -1407,17 +1621,21 @@ impl GenericReplica for MultiPaxosReplica {
             external_api,
             state_machine,
             storage_hub,
+            snapshot_hub,
             transport_hub,
             hb_hear_timer: Timer::new(),
             hb_send_interval,
             is_leader: false,
             insts: vec![],
+            start_slot: 0,
+            snapshot_interval,
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
             commit_bar: 0,
             exec_bar: 0,
             log_offset: 0,
+            snap_offset: 0,
         })
     }
 
@@ -1425,7 +1643,10 @@ impl GenericReplica for MultiPaxosReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
-        // recover state from durable storage log
+        // recover state from durable snapshot file
+        self.recover_from_snapshot().await?;
+
+        // recover the tail-piece memory log & state from durable storage log
         self.recover_from_log().await?;
 
         // kick off leader activity hearing timer
@@ -1470,7 +1691,7 @@ impl GenericReplica for MultiPaxosReplica {
                     if let Err(e) = self.handle_msg_recv(peer, msg) {
                         pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
                     }
-                }
+                },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
@@ -1486,13 +1707,29 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // leader inactivity timeout
                 _ = self.hb_hear_timer.timeout(), if !paused => {
-                    self.become_a_leader()?;
+                    if let Err(e) = self.become_a_leader() {
+                        pf_error!(self.id; "error becoming a leader: {}", e);
+                    }
                 },
 
                 // leader sending heartbeat
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
-                    self.bcast_heartbeats()?;
-                }
+                    if let Err(e) = self.bcast_heartbeats() {
+                        pf_error!(self.id; "error broadcasting heartbeats: {}", e);
+                    }
+                },
+
+                // autonomous snapshot taking timeout
+                _ = self.snapshot_interval.as_mut().unwrap().tick(), if !paused
+                        && self.snapshot_interval.is_some() => {
+                    if let Err(e) = self.take_new_snapshot().await {
+                        pf_error!(self.id; "error taking a new snapshot: {}", e);
+                    } else {
+                        self.control_hub.send_ctrl(
+                            CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
+                        )?;
+                    }
+                },
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {

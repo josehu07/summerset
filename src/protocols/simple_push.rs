@@ -721,7 +721,7 @@ impl GenericReplica for SimplePushReplica {
                         },
                     }
 
-                }
+                },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {

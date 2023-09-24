@@ -1510,7 +1510,7 @@ impl RSPaxosReplica {
         {
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type")
+            logged_err!(self.id; "unexpected log result type or failed truncate")
         }
     }
 }
@@ -1717,7 +1717,7 @@ impl GenericReplica for RSPaxosReplica {
                     if let Err(e) = self.handle_msg_recv(peer, msg) {
                         pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
                     }
-                }
+                },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
@@ -1733,13 +1733,17 @@ impl GenericReplica for RSPaxosReplica {
 
                 // leader inactivity timeout
                 _ = self.hb_hear_timer.timeout(), if !paused => {
-                    self.become_a_leader()?;
+                    if let Err(e) = self.become_a_leader() {
+                        pf_error!(self.id; "error becoming a leader: {}", e);
+                    }
                 },
 
                 // leader sending heartbeat
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
-                    self.bcast_heartbeats()?;
-                }
+                    if let Err(e) = self.bcast_heartbeats() {
+                        pf_error!(self.id; "error broadcasting heartbeats: {}", e);
+                    }
+                },
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {

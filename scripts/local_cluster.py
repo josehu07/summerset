@@ -48,13 +48,21 @@ PROTOCOL_BACKER_PATH = {
     "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
 
+PROTOCOL_SNAPSHOT_PATH = {
+    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+}
 
-def config_with_backer_path(protocol, config, replica):
+
+def config_with_file_paths(protocol, config, replica):
     result_config = PROTOCOL_BACKER_PATH[protocol](replica)
+    if protocol in PROTOCOL_SNAPSHOT_PATH:
+        result_config += "+"
+        result_config += PROTOCOL_SNAPSHOT_PATH[protocol](replica)
 
     if config is not None and len(config) > 0:
-        if "backer_path" in config:
+        if "backer_path" in config or "snapshot_path" in config:
             result_config = config  # use user-supplied path
+            # NOTE: ignores the other one
         else:
             result_config += "+"
             result_config += config
@@ -132,7 +140,7 @@ def launch_servers(protocol, num_replicas, release, config):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            config_with_backer_path(protocol, config, replica),
+            config_with_file_paths(protocol, config, replica),
             release,
         )
         proc = run_process(cmd)
