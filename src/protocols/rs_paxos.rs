@@ -1072,7 +1072,8 @@ impl RSPaxosReplica {
             },
             peer,
         )?;
-        pf_trace!(self.id; "sent ReconstructReply message for slot {} bal {}", slot, inst.bal);
+        pf_trace!(self.id; "sent ReconstructReply message for slot {} bal {}",
+                           slot, inst.bal);
 
         Ok(())
     }

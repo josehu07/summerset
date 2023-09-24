@@ -1094,7 +1094,8 @@ impl CrosswordReplica {
             },
             peer,
         )?;
-        pf_trace!(self.id; "sent RecoverReply message for slot {} bal {}", slot, inst.bal);
+        pf_trace!(self.id; "sent RecoverReply message for slot {} bal {}",
+                           slot, inst.bal);
 
         Ok(())
     }
