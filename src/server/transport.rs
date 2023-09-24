@@ -281,6 +281,18 @@ where
         }
     }
 
+    /// Try to receive the next message using `try_recv()`.
+    #[allow(dead_code)]
+    pub fn try_recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
+        match self.rx_recv.try_recv() {
+            Ok((id, peer_msg)) => match peer_msg {
+                PeerMessage::Msg { msg } => Ok((id, msg)),
+                _ => logged_err!(self.me; "unexpected peer message type"),
+            },
+            Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
+
     /// Broadcasts leave notifications to all peers and waits for replies.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
