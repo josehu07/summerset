@@ -50,6 +50,8 @@ PROTOCOL_BACKER_PATH = {
 
 PROTOCOL_SNAPSHOT_PATH = {
     "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
+    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
 }
 
 
