@@ -14,9 +14,9 @@ use std::net::SocketAddr;
 use crate::utils::{SummersetError, Bitmap, Timer};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
-    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
-    TransportHub, GenericReplica,
+    ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
+    ExternalApi, ApiRequest, ApiReply, StorageHub, LogAction, LogResult,
+    LogActionId, TransportHub, GenericReplica,
 };
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
@@ -41,7 +41,7 @@ pub struct ReplicaConfigMultiPaxos {
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
 
-    /// Path to backing file.
+    /// Path to backing log file.
     pub backer_path: String,
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
@@ -55,6 +55,13 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Interval of leader sending heartbeats to followers.
     pub hb_send_interval_ms: u64,
+
+    /// Path to snapshot file.
+    pub snapshot_path: String,
+
+    /// Snapshot self-triggering interval in secs. 0 means never trigger
+    /// snapshotting autonomously.
+    pub snapshot_interval_s: u64,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -71,9 +78,11 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 300,
-            hb_hear_timeout_max: 600,
+            hb_hear_timeout_min: 600,
+            hb_hear_timeout_max: 900,
             hb_send_interval_ms: 50,
+            snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
+            snapshot_interval_s: 0,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -143,6 +152,9 @@ struct Instance {
 
     /// True if from external client, else false.
     external: bool,
+
+    /// Offset of first durable WAL log entry related to this instance.
+    log_offset: usize,
 }
 
 /// Stable storage log entry type.
@@ -160,6 +172,17 @@ enum LogEntry {
 
     /// Records an event of committing the instance at index.
     CommitSlot { slot: usize },
+}
+
+/// Snapshot file entry type.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+enum SnapEntry {
+    /// First entry at the start of file: number of log instances covered by
+    /// this snapshot file == the start slot index of in-mem log.
+    StartSlot { slot: usize },
+
+    /// Set of key-value pairs to apply to the state.
+    KVPairSet { pairs: HashMap<String, String> },
 }
 
 /// Peer-peer message type.
@@ -191,7 +214,7 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Leader activity heartbeat.
-    Heartbeat { ballot: Ballot },
+    Heartbeat { ballot: Ballot, exec_bar: usize },
 }
 
 /// MultiPaxos server replica module.
@@ -226,6 +249,9 @@ pub struct MultiPaxosReplica {
     /// StorageHub module.
     storage_hub: StorageHub<LogEntry>,
 
+    /// StorageHub module for the snapshot file.
+    snapshot_hub: StorageHub<SnapEntry>,
+
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
@@ -241,6 +267,12 @@ pub struct MultiPaxosReplica {
     /// In-memory log of instances.
     insts: Vec<Instance>,
 
+    /// Start slot index of in-mem log after latest snapshot.
+    start_slot: usize,
+
+    /// Timer for taking a new autonomous snapshot.
+    snapshot_interval: Interval,
+
     /// Largest ballot number that a leader has sent Prepare messages in.
     bal_prep_sent: Ballot,
 
@@ -254,11 +286,14 @@ pub struct MultiPaxosReplica {
     commit_bar: usize,
 
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= insts.len()
+    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
 
     /// Current durable log file offset.
     log_offset: usize,
+
+    /// Current durable snapshot file offset.
+    snap_offset: usize,
 }
 
 impl MultiPaxosReplica {
@@ -272,6 +307,7 @@ impl MultiPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
+            log_offset: 0,
         }
     }
 
@@ -356,9 +392,9 @@ impl MultiPaxosReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
-        let mut slot = self.insts.len();
-        for s in self.commit_bar..self.insts.len() {
-            let old_inst = &mut self.insts[s];
+        let mut slot = self.start_slot + self.insts.len();
+        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+            let old_inst = &mut self.insts[s - self.start_slot];
             if old_inst.status == Status::Null {
                 old_inst.reqs = req_batch.clone();
                 old_inst.leader_bk = Some(LeaderBookkeeping {
@@ -370,7 +406,7 @@ impl MultiPaxosReplica {
                 break;
             }
         }
-        if slot == self.insts.len() {
+        if slot == self.start_slot + self.insts.len() {
             let mut new_inst = self.null_instance();
             new_inst.reqs = req_batch.clone();
             new_inst.leader_bk = Some(LeaderBookkeeping {
@@ -393,7 +429,7 @@ impl MultiPaxosReplica {
                 self.bal_max_seen = self.bal_prep_sent;
             }
 
-            let inst = &mut self.insts[slot];
+            let inst = &mut self.insts[slot - self.start_slot];
             inst.bal = self.bal_prep_sent;
             inst.status = Status::Preparing;
             pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
@@ -425,7 +461,7 @@ impl MultiPaxosReplica {
                                slot, inst.bal);
         } else {
             // normal case: Prepare phase covered, only do the Accept phase
-            let inst = &mut self.insts[slot];
+            let inst = &mut self.insts[slot - self.start_slot];
             inst.bal = self.bal_prepared;
             inst.status = Status::Accepting;
             pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
@@ -468,9 +504,12 @@ impl MultiPaxosReplica {
         &mut self,
         slot: usize,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
-                           slot, self.insts[slot].bal);
-        let inst = &self.insts[slot];
+                           slot, self.insts[slot - self.start_slot].bal);
+        let inst = &self.insts[slot - self.start_slot];
         let voted = if inst.voted.0 > 0 {
             Some(inst.voted.clone())
         } else {
@@ -485,18 +524,18 @@ impl MultiPaxosReplica {
         } else {
             // on follower replica, finishing the logging of a
             // PrepareBal entry leads to sending back a Prepare reply
-            assert!(inst.replica_bk.is_some());
-            let source = inst.replica_bk.as_ref().unwrap().source;
-            self.transport_hub.send_msg(
-                PeerMsg::PrepareReply {
-                    slot,
-                    ballot: inst.bal,
-                    voted,
-                },
-                source,
-            )?;
-            pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
-                               source, slot, inst.bal);
+            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+                self.transport_hub.send_msg(
+                    PeerMsg::PrepareReply {
+                        slot,
+                        ballot: inst.bal,
+                        voted,
+                    },
+                    source,
+                )?;
+                pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
+                                   source, slot, inst.bal);
+            }
         }
 
         Ok(())
@@ -507,9 +546,12 @@ impl MultiPaxosReplica {
         &mut self,
         slot: usize,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "finished AcceptData logging for slot {} bal {}",
-                           slot, self.insts[slot].bal);
-        let inst = &self.insts[slot];
+                           slot, self.insts[slot - self.start_slot].bal);
+        let inst = &self.insts[slot - self.start_slot];
 
         if self.is_leader {
             // on leader, finishing the logging of an AcceptData entry
@@ -519,17 +561,17 @@ impl MultiPaxosReplica {
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            assert!(inst.replica_bk.is_some());
-            let source = inst.replica_bk.as_ref().unwrap().source;
-            self.transport_hub.send_msg(
-                PeerMsg::AcceptReply {
-                    slot,
-                    ballot: inst.bal,
-                },
-                source,
-            )?;
-            pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
-                               source, slot, inst.bal);
+            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+                self.transport_hub.send_msg(
+                    PeerMsg::AcceptReply {
+                        slot,
+                        ballot: inst.bal,
+                    },
+                    source,
+                )?;
+                pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
+                                   source, slot, inst.bal);
+            }
         }
 
         Ok(())
@@ -540,14 +582,16 @@ impl MultiPaxosReplica {
         &mut self,
         slot: usize,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
-                           slot, self.insts[slot].bal);
-        assert!(self.insts[slot].status >= Status::Committed);
+                           slot, self.insts[slot - self.start_slot].bal);
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
-            while self.commit_bar < self.insts.len() {
-                let inst = &mut self.insts[self.commit_bar];
+            while self.commit_bar < self.start_slot + self.insts.len() {
+                let inst = &mut self.insts[self.commit_bar - self.start_slot];
                 if inst.status < Status::Committed {
                     break;
                 }
@@ -585,10 +629,20 @@ impl MultiPaxosReplica {
         log_result: LogResult<LogEntry>,
     ) -> Result<(), SummersetError> {
         let (slot, entry_type) = Self::split_log_action_id(action_id);
-        assert!(slot < self.insts.len());
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
+        assert!(slot < self.start_slot + self.insts.len());
 
         if let LogResult::Append { now_size } = log_result {
             assert!(now_size >= self.log_offset);
+            // update first log_offset of slot
+            let inst = &mut self.insts[slot - self.start_slot];
+            if inst.log_offset == 0 || inst.log_offset > self.log_offset {
+                inst.log_offset = self.log_offset;
+            }
+            assert!(inst.log_offset <= self.log_offset);
+            // then update self.log_offset
             self.log_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
@@ -611,16 +665,19 @@ impl MultiPaxosReplica {
         slot: usize,
         ballot: Ballot,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "received Prepare <- {} for slot {} bal {}",
                            peer, slot, ballot);
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
-            while self.insts.len() <= slot {
+            while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance());
             }
-            let inst = &mut self.insts[slot];
+            let inst = &mut self.insts[slot - self.start_slot];
             assert!(inst.bal <= ballot);
 
             inst.bal = ballot;
@@ -653,16 +710,22 @@ impl MultiPaxosReplica {
         ballot: Ballot,
         voted: Option<(Ballot, ReqBatch)>,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "received PrepareReply <- {} for slot {} bal {}",
                            peer, slot, ballot);
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
-            assert!(slot < self.insts.len());
-            let inst = &mut self.insts[slot];
+            assert!(slot < self.start_slot + self.insts.len());
+            let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if (inst.status != Status::Preparing) || (ballot < inst.bal) {
+            if !self.is_leader
+                || (inst.status != Status::Preparing)
+                || (ballot < inst.bal)
+            {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
@@ -734,16 +797,19 @@ impl MultiPaxosReplica {
         ballot: Ballot,
         reqs: ReqBatch,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "received Accept <- {} for slot {} bal {}",
                            peer, slot, ballot);
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
-            while self.insts.len() <= slot {
+            while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance());
             }
-            let inst = &mut self.insts[slot];
+            let inst = &mut self.insts[slot - self.start_slot];
             assert!(inst.bal <= ballot);
 
             inst.bal = ballot;
@@ -777,16 +843,22 @@ impl MultiPaxosReplica {
         slot: usize,
         ballot: Ballot,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "received AcceptReply <- {} for slot {} bal {}",
                            peer, slot, ballot);
 
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
-            assert!(slot < self.insts.len());
-            let inst = &mut self.insts[slot];
+            assert!(slot < self.start_slot + self.insts.len());
+            let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if (inst.status != Status::Accepting) || (ballot < inst.bal) {
+            if !self.is_leader
+                || (inst.status != Status::Accepting)
+                || (ballot < inst.bal)
+            {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
@@ -834,13 +906,16 @@ impl MultiPaxosReplica {
         peer: ReplicaId,
         slot: usize,
     ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
 
         // locate instance in memory, filling in null instances if needed
-        while self.insts.len() <= slot {
+        while self.start_slot + self.insts.len() <= slot {
             self.insts.push(self.null_instance());
         }
-        let inst = &mut self.insts[slot];
+        let inst = &mut self.insts[slot - self.start_slot];
 
         // ignore spurious duplications
         if inst.status != Status::Accepting {
@@ -888,7 +963,9 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
+            PeerMsg::Heartbeat { ballot, exec_bar } => {
+                self.heard_heartbeat(peer, ballot, exec_bar)
+            }
         }
     }
 
@@ -899,11 +976,14 @@ impl MultiPaxosReplica {
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
         let (slot, cmd_idx) = Self::split_command_id(cmd_id);
-        assert!(slot < self.insts.len());
+        if slot < self.start_slot {
+            return Ok(()); // ignore if slot index outdated
+        }
+        assert!(slot < self.start_slot + self.insts.len());
         pf_trace!(self.id; "executed cmd in instance at slot {} idx {}",
                            slot, cmd_idx);
 
-        let inst = &mut self.insts[slot];
+        let inst = &mut self.insts[slot - self.start_slot];
         assert!(cmd_idx < inst.reqs.len());
         let (client, ref req) = inst.reqs[cmd_idx];
 
@@ -934,8 +1014,8 @@ impl MultiPaxosReplica {
 
             // update index of the first non-executed instance
             if slot == self.exec_bar {
-                while self.exec_bar < self.insts.len() {
-                    let inst = &mut self.insts[self.exec_bar];
+                while self.exec_bar < self.start_slot + self.insts.len() {
+                    let inst = &mut self.insts[self.exec_bar - self.start_slot];
                     if inst.status < Status::Executed {
                         break;
                     }
@@ -968,10 +1048,20 @@ impl MultiPaxosReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         // redo Prepare phase for all in-progress instances
-        for (slot, inst) in self.insts.iter_mut().enumerate() {
+        for (slot, inst) in self
+            .insts
+            .iter_mut()
+            .enumerate()
+            .map(|(s, i)| (self.start_slot + s, i))
+        {
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
+                inst.leader_bk = Some(LeaderBookkeeping {
+                    prepare_acks: Bitmap::new(self.population, false),
+                    prepare_max_bal: 0,
+                    accept_acks: Bitmap::new(self.population, false),
+                });
                 pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
                                    slot, inst.bal);
 
@@ -1010,10 +1100,11 @@ impl MultiPaxosReplica {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_prep_sent,
+                exec_bar: self.exec_bar,
             },
             None,
         )?;
-        self.heard_heartbeat(self.id, self.bal_prep_sent)?;
+        self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1039,9 +1130,10 @@ impl MultiPaxosReplica {
         &mut self,
         _peer: ReplicaId,
         ballot: Ballot,
+        exec_bar: usize,
     ) -> Result<(), SummersetError> {
-        // ignore outdated hearbeat
-        if ballot < self.bal_max_seen {
+        // ignore outdated heartbeats and those from peers with exec_bar < mine
+        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
             return Ok(());
         }
 
@@ -1065,6 +1157,8 @@ impl MultiPaxosReplica {
         &mut self,
         durable: bool,
     ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server got restart req");
+
         // send leave notification to peers and wait for their replies
         self.transport_hub.leave().await?;
 
@@ -1124,6 +1218,19 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
+    /// Handler of TakeSnapshot control message.
+    async fn handle_ctrl_take_snapshot(
+        &mut self,
+    ) -> Result<(), SummersetError> {
+        pf_warn!(self.id; "server told to take snapshot");
+        self.take_new_snapshot().await?;
+
+        self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
+            new_start: self.start_slot,
+        })?;
+        Ok(())
+    }
+
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
@@ -1148,6 +1255,11 @@ impl MultiPaxosReplica {
                 Ok(None)
             }
 
+            CtrlMsg::TakeSnapshot => {
+                self.handle_ctrl_take_snapshot().await?;
+                Ok(None)
+            }
+
             _ => Ok(None), // ignore all other types
         }
     }
@@ -1160,11 +1272,11 @@ impl MultiPaxosReplica {
         match entry {
             LogEntry::PrepareBal { slot, ballot } => {
                 // locate instance in memory, filling in null instances if needed
-                while self.insts.len() <= slot {
+                while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
                 }
                 // update instance state
-                let inst = &mut self.insts[slot];
+                let inst = &mut self.insts[slot - self.start_slot];
                 inst.bal = ballot;
                 inst.status = Status::Preparing;
                 // update bal_prep_sent and bal_max_seen, reset bal_prepared
@@ -1179,15 +1291,20 @@ impl MultiPaxosReplica {
 
             LogEntry::AcceptData { slot, ballot, reqs } => {
                 // locate instance in memory, filling in null instances if needed
-                while self.insts.len() <= slot {
+                while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
                 }
                 // update instance state
-                let inst = &mut self.insts[slot];
+                let inst = &mut self.insts[slot - self.start_slot];
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
                 inst.reqs = reqs.clone();
                 inst.voted = (ballot, reqs);
+                // it could be the case that the PrepareBal action for this
+                // ballot has been snapshotted
+                if self.bal_prep_sent < ballot {
+                    self.bal_prep_sent = ballot;
+                }
                 // update bal_prepared and bal_max_seen
                 if self.bal_prepared < ballot {
                     self.bal_prepared = ballot;
@@ -1199,14 +1316,15 @@ impl MultiPaxosReplica {
             }
 
             LogEntry::CommitSlot { slot } => {
-                assert!(slot < self.insts.len());
+                assert!(slot < self.start_slot + self.insts.len());
                 // update instance state
-                self.insts[slot].status = Status::Committed;
+                self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
                 if slot == self.commit_bar {
-                    while self.commit_bar < self.insts.len() {
-                        let inst = &mut self.insts[self.commit_bar];
+                    while self.commit_bar < self.start_slot + self.insts.len() {
+                        let inst =
+                            &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed {
                             break;
                         }
@@ -1276,7 +1394,221 @@ impl MultiPaxosReplica {
         {
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type")
+            logged_err!(self.id; "unexpected log result type or failed truncate")
+        }
+    }
+
+    /// Dump a new key-value pair to snapshot file.
+    async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
+        // collect all key-value pairs put up to exec_bar
+        let mut pairs = HashMap::new();
+        for slot in self.start_slot..self.exec_bar {
+            let inst = &self.insts[slot - self.start_slot];
+            for (_, req) in inst.reqs.clone() {
+                if let ApiRequest::Req {
+                    cmd: Command::Put { key, value },
+                    ..
+                } = req
+                {
+                    pairs.insert(key, value);
+                }
+            }
+        }
+
+        // write the collection to snapshot file
+        self.snapshot_hub.submit_action(
+            0, // using 0 as dummy log action ID
+            LogAction::Append {
+                entry: SnapEntry::KVPairSet { pairs },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+        if let LogResult::Append { now_size } = log_result {
+            self.snap_offset = now_size;
+            Ok(())
+        } else {
+            logged_err!(
+                self.id;
+                "unexpected log result type"
+            )
+        }
+    }
+
+    /// Discard everything older than start_slot in durable WAL log.
+    async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
+        let cut_offset = if !self.insts.is_empty() {
+            self.insts[0].log_offset
+        } else {
+            self.log_offset
+        };
+
+        // discard the log before cut_offset
+        if cut_offset > 0 {
+            self.storage_hub
+                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
+            loop {
+                let (action_id, log_result) =
+                    self.storage_hub.get_result().await?;
+                if action_id != 0 {
+                    // normal log action previously in queue; process it
+                    self.handle_log_result(action_id, log_result)?;
+                } else {
+                    if let LogResult::Discard {
+                        offset_ok: true,
+                        now_size,
+                    } = log_result
+                    {
+                        assert_eq!(self.log_offset - cut_offset, now_size);
+                        self.log_offset = now_size;
+                    } else {
+                        return logged_err!(
+                            self.id;
+                            "unexpected log result type or failed discard"
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        // update inst.log_offset for all remaining in-mem instances
+        for inst in &mut self.insts {
+            if inst.log_offset > 0 {
+                assert!(inst.log_offset >= cut_offset);
+                inst.log_offset -= cut_offset;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
+    /// to that index as well as outdate entries in the durable WAL log file.
+    ///
+    /// NOTE: the current implementation does not guard against crashes in the
+    /// middle of taking a snapshot.
+    async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
+                           self.start_slot, self.exec_bar);
+        assert!(self.exec_bar >= self.start_slot);
+        if self.exec_bar == self.start_slot {
+            return Ok(());
+        }
+
+        // collect and dump all Puts in executed instances
+        if self.is_leader {
+            // NOTE: broadcast heartbeats here to appease followers
+            self.bcast_heartbeats()?;
+        }
+        self.snapshot_dump_kv_pairs().await?;
+
+        // update start_slot and discard all in-memory log instances up to exec_bar
+        self.insts.drain(0..(self.exec_bar - self.start_slot));
+        self.start_slot = self.exec_bar;
+
+        // discarding everything older than start_slot in WAL log
+        if self.is_leader {
+            // NOTE: broadcast heartbeats here to appease followers
+            self.bcast_heartbeats()?;
+        }
+        self.snapshot_discard_log().await?;
+
+        // reset the leader heartbeat hear timer
+        self.kickoff_hb_hear_timer()?;
+
+        pf_info!(self.id; "took snapshot up to: start {}", self.start_slot);
+        Ok(())
+    }
+
+    /// Recover initial state from durable storage snapshot file.
+    async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.snap_offset, 0);
+
+        // first, try to read the first several bytes, which should record the
+        // start_slot index
+        self.snapshot_hub
+            .submit_action(0, LogAction::Read { offset: 0 })?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+
+        match log_result {
+            LogResult::Read {
+                entry: Some(SnapEntry::StartSlot { slot }),
+                end_offset,
+            } => {
+                self.snap_offset = end_offset;
+                self.start_slot = slot; // get start slot index of in-mem log
+
+                // repeatedly apply key-value pairs
+                loop {
+                    self.snapshot_hub.submit_action(
+                        0,
+                        LogAction::Read {
+                            offset: self.snap_offset,
+                        },
+                    )?;
+                    let (_, log_result) =
+                        self.snapshot_hub.get_result().await?;
+
+                    match log_result {
+                        LogResult::Read {
+                            entry: Some(SnapEntry::KVPairSet { pairs }),
+                            end_offset,
+                        } => {
+                            // execute Put commands on state machine
+                            for (key, value) in pairs {
+                                self.state_machine.submit_cmd(
+                                    0,
+                                    Command::Put { key, value },
+                                )?;
+                                let _ = self.state_machine.get_result().await?;
+                            }
+                            // update snapshot file offset
+                            self.snap_offset = end_offset;
+                        }
+                        LogResult::Read { entry: None, .. } => {
+                            // end of log reached
+                            break;
+                        }
+                        _ => {
+                            return logged_err!(self.id; "unexpected log result type");
+                        }
+                    }
+                }
+
+                // tell manager about my start_slot index
+                self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
+                    new_start: self.start_slot,
+                })?;
+                Ok(())
+            }
+
+            LogResult::Read { entry: None, .. } => {
+                // snapshot file is empty. Write a 0 as start_slot and return
+                self.snapshot_hub.submit_action(
+                    0,
+                    LogAction::Write {
+                        entry: SnapEntry::StartSlot { slot: 0 },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                let (_, log_result) = self.snapshot_hub.get_result().await?;
+                if let LogResult::Write {
+                    offset_ok: true,
+                    now_size,
+                } = log_result
+                {
+                    self.snap_offset = now_size;
+                    Ok(())
+                } else {
+                    logged_err!(self.id; "unexpected log result type or failed truncate")
+                }
+            }
+
+            _ => {
+                logged_err!(self.id; "unexpected log result type")
+            }
         }
     }
 }
@@ -1300,6 +1632,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
+                                    snapshot_path, snapshot_interval_s,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
@@ -1383,6 +1716,14 @@ impl GenericReplica for MultiPaxosReplica {
         }
         transport_hub.wait_for_group(population).await?;
 
+        // setup snapshot hub module
+        let snapshot_hub = StorageHub::new_and_setup(
+            id,
+            Path::new(&config.snapshot_path),
+            None,
+        )
+        .await?;
+
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
             id,
@@ -1396,6 +1737,15 @@ impl GenericReplica for MultiPaxosReplica {
             time::interval(Duration::from_millis(config.hb_send_interval_ms));
         hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut snapshot_interval = time::interval(Duration::from_secs(
+            if config.snapshot_interval_s > 0 {
+                config.snapshot_interval_s
+            } else {
+                60 // dummy non-zero value to make `time::interval` happy
+            },
+        ));
+        snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -1407,17 +1757,21 @@ impl GenericReplica for MultiPaxosReplica {
             external_api,
             state_machine,
             storage_hub,
+            snapshot_hub,
             transport_hub,
             hb_hear_timer: Timer::new(),
             hb_send_interval,
             is_leader: false,
             insts: vec![],
+            start_slot: 0,
+            snapshot_interval,
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
             commit_bar: 0,
             exec_bar: 0,
             log_offset: 0,
+            snap_offset: 0,
         })
     }
 
@@ -1425,7 +1779,10 @@ impl GenericReplica for MultiPaxosReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
-        // recover state from durable storage log
+        // recover state from durable snapshot file
+        self.recover_from_snapshot().await?;
+
+        // recover the tail-piece memory log & state from durable storage log
         self.recover_from_log().await?;
 
         // kick off leader activity hearing timer
@@ -1470,7 +1827,7 @@ impl GenericReplica for MultiPaxosReplica {
                     if let Err(e) = self.handle_msg_recv(peer, msg) {
                         pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
                     }
-                }
+                },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
@@ -1486,13 +1843,29 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // leader inactivity timeout
                 _ = self.hb_hear_timer.timeout(), if !paused => {
-                    self.become_a_leader()?;
+                    if let Err(e) = self.become_a_leader() {
+                        pf_error!(self.id; "error becoming a leader: {}", e);
+                    }
                 },
 
                 // leader sending heartbeat
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
-                    self.bcast_heartbeats()?;
-                }
+                    if let Err(e) = self.bcast_heartbeats() {
+                        pf_error!(self.id; "error broadcasting heartbeats: {}", e);
+                    }
+                },
+
+                // autonomous snapshot taking timeout
+                _ = self.snapshot_interval.tick(), if !paused
+                        && self.config.snapshot_interval_s > 0 => {
+                    if let Err(e) = self.take_new_snapshot().await {
+                        pf_error!(self.id; "error taking a new snapshot: {}", e);
+                    } else {
+                        self.control_hub.send_ctrl(
+                            CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
+                        )?;
+                    }
+                },
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
@@ -1504,10 +1877,6 @@ impl GenericReplica for MultiPaxosReplica {
                     match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
-                                pf_warn!(
-                                    self.id;
-                                    "server got {} req",
-                                    if restart { "restart" } else { "shutdown" });
                                 return Ok(restart);
                             }
                         },

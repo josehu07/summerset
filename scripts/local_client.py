@@ -9,7 +9,7 @@ def do_cargo_build(release):
     if release:
         cmd.append("-r")
     proc = subprocess.Popen(cmd)
-    proc.wait()
+    return proc.wait()
 
 
 def run_process(cmd):
@@ -124,7 +124,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # build everything
-    do_cargo_build(args.release)
+    rc = do_cargo_build(args.release)
+    if rc != 0:
+        print("ERROR: cargo build failed")
+        sys.exit(rc)
 
     # run client executable
     client_proc = run_client(

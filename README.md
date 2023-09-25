@@ -111,12 +111,19 @@ Complete cluster management and benchmarking scripts are available in another re
 - [x] event-based programming structure
 - [x] cluster manager oracle impl.
 - [x] implementation of MultiPaxos
+  - [x] client-side timeout/retry logic
+  - [x] state persistence & restart check
+  - [x] automatic leader election, backoffs
+  - [x] snapshotting & garbage collection
+  - [ ] specialize read-only commands?
+  - [ ] separate commit vs. exec responses?
+  - [ ] membership discovery & view changes?
 - [ ] implementation of Raft
 - [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client
   - [x] testing client
-  - [ ] benchmarking with YCSB input
+  - [ ] YCSB-driven benchmarking
 - [ ] better README & documentation
 
 ---

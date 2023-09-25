@@ -94,6 +94,17 @@ impl StateMachine {
             None => logged_err!(self.me; "ack channel has been closed"),
         }
     }
+
+    /// Try to get the next execution result using `try_recv()`.
+    #[allow(dead_code)]
+    pub fn try_get_result(
+        &mut self,
+    ) -> Result<(CommandId, CommandResult), SummersetError> {
+        match self.rx_ack.try_recv() {
+            Ok((id, result)) => Ok((id, result)),
+            Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
 }
 
 // StateMachine executor thread implementation
