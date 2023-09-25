@@ -12,7 +12,7 @@ def do_cargo_build(release):
     if release:
         cmd.append("-r")
     proc = subprocess.Popen(cmd)
-    proc.wait()
+    return proc.wait()
 
 
 def run_process(cmd, capture_stderr=False):
@@ -48,13 +48,23 @@ PROTOCOL_BACKER_PATH = {
     "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
 
+PROTOCOL_SNAPSHOT_PATH = {
+    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
+    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
+}
 
-def config_with_backer_path(protocol, config, replica):
+
+def config_with_file_paths(protocol, config, replica):
     result_config = PROTOCOL_BACKER_PATH[protocol](replica)
+    if protocol in PROTOCOL_SNAPSHOT_PATH:
+        result_config += "+"
+        result_config += PROTOCOL_SNAPSHOT_PATH[protocol](replica)
 
     if config is not None and len(config) > 0:
-        if "backer_path" in config:
+        if "backer_path" in config or "snapshot_path" in config:
             result_config = config  # use user-supplied path
+            # NOTE: ignores the other one
         else:
             result_config += "+"
             result_config += config
@@ -132,7 +142,7 @@ def launch_servers(protocol, num_replicas, release, config):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            config_with_backer_path(protocol, config, replica),
+            config_with_file_paths(protocol, config, replica),
             release,
         )
         proc = run_process(cmd)
@@ -161,12 +171,17 @@ if __name__ == "__main__":
     kill_all_matching("summerset_server", force=True)
     kill_all_matching("summerset_manager", force=True)
 
-    # remove all existing wal files
+    # remove all existing wal log & snapshot files
     for path in Path("/tmp").glob("summerset.*.wal"):
+        path.unlink()
+    for path in Path("/tmp").glob("summerset.*.snap"):
         path.unlink()
 
     # build everything
-    do_cargo_build(args.release)
+    rc = do_cargo_build(args.release)
+    if rc != 0:
+        print("ERROR: cargo build failed")
+        sys.exit(rc)
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)

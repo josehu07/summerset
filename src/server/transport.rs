@@ -1,4 +1,9 @@
 //! Summerset server internal TCP transport module implementation.
+//!
+//! In concept, all messages are sent through unstable communication channels,
+//! and are retried if the sender did not receive an ACK in a timely manner.
+//! Here, we use TCP as the communication protocol to get the same effect of
+//! "every message a sender wants to send will eventually be delivered".
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -276,10 +281,23 @@ where
         }
     }
 
+    /// Try to receive the next message using `try_recv()`.
+    #[allow(dead_code)]
+    pub fn try_recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
+        match self.rx_recv.try_recv() {
+            Ok((id, peer_msg)) => match peer_msg {
+                PeerMessage::Msg { msg } => Ok((id, msg)),
+                _ => logged_err!(self.me; "unexpected peer message type"),
+            },
+            Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
+
     /// Broadcasts leave notifications to all peers and waits for replies.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
+        #[allow(unused_variables)]
         let mut num_peers = 0;
+        let tx_sends_guard = self.tx_sends.guard();
         for &peer in tx_sends_guard.keys() {
             if peer == self.me {
                 continue;
@@ -294,18 +312,20 @@ where
             num_peers += 1;
         }
 
-        let mut replies = Bitmap::new(self.population, false);
-        while replies.count() < num_peers {
-            match self.rx_recv.recv().await {
-                Some((id, peer_msg)) => match peer_msg {
-                    PeerMessage::LeaveReply => replies.set(id, true)?,
-                    _ => continue, // ignore all other types of messages
-                },
-                None => {
-                    return logged_err!(self.me; "recv channel has been closed");
-                }
-            }
-        }
+        // NOTE: commenting out the following to avoid rare blocking during
+        // tester resets
+        // let mut replies = Bitmap::new(self.population, false);
+        // while replies.count() < num_peers {
+        //     match self.rx_recv.recv().await {
+        //         Some((id, peer_msg)) => match peer_msg {
+        //             PeerMessage::LeaveReply => replies.set(id, true)?,
+        //             _ => continue, // ignore all other types of messages
+        //         },
+        //         None => {
+        //             return logged_err!(self.me; "recv channel has been closed");
+        //         }
+        //     }
+        // }
 
         Ok(())
     }

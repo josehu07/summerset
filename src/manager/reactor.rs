@@ -45,6 +45,12 @@ pub enum CtrlRequest {
         servers: HashSet<ReplicaId>,
     },
 
+    /// Tell the servers to take a snapshot now.
+    TakeSnapshot {
+        /// IDs of servers to take snapshot. If empty, tells all servers.
+        servers: HashSet<ReplicaId>,
+    },
+
     /// Client leave notification.
     Leave,
 }
@@ -68,6 +74,12 @@ pub enum CtrlReply {
 
     /// Reply to server resume request.
     ResumeServers { servers: HashSet<ReplicaId> },
+
+    /// Reply to take snapshot request.
+    TakeSnapshot {
+        /// Map from replica ID -> new log start index.
+        snapshot_up_to: HashMap<ReplicaId, usize>,
+    },
 
     /// Reply to client leave notification.
     Leave,

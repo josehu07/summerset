@@ -12,6 +12,7 @@ use crate::client::ClientId;
 use crate::protocols::SmrProtocol;
 
 use tokio::sync::{mpsc, watch};
+use tokio::time::{self, Duration};
 
 /// Information about an active server.
 #[derive(Debug, Clone)]
@@ -27,6 +28,9 @@ struct ServerInfo {
 
     /// This server is currently paused?
     is_paused: bool,
+
+    /// In-mem log start index after latest snapshot.
+    start_slot: usize,
 }
 
 /// Standalone cluster manager oracle.
@@ -204,6 +208,7 @@ impl ClusterManager {
                 p2p_addr,
                 is_leader: false,
                 is_paused: false,
+                start_slot: 0,
             },
         );
         Ok(())
@@ -227,6 +232,28 @@ impl ClusterManager {
             logged_err!("m"; "server {} is already marked as non-leader", server)
         } else {
             info.is_leader = step_up;
+            Ok(())
+        }
+    }
+
+    /// Handler of autonomous SnapshotUpTo message.
+    fn handle_snapshot_up_to(
+        &mut self,
+        server: ReplicaId,
+        new_start: usize,
+    ) -> Result<(), SummersetError> {
+        if !self.server_info.contains_key(&server) {
+            return logged_err!("m"; "snapshot up to got unknown ID: {}", server);
+        }
+
+        // update this server's info
+        let info = self.server_info.get_mut(&server).unwrap();
+        if new_start < info.start_slot {
+            logged_err!("m"; "server {} snapshot up to {} < {}",
+                             server, new_start,
+                             self.server_info[&server].start_slot)
+        } else {
+            info.start_slot = new_start;
             Ok(())
         }
     }
@@ -256,6 +283,10 @@ impl ClusterManager {
 
             CtrlMsg::LeaderStatus { step_up } => {
                 self.handle_leader_status(server, step_up)?;
+            }
+
+            CtrlMsg::SnapshotUpTo { new_start } => {
+                self.handle_snapshot_up_to(server, new_start)?;
             }
 
             _ => {} // ignore all other types
@@ -328,6 +359,9 @@ impl ClusterManager {
                 return logged_err!("m"; "error assigning new server ID: {}", e);
             }
 
+            // wait a while to ensure the server's transport hub is setup
+            time::sleep(Duration::from_millis(500)).await;
+
             reset_done.insert(s);
         }
 
@@ -364,7 +398,7 @@ impl ClusterManager {
         // pause specified server(s)
         let mut pause_done = HashSet::new();
         while let Some(s) = servers.pop() {
-            // send puase server control message to server
+            // send pause server control message to server
             self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
 
             // set the is_paused flag
@@ -404,18 +438,18 @@ impl ClusterManager {
         // resume specified server(s)
         let mut resume_done = HashSet::new();
         while let Some(s) = servers.pop() {
-            // send puase server control message to server
+            // send resume server control message to server
             self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
-
-            // clear the is_paused flag
-            assert!(self.server_info.contains_key(&s));
-            self.server_info.get_mut(&s).unwrap().is_paused = false;
 
             // wait for dummy reply
             let (_, reply) = self.server_reigner.recv_ctrl().await?;
             if reply != CtrlMsg::ResumeReply {
                 return logged_err!("m"; "unexpected reply type received");
             }
+
+            // clear the is_paused flag
+            assert!(self.server_info.contains_key(&s));
+            self.server_info.get_mut(&s).unwrap().is_paused = false;
 
             resume_done.insert(s);
         }
@@ -426,6 +460,49 @@ impl ClusterManager {
             },
             client,
         )
+    }
+
+    /// Handler of client TakeSnapshot rquest.
+    async fn handle_client_take_snapshot(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.server_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // tell specified server(s)
+        let mut snapshot_up_to = HashMap::new();
+        while let Some(s) = servers.pop() {
+            // send take snapshot control message to server
+            self.server_reigner.send_ctrl(CtrlMsg::TakeSnapshot, s)?;
+
+            // wait for reply
+            let (_, reply) = self.server_reigner.recv_ctrl().await?;
+            if let CtrlMsg::SnapshotUpTo { new_start } = reply {
+                // update the log start index info
+                assert!(self.server_info.contains_key(&s));
+                if new_start < self.server_info[&s].start_slot {
+                    return logged_err!("m"; "server {} snapshot up to {} < {}",
+                                            s, new_start,
+                                            self.server_info[&s].start_slot);
+                } else {
+                    self.server_info.get_mut(&s).unwrap().start_slot =
+                        new_start;
+                }
+
+                snapshot_up_to.insert(s, new_start);
+            } else {
+                return logged_err!("m"; "unexpected reply type received");
+            }
+        }
+
+        self.client_reactor
+            .send_reply(CtrlReply::TakeSnapshot { snapshot_up_to }, client)
     }
 
     /// Synthesized handler of client-initiated control requests.
@@ -451,6 +528,10 @@ impl ClusterManager {
 
             CtrlRequest::ResumeServers { servers } => {
                 self.handle_client_resume_servers(client, servers).await?;
+            }
+
+            CtrlRequest::TakeSnapshot { servers } => {
+                self.handle_client_take_snapshot(client, servers).await?;
             }
 
             _ => {} // ignore all other types
