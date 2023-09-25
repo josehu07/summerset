@@ -223,7 +223,7 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Reconstruction read from new leader to replicas.
-    Reconstruct { slot: usize },
+    Reconstruct { slot: usize, exclude: Vec<u8> },
 
     /// Reconstruction read reply from replica to leader.
     ReconstructReply {
@@ -1147,6 +1147,7 @@ impl CrosswordReplica {
         &mut self,
         peer: ReplicaId,
         slot: usize,
+        exclude: Vec<u8>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -1160,7 +1161,13 @@ impl CrosswordReplica {
         let inst = &mut self.insts[slot - self.start_slot];
 
         // ignore spurious duplications; also ignore if I have nothing to send back
-        if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
+        if inst.status < Status::Accepting {
+            return Ok(());
+        }
+        let mut subset = Bitmap::from(inst.reqs_cw.num_shards(), exclude);
+        subset.flip(); // exclude unwanted shards the sender already has
+        let reply_cw = inst.reqs_cw.subset_copy(subset, false)?;
+        if reply_cw.avail_shards() == 0 {
             return Ok(());
         }
 
@@ -1169,7 +1176,7 @@ impl CrosswordReplica {
             PeerMsg::ReconstructReply {
                 slot,
                 ballot: inst.bal,
-                reqs_cw: inst.reqs_cw.clone(),
+                reqs_cw: reply_cw.clone(),
             },
             peer,
         )?;
@@ -1273,8 +1280,8 @@ impl CrosswordReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Reconstruct { slot } => {
-                self.handle_msg_reconstruct(peer, slot)
+            PeerMsg::Reconstruct { slot, exclude } => {
+                self.handle_msg_reconstruct(peer, slot, exclude)
             }
             PeerMsg::ReconstructReply {
                 slot,
@@ -1415,8 +1422,26 @@ impl CrosswordReplica {
             if inst.status == Status::Committed
                 && inst.reqs_cw.avail_shards() < self.quorum_cnt
             {
-                self.transport_hub
-                    .bcast_msg(PeerMsg::Reconstruct { slot }, None)?;
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Reconstruct {
+                        slot,
+                        exclude: inst
+                            .reqs_cw
+                            .avail_shards_map()
+                            .iter()
+                            .filter_map(
+                                |(idx, flag)| {
+                                    if flag {
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
+                                },
+                            )
+                            .collect(),
+                    },
+                    None,
+                )?;
                 pf_trace!(self.id; "broadcast Reconstruct messages for slot {} bal {} shards {:?}",
                                    slot, inst.bal, inst.reqs_cw.avail_shards_map());
             }
