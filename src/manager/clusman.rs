@@ -360,7 +360,7 @@ impl ClusterManager {
             }
 
             // wait a while to ensure the server's transport hub is setup
-            time::sleep(Duration::from_millis(300)).await;
+            time::sleep(Duration::from_millis(500)).await;
 
             reset_done.insert(s);
         }

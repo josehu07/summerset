@@ -226,7 +226,7 @@ enum PeerMsg {
     },
 
     /// Leader activity heartbeat.
-    Heartbeat { ballot: Ballot },
+    Heartbeat { ballot: Ballot, exec_bar: usize },
 }
 
 /// RSPaxos server replica module.
@@ -1180,7 +1180,9 @@ impl RSPaxosReplica {
                 ballot,
                 reqs_cw,
             } => self.handle_msg_reconstruct_reply(peer, slot, ballot, reqs_cw),
-            PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
+            PeerMsg::Heartbeat { ballot, exec_bar } => {
+                self.heard_heartbeat(peer, ballot, exec_bar)
+            }
         }
     }
 
@@ -1327,10 +1329,11 @@ impl RSPaxosReplica {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_prep_sent,
+                exec_bar: self.exec_bar,
             },
             None,
         )?;
-        self.heard_heartbeat(self.id, self.bal_prep_sent)?;
+        self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1356,9 +1359,10 @@ impl RSPaxosReplica {
         &mut self,
         _peer: ReplicaId,
         ballot: Ballot,
+        exec_bar: usize,
     ) -> Result<(), SummersetError> {
-        // ignore outdated hearbeat
-        if ballot < self.bal_max_seen {
+        // ignore outdated heartbeats and those from peers with exec_bar < mine
+        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
             return Ok(());
         }
 
