@@ -106,6 +106,7 @@ pub struct RepNothingReplica {
     log_offset: usize,
 }
 
+// RepNothingReplica common helpers
 impl RepNothingReplica {
     /// Compose CommandId from instance index & command index within.
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
@@ -120,7 +121,10 @@ impl RepNothingReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
     }
+}
 
+// RepNothingReplica client requests entrance
+impl RepNothingReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -149,7 +153,10 @@ impl RepNothingReplica {
 
         Ok(())
     }
+}
 
+// RepNothingReplica durable WAL logging
+impl RepNothingReplica {
     /// Handler of durable logging result chan recv.
     fn handle_log_result(
         &mut self,
@@ -190,7 +197,10 @@ impl RepNothingReplica {
 
         Ok(())
     }
+}
 
+// RepNothingReplica state machine execution
+impl RepNothingReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -236,7 +246,10 @@ impl RepNothingReplica {
 
         Ok(())
     }
+}
 
+// RepNothingReplica control messages handling
+impl RepNothingReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -321,7 +334,10 @@ impl RepNothingReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// RepNothingReplica recovery from WAL log
+impl RepNothingReplica {
     /// Recover state from durable storage log.
     async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
         assert_eq!(self.log_offset, 0);

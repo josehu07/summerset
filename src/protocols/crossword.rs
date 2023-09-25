@@ -48,7 +48,6 @@ pub struct ReplicaConfigCrossword {
 
     /// Min timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_min: u64,
-
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_max: u64,
 
@@ -61,6 +60,11 @@ pub struct ReplicaConfigCrossword {
     /// Snapshot self-triggering interval in secs. 0 means never trigger
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
+
+    /// Min timeout of follower gossiping trigger in millisecs.
+    pub gossip_timeout_min: u64,
+    /// Max timeout of follower gossiping trigger in millisecs.
+    pub gossip_timeout_max: u64,
 
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
@@ -89,6 +93,8 @@ impl Default for ReplicaConfigCrossword {
             hb_send_interval_ms: 50,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
+            gossip_timeout_min: 100,
+            gossip_timeout_max: 300,
             fault_tolerance: 0,
             shards_per_replica: 1,
             perf_storage_a: 0,
@@ -292,6 +298,9 @@ pub struct CrosswordReplica {
     /// Timer for taking a new autonomous snapshot.
     snapshot_interval: Interval,
 
+    /// Titer for trigger follower gossiping.
+    gossip_timer: Timer,
+
     /// Largest ballot number that a leader has sent Prepare messages in.
     bal_prep_sent: Ballot,
 
@@ -318,6 +327,7 @@ pub struct CrosswordReplica {
     rs_coder: ReedSolomon,
 }
 
+// CrosswordReplica common helpers
 impl CrosswordReplica {
     /// Create an empty null instance.
     fn null_instance(&self) -> Result<Instance, SummersetError> {
@@ -442,7 +452,10 @@ impl CrosswordReplica {
 
         min_coverage
     }
+}
 
+// CrosswordReplica client requests entrance
+impl CrosswordReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -619,7 +632,10 @@ impl CrosswordReplica {
 
         Ok(())
     }
+}
 
+// CrosswordReplica durable WAL logging
+impl CrosswordReplica {
     /// Handler of PrepareBal logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
@@ -789,7 +805,10 @@ impl CrosswordReplica {
             }
         }
     }
+}
 
+// CrosswordReplica peer-peer messages handling
+impl CrosswordReplica {
     /// Handler of Prepare message from leader.
     fn handle_msg_prepare(
         &mut self,
@@ -1293,7 +1312,10 @@ impl CrosswordReplica {
             }
         }
     }
+}
 
+// CrosswordReplica state machine execution
+impl CrosswordReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -1352,7 +1374,10 @@ impl CrosswordReplica {
 
         Ok(())
     }
+}
 
+// CrosswordReplica leadership related logic
+impl CrosswordReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
@@ -1506,7 +1531,80 @@ impl CrosswordReplica {
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
+}
 
+// CrosswordReplica follower gossiping
+impl CrosswordReplica {
+    /// Chooses a random gossip_timeout from the min-max range and kicks off
+    /// the gossip_timer.
+    fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+        let timeout_ms = thread_rng().gen_range(
+            self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
+        );
+
+        // pf_trace!(self.id; "kickoff gossip_timer @ {} ms", timeout_ms);
+        self.gossip_timer
+            .kickoff(Duration::from_millis(timeout_ms))?;
+        Ok(())
+    }
+
+    /// Triggers gossiping for my missing shards in committed but not-yet-
+    /// executed instances: fetch missing shards from peers, preferring
+    /// follower peers that hold data shards.
+    fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
+        // TODO: want cleverer design than this!
+        let mut slot_up_to = self.exec_bar;
+        for slot in self.exec_bar..(self.start_slot + self.insts.len()) {
+            slot_up_to = slot;
+            let inst = &self.insts[slot - self.start_slot];
+            if inst.status >= Status::Executed {
+                continue;
+            } else if inst.status < Status::Committed {
+                break;
+            }
+
+            if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                let mut target = Bitmap::new(self.population, true);
+                if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+                    // skip leader who initially replicated this instance to me
+                    target.set(source, false)?;
+                }
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Reconstruct {
+                        slot,
+                        exclude: inst
+                            .reqs_cw
+                            .avail_shards_map()
+                            .iter()
+                            .filter_map(
+                                |(idx, flag)| {
+                                    if flag {
+                                        Some(idx)
+                                    } else {
+                                        None
+                                    }
+                                },
+                            )
+                            .collect(),
+                    },
+                    Some(target),
+                )?;
+            }
+        }
+
+        // reset gossip trigger timer
+        self.kickoff_gossip_timer()?;
+
+        if slot_up_to > self.exec_bar {
+            pf_debug!(self.id; "triggered gossiping: slots {} - {}",
+                                   self.exec_bar, slot_up_to);
+        }
+        Ok(())
+    }
+}
+
+// CrosswordReplica control messages handling
+impl CrosswordReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -1618,7 +1716,10 @@ impl CrosswordReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// CrosswordReplica recovery from WAL log
+impl CrosswordReplica {
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
@@ -1767,7 +1868,10 @@ impl CrosswordReplica {
             logged_err!(self.id; "unexpected log result type or failed truncate")
         }
     }
+}
 
+// CrosswordReplica snapshotting & GC logic
+impl CrosswordReplica {
     /// Dump a new key-value pair to snapshot file.
     async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
@@ -1860,12 +1964,12 @@ impl CrosswordReplica {
     /// NOTE: the current implementation does not guard against crashes in the
     /// middle of taking a snapshot.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
-                           self.start_slot, self.exec_bar);
         assert!(self.exec_bar >= self.start_slot);
         if self.exec_bar == self.start_slot {
             return Ok(());
         }
+        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
+                           self.start_slot, self.exec_bar);
 
         // collect and dump all Puts in executed instances
         if self.is_leader {
@@ -2004,6 +2108,7 @@ impl GenericReplica for CrosswordReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
+                                    gossip_timeout_min, gossip_timeout_max,
                                     fault_tolerance, shards_per_replica,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -2155,6 +2260,7 @@ impl GenericReplica for CrosswordReplica {
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
+            gossip_timer: Timer::new(),
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
@@ -2178,6 +2284,9 @@ impl GenericReplica for CrosswordReplica {
 
         // kick off leader activity hearing timer
         self.kickoff_hb_hear_timer()?;
+
+        // kick off follower gossiping trigger timer
+        self.kickoff_gossip_timer()?;
 
         // main event loop
         let mut paused = false;
@@ -2255,6 +2364,13 @@ impl GenericReplica for CrosswordReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
+                    }
+                },
+
+                // follower gossiping trigger
+                _ = self.gossip_timer.timeout(), if !paused && !self.is_leader => {
+                    if let Err(e) = self.trigger_gossiping() {
+                        pf_error!(self.id; "error triggering gossiping: {}", e);
                     }
                 },
 

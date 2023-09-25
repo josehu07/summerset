@@ -47,7 +47,6 @@ pub struct ReplicaConfigRSPaxos {
 
     /// Min timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_min: u64,
-
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_max: u64,
 
@@ -311,6 +310,7 @@ pub struct RSPaxosReplica {
     rs_coder: ReedSolomon,
 }
 
+// RSPaxosReplica common helpers
 impl RSPaxosReplica {
     /// Create an empty null instance.
     fn null_instance(&self) -> Result<Instance, SummersetError> {
@@ -383,7 +383,10 @@ impl RSPaxosReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
+}
 
+// RSPaxosReplica client requests entrance
+impl RSPaxosReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -545,7 +548,10 @@ impl RSPaxosReplica {
 
         Ok(())
     }
+}
 
+// RSPaxosReplica durable WAL logging
+impl RSPaxosReplica {
     /// Handler of PrepareBal logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
@@ -715,7 +721,10 @@ impl RSPaxosReplica {
             }
         }
     }
+}
 
+// RSPaxosReplica peer-peer messages handling
+impl RSPaxosReplica {
     /// Handler of Prepare message from leader.
     fn handle_msg_prepare(
         &mut self,
@@ -1185,7 +1194,10 @@ impl RSPaxosReplica {
             }
         }
     }
+}
 
+// RSPaxosReplica state machine execution
+impl RSPaxosReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -1244,7 +1256,10 @@ impl RSPaxosReplica {
 
         Ok(())
     }
+}
 
+// RSPaxosReplica leadership related logic
+impl RSPaxosReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
@@ -1380,7 +1395,10 @@ impl RSPaxosReplica {
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
+}
 
+// RSPaxosReplica control messages handling
+impl RSPaxosReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -1492,7 +1510,10 @@ impl RSPaxosReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// RSPaxosReplica recovery from WAL log
+impl RSPaxosReplica {
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
@@ -1641,7 +1662,10 @@ impl RSPaxosReplica {
             logged_err!(self.id; "unexpected log result type or failed truncate")
         }
     }
+}
 
+// RSPaxosReplica snapshotting & GC logic
+impl RSPaxosReplica {
     /// Dump a new key-value pair to snapshot file.
     async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
