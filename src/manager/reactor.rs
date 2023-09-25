@@ -81,15 +81,6 @@ pub enum CtrlReply {
         snapshot_up_to: HashMap<ReplicaId, usize>,
     },
 
-    /// Reply to server reset request.
-    ResetServers { servers: HashSet<ReplicaId> },
-
-    /// Reply to server pause request.
-    PauseServers { servers: HashSet<ReplicaId> },
-
-    /// Reply to server resume request.
-    ResumeServers { servers: HashSet<ReplicaId> },
-
     /// Reply to client leave notification.
     Leave,
 }

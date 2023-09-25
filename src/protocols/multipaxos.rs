@@ -56,8 +56,6 @@ pub struct ReplicaConfigMultiPaxos {
     /// Interval of leader sending heartbeats to followers.
     pub hb_send_interval_ms: u64,
 
-<<<<<<< HEAD
-=======
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -65,7 +63,6 @@ pub struct ReplicaConfigMultiPaxos {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -81,17 +78,11 @@ impl Default for ReplicaConfigMultiPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
-<<<<<<< HEAD
-            hb_hear_timeout_min: 300,
-            hb_hear_timeout_max: 600,
-            hb_send_interval_ms: 50,
-=======
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
             hb_send_interval_ms: 50,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -161,12 +152,9 @@ struct Instance {
 
     /// True if from external client, else false.
     external: bool,
-<<<<<<< HEAD
-=======
 
     /// Offset of first durable WAL log entry related to this instance.
     log_offset: usize,
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
 }
 
 /// Stable storage log entry type.
@@ -226,11 +214,7 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Leader activity heartbeat.
-<<<<<<< HEAD
-    Heartbeat { ballot: Ballot },
-=======
     Heartbeat { ballot: Ballot, exec_bar: usize },
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
 }
 
 /// MultiPaxos server replica module.
@@ -323,10 +307,7 @@ impl MultiPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
-<<<<<<< HEAD
-=======
             log_offset: 0,
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
         }
     }
 
@@ -411,15 +392,9 @@ impl MultiPaxosReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist)
-<<<<<<< HEAD
-        let mut slot = self.insts.len();
-        for s in self.commit_bar..self.insts.len() {
-            let old_inst = &mut self.insts[s];
-=======
         let mut slot = self.start_slot + self.insts.len();
         for s in self.commit_bar..(self.start_slot + self.insts.len()) {
             let old_inst = &mut self.insts[s - self.start_slot];
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             if old_inst.status == Status::Null {
                 old_inst.reqs = req_batch.clone();
                 old_inst.leader_bk = Some(LeaderBookkeeping {
@@ -431,11 +406,7 @@ impl MultiPaxosReplica {
                 break;
             }
         }
-<<<<<<< HEAD
-        if slot == self.insts.len() {
-=======
         if slot == self.start_slot + self.insts.len() {
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             let mut new_inst = self.null_instance();
             new_inst.reqs = req_batch.clone();
             new_inst.leader_bk = Some(LeaderBookkeeping {
@@ -537,13 +508,8 @@ impl MultiPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
-<<<<<<< HEAD
-                           slot, self.insts[slot].bal);
-        let inst = &self.insts[slot];
-=======
                            slot, self.insts[slot - self.start_slot].bal);
         let inst = &self.insts[slot - self.start_slot];
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
         let voted = if inst.voted.0 > 0 {
             Some(inst.voted.clone())
         } else {
@@ -708,11 +674,7 @@ impl MultiPaxosReplica {
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
-<<<<<<< HEAD
-            while self.insts.len() <= slot {
-=======
             while self.start_slot + self.insts.len() <= slot {
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot - self.start_slot];
@@ -844,11 +806,7 @@ impl MultiPaxosReplica {
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
             // locate instance in memory, filling in null instances if needed
-<<<<<<< HEAD
-            while self.insts.len() <= slot {
-=======
             while self.start_slot + self.insts.len() <= slot {
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 self.insts.push(self.null_instance());
             }
             let inst = &mut self.insts[slot - self.start_slot];
@@ -954,11 +912,7 @@ impl MultiPaxosReplica {
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
 
         // locate instance in memory, filling in null instances if needed
-<<<<<<< HEAD
-        while self.insts.len() <= slot {
-=======
         while self.start_slot + self.insts.len() <= slot {
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             self.insts.push(self.null_instance());
         }
         let inst = &mut self.insts[slot - self.start_slot];
@@ -1009,13 +963,9 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-<<<<<<< HEAD
-            PeerMsg::Heartbeat { ballot } => self.heard_heartbeat(peer, ballot),
-=======
             PeerMsg::Heartbeat { ballot, exec_bar } => {
                 self.heard_heartbeat(peer, ballot, exec_bar)
             }
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
         }
     }
 
@@ -1098,12 +1048,6 @@ impl MultiPaxosReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         // redo Prepare phase for all in-progress instances
-<<<<<<< HEAD
-        for (slot, inst) in self.insts.iter_mut().enumerate() {
-            if inst.status < Status::Committed {
-                inst.bal = self.bal_prep_sent;
-                inst.status = Status::Preparing;
-=======
         for (slot, inst) in self
             .insts
             .iter_mut()
@@ -1118,7 +1062,6 @@ impl MultiPaxosReplica {
                     prepare_max_bal: 0,
                     accept_acks: Bitmap::new(self.population, false),
                 });
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
                                    slot, inst.bal);
 
@@ -1157,18 +1100,11 @@ impl MultiPaxosReplica {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_prep_sent,
-<<<<<<< HEAD
-            },
-            None,
-        )?;
-        self.heard_heartbeat(self.id, self.bal_prep_sent)?;
-=======
                 exec_bar: self.exec_bar,
             },
             None,
         )?;
         self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1194,16 +1130,10 @@ impl MultiPaxosReplica {
         &mut self,
         _peer: ReplicaId,
         ballot: Ballot,
-<<<<<<< HEAD
-    ) -> Result<(), SummersetError> {
-        // ignore outdated hearbeat
-        if ballot < self.bal_max_seen {
-=======
         exec_bar: usize,
     ) -> Result<(), SummersetError> {
         // ignore outdated heartbeats and those from peers with exec_bar < mine
         if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             return Ok(());
         }
 
@@ -1288,8 +1218,6 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-<<<<<<< HEAD
-=======
     /// Handler of TakeSnapshot control message.
     async fn handle_ctrl_take_snapshot(
         &mut self,
@@ -1303,7 +1231,6 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
@@ -1328,14 +1255,11 @@ impl MultiPaxosReplica {
                 Ok(None)
             }
 
-<<<<<<< HEAD
-=======
             CtrlMsg::TakeSnapshot => {
                 self.handle_ctrl_take_snapshot().await?;
                 Ok(None)
             }
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             _ => Ok(None), // ignore all other types
         }
     }
@@ -1348,19 +1272,11 @@ impl MultiPaxosReplica {
         match entry {
             LogEntry::PrepareBal { slot, ballot } => {
                 // locate instance in memory, filling in null instances if needed
-<<<<<<< HEAD
-                while self.insts.len() <= slot {
-                    self.insts.push(self.null_instance());
-                }
-                // update instance state
-                let inst = &mut self.insts[slot];
-=======
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot - self.start_slot];
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 inst.bal = ballot;
                 inst.status = Status::Preparing;
                 // update bal_prep_sent and bal_max_seen, reset bal_prepared
@@ -1375,31 +1291,20 @@ impl MultiPaxosReplica {
 
             LogEntry::AcceptData { slot, ballot, reqs } => {
                 // locate instance in memory, filling in null instances if needed
-<<<<<<< HEAD
-                while self.insts.len() <= slot {
-                    self.insts.push(self.null_instance());
-                }
-                // update instance state
-                let inst = &mut self.insts[slot];
-=======
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
                 }
                 // update instance state
                 let inst = &mut self.insts[slot - self.start_slot];
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
                 inst.reqs = reqs.clone();
                 inst.voted = (ballot, reqs);
-<<<<<<< HEAD
-=======
                 // it could be the case that the PrepareBal action for this
                 // ballot has been snapshotted
                 if self.bal_prep_sent < ballot {
                     self.bal_prep_sent = ballot;
                 }
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                 // update bal_prepared and bal_max_seen
                 if self.bal_prepared < ballot {
                     self.bal_prepared = ballot;
@@ -1411,16 +1316,6 @@ impl MultiPaxosReplica {
             }
 
             LogEntry::CommitSlot { slot } => {
-<<<<<<< HEAD
-                assert!(slot < self.insts.len());
-                // update instance state
-                self.insts[slot].status = Status::Committed;
-                // submit commands in contiguously committed instance to the
-                // state machine
-                if slot == self.commit_bar {
-                    while self.commit_bar < self.insts.len() {
-                        let inst = &mut self.insts[self.commit_bar];
-=======
                 assert!(slot < self.start_slot + self.insts.len());
                 // update instance state
                 self.insts[slot - self.start_slot].status = Status::Committed;
@@ -1430,7 +1325,6 @@ impl MultiPaxosReplica {
                     while self.commit_bar < self.start_slot + self.insts.len() {
                         let inst =
                             &mut self.insts[self.commit_bar - self.start_slot];
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
                         if inst.status < Status::Committed {
                             break;
                         }

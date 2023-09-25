@@ -29,19 +29,12 @@ lazy_static! {
         ("client_reconnect", true),
         ("non_leader_reset", true),
         ("leader_node_reset", true),
-<<<<<<< HEAD
-        ("two_nodes_reset", true),
-        ("non_leader_pause", false),
-        ("leader_node_pause", false),
-        ("node_pause_resume", false),
-=======
         ("two_nodes_reset", false),
         ("all_nodes_reset", false),
         ("non_leader_pause", false),
         ("leader_node_pause", false),
         ("node_pause_resume", false),
         ("snapshot_reset", false),
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
     ];
 }
 

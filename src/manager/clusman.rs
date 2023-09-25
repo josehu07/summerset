@@ -28,12 +28,9 @@ struct ServerInfo {
 
     /// This server is currently paused?
     is_paused: bool,
-<<<<<<< HEAD
-=======
 
     /// In-mem log start index after latest snapshot.
     start_slot: usize,
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
 }
 
 /// Standalone cluster manager oracle.
@@ -211,10 +208,7 @@ impl ClusterManager {
                 p2p_addr,
                 is_leader: false,
                 is_paused: false,
-<<<<<<< HEAD
-=======
                 start_slot: 0,
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             },
         );
         Ok(())
@@ -242,8 +236,6 @@ impl ClusterManager {
         }
     }
 
-<<<<<<< HEAD
-=======
     /// Handler of autonomous SnapshotUpTo message.
     fn handle_snapshot_up_to(
         &mut self,
@@ -266,7 +258,6 @@ impl ClusterManager {
         }
     }
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
     /// Synthesized handler of server-initiated control messages.
     async fn handle_ctrl_msg(
         &mut self,
@@ -294,13 +285,10 @@ impl ClusterManager {
                 self.handle_leader_status(server, step_up)?;
             }
 
-<<<<<<< HEAD
-=======
             CtrlMsg::SnapshotUpTo { new_start } => {
                 self.handle_snapshot_up_to(server, new_start)?;
             }
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             _ => {} // ignore all other types
         }
 
@@ -410,11 +398,7 @@ impl ClusterManager {
         // pause specified server(s)
         let mut pause_done = HashSet::new();
         while let Some(s) = servers.pop() {
-<<<<<<< HEAD
-            // send puase server control message to server
-=======
             // send pause server control message to server
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
 
             // set the is_paused flag
@@ -454,32 +438,19 @@ impl ClusterManager {
         // resume specified server(s)
         let mut resume_done = HashSet::new();
         while let Some(s) = servers.pop() {
-<<<<<<< HEAD
-            // send puase server control message to server
-            self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
-
-            // clear the is_paused flag
-            assert!(self.server_info.contains_key(&s));
-            self.server_info.get_mut(&s).unwrap().is_paused = false;
-
-=======
             // send resume server control message to server
             self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             // wait for dummy reply
             let (_, reply) = self.server_reigner.recv_ctrl().await?;
             if reply != CtrlMsg::ResumeReply {
                 return logged_err!("m"; "unexpected reply type received");
             }
 
-<<<<<<< HEAD
-=======
             // clear the is_paused flag
             assert!(self.server_info.contains_key(&s));
             self.server_info.get_mut(&s).unwrap().is_paused = false;
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             resume_done.insert(s);
         }
 
@@ -559,13 +530,10 @@ impl ClusterManager {
                 self.handle_client_resume_servers(client, servers).await?;
             }
 
-<<<<<<< HEAD
-=======
             CtrlRequest::TakeSnapshot { servers } => {
                 self.handle_client_take_snapshot(client, servers).await?;
             }
 
->>>>>>> 752d124f30dcdcefcc8bd2f8fbc7394e017e85a9
             _ => {} // ignore all other types
         }
 
