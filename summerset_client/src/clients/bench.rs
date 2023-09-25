@@ -19,7 +19,6 @@ use summerset::{
 
 lazy_static! {
     /// Pool of keys to choose from.
-    // TODO: enable using a dynamic pool of keys
     static ref KEYS_POOL: Vec<String> = {
         let mut pool = vec![];
         for _ in 0..5 {

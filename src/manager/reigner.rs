@@ -58,6 +58,12 @@ pub enum CtrlMsg {
     /// Server -> Manager: dummy resume reply.
     ResumeReply,
 
+    /// Manager -> Server: tell server to take a snapshot now.
+    TakeSnapshot,
+
+    /// Server -> Manager: server took snapshot up to log index.
+    SnapshotUpTo { new_start: usize },
+
     /// Server -> Manager: leave notification.
     Leave,
 
