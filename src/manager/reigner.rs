@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
-// TODO: add pause, resume, leader change, membership change, etc.
+// TODO: later add leader change, membership change, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
@@ -39,9 +39,30 @@ pub enum CtrlMsg {
         to_peers: HashMap<ReplicaId, SocketAddr>,
     },
 
+    /// Server -> Manager: tell the manager that I steped-up/down as leader.
+    LeaderStatus { step_up: bool },
+
     /// Manager -> Server: reset to initial state. If durable is false, cleans
     /// durable storage state as well.
     ResetState { durable: bool },
+
+    /// Manager -> Server: pause server event loop execution.
+    Pause,
+
+    /// Server -> Manager: dummy pause reply.
+    PauseReply,
+
+    /// Manager -> Server: resume server event loop execution.
+    Resume,
+
+    /// Server -> Manager: dummy resume reply.
+    ResumeReply,
+
+    /// Manager -> Server: tell server to take a snapshot now.
+    TakeSnapshot,
+
+    /// Server -> Manager: server took snapshot up to log index.
+    SnapshotUpTo { new_start: usize },
 
     /// Server -> Manager: leave notification.
     Leave,
@@ -333,7 +354,7 @@ impl ServerReigner {
         mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) {
-        pf_debug!("m"; "server_controller thread for {} ({}) spawned", id, addr);
+        pf_debug!("m"; "server_controller thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::new();
@@ -451,7 +472,7 @@ impl ServerReigner {
         if let Err(e) = tx_exit.send(id) {
             pf_error!("m"; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!("m"; "server_controller thread for {} ({}) exitted", id, addr);
+        pf_debug!("m"; "server_controller thread for {} '{}' exitted", id, addr);
     }
 }
 

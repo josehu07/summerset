@@ -1,13 +1,21 @@
 //! Summerset server internal TCP transport module implementation.
+//!
+//! In concept, all messages are sent through unstable communication channels,
+//! and are retried if the sender did not receive an ACK in a timely manner.
+//! Here, we use TCP as the communication protocol to get the same effect of
+//! "every message a sender wants to send will eventually be delivered".
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::utils::{
     SummersetError, Bitmap, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
     tcp_connect_with_retry,
 };
 use crate::server::ReplicaId;
+
+use get_size::GetSize;
 
 use bytes::BytesMut;
 
@@ -21,7 +29,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
 /// Peer-peer message wrapper type that includes leave notification variants.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMessage<Msg> {
     /// Normal protocol-specific request.
     Msg { msg: Msg },
@@ -74,6 +82,7 @@ where
         + Clone
         + Serialize
         + DeserializeOwned
+        + GetSize
         + Send
         + Sync
         + 'static,
@@ -85,12 +94,38 @@ where
         me: ReplicaId,
         population: u8,
         p2p_addr: SocketAddr,
+        perf_a_b: Option<(u64, u64)>, // performance simulation params
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!(me; "invalid population {}", population);
         }
 
-        let (tx_recv, rx_recv) = mpsc::unbounded_channel();
+        let (tx_recv, mut rx_recv) =
+            mpsc::unbounded_channel::<(ReplicaId, PeerMessage<Msg>)>();
+
+        // if doing performance delay simulation, add on-the-fly delay to
+        // each message received
+        let rx_recv_true = if let Some((perf_a, perf_b)) = perf_a_b {
+            let (tx_recv_delayed, rx_recv_delayed) = mpsc::unbounded_channel();
+            let tx_recv_delayed_arc = Arc::new(tx_recv_delayed);
+
+            tokio::spawn(async move {
+                while let Some((id, peer_msg)) = rx_recv.recv().await {
+                    let tx_recv_delayed_clone = tx_recv_delayed_arc.clone();
+                    tokio::spawn(async move {
+                        let approx_size = peer_msg.get_size() as u64;
+                        let delay_ns = perf_a + approx_size * perf_b;
+                        time::sleep(Duration::from_nanos(delay_ns)).await;
+                        tx_recv_delayed_clone.send((id, peer_msg)).unwrap();
+                    });
+                }
+                pf_error!("d"; "recv channel has been closed");
+            });
+
+            rx_recv_delayed
+        } else {
+            rx_recv
+        };
 
         let (tx_sends_write, tx_sends_read) = flashmap::new::<
             ReplicaId,
@@ -119,7 +154,7 @@ where
         Ok(TransportHub {
             me,
             population,
-            rx_recv,
+            rx_recv: rx_recv_true,
             tx_sends: tx_sends_read,
             _peer_acceptor_handle: peer_acceptor_handle,
             tx_connect,
@@ -246,10 +281,23 @@ where
         }
     }
 
+    /// Try to receive the next message using `try_recv()`.
+    #[allow(dead_code)]
+    pub fn try_recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
+        match self.rx_recv.try_recv() {
+            Ok((id, peer_msg)) => match peer_msg {
+                PeerMessage::Msg { msg } => Ok((id, msg)),
+                _ => logged_err!(self.me; "unexpected peer message type"),
+            },
+            Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
+
     /// Broadcasts leave notifications to all peers and waits for replies.
     pub async fn leave(&mut self) -> Result<(), SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
+        #[allow(unused_variables)]
         let mut num_peers = 0;
+        let tx_sends_guard = self.tx_sends.guard();
         for &peer in tx_sends_guard.keys() {
             if peer == self.me {
                 continue;
@@ -264,18 +312,20 @@ where
             num_peers += 1;
         }
 
-        let mut replies = Bitmap::new(self.population, false);
-        while replies.count() < num_peers {
-            match self.rx_recv.recv().await {
-                Some((id, peer_msg)) => match peer_msg {
-                    PeerMessage::LeaveReply => replies.set(id, true)?,
-                    _ => continue, // ignore all other types of messages
-                },
-                None => {
-                    return logged_err!(self.me; "recv channel has been closed");
-                }
-            }
-        }
+        // NOTE: commenting out the following to avoid rare blocking during
+        // tester resets
+        // let mut replies = Bitmap::new(self.population, false);
+        // while replies.count() < num_peers {
+        //     match self.rx_recv.recv().await {
+        //         Some((id, peer_msg)) => match peer_msg {
+        //             PeerMessage::LeaveReply => replies.set(id, true)?,
+        //             _ => continue, // ignore all other types of messages
+        //         },
+        //         None => {
+        //             return logged_err!(self.me; "recv channel has been closed");
+        //         }
+        //     }
+        // }
 
         Ok(())
     }
@@ -524,7 +574,7 @@ where
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) {
-        pf_debug!(me; "peer_messenger thread for {} ({}) spawned", id, addr);
+        pf_debug!(me; "peer_messenger thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::with_capacity(8 + 1024);
@@ -650,7 +700,7 @@ where
         if let Err(e) = tx_exit.send(id) {
             pf_error!(me; "error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!(me; "peer_messenger thread for {} ({}) exitted", id, addr);
+        pf_debug!(me; "peer_messenger thread for {} '{}' exitted", id, addr);
     }
 }
 
@@ -661,7 +711,7 @@ mod transport_tests {
     use serde::{Serialize, Deserialize};
     use tokio::sync::Barrier;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
     struct TestMsg(String);
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -671,9 +721,13 @@ mod transport_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:53801".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:53801".parse()?,
+                None,
+            )
+            .await?;
             barrier1.wait().await;
             hub.connect_to_peer(2, "127.0.0.1:53802".parse()?).await?;
             // recv a message from 0
@@ -696,9 +750,13 @@ mod transport_tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:53802".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:53802".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -714,7 +772,7 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:53800".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:53800".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:53801".parse()?).await?;
@@ -747,9 +805,13 @@ mod transport_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1/2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:54801".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:54801".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -759,9 +821,13 @@ mod transport_tests {
             // leave and come back as 2
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:54802".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:54802".parse()?,
+                None,
+            )
+            .await?;
             hub.connect_to_peer(0, "127.0.0.1:54800".parse()?).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
@@ -769,7 +835,7 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:54800".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:54800".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:54801".parse()?).await?;

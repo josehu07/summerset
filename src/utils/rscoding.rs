@@ -6,6 +6,8 @@ use std::marker::PhantomData;
 
 use crate::utils::{SummersetError, Bitmap};
 
+use get_size::GetSize;
+
 use bytes::{BytesMut, BufMut};
 
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
@@ -41,6 +43,24 @@ pub struct RSCodeword<T> {
     /// Zero-sized phantom marker to make this struct act as if it owns a data
     /// of type `T` (yet in the form of vec of bytes).
     phantom: PhantomData<T>,
+}
+
+// implement `GetSize` trait for `RSCodeword`; the heap size is approximated
+// simply by the sum of sizes of present shards
+impl<T> GetSize for RSCodeword<T>
+where
+    T: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
+{
+    fn get_heap_size(&self) -> usize {
+        self.shards
+            .iter()
+            .map(|s| if let Some(b) = s { b.len() } else { 0 })
+            .sum()
+    }
+
+    fn get_size(&self) -> usize {
+        Self::get_stack_size() + self.get_heap_size()
+    }
 }
 
 impl<T> RSCodeword<T>

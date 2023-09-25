@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
 
+use get_size::GetSize;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::sync::mpsc;
@@ -14,7 +16,7 @@ use tokio::task::JoinHandle;
 pub type CommandId = u64;
 
 /// Command to the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum Command {
     /// Get the value of given key.
     Get { key: String },
@@ -24,7 +26,7 @@ pub enum Command {
 }
 
 /// Command execution result returned by the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum CommandResult {
     /// `Some(value)` if key is found in state machine, else `None`.
     Get { value: Option<String> },
@@ -90,6 +92,17 @@ impl StateMachine {
         match self.rx_ack.recv().await {
             Some((id, result)) => Ok((id, result)),
             None => logged_err!(self.me; "ack channel has been closed"),
+        }
+    }
+
+    /// Try to get the next execution result using `try_recv()`.
+    #[allow(dead_code)]
+    pub fn try_get_result(
+        &mut self,
+    ) -> Result<(CommandId, CommandResult), SummersetError> {
+        match self.rx_ack.try_recv() {
+            Ok((id, result)) => Ok((id, result)),
+            Err(e) => Err(SummersetError(e.to_string())),
         }
     }
 }

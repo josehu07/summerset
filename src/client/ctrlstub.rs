@@ -38,7 +38,6 @@ impl ClientCtrlStub {
     pub async fn new_by_connect(
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        pf_info!("c"; "connecting to manager '{}'...", manager);
         let mut stream = TcpStream::connect(manager).await?;
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
