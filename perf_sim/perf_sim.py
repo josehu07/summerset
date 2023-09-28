@@ -1,4 +1,4 @@
-import simpy
+import simpy  # type: ignore
 
 
 class Data:
