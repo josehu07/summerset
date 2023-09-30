@@ -41,16 +41,15 @@ class DiskDev:
 
 
 class Replica:
-    def __init__(self, env, is_leader, disk_a, disk_b):
+    def __init__(self, env, rid, disk_ab):
         self.env = env
-        self.is_leader = is_leader
-        self.disk_dev = DiskDev(env, disk_a, disk_b)
-        self.peers = dict()
+        self.rid = rid
+        self.api = NetLink(env, 0, 0)
+        self.disk_dev = DiskDev(env, disk_ab[0], disk_ab[1])
         self.net_links = dict()
 
-    def add_peer(self, name, peer, net_a, net_b):
-        self.peers[name] = peer
-        self.net_links[name] = NetLink(self.env, net_a, net_b)
+    def add_peer(self, rid, net_ab):
+        self.net_links[rid] = NetLink(self.env, net_ab[0], net_ab[1])
 
     def run(self):
         while True:
@@ -59,10 +58,30 @@ class Replica:
             yield self.disk_dev.save(Data("d", 2))
             print(f"saved")
 
+    def req(self, data):
+        self.api.send(data)
+
 
 class Cluster:
-    def __init__(self, num_replicas):
-        pass
+    def __init__(self, env, num_replicas, disk_perf_map, net_perf_map):
+        self.env = env
+        self.replicas = [
+            Replica(
+                env,
+                rid,
+                disk_perf_map[rid],
+            )
+            for rid in range(num_replicas)
+        ]
+        self.leader = self.replicas[0]
+
+        for replica in self.replicas:
+            for rid in range(num_replicas):
+                if rid != replica.rid:
+                    replica.add_peer(
+                        rid,
+                        net_perf_map[(replica.rid, rid)],
+                    )
 
 
 if __name__ == "__main__":
