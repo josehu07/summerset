@@ -22,6 +22,12 @@ class Req(Data):
         super().__init__(mark, size)
 
 
+class Ack(Data):
+    def __init__(self, cid, mark):
+        self.cid = cid
+        super().__init__(mark, 8)
+
+
 class Batch(Data):
     def __init__(self, mark, vec):
         self.vec = vec
@@ -97,13 +103,9 @@ class NetLink(Device):
         super().__init__(env, l, t, v)
 
     def send(self, msg):
-        if self.src == 1 and self.dst == 0:
-            print("!!!", msg)
         self.env.process(self.delay(msg))
 
     def recv(self):
-        if self.src == 1 and self.dst == 0:
-            print("???", self.env.now, self.pipe.items)
         msg = yield self.pipe.get()
         return NetRecved(self.src, msg)
 
@@ -172,7 +174,7 @@ class ExtlApi:
     def ack(self, cid, mark):
         if cid not in self.ack_links:
             raise RuntimeError(f"cid {cid} not in connected")
-        self.ack_links[cid].send(mark)
+        self.ack_links[cid].send(Ack(cid, mark))
 
 
 #####################
@@ -207,25 +209,36 @@ class Replica:
         peer.recv_links[self.rid] = s2p_link
 
     def run(self):
-        while True:
-            events = [
-                self.env.process(self.extl_api.batch()),
-                self.env.process(self.disk_dev.saved()),
-            ]
-            for link in self.recv_links.values():
-                events.append(self.env.process(link.recv()))
-            print("XXX", self.rid, len(events))
+        events = {
+            "api_batch": self.env.process(self.extl_api.batch()),
+            "disk_saved": self.env.process(self.disk_dev.saved()),
+        }
+        for peer, link in self.recv_links.items():
+            events[("net_recved", peer)] = self.env.process(link.recv())
 
+        while True:
             # could get multiple completed triggers at this yield
-            conds = yield self.env.any_of(events)
+            conds = yield self.env.any_of(events.values())
             for event in conds.values():
-                print(f"{self.env.now}:  R{self.rid}  {event}")
+                # print(f"{self.env.now}:  R{self.rid}  {event}")
+
                 if event.enum == EType.ApiBatch:
-                    self.protocol.handle_api_batch(event.value)
+                    batch = event.value
+                    self.protocol.handle_api_batch(batch)
+                    events["api_batch"] = self.env.process(self.extl_api.batch())
+
                 elif event.enum == EType.DiskSaved:
-                    self.protocol.handle_disk_saved(event.value)
+                    mark = event.value
+                    self.protocol.handle_disk_saved(mark)
+                    events["disk_saved"] = self.env.process(self.disk_dev.saved())
+
                 elif event.enum == EType.NetRecved:
-                    self.protocol.handle_net_recved(event.info, event.value)
+                    peer, msg = event.info, event.value
+                    self.protocol.handle_net_recved(peer, msg)
+                    events[("net_recved", peer)] = self.env.process(
+                        self.recv_links[peer].recv()
+                    )
+
                 else:
                     raise RuntimeError(f"unrecognized event type: {event}")
 
@@ -338,7 +351,6 @@ class MultiPaxos(Protocol):
             self.replica.send_links[peer].send(self.AcceptReply(slot))
 
         elif msg.mark.startswith("r-"):
-            print("!!!", slot)
             slot = int(msg.mark[2:])
             assert slot < len(self.insts)
             self.insts[slot].num_replies += 1
@@ -382,7 +394,6 @@ class Stats:
         assert mark not in self.ack_times
         self.total_cnt += 1
         self.ack_times[mark] = self.env.now
-        print("!!!", self.env.now)
 
     def clear(self):
         for mark in self.ack_times:
@@ -418,23 +429,28 @@ class Client:
         return SendNewReq(self.mark)
 
     def driver(self):
-        while True:
-            events = [
-                self.env.process(self.new_req()),
-                self.env.process(self.ack_link.recv()),
-            ]
+        events = {
+            "req": self.env.process(self.new_req()),
+            "ack": self.env.process(self.ack_link.recv()),
+        }
 
+        while True:
             # could get multiple completed triggers at this yield
-            conds = yield self.env.any_of(events)
+            conds = yield self.env.any_of(events.values())
             for event in conds.values():
-                print(f"{self.env.now}:  C{self.cid}  {event}")
+                # print(f"{self.env.now}:  C{self.cid}  {event}")
+
                 if event.enum == EType.SendNewReq:
                     mark = event.value
                     self.req_link.send(Req(self.cid, mark, self.vsize))
                     self.stats.add_req(mark)
+                    events["req"] = self.env.process(self.new_req())
+
                 elif event.enum == EType.NetRecved:
-                    mark = event.value
+                    mark = event.value.mark
                     self.stats.add_ack(mark)
+                    events["ack"] = self.env.process(self.ack_link.recv())
+
                 else:
                     raise RuntimeError(f"unrecognized event type: {event}")
 
