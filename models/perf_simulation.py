@@ -302,10 +302,10 @@ class MultiPaxos(Protocol):
         self.insts = []
 
     class Instance:
-        def __init__(self, batch=None):
-            self.batch = batch
+        def __init__(self):
+            self.batch = None
             self.num_replies = 0
-            self.from_peer = 0
+            self.from_peer = -1
             self.client_acked = False
 
     class AcceptMsg(Data):
@@ -318,8 +318,9 @@ class MultiPaxos(Protocol):
             super().__init__(f"r-{slot}", 8)
 
     def handle_api_batch(self, batch):
-        self.insts.append(self.Instance(batch))
+        self.insts.append(self.Instance())
         slot = len(self.insts) - 1
+        self.insts[slot].batch = batch
 
         for link in self.replica.send_links.values():
             link.send(self.AcceptMsg(slot, batch))
@@ -329,28 +330,38 @@ class MultiPaxos(Protocol):
     def handle_disk_saved(self, mark):
         if not mark.startswith("a-"):
             raise RuntimeError(f"unrecognized ent mark: {mark}")
-
         slot = int(mark[2:])
         assert slot < len(self.insts)
-        self.insts[slot].num_replies += 1
 
-        if (
-            not self.insts[slot].client_acked
-            and self.insts[slot].num_replies >= self.quorum_size
-        ):
-            self.ack_client_reqs(slot)
+        if self.insts[slot].from_peer < 0:
+            # disk save on leader
+            self.insts[slot].num_replies += 1
+
+            if (
+                not self.insts[slot].client_acked
+                and self.insts[slot].num_replies >= self.quorum_size
+            ):
+                self.ack_client_reqs(slot)
+
+        else:
+            # disk save on follower
+            self.replica.send_links[self.insts[slot].from_peer].send(
+                self.AcceptReply(slot)
+            )
 
     def handle_net_recved(self, peer, msg):
         if msg.mark.startswith("a-"):
+            # net recv on follower
             slot = int(msg.mark[2:])
             while slot >= len(self.insts):
                 self.insts.append(self.Instance())
             self.insts[slot].from_peer = peer
             self.insts[slot].batch = msg.batch
 
-            self.replica.send_links[peer].send(self.AcceptReply(slot))
+            self.replica.disk_dev.write(self.AcceptMsg(slot, msg.batch))
 
         elif msg.mark.startswith("r-"):
+            # net recv on leader
             slot = int(msg.mark[2:])
             assert slot < len(self.insts)
             self.insts[slot].num_replies += 1
@@ -381,19 +392,27 @@ class MultiPaxos(Protocol):
 class Stats:
     def __init__(self, env):
         self.env = env
-        self.total_cnt = 0
+        self.total_sent = 0
+        self.total_acks = 0
         self.req_times = dict()
         self.ack_times = dict()
 
     def add_req(self, mark):
         assert mark not in self.req_times
+        self.total_sent += 1
         self.req_times[mark] = self.env.now
 
     def add_ack(self, mark):
         assert mark in self.req_times
         assert mark not in self.ack_times
-        self.total_cnt += 1
+        self.total_acks += 1
         self.ack_times[mark] = self.env.now
+
+    def display(self, chunk_time):
+        lats = [self.ack_times[m] - self.req_times[m] for m in self.ack_times]
+        avg_tput = len(lats) / chunk_time
+        avg_lat = sum(lats) / len(lats) if len(lats) > 0 else 0.0
+        return f"{avg_tput:>9.2f}  {avg_lat:>9.2f}  {len(lats):>7d}  {self.total_acks:>8d} / {self.total_sent:<8d}"
 
     def clear(self):
         for mark in self.ack_times:
@@ -402,7 +421,7 @@ class Stats:
 
 
 class Client:
-    def __init__(self, env, cluster, cid, freq, vsize):
+    def __init__(self, env, cluster, cid, freq, vsize, chunk_time):
         self.env = env
         self.cid = cid
         self.service = cluster
@@ -413,7 +432,10 @@ class Client:
 
         self.mark = 0
         self.tick = simpy.Container(env, capacity=1)
+
         self.stats = Stats(env)
+        self.last_print = 0
+        self.chunk_time = chunk_time
 
         self.env.process(self.ticker())
 
@@ -428,12 +450,15 @@ class Client:
         self.mark += 1
         return SendNewReq(self.mark)
 
-    def driver(self):
+    def loop(self):
         events = {
             "req": self.env.process(self.new_req()),
             "ack": self.env.process(self.ack_link.recv()),
         }
 
+        print(
+            f"{'Time':>5s}:  {'Tput':>9s}  {'Lat':>9s}  {'Chunk':>7s}  {'Reply':>8s} / {'Total':<8s}"
+        )
         while True:
             # could get multiple completed triggers at this yield
             conds = yield self.env.any_of(events.values())
@@ -454,8 +479,14 @@ class Client:
                 else:
                     raise RuntimeError(f"unrecognized event type: {event}")
 
+            # print chunk-average stats
+            if self.env.now - self.last_print > self.chunk_time:
+                print(f"{self.env.now:>5.1f}:  {self.stats.display(self.chunk_time)}")
+                self.stats.clear()
+                self.last_print = self.env.now
+
     def start(self):
-        self.env.process(self.driver())
+        self.env.process(self.loop())
 
 
 #################
@@ -487,7 +518,7 @@ if __name__ == "__main__":
     )
     cluster.launch()
 
-    client = Client(env, cluster, 2957, freq, vsize)
+    client = Client(env, cluster, 2957, freq, vsize, 10)
     client.start()
 
     env.run(until=60)
