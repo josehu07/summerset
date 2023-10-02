@@ -70,6 +70,14 @@ def plot_cstr_bound(idx, cluster_size):
     ys = [m, m + 1, 2, 1]
     plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
 
+    # unused x-axis range
+    if cluster_size < CLUSTER_SIZES[-1]:
+        xs = [n + 0.9, X_TICKS[-1] + 0.35, X_TICKS[-1] + 0.35, n + 0.8]
+        ys = [0.3, 0.3, 0, 0]
+        plt.fill(
+            xs, ys, hatch="///", fill=False, edgecolor=None, linewidth=0, zorder=10
+        )
+
     # latency & throughput optimized arrows
     plt.arrow(
         m + 0.3,
@@ -117,22 +125,27 @@ def plot_cstr_bound(idx, cluster_size):
 
     plt.xlim((0, X_TICKS[-1] + 0.7))
     plt.ylim((0, Y_TICKS[-1] + 2.7))
-    plt.xticks(X_TICKS, list(map(str, X_TICKS)))
+    plt.xticks(X_TICKS[:cluster_size], list(map(str, X_TICKS))[:cluster_size])
     plt.yticks(Y_TICKS, list(map(str, Y_TICKS)))
 
     plt.xlabel("|Quorum|", loc="right")
     plt.ylabel("#Shards\n/replica", loc="top", rotation=0, backgroundcolor="white")
-    ax.xaxis.set_label_coords(1.05, -0.18)
+    if idx < 2:
+        ax.xaxis.set_label_coords(1.05, -0.1)
+    else:
+        ax.xaxis.set_label_coords(1.05, -0.18)
     ax.yaxis.set_label_coords(0.2, 0.8)
 
-    plt.title(
-        f"|Cluster|={n}  f={f}",
-        x=0.3,
-        y=-0.38,
-        fontsize=10,
-        fontweight="bold",
-        backgroundcolor=fill_color,
-    )
+    # plt.title(
+    #     f"|Cluster|={n}  f={f}",
+    #     x=0.5,
+    #     y=-0.48,
+    #     fontsize=11,
+    #     # fontweight="bold",
+    #     # backgroundcolor=fill_color,
+    # )
+    plt.text(2.2, -3.2, f"|Cluster|={n}  f={f}", fontsize=11)
+    plt.text(1, -3.2, "▬", fontsize=11, color=line_color)
 
     return ax
 
@@ -182,7 +195,7 @@ def make_legend(fig, handles, labels):
         sorted_handles,
         sorted_labels,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.78),
+        bbox_to_anchor=(0.5, 0.81),
         ncol=len(handles),
         handlelength=1.5,
         handletextpad=0.5,
@@ -214,7 +227,7 @@ def plot_all_cstr_bounds():
     # single legend group on top
     make_legend(fig, handles, labels)
 
-    plt.tight_layout()
+    plt.tight_layout(pad=1.0)
     plt.savefig(f"results/cstr_bounds.png", dpi=300)
 
 
