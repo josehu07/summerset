@@ -330,6 +330,7 @@ pub struct CrosswordReplica {
 // CrosswordReplica common helpers
 impl CrosswordReplica {
     /// Create an empty null instance.
+    #[inline]
     fn null_instance(&self) -> Result<Instance, SummersetError> {
         Ok(Instance {
             bal: 0,
@@ -352,18 +353,32 @@ impl CrosswordReplica {
         })
     }
 
+    /// Locate the first null slot or append a null instance if no holes exist.
+    fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
+        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+            if self.insts[s - self.start_slot].status == Status::Null {
+                return Ok(s);
+            }
+        }
+        self.insts.push(self.null_instance()?);
+        Ok(self.start_slot + self.insts.len() - 1)
+    }
+
     /// Compose a unique ballot number from base.
+    #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
+    #[inline]
     fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
     /// Compose LogActionId from slot index & entry type.
     /// Uses the `Status` enum type to represent differnet entry types.
+    #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {
             Status::Preparing => 1,
@@ -375,6 +390,7 @@ impl CrosswordReplica {
     }
 
     /// Decompose LogActionId into slot index & entry type.
+    #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
         let type_num = log_action_id & ((1 << 2) - 1);
@@ -388,6 +404,7 @@ impl CrosswordReplica {
     }
 
     /// Compose CommandId from slot index & command index within.
+    #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
         assert!(slot <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -395,6 +412,7 @@ impl CrosswordReplica {
     }
 
     /// Decompose CommandId into slot index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
@@ -402,12 +420,17 @@ impl CrosswordReplica {
     }
 
     /// TODO: maybe remove this.
+    #[inline]
     fn shards_for_replica(
+        slot: usize,
         id: ReplicaId,
         population: u8,
         num_shards: u8,
     ) -> Vec<u8> {
-        (id..(id + num_shards)).map(|i| (i % population)).collect()
+        let first: u8 = ((id as usize + slot) % population as usize) as u8;
+        (first..(first + num_shards))
+            .map(|i| (i % population))
+            .collect()
     }
 
     /// TODO: make better impl of this.
@@ -495,33 +518,18 @@ impl CrosswordReplica {
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
         // create a new instance in the first null slot (or append a new one
-        // at the end if no holes exist)
-        let mut slot = self.start_slot + self.insts.len();
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
-            if self.insts[s - self.start_slot].status == Status::Null {
-                slot = s;
-                break;
-            }
-        }
-        if slot < self.start_slot + self.insts.len() {
-            let old_inst = &mut self.insts[slot - self.start_slot];
-            assert_eq!(old_inst.status, Status::Null);
-            old_inst.reqs_cw = reqs_cw;
-            old_inst.leader_bk = Some(LeaderBookkeeping {
+        // at the end if no holes exist); fill it up with incoming data
+        let slot = self.first_null_slot()?;
+        {
+            let inst = &mut self.insts[slot - self.start_slot];
+            assert_eq!(inst.status, Status::Null);
+            inst.reqs_cw = reqs_cw;
+            inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: HashMap::new(),
             });
-        } else {
-            let mut new_inst = self.null_instance()?;
-            new_inst.reqs_cw = reqs_cw;
-            new_inst.leader_bk = Some(LeaderBookkeeping {
-                prepare_acks: Bitmap::new(self.population, false),
-                prepare_max_bal: 0,
-                accept_acks: HashMap::new(),
-            });
-            new_inst.external = true;
-            self.insts.push(new_inst);
+            inst.external = true;
         }
 
         // decide whether we can enter fast path for this instance
@@ -578,6 +586,7 @@ impl CrosswordReplica {
                 Bitmap::from(
                     self.population,
                     Self::shards_for_replica(
+                        slot,
                         self.id,
                         self.population,
                         self.config.shards_per_replica,
@@ -615,6 +624,7 @@ impl CrosswordReplica {
                             Bitmap::from(
                                 self.population,
                                 Self::shards_for_replica(
+                                    slot,
                                     peer,
                                     self.population,
                                     self.config.shards_per_replica,
@@ -732,6 +742,8 @@ impl CrosswordReplica {
                 if inst.status < Status::Committed {
                     break;
                 }
+                let now_slot = self.commit_bar;
+                self.commit_bar += 1;
 
                 if inst.reqs_cw.avail_shards() < self.quorum_cnt {
                     // can't execute if I don't have the complete request batch
@@ -752,7 +764,7 @@ impl CrosswordReplica {
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
+                                Self::make_command_id(now_slot, cmd_idx),
                                 cmd.clone(),
                             )?;
                         } else {
@@ -760,10 +772,8 @@ impl CrosswordReplica {
                         }
                     }
                     pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), self.commit_bar);
+                                       reqs.len(), now_slot);
                 }
-
-                self.commit_bar += 1;
             }
         }
 
@@ -934,6 +944,7 @@ impl CrosswordReplica {
                     Bitmap::from(
                         self.population,
                         Self::shards_for_replica(
+                            slot,
                             self.id,
                             self.population,
                             self.config.shards_per_replica,
@@ -969,6 +980,7 @@ impl CrosswordReplica {
                                 Bitmap::from(
                                     self.population,
                                     Self::shards_for_replica(
+                                        slot,
                                         peer,
                                         self.population,
                                         self.config.shards_per_replica,
@@ -1078,6 +1090,7 @@ impl CrosswordReplica {
                 Bitmap::from(
                     self.population,
                     Self::shards_for_replica(
+                        slot,
                         peer,
                         self.population,
                         self.config.shards_per_replica,
@@ -1220,7 +1233,6 @@ impl CrosswordReplica {
                            peer, slot, ballot, reqs_cw.avail_shards_map());
         assert!(slot < self.start_slot + self.insts.len());
         assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
-        let num_insts = self.start_slot + self.insts.len();
         let inst = &mut self.insts[slot - self.start_slot];
 
         // if reply not outdated and ballot is up-to-date
@@ -1229,10 +1241,10 @@ impl CrosswordReplica {
             inst.reqs_cw.absorb_other(reqs_cw)?;
 
             // if enough shards have been gathered, can push execution forward
-            if slot == self.commit_bar {
-                while self.commit_bar < num_insts {
-                    let inst =
-                        &mut self.insts[self.commit_bar - self.start_slot];
+            if slot == self.exec_bar {
+                let mut now_slot = self.exec_bar;
+                while now_slot < self.start_slot + self.insts.len() {
+                    let inst = &mut self.insts[now_slot - self.start_slot];
                     if inst.status < Status::Committed
                         || inst.reqs_cw.avail_shards() < self.quorum_cnt
                     {
@@ -1253,10 +1265,7 @@ impl CrosswordReplica {
                         for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                             if let ApiRequest::Req { cmd, .. } = req {
                                 self.state_machine.submit_cmd(
-                                    Self::make_command_id(
-                                        self.commit_bar,
-                                        cmd_idx,
-                                    ),
+                                    Self::make_command_id(now_slot, cmd_idx),
                                     cmd.clone(),
                                 )?;
                             } else {
@@ -1264,10 +1273,10 @@ impl CrosswordReplica {
                             }
                         }
                         pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                           reqs.len(), self.commit_bar);
+                                           reqs.len(), now_slot);
                     }
 
-                    self.commit_bar += 1;
+                    now_slot += 1;
                 }
             }
         }
@@ -1777,7 +1786,7 @@ impl CrosswordReplica {
 
             LogEntry::CommitSlot { slot } => {
                 assert!(slot < self.start_slot + self.insts.len());
-                // update instance state
+                // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
@@ -1788,6 +1797,8 @@ impl CrosswordReplica {
                         if inst.status < Status::Committed {
                             break;
                         }
+                        // update commit_bar
+                        self.commit_bar += 1;
                         // check number of available shards
                         if inst.reqs_cw.avail_shards() < self.quorum_cnt {
                             // can't execute if I don't have the complete request batch
@@ -1808,9 +1819,9 @@ impl CrosswordReplica {
                                 let _ = self.state_machine.get_result().await?;
                             }
                         }
-                        // update commit_bar and exec_bar
-                        self.commit_bar += 1;
+                        // update instance status and exec_bar
                         self.exec_bar += 1;
+                        inst.status = Status::Executed;
                     }
                 }
             }
@@ -1863,6 +1874,10 @@ impl CrosswordReplica {
             offset_ok: true, ..
         } = log_result
         {
+            if self.log_offset > 0 {
+                pf_info!(self.id; "recovered from wal log: commit {} exec {}",
+                                  self.commit_bar, self.exec_bar);
+            }
             Ok(())
         } else {
             logged_err!(self.id; "unexpected log result type or failed truncate")
@@ -1964,12 +1979,12 @@ impl CrosswordReplica {
     /// NOTE: the current implementation does not guard against crashes in the
     /// middle of taking a snapshot.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
+                           self.start_slot, self.exec_bar);
         assert!(self.exec_bar >= self.start_slot);
         if self.exec_bar == self.start_slot {
             return Ok(());
         }
-        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
-                           self.start_slot, self.exec_bar);
 
         // collect and dump all Puts in executed instances
         if self.is_leader {
@@ -2055,6 +2070,10 @@ impl CrosswordReplica {
                 self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
                     new_start: self.start_slot,
                 })?;
+
+                if self.start_slot > 0 {
+                    pf_info!(self.id; "recovered from snapshot: start {}", self.start_slot);
+                }
                 Ok(())
             }
 

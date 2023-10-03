@@ -186,19 +186,12 @@ impl ClusterManager {
                                     protocol);
         }
 
-        // tell it to connect to all existing known servers
+        // gather the list of all existing known servers
         let to_peers: HashMap<ReplicaId, SocketAddr> = self
             .server_info
             .iter()
             .map(|(&server, info)| (server, info.p2p_addr))
             .collect();
-        self.server_reigner.send_ctrl(
-            CtrlMsg::ConnectToPeers {
-                population: self.population,
-                to_peers,
-            },
-            server,
-        )?;
 
         // save new server's info
         self.server_info.insert(
@@ -211,6 +204,15 @@ impl ClusterManager {
                 start_slot: 0,
             },
         );
+
+        // tell it to connect to all other existing known servers
+        self.server_reigner.send_ctrl(
+            CtrlMsg::ConnectToPeers {
+                population: self.population,
+                to_peers,
+            },
+            server,
+        )?;
         Ok(())
     }
 

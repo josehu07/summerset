@@ -141,6 +141,7 @@ pub struct SimplePushReplica {
 // SimplePushReplica common helpers
 impl SimplePushReplica {
     /// Compose CommandId from instance index & command index within.
+    #[inline]
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -148,6 +149,7 @@ impl SimplePushReplica {
     }
 
     /// Decompose CommandId into instance index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;

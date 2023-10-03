@@ -298,6 +298,7 @@ pub struct MultiPaxosReplica {
 // MultiPaxosReplica common helpers
 impl MultiPaxosReplica {
     /// Create an empty null instance.
+    #[inline]
     fn null_instance(&self) -> Instance {
         Instance {
             bal: 0,
@@ -311,18 +312,32 @@ impl MultiPaxosReplica {
         }
     }
 
+    /// Locate the first null slot or append a null instance if no holes exist.
+    fn first_null_slot(&mut self) -> usize {
+        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+            if self.insts[s - self.start_slot].status == Status::Null {
+                return s;
+            }
+        }
+        self.insts.push(self.null_instance());
+        self.start_slot + self.insts.len() - 1
+    }
+
     /// Compose a unique ballot number from base.
+    #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
+    #[inline]
     fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
     /// Compose LogActionId from slot index & entry type.
     /// Uses the `Status` enum type to represent differnet entry types.
+    #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {
             Status::Preparing => 1,
@@ -334,6 +349,7 @@ impl MultiPaxosReplica {
     }
 
     /// Decompose LogActionId into slot index & entry type.
+    #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
         let type_num = log_action_id & ((1 << 2) - 1);
@@ -347,6 +363,7 @@ impl MultiPaxosReplica {
     }
 
     /// Compose CommandId from slot index & command index within.
+    #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
         assert!(slot <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -354,6 +371,7 @@ impl MultiPaxosReplica {
     }
 
     /// Decompose CommandId into slot index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
@@ -394,31 +412,18 @@ impl MultiPaxosReplica {
         }
 
         // create a new instance in the first null slot (or append a new one
-        // at the end if no holes exist)
-        let mut slot = self.start_slot + self.insts.len();
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
-            let old_inst = &mut self.insts[s - self.start_slot];
-            if old_inst.status == Status::Null {
-                old_inst.reqs = req_batch.clone();
-                old_inst.leader_bk = Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                });
-                slot = s;
-                break;
-            }
-        }
-        if slot == self.start_slot + self.insts.len() {
-            let mut new_inst = self.null_instance();
-            new_inst.reqs = req_batch.clone();
-            new_inst.leader_bk = Some(LeaderBookkeeping {
+        // at the end if no holes exist); fill it up with incoming data
+        let slot = self.first_null_slot();
+        {
+            let inst = &mut self.insts[slot - self.start_slot];
+            assert_eq!(inst.status, Status::Null);
+            inst.reqs = req_batch.clone();
+            inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: Bitmap::new(self.population, false),
             });
-            new_inst.external = true;
-            self.insts.push(new_inst);
+            inst.external = true;
         }
 
         // decide whether we can enter fast path for this instance
@@ -1338,7 +1343,7 @@ impl MultiPaxosReplica {
 
             LogEntry::CommitSlot { slot } => {
                 assert!(slot < self.start_slot + self.insts.len());
-                // update instance state
+                // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
@@ -1358,9 +1363,10 @@ impl MultiPaxosReplica {
                                 let _ = self.state_machine.get_result().await?;
                             }
                         }
-                        // update commit_bar and exec_bar
+                        // update instance status, commit_bar and exec_bar
                         self.commit_bar += 1;
                         self.exec_bar += 1;
+                        inst.status = Status::Executed;
                     }
                 }
             }
@@ -1413,6 +1419,10 @@ impl MultiPaxosReplica {
             offset_ok: true, ..
         } = log_result
         {
+            if self.log_offset > 0 {
+                pf_info!(self.id; "recovered from wal log: commit {} exec {}",
+                                  self.commit_bar, self.exec_bar);
+            }
             Ok(())
         } else {
             logged_err!(self.id; "unexpected log result type or failed truncate")
@@ -1604,6 +1614,10 @@ impl MultiPaxosReplica {
                 self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
                     new_start: self.start_slot,
                 })?;
+
+                if self.start_slot > 0 {
+                    pf_info!(self.id; "recovered from snapshot: start {}", self.start_slot);
+                }
                 Ok(())
             }
 
