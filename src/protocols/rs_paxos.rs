@@ -63,6 +63,9 @@ pub struct ReplicaConfigRSPaxos {
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
+    /// Maximum chunk size of a ReconstructRead message.
+    pub recon_chunk_size: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -84,6 +87,7 @@ impl Default for ReplicaConfigRSPaxos {
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
+            recon_chunk_size: 1000,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -220,13 +224,12 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Reconstruction read from new leader to replicas.
-    Reconstruct { slot: usize },
+    Reconstruct { slots: Vec<usize> },
 
     /// Reconstruction read reply from replica to leader.
     ReconstructReply {
-        slot: usize,
-        ballot: Ballot,
-        reqs_cw: RSCodeword<ReqBatch>,
+        /// Map from slot -> (ballot, peer shards).
+        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
     },
 
     /// Leader activity heartbeat.
@@ -1062,36 +1065,39 @@ impl RSPaxosReplica {
     fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
+        slots: Vec<usize>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
+        pf_trace!(self.id; "received Reconstruct <- {} for slots {:?}", peer, slots);
+        let mut slots_data = HashMap::new();
+
+        for slot in slots {
+            if slot < self.start_slot {
+                continue; // ignore if slot index outdated
+            }
+
+            // locate instance in memory, filling in null instances if needed
+            while self.start_slot + self.insts.len() <= slot {
+                self.insts.push(self.null_instance()?);
+            }
+            let inst = &mut self.insts[slot - self.start_slot];
+
+            // ignore spurious duplications; also ignore if I have nothing to send back
+            if inst.status < Status::Accepting
+                || inst.reqs_cw.avail_shards() == 0
+            {
+                continue;
+            }
+
+            // send back my ballot for this slot and the available shards
+            slots_data.insert(slot, (inst.bal, inst.reqs_cw.clone()));
         }
-        pf_trace!(self.id; "received Reconstruct <- {} for slot {}", peer, slot);
 
-        // locate instance in memory, filling in null instances if needed
-        while self.start_slot + self.insts.len() <= slot {
-            self.insts.push(self.null_instance()?);
+        if !slots_data.is_empty() {
+            let num_slots = slots_data.len();
+            self.transport_hub
+                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
+            pf_trace!(self.id; "sent ReconstructReply message for {} slots", num_slots);
         }
-        let inst = &mut self.insts[slot - self.start_slot];
-
-        // ignore spurious duplications; also ignore if I have nothing to send back
-        if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
-            return Ok(());
-        }
-
-        // send back my ballot for this slot and the available shards
-        self.transport_hub.send_msg(
-            PeerMsg::ReconstructReply {
-                slot,
-                ballot: inst.bal,
-                reqs_cw: inst.reqs_cw.clone(),
-            },
-            peer,
-        )?;
-        pf_trace!(self.id; "sent ReconstructReply message for slot {} bal {}",
-                           slot, inst.bal);
-
         Ok(())
     }
 
@@ -1099,61 +1105,66 @@ impl RSPaxosReplica {
     fn handle_msg_reconstruct_reply(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
-        ballot: Ballot,
-        reqs_cw: RSCodeword<ReqBatch>,
+        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
-        }
-        pf_trace!(self.id; "received ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot, reqs_cw.avail_shards_map());
-        assert!(slot < self.start_slot + self.insts.len());
-        assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
-        let inst = &mut self.insts[slot - self.start_slot];
+        for (slot, (ballot, reqs_cw)) in slots_data {
+            if slot < self.start_slot {
+                continue; // ignore if slot index outdated
+            }
+            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
+                               peer, slot, ballot, reqs_cw.avail_shards_map());
+            assert!(slot < self.start_slot + self.insts.len());
+            assert!(
+                self.insts[slot - self.start_slot].status >= Status::Committed
+            );
+            let inst = &mut self.insts[slot - self.start_slot];
 
-        // if reply not outdated and ballot is up-to-date
-        if inst.status < Status::Executed && ballot >= inst.bal {
-            // absorb the shards from this replica
-            inst.reqs_cw.absorb_other(reqs_cw)?;
+            // if reply not outdated and ballot is up-to-date
+            if inst.status < Status::Executed && ballot >= inst.bal {
+                // absorb the shards from this replica
+                inst.reqs_cw.absorb_other(reqs_cw)?;
 
-            // if enough shards have been gathered, can push execution forward
-            if slot == self.exec_bar {
-                let mut now_slot = self.exec_bar;
-                while now_slot < self.start_slot + self.insts.len() {
-                    let inst = &mut self.insts[now_slot - self.start_slot];
-                    if inst.status < Status::Committed
-                        || inst.reqs_cw.avail_shards() < self.quorum_cnt
-                    {
-                        break;
-                    }
-
-                    if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
-                        // have enough shards but need reconstruction
-                        inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                    }
-                    let reqs = inst.reqs_cw.get_data()?;
-
-                    // submit commands in committed instance to the state machine
-                    // for execution
-                    if reqs.is_empty() {
-                        inst.status = Status::Executed;
-                    } else {
-                        for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                            if let ApiRequest::Req { cmd, .. } = req {
-                                self.state_machine.submit_cmd(
-                                    Self::make_command_id(now_slot, cmd_idx),
-                                    cmd.clone(),
-                                )?;
-                            } else {
-                                continue; // ignore other types of requests
-                            }
+                // if enough shards have been gathered, can push execution forward
+                if slot == self.exec_bar {
+                    let mut now_slot = self.exec_bar;
+                    while now_slot < self.start_slot + self.insts.len() {
+                        let inst = &mut self.insts[now_slot - self.start_slot];
+                        if inst.status < Status::Committed
+                            || inst.reqs_cw.avail_shards() < self.quorum_cnt
+                        {
+                            break;
                         }
-                        pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                           reqs.len(), now_slot);
-                    }
 
-                    now_slot += 1;
+                        if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                            // have enough shards but need reconstruction
+                            inst.reqs_cw
+                                .reconstruct_data(Some(&self.rs_coder))?;
+                        }
+                        let reqs = inst.reqs_cw.get_data()?;
+
+                        // submit commands in committed instance to the state machine
+                        // for execution
+                        if reqs.is_empty() {
+                            inst.status = Status::Executed;
+                        } else {
+                            for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
+                                if let ApiRequest::Req { cmd, .. } = req {
+                                    self.state_machine.submit_cmd(
+                                        Self::make_command_id(
+                                            now_slot, cmd_idx,
+                                        ),
+                                        cmd.clone(),
+                                    )?;
+                                } else {
+                                    continue; // ignore other types of requests
+                                }
+                            }
+                            pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                               reqs.len(), now_slot);
+                        }
+
+                        now_slot += 1;
+                    }
                 }
             }
         }
@@ -1185,14 +1196,12 @@ impl RSPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Reconstruct { slot } => {
-                self.handle_msg_reconstruct(peer, slot)
+            PeerMsg::Reconstruct { slots } => {
+                self.handle_msg_reconstruct(peer, slots)
             }
-            PeerMsg::ReconstructReply {
-                slot,
-                ballot,
-                reqs_cw,
-            } => self.handle_msg_reconstruct_reply(peer, slot, ballot, reqs_cw),
+            PeerMsg::ReconstructReply { slots_data } => {
+                self.handle_msg_reconstruct_reply(peer, slots_data)
+            }
             PeerMsg::Heartbeat { ballot, exec_bar } => {
                 self.heard_heartbeat(peer, ballot, exec_bar)
             }
@@ -1284,6 +1293,7 @@ impl RSPaxosReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        let mut recon_slots = Vec::new();
         for (slot, inst) in self
             .insts
             .iter_mut()
@@ -1333,13 +1343,18 @@ impl RSPaxosReplica {
             if inst.status == Status::Committed
                 && inst.reqs_cw.avail_shards() < self.quorum_cnt
             {
-                self.transport_hub
-                    .bcast_msg(PeerMsg::Reconstruct { slot }, None)?;
-                pf_trace!(self.id; "broadcast Reconstruct messages for slot {} bal {} shards {:?}",
-                                   slot, inst.bal, inst.reqs_cw.avail_shards_map());
+                recon_slots.push(slot);
             }
         }
 
+        // send reconstruction read messages in chunks
+        for chunk in recon_slots.chunks(self.config.recon_chunk_size) {
+            let slots = chunk.to_vec();
+            let num_slots = slots.len();
+            self.transport_hub
+                .bcast_msg(PeerMsg::Reconstruct { slots }, None)?;
+            pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+        }
         Ok(())
     }
 
@@ -1951,7 +1966,7 @@ impl GenericReplica for RSPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
-                                    fault_tolerance,
+                                    fault_tolerance, recon_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
@@ -1980,6 +1995,13 @@ impl GenericReplica for RSPaxosReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.recon_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.recon_chunk_size '{}'",
+                config.recon_chunk_size
             );
         }
 
