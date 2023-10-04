@@ -192,9 +192,14 @@ enum LogEntry {
 /// Snapshot file entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum SnapEntry {
-    /// First entry at the start of file: number of log instances covered by
-    /// this snapshot file == the start slot index of in-mem log.
-    StartSlot { slot: usize },
+    /// Necessary slot indices to remember.
+    SlotInfo {
+        /// First entry at the start of file: number of log instances covered
+        /// by this snapshot file == the start slot index of in-mem log.
+        start_slot: usize,
+        /// Index of the first non-committed slot.
+        commit_bar: usize,
+    },
 
     /// Set of key-value pairs to apply to the state.
     KVPairSet { pairs: HashMap<String, String> },
@@ -1977,7 +1982,8 @@ impl CrosswordReplica {
     /// to that index as well as outdate entries in the durable WAL log file.
     ///
     /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot.
+    /// middle of taking a snapshot. Production quality implementations should
+    /// make the snapshotting action "atomic".
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {}",
                            self.start_slot, self.exec_bar);
@@ -1992,6 +1998,28 @@ impl CrosswordReplica {
             self.bcast_heartbeats()?;
         }
         self.snapshot_dump_kv_pairs().await?;
+
+        // write new slot info entry to the head of snapshot
+        self.snapshot_hub.submit_action(
+            0,
+            LogAction::Write {
+                entry: SnapEntry::SlotInfo {
+                    start_slot: self.exec_bar,
+                    commit_bar: self.commit_bar,
+                },
+                offset: 0,
+                sync: self.config.logger_sync,
+            },
+        )?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+        match log_result {
+            LogResult::Write {
+                offset_ok: true, ..
+            } => {}
+            _ => {
+                return logged_err!(self.id; "unexpected log result type or failed truncate");
+            }
+        }
 
         // update start_slot and discard all in-memory log instances up to exec_bar
         self.insts.drain(0..(self.exec_bar - self.start_slot));
@@ -2023,11 +2051,19 @@ impl CrosswordReplica {
 
         match log_result {
             LogResult::Read {
-                entry: Some(SnapEntry::StartSlot { slot }),
+                entry:
+                    Some(SnapEntry::SlotInfo {
+                        start_slot,
+                        commit_bar,
+                    }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
-                self.start_slot = slot; // get start slot index of in-mem log
+
+                // recover necessary slot indices info
+                self.start_slot = start_slot;
+                self.commit_bar = commit_bar;
+                self.exec_bar = start_slot;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -2072,7 +2108,8 @@ impl CrosswordReplica {
                 })?;
 
                 if self.start_slot > 0 {
-                    pf_info!(self.id; "recovered from snapshot: start {}", self.start_slot);
+                    pf_info!(self.id; "recovered from snapshot: start {} commit {} exec {}",
+                                      self.start_slot, self.commit_bar, self.exec_bar);
                 }
                 Ok(())
             }
@@ -2082,7 +2119,10 @@ impl CrosswordReplica {
                 self.snapshot_hub.submit_action(
                     0,
                     LogAction::Write {
-                        entry: SnapEntry::StartSlot { slot: 0 },
+                        entry: SnapEntry::SlotInfo {
+                            start_slot: 0,
+                            commit_bar: 0,
+                        },
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
