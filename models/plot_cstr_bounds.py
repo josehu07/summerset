@@ -62,57 +62,59 @@ def plot_cstr_bound(idx, cluster_size):
         label="Crossword configs",
         zorder=20,
     )
-    plt.vlines(m, ymin=m, ymax=m + 1.5, linestyles="-", color=line_color, zorder=20)
-    plt.vlines(n, ymin=1, ymax=2.5, linestyles="-", color=line_color, zorder=20)
+    plt.vlines(m, ymin=m, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
+    plt.vlines(n, ymin=1, ymax=2.4, linestyles="-", color=line_color, zorder=20)
 
     # correct region
     xs = [m, m, n, n]
-    ys = [m, m + 1, 2, 1]
+    ys = [m, m + 1.7, 2.7, 1]
     plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
 
-    # unused x-axis range
+    # unused x-axis ranges
+    xs = [0.42, m - 0.5, m - 0.8, 0.12]
+    ys = [0.3, 0.3, 0, 0]
+    plt.fill(xs, ys, hatch="///", fill=False, linewidth=0, zorder=10)
     if cluster_size < CLUSTER_SIZES[-1]:
-        xs = [n + 0.9, X_TICKS[-1] + 0.35, X_TICKS[-1] + 0.35, n + 0.8]
-        ys = [0.3, 0.3, 0, 0]
-        plt.fill(
-            xs, ys, hatch="///", fill=False, edgecolor=None, linewidth=0, zorder=10
-        )
+        xs = [n + 1.1, X_TICKS[-1] + 0.4, X_TICKS[-1] + 0.1, n + 0.8]
+        plt.fill(xs, ys, hatch="///", fill=False, linewidth=0, zorder=10)
 
     # latency & throughput optimized arrows
     plt.arrow(
-        m + 0.3,
-        m + 1.7,
-        -0.9,
-        0.9,
+        m + 0.1,
+        m + 2.4,
+        -1.3,
+        0,
         linewidth=1,
         color="dimgray",
         length_includes_head=True,
         head_width=0.3,
         overhang=0.5,
+        clip_on=False,
         label="Tradeoff decisions",
     )
     plt.text(
-        m + 0.18 if n <= 5 else m + 0.5 if n == 9 else m + 0.4,
-        m + 2.78 if n <= 5 else m + 2.0 if n == 9 else m + 2.4,
+        m + 0.3 if n < 9 else m + 0.6,
+        m + 2.5 if n < 9 else m + 2.2,
         "Lat.\noptim.",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
     )
     plt.arrow(
-        n - 0.3,
-        3.3,
-        0.9,
-        -0.9,
+        n + 1,
+        2,
+        0,
+        -1.3,
         linewidth=1,
         color="dimgray",
         length_includes_head=True,
         head_width=0.3,
         overhang=0.5,
+        clip_on=False,
     )
     plt.text(
-        n + 0.8 if n <= 5 else n + 0.0 if n == 9 else n + 0.4,
-        1 + 1.5 if n <= 5 else 1 + 2.9 if n == 9 else 1 + 2.6,
+        n + 1.3 if n < 7 else n + 0.4,
+        1 + 1.1 if n < 7 else 1 + 2.1,
         "Tput.\noptim.",
         horizontalalignment="left",
         verticalalignment="center",
@@ -125,7 +127,9 @@ def plot_cstr_bound(idx, cluster_size):
 
     plt.xlim((0, X_TICKS[-1] + 0.7))
     plt.ylim((0, Y_TICKS[-1] + 2.7))
-    plt.xticks(X_TICKS[:cluster_size], list(map(str, X_TICKS))[:cluster_size])
+    plt.xticks(
+        X_TICKS[m - 1 : cluster_size], list(map(str, X_TICKS))[m - 1 : cluster_size]
+    )
     plt.yticks(Y_TICKS, list(map(str, Y_TICKS)))
 
     plt.xlabel("|Quorum|", loc="right")
@@ -163,7 +167,7 @@ def make_legend(fig, handles, labels):
             color="dimgray",
             length_includes_head=True,
             head_width=0.6 * height,
-            overhang=0.3,
+            overhang=0.2,
         )
 
     def make_legend_polygon(
