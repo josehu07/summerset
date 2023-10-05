@@ -82,6 +82,15 @@ impl Bitmap {
     pub fn iter(&self) -> BitmapIter {
         BitmapIter { map: self, idx: 0 }
     }
+
+    /// Convenience method for converting the bitmap to a vec of indexes where
+    /// the flag is true.
+    #[inline]
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.iter()
+            .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
+            .collect()
+    }
 }
 
 /// Iterator over `Bitmap`, yielding `(id, bit)` pairs.
@@ -175,5 +184,6 @@ mod bitmap_tests {
         for (id, flag) in map.iter() {
             assert_eq!(ref_map[id as usize], flag);
         }
+        assert_eq!(map.to_vec(), [0, 1, 3, 4]);
     }
 }

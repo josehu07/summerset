@@ -96,10 +96,10 @@ impl Default for ReplicaConfigCrossword {
             hb_send_interval_ms: 50,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
-            gossip_timeout_min: 100,
-            gossip_timeout_max: 300,
+            gossip_timeout_min: 1200,
+            gossip_timeout_max: 1800,
             fault_tolerance: 0,
-            recon_chunk_size: 1000,
+            recon_chunk_size: 2000,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,
@@ -146,6 +146,9 @@ struct LeaderBookkeeping {
 struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
+
+    /// Have I tried gossiping for this instance at least once?
+    gossip_tried: bool,
 }
 
 /// In-memory instance containing a (possibly partial) commands batch.
@@ -436,12 +439,82 @@ impl CrosswordReplica {
         slot: usize,
         id: ReplicaId,
         population: u8,
-        num_shards: u8,
+        shards_per_replica: u8,
     ) -> Vec<u8> {
         let first: u8 = ((id as usize + slot) % population as usize) as u8;
-        (first..(first + num_shards))
+        (first..(first + shards_per_replica))
             .map(|i| (i % population))
             .collect()
+    }
+
+    /// TODO: should let leader incorporate assignment metadata in Accept
+    /// messages. With more complex assignment policies, a follower probably
+    /// does not know the assignment.
+    fn gossip_targets_excl(
+        slot: usize,
+        me: ReplicaId,
+        population: u8,
+        quorum_cnt: u8,
+        shards_per_replica: u8,
+        mut avail_shards_map: Bitmap,
+        replica_bk: &mut Option<ReplicaBookkeeping>,
+    ) -> HashMap<ReplicaId, Vec<u8>> {
+        let mut src_peer = me;
+        let mut first_try = false;
+        if let Some(ReplicaBookkeeping {
+            source,
+            gossip_tried,
+        }) = replica_bk
+        {
+            if !*gossip_tried {
+                src_peer = *source;
+                first_try = true;
+                // first try: exclude all parity shards
+                for idx in quorum_cnt..population {
+                    avail_shards_map.set(idx, true).unwrap();
+                }
+                *gossip_tried = true;
+            }
+        }
+
+        // greedily considers my peers, starting from the one with my ID + 1,
+        // until all data shards covered
+        let mut targets_excl = HashMap::new();
+        for p in (me + 1)..(population + me) {
+            let peer = p % population;
+            if peer == src_peer {
+                // skip leader who initially replicated this instance to me
+                continue;
+            }
+
+            if !first_try {
+                // first try probably did not succeed, so do it conservatively
+                targets_excl.insert(peer, avail_shards_map.to_vec());
+            } else {
+                // first try: only ask for a minimum number of data shards
+                let mut useful_shards = Vec::new();
+                for idx in Self::shards_for_replica(
+                    slot,
+                    peer,
+                    population,
+                    shards_per_replica,
+                ) {
+                    if !avail_shards_map.get(idx).unwrap() {
+                        useful_shards.push(idx);
+                    }
+                }
+                // if this peer has data shards which I don't have right now
+                // and I have not asked others for in this round
+                if !useful_shards.is_empty() {
+                    targets_excl.insert(peer, avail_shards_map.to_vec());
+                    for idx in useful_shards {
+                        avail_shards_map.set(idx, true).unwrap();
+                    }
+                }
+            }
+        }
+
+        targets_excl
     }
 
     /// TODO: make better impl of this.
@@ -682,7 +755,7 @@ impl CrosswordReplica {
         } else {
             // on follower replica, finishing the logging of a
             // PrepareBal entry leads to sending back a Prepare reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::PrepareReply {
                         slot,
@@ -719,7 +792,7 @@ impl CrosswordReplica {
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,
@@ -854,7 +927,10 @@ impl CrosswordReplica {
 
             inst.bal = ballot;
             inst.status = Status::Preparing;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            inst.replica_bk = Some(ReplicaBookkeeping {
+                source: peer,
+                gossip_tried: false,
+            });
 
             // update largest ballot seen
             self.bal_max_seen = ballot;
@@ -1037,7 +1113,10 @@ impl CrosswordReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            inst.replica_bk = Some(ReplicaBookkeeping {
+                source: peer,
+                gossip_tried: false,
+            });
 
             // update largest ballot seen
             self.bal_max_seen = ballot;
@@ -1468,26 +1547,13 @@ impl CrosswordReplica {
             }
 
             // do reconstruction reads for all committed instances that do not
-            // hold enough available shards for reconstruction
+            // hold enough available shards for reconstruction. It would be too
+            // complicated and slow to do the "data shards only" optimization
+            // during fail-over, so just do this conservatively here
             if inst.status == Status::Committed
                 && inst.reqs_cw.avail_shards() < self.quorum_cnt
             {
-                recon_slots.insert(
-                    slot,
-                    inst.reqs_cw
-                        .avail_shards_map()
-                        .iter()
-                        .filter_map(
-                            |(idx, flag)| {
-                                if flag {
-                                    Some(idx)
-                                } else {
-                                    None
-                                }
-                            },
-                        )
-                        .collect(),
-                );
+                recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
 
                 // send reconstruction read messages in chunks
                 if recon_slots.len() == self.config.recon_chunk_size {
@@ -1593,11 +1659,10 @@ impl CrosswordReplica {
     /// Triggers gossiping for my missing shards in committed but not-yet-
     /// executed instances: fetch missing shards from peers, preferring
     /// follower peers that hold data shards.
-    // TODO: prefer replicas with original data shards first
     fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
         // maintain a map from peer ID to send to -> slots_excl to send
         let mut recon_slots: HashMap<ReplicaId, HashMap<usize, Vec<u8>>> =
-            HashMap::new();
+            HashMap::with_capacity(self.population as usize - 1);
         for peer in 0..self.population {
             if peer != self.id {
                 recon_slots.insert(peer, HashMap::new());
@@ -1607,42 +1672,32 @@ impl CrosswordReplica {
         let mut slot_up_to = self.exec_bar;
         for slot in self.exec_bar..(self.start_slot + self.insts.len()) {
             slot_up_to = slot;
-            let inst = &self.insts[slot - self.start_slot];
-            if inst.status >= Status::Executed {
-                continue;
-            } else if inst.status < Status::Committed {
-                break;
+            {
+                let inst = &self.insts[slot - self.start_slot];
+                if inst.status >= Status::Executed {
+                    continue;
+                } else if inst.status < Status::Committed {
+                    break;
+                }
             }
 
-            if inst.reqs_cw.avail_shards() < self.quorum_cnt {
-                for peer in 0..self.population {
-                    if peer == self.id {
-                        continue;
-                    }
-                    if let Some(ReplicaBookkeeping { source }) = inst.replica_bk
-                    {
-                        if peer == source {
-                            // skip leader who initially replicated this instance to me
-                            continue;
-                        }
-                    }
+            let avail_shards_map = self.insts[slot - self.start_slot]
+                .reqs_cw
+                .avail_shards_map();
+            if avail_shards_map.count() < self.quorum_cnt {
+                // decide which peers to ask for which shards from
+                let targets_excl = Self::gossip_targets_excl(
+                    slot,
+                    self.id,
+                    self.population,
+                    self.quorum_cnt,
+                    self.config.shards_per_replica,
+                    avail_shards_map,
+                    &mut self.insts[slot - self.start_slot].replica_bk,
+                );
 
-                    recon_slots.get_mut(&peer).unwrap().insert(
-                        slot,
-                        inst.reqs_cw
-                            .avail_shards_map()
-                            .iter()
-                            .filter_map(
-                                |(idx, flag)| {
-                                    if flag {
-                                        Some(idx)
-                                    } else {
-                                        None
-                                    }
-                                },
-                            )
-                            .collect(),
-                    );
+                for (peer, exclude) in targets_excl {
+                    recon_slots.get_mut(&peer).unwrap().insert(slot, exclude);
 
                     // send reconstruction read messages in chunks
                     if recon_slots[&peer].len() == self.config.recon_chunk_size
