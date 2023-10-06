@@ -245,7 +245,7 @@ pub struct RSPaxosReplica {
     population: u8,
 
     /// Majority quorum size.
-    quorum_cnt: u8,
+    majority: u8,
 
     /// Configuration parameters struct.
     config: ReplicaConfigRSPaxos,
@@ -340,14 +340,14 @@ impl RSPaxosReplica {
             bal: 0,
             status: Status::Null,
             reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                self.quorum_cnt,
-                self.population - self.quorum_cnt,
+                self.majority,
+                self.population - self.majority,
             )?,
             voted: (
                 0,
                 RSCodeword::<ReqBatch>::from_null(
-                    self.quorum_cnt,
-                    self.population - self.quorum_cnt,
+                    self.majority,
+                    self.population - self.majority,
                 )?,
             ),
             leader_bk: None,
@@ -464,8 +464,8 @@ impl RSPaxosReplica {
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
-            self.quorum_cnt,
-            self.population - self.quorum_cnt,
+            self.majority,
+            self.population - self.majority,
         )?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
@@ -680,12 +680,12 @@ impl RSPaxosReplica {
                 let now_slot = self.commit_bar;
                 self.commit_bar += 1;
 
-                if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, inst.reqs_cw.avail_shards(), self.quorum_cnt);
+                                       slot, inst.reqs_cw.avail_shards(), self.majority);
                     break;
-                } else if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                } else if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -854,10 +854,10 @@ impl RSPaxosReplica {
             // reconstruct the original data, enter Accept phase for this
             // instance using the request batch value constructed using shards
             // with the highest ballot number in quorum
-            if leader_bk.prepare_acks.count() >= self.quorum_cnt
-                && inst.reqs_cw.avail_shards() >= self.quorum_cnt
+            if leader_bk.prepare_acks.count() >= self.majority
+                && inst.reqs_cw.avail_shards() >= self.majority
             {
-                if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -1010,9 +1010,9 @@ impl RSPaxosReplica {
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed; in RS-Paxos, this
-            // means accept_acks.count() >= self.quorum_cnt + fault_tolerance
+            // means accept_acks.count() >= self.majority + fault_tolerance
             if leader_bk.accept_acks.count()
-                >= self.quorum_cnt + self.config.fault_tolerance
+                >= self.majority + self.config.fault_tolerance
             {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
@@ -1150,12 +1150,12 @@ impl RSPaxosReplica {
                     while now_slot < self.start_slot + self.insts.len() {
                         let inst = &mut self.insts[now_slot - self.start_slot];
                         if inst.status < Status::Committed
-                            || inst.reqs_cw.avail_shards() < self.quorum_cnt
+                            || inst.reqs_cw.avail_shards() < self.majority
                         {
                             break;
                         }
 
-                        if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                        if inst.reqs_cw.avail_data_shards() < self.majority {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
                                 .reconstruct_data(Some(&self.rs_coder))?;
@@ -1370,7 +1370,7 @@ impl RSPaxosReplica {
             // do reconstruction reads for all committed instances that do not
             // hold enough available shards for reconstruction
             if inst.status == Status::Committed
-                && inst.reqs_cw.avail_shards() < self.quorum_cnt
+                && inst.reqs_cw.avail_shards() < self.majority
             {
                 recon_slots.push(slot);
             }
@@ -1696,11 +1696,11 @@ impl RSPaxosReplica {
                         // update commit_bar
                         self.commit_bar += 1;
                         // check number of available shards
-                        if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                        if inst.reqs_cw.avail_shards() < self.majority {
                             // can't execute if I don't have the complete request batch
                             break;
                         } else if inst.reqs_cw.avail_data_shards()
-                            < self.quorum_cnt
+                            < self.majority
                         {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
@@ -1789,7 +1789,7 @@ impl RSPaxosReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..self.exec_bar {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.reqs_cw.avail_data_shards() >= self.quorum_cnt);
+            assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
@@ -2144,14 +2144,14 @@ impl GenericReplica for RSPaxosReplica {
 
         // create a Reed-Solomon coder with num_data_shards == quorum size and
         // num_parity shards == population - quorum
-        let quorum_cnt = (population / 2) + 1;
-        if config.fault_tolerance > (population - quorum_cnt) {
+        let majority = (population / 2) + 1;
+        if config.fault_tolerance > (population - majority) {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
         }
         let rs_coder = ReedSolomon::new(
-            quorum_cnt as usize,
-            (population - quorum_cnt) as usize,
+            majority as usize,
+            (population - majority) as usize,
         )?;
 
         // proactively connect to some peers, then wait for all population
@@ -2198,7 +2198,7 @@ impl GenericReplica for RSPaxosReplica {
         Ok(RSPaxosReplica {
             id,
             population,
-            quorum_cnt,
+            majority,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,

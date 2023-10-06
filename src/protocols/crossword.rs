@@ -73,7 +73,7 @@ pub struct ReplicaConfigCrossword {
     pub recon_chunk_size: usize,
 
     /// Number of shards to assign to each replica.
-    // TODO: proper config options.
+    // TODO: think about how to allow unbalanced assignments.
     pub shards_per_replica: u8,
 
     // Performance simulation params (all zeros means no perf simulation):
@@ -265,7 +265,11 @@ pub struct CrosswordReplica {
     population: u8,
 
     /// Majority quorum size.
-    quorum_cnt: u8,
+    majority: u8,
+
+    /// Current #shards per replica configuration.
+    // TODO: probably needs something better for unbalanced assignments.
+    shards_per_replica: u8,
 
     /// Configuration parameters struct.
     config: ReplicaConfigCrossword,
@@ -363,14 +367,14 @@ impl CrosswordReplica {
             bal: 0,
             status: Status::Null,
             reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                self.quorum_cnt,
-                self.population - self.quorum_cnt,
+                self.majority,
+                self.population - self.majority,
             )?,
             voted: (
                 0,
                 RSCodeword::<ReqBatch>::from_null(
-                    self.quorum_cnt,
-                    self.population - self.quorum_cnt,
+                    self.majority,
+                    self.population - self.majority,
                 )?,
             ),
             leader_bk: None,
@@ -446,7 +450,7 @@ impl CrosswordReplica {
         (slot, cmd_idx)
     }
 
-    /// TODO: maybe remove this.
+    // TODO: think about how to allow unbalanced assignments.
     #[inline]
     fn shards_for_replica(
         slot: usize,
@@ -460,14 +464,14 @@ impl CrosswordReplica {
             .collect()
     }
 
-    /// TODO: should let leader incorporate assignment metadata in Accept
-    /// messages. With more complex assignment policies, a follower probably
-    /// does not know the assignment.
+    // TODO: should let leader incorporate assignment metadata in Accept
+    // messages. With more complex assignment policies, a follower probably
+    // does not know the assignment.
     fn gossip_targets_excl(
         slot: usize,
         me: ReplicaId,
         population: u8,
-        quorum_cnt: u8,
+        majority: u8,
         shards_per_replica: u8,
         mut avail_shards_map: Bitmap,
         replica_bk: &mut Option<ReplicaBookkeeping>,
@@ -483,7 +487,7 @@ impl CrosswordReplica {
                 src_peer = *source;
                 first_try = true;
                 // first try: exclude all parity shards
-                for idx in quorum_cnt..population {
+                for idx in majority..population {
                     avail_shards_map.set(idx, true).unwrap();
                 }
                 *gossip_tried = true;
@@ -529,14 +533,22 @@ impl CrosswordReplica {
         targets_excl
     }
 
-    /// TODO: make better impl of this.
+    // TODO: think about how to allow unbalanced assignments.
     fn coverage_under_faults(
         population: u8,
         acks: &HashMap<ReplicaId, Bitmap>,
         fault_tolerance: u8,
+        // if given, assume balanced assignment
+        shards_per_replica: Option<u8>,
     ) -> u8 {
         if acks.len() <= fault_tolerance as usize {
             return 0;
+        }
+
+        // if assuming balanced assignment
+        if let Some(shards_per_replica) = shards_per_replica {
+            assert!(shards_per_replica > 0);
+            return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
         }
 
         // enumerate all subsets of acks excluding fault number of replicas
@@ -570,6 +582,107 @@ impl CrosswordReplica {
         }
 
         min_coverage
+    }
+
+    /// Change to a new #shards_per_replica vs. quorum_size configuration. If
+    /// `redo_accepts` is true, redo all the instances that are currently in
+    /// the Accepting phase. This typically should happen when we are falling
+    /// back to a smaller quorum_size because of detected follower failures;
+    /// for performance-oriented config changes, this is not necessary.
+    // TODO: think about how to allow unbalanced assignments.
+    fn change_assignment_config(
+        &mut self,
+        shards_per_replica: u8,
+        redo_accepts: bool,
+    ) -> Result<(), SummersetError> {
+        assert!(shards_per_replica > 0);
+        if shards_per_replica > self.majority {
+            return Ok(()); // invalid, ignore
+        }
+
+        let quorum_size = self.majority + self.config.fault_tolerance + 1
+            - shards_per_replica;
+        self.shards_per_replica = shards_per_replica;
+        pf_info!(self.id; "switching assignment config: ({} - {}) {}",
+                          self.shards_per_replica, quorum_size,
+                          if redo_accepts { "redo" } else { "" });
+
+        if redo_accepts {
+            for (slot, inst) in self
+                .insts
+                .iter_mut()
+                .enumerate()
+                .map(|(s, i)| (self.start_slot + s, i))
+            {
+                if inst.status == Status::Accepting {
+                    assert!(inst.leader_bk.is_some());
+                    inst.bal = self.bal_prepared;
+                    inst.leader_bk.as_mut().unwrap().accept_acks.clear();
+                    pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
+                               slot, inst.bal);
+
+                    // record update to largest accepted ballot and corresponding data
+                    let subset_copy = inst.reqs_cw.subset_copy(
+                        Bitmap::from(
+                            self.population,
+                            Self::shards_for_replica(
+                                slot,
+                                self.id,
+                                self.population,
+                                self.shards_per_replica,
+                            ),
+                        ),
+                        false,
+                    )?;
+                    inst.voted = (inst.bal, subset_copy.clone());
+                    self.storage_hub.submit_action(
+                        Self::make_log_action_id(slot, Status::Accepting),
+                        LogAction::Append {
+                            entry: LogEntry::AcceptData {
+                                slot,
+                                ballot: inst.bal,
+                                // persist only some shards on myself
+                                reqs_cw: subset_copy,
+                            },
+                            sync: self.config.logger_sync,
+                        },
+                    )?;
+                    pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
+                               slot, inst.bal);
+
+                    // send Accept messages to all peers, each getting its subset of
+                    // shards of data
+                    for peer in 0..self.population {
+                        if peer == self.id {
+                            continue;
+                        }
+                        self.transport_hub.send_msg(
+                            PeerMsg::Accept {
+                                slot,
+                                ballot: inst.bal,
+                                reqs_cw: inst.reqs_cw.subset_copy(
+                                    Bitmap::from(
+                                        self.population,
+                                        Self::shards_for_replica(
+                                            slot,
+                                            peer,
+                                            self.population,
+                                            self.shards_per_replica,
+                                        ),
+                                    ),
+                                    false,
+                                )?,
+                            },
+                            peer,
+                        )?;
+                    }
+                    pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
+                               slot, inst.bal);
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -613,8 +726,8 @@ impl CrosswordReplica {
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
-            self.quorum_cnt,
-            self.population - self.quorum_cnt,
+            self.majority,
+            self.population - self.majority,
         )?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
@@ -690,7 +803,7 @@ impl CrosswordReplica {
                         slot,
                         self.id,
                         self.population,
-                        self.config.shards_per_replica,
+                        self.shards_per_replica,
                     ),
                 ),
                 false,
@@ -728,7 +841,7 @@ impl CrosswordReplica {
                                     slot,
                                     peer,
                                     self.population,
-                                    self.config.shards_per_replica,
+                                    self.shards_per_replica,
                                 ),
                             ),
                             false,
@@ -846,12 +959,12 @@ impl CrosswordReplica {
                 let now_slot = self.commit_bar;
                 self.commit_bar += 1;
 
-                if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, inst.reqs_cw.avail_shards(), self.quorum_cnt);
+                                       slot, inst.reqs_cw.avail_shards(), self.majority);
                     break;
-                } else if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                } else if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -1023,10 +1136,10 @@ impl CrosswordReplica {
             // reconstruct the original data, enter Accept phase for this
             // instance using the request batch value constructed using shards
             // with the highest ballot number in quorum
-            if leader_bk.prepare_acks.count() >= self.quorum_cnt
-                && inst.reqs_cw.avail_shards() >= self.quorum_cnt
+            if leader_bk.prepare_acks.count() >= self.majority
+                && inst.reqs_cw.avail_shards() >= self.majority
             {
-                if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -1052,7 +1165,7 @@ impl CrosswordReplica {
                             slot,
                             self.id,
                             self.population,
-                            self.config.shards_per_replica,
+                            self.shards_per_replica,
                         ),
                     ),
                     false,
@@ -1088,7 +1201,7 @@ impl CrosswordReplica {
                                         slot,
                                         peer,
                                         self.population,
-                                        self.config.shards_per_replica,
+                                        self.shards_per_replica,
                                     ),
                                 ),
                                 false,
@@ -1202,19 +1315,20 @@ impl CrosswordReplica {
                         slot,
                         peer,
                         self.population,
-                        self.config.shards_per_replica,
+                        self.shards_per_replica,
                     ),
                 ),
             );
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed
-            if leader_bk.accept_acks.len() as u8 >= self.quorum_cnt
+            if leader_bk.accept_acks.len() as u8 >= self.majority
                 && Self::coverage_under_faults(
                     self.population,
                     &leader_bk.accept_acks,
                     self.config.fault_tolerance,
-                ) >= self.quorum_cnt
+                    Some(self.shards_per_replica),
+                ) >= self.majority
             {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
@@ -1357,12 +1471,12 @@ impl CrosswordReplica {
                     while now_slot < self.start_slot + self.insts.len() {
                         let inst = &mut self.insts[now_slot - self.start_slot];
                         if inst.status < Status::Committed
-                            || inst.reqs_cw.avail_shards() < self.quorum_cnt
+                            || inst.reqs_cw.avail_shards() < self.majority
                         {
                             break;
                         }
 
-                        if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                        if inst.reqs_cw.avail_data_shards() < self.majority {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
                                 .reconstruct_data(Some(&self.rs_coder))?;
@@ -1510,6 +1624,18 @@ impl CrosswordReplica {
             if self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, false)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                // check if we need to fall back to a config with smaller
+                // fast-path quorum size
+                let curr_quorum_size =
+                    self.majority + self.config.fault_tolerance + 1
+                        - self.shards_per_replica;
+                if self.peer_alive.count() < curr_quorum_size {
+                    self.change_assignment_config(
+                        self.shards_per_replica + curr_quorum_size
+                            - self.peer_alive.count(),
+                        true,
+                    )?;
+                }
             }
         }
 
@@ -1579,7 +1705,7 @@ impl CrosswordReplica {
             // complicated and slow to do the "data shards only" optimization
             // during fail-over, so just do this conservatively here
             if inst.status == Status::Committed
-                && inst.reqs_cw.avail_shards() < self.quorum_cnt
+                && inst.reqs_cw.avail_shards() < self.majority
             {
                 recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
 
@@ -1648,6 +1774,18 @@ impl CrosswordReplica {
 
         // I also heard this heartbeat from myself
         self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
+
+        // check if we need to fall back to a config with smaller fast-path
+        // quorum size
+        let curr_quorum_size = self.majority + self.config.fault_tolerance + 1
+            - self.shards_per_replica;
+        if self.peer_alive.count() < curr_quorum_size {
+            self.change_assignment_config(
+                self.shards_per_replica + curr_quorum_size
+                    - self.peer_alive.count(),
+                true,
+            )?;
+        }
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1765,14 +1903,14 @@ impl CrosswordReplica {
             let avail_shards_map = self.insts[slot - self.start_slot]
                 .reqs_cw
                 .avail_shards_map();
-            if avail_shards_map.count() < self.quorum_cnt {
+            if avail_shards_map.count() < self.majority {
                 // decide which peers to ask for which shards from
                 let targets_excl = Self::gossip_targets_excl(
                     slot,
                     self.id,
                     self.population,
-                    self.quorum_cnt,
-                    self.config.shards_per_replica,
+                    self.majority,
+                    self.shards_per_replica,
                     avail_shards_map,
                     &mut self.insts[slot - self.start_slot].replica_bk,
                 );
@@ -2017,11 +2155,11 @@ impl CrosswordReplica {
                         // update commit_bar
                         self.commit_bar += 1;
                         // check number of available shards
-                        if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                        if inst.reqs_cw.avail_shards() < self.majority {
                             // can't execute if I don't have the complete request batch
                             break;
                         } else if inst.reqs_cw.avail_data_shards()
-                            < self.quorum_cnt
+                            < self.majority
                         {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
@@ -2110,7 +2248,7 @@ impl CrosswordReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..self.exec_bar {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.reqs_cw.avail_data_shards() >= self.quorum_cnt);
+            assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
@@ -2467,20 +2605,20 @@ impl GenericReplica for CrosswordReplica {
 
         // create a Reed-Solomon coder with num_data_shards == quorum size and
         // num_parity shards == population - quorum
-        let quorum_cnt = (population / 2) + 1;
-        if config.fault_tolerance > (population - quorum_cnt) {
+        let majority = (population / 2) + 1;
+        if config.fault_tolerance > (population - majority) {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
         }
         if config.shards_per_replica == 0
-            || config.shards_per_replica > quorum_cnt
+            || config.shards_per_replica > majority
         {
             return logged_err!(id; "invalid config.shards_per_replica '{}'",
                                    config.shards_per_replica);
         }
         let rs_coder = ReedSolomon::new(
-            quorum_cnt as usize,
-            (population - quorum_cnt) as usize,
+            majority as usize,
+            (population - majority) as usize,
         )?;
 
         // proactively connect to some peers, then wait for all population
@@ -2527,7 +2665,8 @@ impl GenericReplica for CrosswordReplica {
         Ok(CrosswordReplica {
             id,
             population,
-            quorum_cnt,
+            majority,
+            shards_per_replica: config.shards_per_replica,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
