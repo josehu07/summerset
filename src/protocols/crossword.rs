@@ -48,7 +48,6 @@ pub struct ReplicaConfigCrossword {
 
     /// Min timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_min: u64,
-
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_max: u64,
 
@@ -62,11 +61,19 @@ pub struct ReplicaConfigCrossword {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
+    /// Min timeout of follower gossiping trigger in millisecs.
+    pub gossip_timeout_min: u64,
+    /// Max timeout of follower gossiping trigger in millisecs.
+    pub gossip_timeout_max: u64,
+
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
+    /// Maximum chunk size of a ReconstructRead message.
+    pub recon_chunk_size: usize,
+
     /// Number of shards to assign to each replica.
-    // TODO: proper config options.
+    // TODO: think about how to allow unbalanced assignments.
     pub shards_per_replica: u8,
 
     // Performance simulation params (all zeros means no perf simulation):
@@ -89,7 +96,10 @@ impl Default for ReplicaConfigCrossword {
             hb_send_interval_ms: 50,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
+            gossip_timeout_min: 1200,
+            gossip_timeout_max: 1800,
             fault_tolerance: 0,
+            recon_chunk_size: 2000,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,
@@ -136,6 +146,9 @@ struct LeaderBookkeeping {
 struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
+
+    /// Have I tried gossiping for this instance at least once?
+    gossip_tried: bool,
 }
 
 /// In-memory instance containing a (possibly partial) commands batch.
@@ -186,9 +199,14 @@ enum LogEntry {
 /// Snapshot file entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum SnapEntry {
-    /// First entry at the start of file: number of log instances covered by
-    /// this snapshot file == the start slot index of in-mem log.
-    StartSlot { slot: usize },
+    /// Necessary slot indices to remember.
+    SlotInfo {
+        /// First entry at the start of file: number of log instances covered
+        /// by this snapshot file == the start slot index of in-mem log.
+        start_slot: usize,
+        /// Index of the first non-committed slot.
+        commit_bar: usize,
+    },
 
     /// Set of key-value pairs to apply to the state.
     KVPairSet { pairs: HashMap<String, String> },
@@ -223,13 +241,15 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Reconstruction read from new leader to replicas.
-    Reconstruct { slot: usize },
+    Reconstruct {
+        /// Map from slot -> shards to exclude.
+        slots_excl: HashMap<usize, Vec<u8>>,
+    },
 
     /// Reconstruction read reply from replica to leader.
     ReconstructReply {
-        slot: usize,
-        ballot: Ballot,
-        reqs_cw: RSCodeword<ReqBatch>,
+        /// Map from slot -> (ballot, peer shards).
+        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
     },
 
     /// Leader activity heartbeat.
@@ -245,7 +265,11 @@ pub struct CrosswordReplica {
     population: u8,
 
     /// Majority quorum size.
-    quorum_cnt: u8,
+    majority: u8,
+
+    /// Current #shards per replica configuration.
+    // TODO: probably needs something better for unbalanced assignments.
+    shards_per_replica: u8,
 
     /// Configuration parameters struct.
     config: ReplicaConfigCrossword,
@@ -274,14 +298,21 @@ pub struct CrosswordReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Who do I think is the effective leader of the cluster right now?
+    leader: Option<ReplicaId>,
+
     /// Timer for hearing heartbeat from leader.
     hb_hear_timer: Timer,
 
     /// Interval for sending heartbeat to followers.
     hb_send_interval: Interval,
 
-    /// Do I think I am the leader?
-    is_leader: bool,
+    /// Heartbeat reply counters for approximate detection of follower health.
+    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
+    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
+
+    /// Approximate health status tracking of peer replicas.
+    peer_alive: Bitmap,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -291,6 +322,9 @@ pub struct CrosswordReplica {
 
     /// Timer for taking a new autonomous snapshot.
     snapshot_interval: Interval,
+
+    /// Titer for trigger follower gossiping.
+    gossip_timer: Timer,
 
     /// Largest ballot number that a leader has sent Prepare messages in.
     bal_prep_sent: Ballot,
@@ -318,21 +352,29 @@ pub struct CrosswordReplica {
     rs_coder: ReedSolomon,
 }
 
+// CrosswordReplica common helpers
 impl CrosswordReplica {
+    /// Do I think I am the current effective leader?
+    #[inline]
+    fn is_leader(&self) -> bool {
+        self.leader == Some(self.id)
+    }
+
     /// Create an empty null instance.
+    #[inline]
     fn null_instance(&self) -> Result<Instance, SummersetError> {
         Ok(Instance {
             bal: 0,
             status: Status::Null,
             reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                self.quorum_cnt,
-                self.population - self.quorum_cnt,
+                self.majority,
+                self.population - self.majority,
             )?,
             voted: (
                 0,
                 RSCodeword::<ReqBatch>::from_null(
-                    self.quorum_cnt,
-                    self.population - self.quorum_cnt,
+                    self.majority,
+                    self.population - self.majority,
                 )?,
             ),
             leader_bk: None,
@@ -342,18 +384,32 @@ impl CrosswordReplica {
         })
     }
 
+    /// Locate the first null slot or append a null instance if no holes exist.
+    fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
+        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+            if self.insts[s - self.start_slot].status == Status::Null {
+                return Ok(s);
+            }
+        }
+        self.insts.push(self.null_instance()?);
+        Ok(self.start_slot + self.insts.len() - 1)
+    }
+
     /// Compose a unique ballot number from base.
+    #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
+    #[inline]
     fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
     /// Compose LogActionId from slot index & entry type.
     /// Uses the `Status` enum type to represent differnet entry types.
+    #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {
             Status::Preparing => 1,
@@ -365,6 +421,7 @@ impl CrosswordReplica {
     }
 
     /// Decompose LogActionId into slot index & entry type.
+    #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
         let type_num = log_action_id & ((1 << 2) - 1);
@@ -378,6 +435,7 @@ impl CrosswordReplica {
     }
 
     /// Compose CommandId from slot index & command index within.
+    #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
         assert!(slot <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -385,29 +443,112 @@ impl CrosswordReplica {
     }
 
     /// Decompose CommandId into slot index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
 
-    /// TODO: maybe remove this.
+    // TODO: think about how to allow unbalanced assignments.
+    #[inline]
     fn shards_for_replica(
+        slot: usize,
         id: ReplicaId,
         population: u8,
-        num_shards: u8,
+        shards_per_replica: u8,
     ) -> Vec<u8> {
-        (id..(id + num_shards)).map(|i| (i % population)).collect()
+        let first: u8 = ((id as usize + slot) % population as usize) as u8;
+        (first..(first + shards_per_replica))
+            .map(|i| (i % population))
+            .collect()
     }
 
-    /// TODO: make better impl of this.
+    // TODO: should let leader incorporate assignment metadata in Accept
+    // messages. With more complex assignment policies, a follower probably
+    // does not know the assignment.
+    fn gossip_targets_excl(
+        slot: usize,
+        me: ReplicaId,
+        population: u8,
+        majority: u8,
+        shards_per_replica: u8,
+        mut avail_shards_map: Bitmap,
+        replica_bk: &mut Option<ReplicaBookkeeping>,
+    ) -> HashMap<ReplicaId, Vec<u8>> {
+        let mut src_peer = me;
+        let mut first_try = false;
+        if let Some(ReplicaBookkeeping {
+            source,
+            gossip_tried,
+        }) = replica_bk
+        {
+            if !*gossip_tried {
+                src_peer = *source;
+                first_try = true;
+                // first try: exclude all parity shards
+                for idx in majority..population {
+                    avail_shards_map.set(idx, true).unwrap();
+                }
+                *gossip_tried = true;
+            }
+        }
+
+        // greedily considers my peers, starting from the one with my ID + 1,
+        // until all data shards covered
+        let mut targets_excl = HashMap::new();
+        for p in (me + 1)..(population + me) {
+            let peer = p % population;
+            if !first_try {
+                // first try probably did not succeed, so do it conservatively
+                targets_excl.insert(peer, avail_shards_map.to_vec());
+            } else {
+                // skip leader who initially replicated this instance to me
+                if peer == src_peer {
+                    continue;
+                }
+                // first try: only ask for a minimum number of data shards
+                let mut useful_shards = Vec::new();
+                for idx in Self::shards_for_replica(
+                    slot,
+                    peer,
+                    population,
+                    shards_per_replica,
+                ) {
+                    if !avail_shards_map.get(idx).unwrap() {
+                        useful_shards.push(idx);
+                    }
+                }
+                // if this peer has data shards which I don't have right now
+                // and I have not asked others for in this round
+                if !useful_shards.is_empty() {
+                    targets_excl.insert(peer, avail_shards_map.to_vec());
+                    for idx in useful_shards {
+                        avail_shards_map.set(idx, true).unwrap();
+                    }
+                }
+            }
+        }
+
+        targets_excl
+    }
+
+    // TODO: think about how to allow unbalanced assignments.
     fn coverage_under_faults(
         population: u8,
         acks: &HashMap<ReplicaId, Bitmap>,
         fault_tolerance: u8,
+        // if given, assume balanced assignment
+        shards_per_replica: Option<u8>,
     ) -> u8 {
         if acks.len() <= fault_tolerance as usize {
             return 0;
+        }
+
+        // if assuming balanced assignment
+        if let Some(shards_per_replica) = shards_per_replica {
+            assert!(shards_per_replica > 0);
+            return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
         }
 
         // enumerate all subsets of acks excluding fault number of replicas
@@ -443,6 +584,110 @@ impl CrosswordReplica {
         min_coverage
     }
 
+    /// Change to a new #shards_per_replica vs. quorum_size configuration. If
+    /// `redo_accepts` is true, redo all the instances that are currently in
+    /// the Accepting phase. This typically should happen when we are falling
+    /// back to a smaller quorum_size because of detected follower failures;
+    /// for performance-oriented config changes, this is not necessary.
+    // TODO: think about how to allow unbalanced assignments.
+    fn change_assignment_config(
+        &mut self,
+        shards_per_replica: u8,
+        redo_accepts: bool,
+    ) -> Result<(), SummersetError> {
+        assert!(shards_per_replica > 0);
+        if shards_per_replica > self.majority {
+            return Ok(()); // invalid, ignore
+        }
+
+        let quorum_size = self.majority + self.config.fault_tolerance + 1
+            - shards_per_replica;
+        self.shards_per_replica = shards_per_replica;
+        pf_info!(self.id; "switching assignment config: ({} - {}) {}",
+                          self.shards_per_replica, quorum_size,
+                          if redo_accepts { "redo" } else { "" });
+
+        if redo_accepts {
+            for (slot, inst) in self
+                .insts
+                .iter_mut()
+                .enumerate()
+                .map(|(s, i)| (self.start_slot + s, i))
+            {
+                if inst.status == Status::Accepting {
+                    assert!(inst.leader_bk.is_some());
+                    inst.bal = self.bal_prepared;
+                    inst.leader_bk.as_mut().unwrap().accept_acks.clear();
+                    pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
+                               slot, inst.bal);
+
+                    // record update to largest accepted ballot and corresponding data
+                    let subset_copy = inst.reqs_cw.subset_copy(
+                        Bitmap::from(
+                            self.population,
+                            Self::shards_for_replica(
+                                slot,
+                                self.id,
+                                self.population,
+                                self.shards_per_replica,
+                            ),
+                        ),
+                        false,
+                    )?;
+                    inst.voted = (inst.bal, subset_copy.clone());
+                    self.storage_hub.submit_action(
+                        Self::make_log_action_id(slot, Status::Accepting),
+                        LogAction::Append {
+                            entry: LogEntry::AcceptData {
+                                slot,
+                                ballot: inst.bal,
+                                // persist only some shards on myself
+                                reqs_cw: subset_copy,
+                            },
+                            sync: self.config.logger_sync,
+                        },
+                    )?;
+                    pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
+                               slot, inst.bal);
+
+                    // send Accept messages to all peers, each getting its subset of
+                    // shards of data
+                    for peer in 0..self.population {
+                        if peer == self.id {
+                            continue;
+                        }
+                        self.transport_hub.send_msg(
+                            PeerMsg::Accept {
+                                slot,
+                                ballot: inst.bal,
+                                reqs_cw: inst.reqs_cw.subset_copy(
+                                    Bitmap::from(
+                                        self.population,
+                                        Self::shards_for_replica(
+                                            slot,
+                                            peer,
+                                            self.population,
+                                            self.shards_per_replica,
+                                        ),
+                                    ),
+                                    false,
+                                )?,
+                            },
+                            peer,
+                        )?;
+                    }
+                    pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
+                               slot, inst.bal);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// CrosswordReplica client requests entrance
+impl CrosswordReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -453,21 +698,26 @@ impl CrosswordReplica {
         pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
-        if !self.is_leader {
+        if !self.is_leader() {
             for (client, req) in req_batch {
                 if let ApiRequest::Req { id: req_id, .. } = req {
-                    // tell the client to try on the next replica
-                    let next_replica = (self.id + 1) % self.population;
+                    // tell the client to try on known leader or just the
+                    // next ID replica
+                    let target = if let Some(peer) = self.leader {
+                        peer
+                    } else {
+                        (self.id + 1) % self.population
+                    };
                     self.external_api.send_reply(
                         ApiReply::Reply {
                             id: req_id,
                             result: None,
-                            redirect: Some(next_replica),
+                            redirect: Some(target),
                         },
                         client,
                     )?;
                     pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, next_replica);
+                                       client, target);
                 }
             }
             return Ok(());
@@ -476,39 +726,24 @@ impl CrosswordReplica {
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
-            self.quorum_cnt,
-            self.population - self.quorum_cnt,
+            self.majority,
+            self.population - self.majority,
         )?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
         // create a new instance in the first null slot (or append a new one
-        // at the end if no holes exist)
-        let mut slot = self.start_slot + self.insts.len();
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
-            if self.insts[s - self.start_slot].status == Status::Null {
-                slot = s;
-                break;
-            }
-        }
-        if slot < self.start_slot + self.insts.len() {
-            let old_inst = &mut self.insts[slot - self.start_slot];
-            assert_eq!(old_inst.status, Status::Null);
-            old_inst.reqs_cw = reqs_cw;
-            old_inst.leader_bk = Some(LeaderBookkeeping {
+        // at the end if no holes exist); fill it up with incoming data
+        let slot = self.first_null_slot()?;
+        {
+            let inst = &mut self.insts[slot - self.start_slot];
+            assert_eq!(inst.status, Status::Null);
+            inst.reqs_cw = reqs_cw;
+            inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: HashMap::new(),
             });
-        } else {
-            let mut new_inst = self.null_instance()?;
-            new_inst.reqs_cw = reqs_cw;
-            new_inst.leader_bk = Some(LeaderBookkeeping {
-                prepare_acks: Bitmap::new(self.population, false),
-                prepare_max_bal: 0,
-                accept_acks: HashMap::new(),
-            });
-            new_inst.external = true;
-            self.insts.push(new_inst);
+            inst.external = true;
         }
 
         // decide whether we can enter fast path for this instance
@@ -565,9 +800,10 @@ impl CrosswordReplica {
                 Bitmap::from(
                     self.population,
                     Self::shards_for_replica(
+                        slot,
                         self.id,
                         self.population,
-                        self.config.shards_per_replica,
+                        self.shards_per_replica,
                     ),
                 ),
                 false,
@@ -602,9 +838,10 @@ impl CrosswordReplica {
                             Bitmap::from(
                                 self.population,
                                 Self::shards_for_replica(
+                                    slot,
                                     peer,
                                     self.population,
-                                    self.config.shards_per_replica,
+                                    self.shards_per_replica,
                                 ),
                             ),
                             false,
@@ -619,7 +856,10 @@ impl CrosswordReplica {
 
         Ok(())
     }
+}
 
+// CrosswordReplica durable WAL logging
+impl CrosswordReplica {
     /// Handler of PrepareBal logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
@@ -637,7 +877,7 @@ impl CrosswordReplica {
             None
         };
 
-        if self.is_leader {
+        if self.is_leader() {
             // on leader, finishing the logging of a PrepareBal entry
             // is equivalent to receiving a Prepare reply from myself
             // (as an acceptor role)
@@ -645,7 +885,7 @@ impl CrosswordReplica {
         } else {
             // on follower replica, finishing the logging of a
             // PrepareBal entry leads to sending back a Prepare reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::PrepareReply {
                         slot,
@@ -674,7 +914,7 @@ impl CrosswordReplica {
                            slot, self.insts[slot - self.start_slot].bal);
         let inst = &self.insts[slot - self.start_slot];
 
-        if self.is_leader {
+        if self.is_leader() {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
@@ -682,7 +922,7 @@ impl CrosswordReplica {
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,
@@ -716,13 +956,15 @@ impl CrosswordReplica {
                 if inst.status < Status::Committed {
                     break;
                 }
+                let now_slot = self.commit_bar;
+                self.commit_bar += 1;
 
-                if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, inst.reqs_cw.avail_shards(), self.quorum_cnt);
+                                       slot, inst.reqs_cw.avail_shards(), self.majority);
                     break;
-                } else if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                } else if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -736,7 +978,7 @@ impl CrosswordReplica {
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
+                                Self::make_command_id(now_slot, cmd_idx),
                                 cmd.clone(),
                             )?;
                         } else {
@@ -744,10 +986,8 @@ impl CrosswordReplica {
                         }
                     }
                     pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), self.commit_bar);
+                                       reqs.len(), now_slot);
                 }
-
-                self.commit_bar += 1;
             }
         }
 
@@ -789,7 +1029,10 @@ impl CrosswordReplica {
             }
         }
     }
+}
 
+// CrosswordReplica peer-peer messages handling
+impl CrosswordReplica {
     /// Handler of Prepare message from leader.
     fn handle_msg_prepare(
         &mut self,
@@ -814,7 +1057,10 @@ impl CrosswordReplica {
 
             inst.bal = ballot;
             inst.status = Status::Preparing;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            inst.replica_bk = Some(ReplicaBookkeeping {
+                source: peer,
+                gossip_tried: false,
+            });
 
             // update largest ballot seen
             self.bal_max_seen = ballot;
@@ -852,10 +1098,11 @@ impl CrosswordReplica {
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
             assert!(slot < self.start_slot + self.insts.len());
+            let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !self.is_leader
+            if !is_leader
                 || (inst.status != Status::Preparing)
                 || (ballot < inst.bal)
             {
@@ -889,10 +1136,10 @@ impl CrosswordReplica {
             // reconstruct the original data, enter Accept phase for this
             // instance using the request batch value constructed using shards
             // with the highest ballot number in quorum
-            if leader_bk.prepare_acks.count() >= self.quorum_cnt
-                && inst.reqs_cw.avail_shards() >= self.quorum_cnt
+            if leader_bk.prepare_acks.count() >= self.majority
+                && inst.reqs_cw.avail_shards() >= self.majority
             {
-                if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
+                if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -915,9 +1162,10 @@ impl CrosswordReplica {
                     Bitmap::from(
                         self.population,
                         Self::shards_for_replica(
+                            slot,
                             self.id,
                             self.population,
-                            self.config.shards_per_replica,
+                            self.shards_per_replica,
                         ),
                     ),
                     false,
@@ -950,9 +1198,10 @@ impl CrosswordReplica {
                                 Bitmap::from(
                                     self.population,
                                     Self::shards_for_replica(
+                                        slot,
                                         peer,
                                         self.population,
-                                        self.config.shards_per_replica,
+                                        self.shards_per_replica,
                                     ),
                                 ),
                                 false,
@@ -995,7 +1244,10 @@ impl CrosswordReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            inst.replica_bk = Some(ReplicaBookkeeping {
+                source: peer,
+                gossip_tried: false,
+            });
 
             // update largest ballot seen
             self.bal_max_seen = ballot;
@@ -1036,10 +1288,11 @@ impl CrosswordReplica {
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
             assert!(slot < self.start_slot + self.insts.len());
+            let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !self.is_leader
+            if !is_leader
                 || (inst.status != Status::Accepting)
                 || (ballot < inst.bal)
             {
@@ -1059,21 +1312,23 @@ impl CrosswordReplica {
                 Bitmap::from(
                     self.population,
                     Self::shards_for_replica(
+                        slot,
                         peer,
                         self.population,
-                        self.config.shards_per_replica,
+                        self.shards_per_replica,
                     ),
                 ),
             );
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed
-            if leader_bk.accept_acks.len() as u8 >= self.quorum_cnt
+            if leader_bk.accept_acks.len() as u8 >= self.majority
                 && Self::coverage_under_faults(
                     self.population,
                     &leader_bk.accept_acks,
                     self.config.fault_tolerance,
-                ) >= self.quorum_cnt
+                    Some(self.shards_per_replica),
+                ) >= self.majority
             {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
@@ -1146,36 +1401,44 @@ impl CrosswordReplica {
     fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
+        slots_excl: HashMap<usize, Vec<u8>>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
+        pf_trace!(self.id; "received Reconstruct <- {} for {} slots",
+                           peer, slots_excl.len());
+        let mut slots_data = HashMap::new();
+
+        for (slot, exclude) in slots_excl {
+            if slot < self.start_slot {
+                continue; // ignore if slot index outdated
+            }
+
+            // locate instance in memory, filling in null instances if needed
+            while self.start_slot + self.insts.len() <= slot {
+                self.insts.push(self.null_instance()?);
+            }
+            let inst = &mut self.insts[slot - self.start_slot];
+
+            // ignore spurious duplications; also ignore if I have nothing to send back
+            if inst.status < Status::Accepting {
+                continue;
+            }
+            let mut subset = Bitmap::from(inst.reqs_cw.num_shards(), exclude);
+            subset.flip(); // exclude unwanted shards the sender already has
+            let reply_cw = inst.reqs_cw.subset_copy(subset, false)?;
+            if reply_cw.avail_shards() == 0 {
+                continue;
+            }
+
+            // send back my ballot for this slot and the available shards
+            slots_data.insert(slot, (inst.bal, reply_cw));
         }
-        pf_trace!(self.id; "received Reconstruct <- {} for slot {}", peer, slot);
 
-        // locate instance in memory, filling in null instances if needed
-        while self.start_slot + self.insts.len() <= slot {
-            self.insts.push(self.null_instance()?);
+        if !slots_data.is_empty() {
+            let num_slots = slots_data.len();
+            self.transport_hub
+                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
+            pf_trace!(self.id; "sent ReconstructReply message for {} slots", num_slots);
         }
-        let inst = &mut self.insts[slot - self.start_slot];
-
-        // ignore spurious duplications; also ignore if I have nothing to send back
-        if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
-            return Ok(());
-        }
-
-        // send back my ballot for this slot and the available shards
-        self.transport_hub.send_msg(
-            PeerMsg::ReconstructReply {
-                slot,
-                ballot: inst.bal,
-                reqs_cw: inst.reqs_cw.clone(),
-            },
-            peer,
-        )?;
-        pf_trace!(self.id; "sent ReconstructReply message for slot {} bal {}",
-                           slot, inst.bal);
-
         Ok(())
     }
 
@@ -1183,65 +1446,66 @@ impl CrosswordReplica {
     fn handle_msg_reconstruct_reply(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
-        ballot: Ballot,
-        reqs_cw: RSCodeword<ReqBatch>,
+        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
-        }
-        pf_trace!(self.id; "received ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot, reqs_cw.avail_shards_map());
-        assert!(slot < self.start_slot + self.insts.len());
-        assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
-        let num_insts = self.start_slot + self.insts.len();
-        let inst = &mut self.insts[slot - self.start_slot];
+        for (slot, (ballot, reqs_cw)) in slots_data {
+            if slot < self.start_slot {
+                continue; // ignore if slot index outdated
+            }
+            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
+                               peer, slot, ballot, reqs_cw.avail_shards_map());
+            assert!(slot < self.start_slot + self.insts.len());
+            assert!(
+                self.insts[slot - self.start_slot].status >= Status::Committed
+            );
+            let inst = &mut self.insts[slot - self.start_slot];
 
-        // if reply not outdated and ballot is up-to-date
-        if inst.status < Status::Executed && ballot >= inst.bal {
-            // absorb the shards from this replica
-            inst.reqs_cw.absorb_other(reqs_cw)?;
+            // if reply not outdated and ballot is up-to-date
+            if inst.status < Status::Executed && ballot >= inst.bal {
+                // absorb the shards from this replica
+                inst.reqs_cw.absorb_other(reqs_cw)?;
 
-            // if enough shards have been gathered, can push execution forward
-            if slot == self.commit_bar {
-                while self.commit_bar < num_insts {
-                    let inst =
-                        &mut self.insts[self.commit_bar - self.start_slot];
-                    if inst.status < Status::Committed
-                        || inst.reqs_cw.avail_shards() < self.quorum_cnt
-                    {
-                        break;
-                    }
-
-                    if inst.reqs_cw.avail_data_shards() < self.quorum_cnt {
-                        // have enough shards but need reconstruction
-                        inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                    }
-                    let reqs = inst.reqs_cw.get_data()?;
-
-                    // submit commands in committed instance to the state machine
-                    // for execution
-                    if reqs.is_empty() {
-                        inst.status = Status::Executed;
-                    } else {
-                        for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                            if let ApiRequest::Req { cmd, .. } = req {
-                                self.state_machine.submit_cmd(
-                                    Self::make_command_id(
-                                        self.commit_bar,
-                                        cmd_idx,
-                                    ),
-                                    cmd.clone(),
-                                )?;
-                            } else {
-                                continue; // ignore other types of requests
-                            }
+                // if enough shards have been gathered, can push execution forward
+                if slot == self.exec_bar {
+                    let mut now_slot = self.exec_bar;
+                    while now_slot < self.start_slot + self.insts.len() {
+                        let inst = &mut self.insts[now_slot - self.start_slot];
+                        if inst.status < Status::Committed
+                            || inst.reqs_cw.avail_shards() < self.majority
+                        {
+                            break;
                         }
-                        pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                           reqs.len(), self.commit_bar);
-                    }
 
-                    self.commit_bar += 1;
+                        if inst.reqs_cw.avail_data_shards() < self.majority {
+                            // have enough shards but need reconstruction
+                            inst.reqs_cw
+                                .reconstruct_data(Some(&self.rs_coder))?;
+                        }
+                        let reqs = inst.reqs_cw.get_data()?;
+
+                        // submit commands in committed instance to the state machine
+                        // for execution
+                        if reqs.is_empty() {
+                            inst.status = Status::Executed;
+                        } else {
+                            for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
+                                if let ApiRequest::Req { cmd, .. } = req {
+                                    self.state_machine.submit_cmd(
+                                        Self::make_command_id(
+                                            now_slot, cmd_idx,
+                                        ),
+                                        cmd.clone(),
+                                    )?;
+                                } else {
+                                    continue; // ignore other types of requests
+                                }
+                            }
+                            pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                               reqs.len(), now_slot);
+                        }
+
+                        now_slot += 1;
+                    }
                 }
             }
         }
@@ -1273,20 +1537,21 @@ impl CrosswordReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Reconstruct { slot } => {
-                self.handle_msg_reconstruct(peer, slot)
+            PeerMsg::Reconstruct { slots_excl } => {
+                self.handle_msg_reconstruct(peer, slots_excl)
             }
-            PeerMsg::ReconstructReply {
-                slot,
-                ballot,
-                reqs_cw,
-            } => self.handle_msg_reconstruct_reply(peer, slot, ballot, reqs_cw),
+            PeerMsg::ReconstructReply { slots_data } => {
+                self.handle_msg_reconstruct_reply(peer, slots_data)
+            }
             PeerMsg::Heartbeat { ballot, exec_bar } => {
                 self.heard_heartbeat(peer, ballot, exec_bar)
             }
         }
     }
+}
 
+// CrosswordReplica state machine execution
+impl CrosswordReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -1345,20 +1610,44 @@ impl CrosswordReplica {
 
         Ok(())
     }
+}
 
+// CrosswordReplica leadership related logic
+impl CrosswordReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
-        if self.is_leader {
+        if self.is_leader() {
             return Ok(());
+        } else if let Some(peer) = self.leader {
+            // mark old leader as dead
+            if self.peer_alive.get(peer)? {
+                self.peer_alive.set(peer, false)?;
+                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                // check if we need to fall back to a config with smaller
+                // fast-path quorum size
+                let curr_quorum_size =
+                    self.majority + self.config.fault_tolerance + 1
+                        - self.shards_per_replica;
+                if self.peer_alive.count() < curr_quorum_size {
+                    self.change_assignment_config(
+                        self.shards_per_replica + curr_quorum_size
+                            - self.peer_alive.count(),
+                        true,
+                    )?;
+                }
+            }
         }
 
-        self.is_leader = true; // this starts broadcasting heartbeats
+        self.leader = Some(self.id); // this starts broadcasting heartbeats
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_info!(self.id; "becoming a leader...");
 
-        // broadcast a heartbeat right now
+        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
+        for cnts in self.hb_reply_cnts.values_mut() {
+            *cnts = (1, 0, 0);
+        }
         self.bcast_heartbeats()?;
 
         // make a greater ballot number and invalidate all in-progress instances
@@ -1366,6 +1655,7 @@ impl CrosswordReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        let mut recon_slots: HashMap<usize, Vec<u8>> = HashMap::new();
         for (slot, inst) in self
             .insts
             .iter_mut()
@@ -1411,17 +1701,39 @@ impl CrosswordReplica {
             }
 
             // do reconstruction reads for all committed instances that do not
-            // hold enough available shards for reconstruction
+            // hold enough available shards for reconstruction. It would be too
+            // complicated and slow to do the "data shards only" optimization
+            // during fail-over, so just do this conservatively here
             if inst.status == Status::Committed
-                && inst.reqs_cw.avail_shards() < self.quorum_cnt
+                && inst.reqs_cw.avail_shards() < self.majority
             {
-                self.transport_hub
-                    .bcast_msg(PeerMsg::Reconstruct { slot }, None)?;
-                pf_trace!(self.id; "broadcast Reconstruct messages for slot {} bal {} shards {:?}",
-                                   slot, inst.bal, inst.reqs_cw.avail_shards_map());
+                recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
+
+                // send reconstruction read messages in chunks
+                if recon_slots.len() == self.config.recon_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Reconstruct {
+                            slots_excl: std::mem::take(&mut recon_slots),
+                        },
+                        None,
+                    )?;
+                    pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
+                                       self.config.recon_chunk_size);
+                }
             }
         }
 
+        // send reconstruction read message for remaining slots
+        if !recon_slots.is_empty() {
+            let num_slots = recon_slots.len();
+            self.transport_hub.bcast_msg(
+                PeerMsg::Reconstruct {
+                    slots_excl: recon_slots,
+                },
+                None,
+            )?;
+            pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+        }
         Ok(())
     }
 
@@ -1434,7 +1746,46 @@ impl CrosswordReplica {
             },
             None,
         )?;
+
+        // update max heartbeat reply counters and their repetitions seen
+        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
+            if cnts.0 > cnts.1 {
+                // more hb replies have been received from this peer; it is
+                // probably alive
+                cnts.1 = cnts.0;
+                cnts.2 = 0;
+            } else {
+                // did not receive hb reply from this peer at least for the
+                // last sent hb from me; increment repetition count
+                cnts.2 += 1;
+                let repeat_threshold = (self.config.hb_hear_timeout_min
+                    / self.config.hb_send_interval_ms)
+                    as u8;
+                if cnts.2 > repeat_threshold {
+                    // did not receive hb reply from this peer for too many
+                    // past hbs sent from me; this peer is probably dead
+                    if self.peer_alive.get(peer)? {
+                        self.peer_alive.set(peer, false)?;
+                        pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                    }
+                }
+            }
+        }
+
+        // I also heard this heartbeat from myself
         self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
+
+        // check if we need to fall back to a config with smaller fast-path
+        // quorum size
+        let curr_quorum_size = self.majority + self.config.fault_tolerance + 1
+            - self.shards_per_replica;
+        if self.peer_alive.count() < curr_quorum_size {
+            self.change_assignment_config(
+                self.shards_per_replica + curr_quorum_size
+                    - self.peer_alive.count(),
+                true,
+            )?;
+        }
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1458,10 +1809,18 @@ impl CrosswordReplica {
     /// leader status if I currently think I'm a leader.
     fn heard_heartbeat(
         &mut self,
-        _peer: ReplicaId,
+        peer: ReplicaId,
         ballot: Ballot,
         exec_bar: usize,
     ) -> Result<(), SummersetError> {
+        if peer != self.id {
+            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
+            if !self.peer_alive.get(peer)? {
+                self.peer_alive.set(peer, true)?;
+                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+            }
+        }
+
         // ignore outdated heartbeats and those from peers with exec_bar < mine
         if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
             return Ok(());
@@ -1470,18 +1829,136 @@ impl CrosswordReplica {
         // reset hearing timer
         self.kickoff_hb_hear_timer()?;
 
-        // clear my leader status if it carries a higher ballot number
-        if self.is_leader && ballot > self.bal_max_seen {
-            self.is_leader = false;
-            self.control_hub
-                .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-            pf_info!(self.id; "no longer a leader...");
+        if peer != self.id {
+            // reply back with a Heartbeat message
+            self.transport_hub.send_msg(
+                PeerMsg::Heartbeat {
+                    ballot,
+                    exec_bar: self.exec_bar,
+                },
+                peer,
+            )?;
+
+            // if the peer has made a higher ballot number
+            if ballot > self.bal_max_seen {
+                self.bal_max_seen = ballot;
+
+                // clear my leader status if I was one
+                if self.is_leader() {
+                    self.control_hub
+                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                    pf_info!(self.id; "no longer a leader...");
+                }
+
+                // set this peer to be the believed leader
+                self.leader = Some(peer);
+            }
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
+}
 
+// CrosswordReplica follower gossiping
+impl CrosswordReplica {
+    /// Chooses a random gossip_timeout from the min-max range and kicks off
+    /// the gossip_timer.
+    fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+        let timeout_ms = thread_rng().gen_range(
+            self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
+        );
+
+        // pf_trace!(self.id; "kickoff gossip_timer @ {} ms", timeout_ms);
+        self.gossip_timer
+            .kickoff(Duration::from_millis(timeout_ms))?;
+        Ok(())
+    }
+
+    /// Triggers gossiping for my missing shards in committed but not-yet-
+    /// executed instances: fetch missing shards from peers, preferring
+    /// follower peers that hold data shards.
+    fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
+        // maintain a map from peer ID to send to -> slots_excl to send
+        let mut recon_slots: HashMap<ReplicaId, HashMap<usize, Vec<u8>>> =
+            HashMap::with_capacity(self.population as usize - 1);
+        for peer in 0..self.population {
+            if peer != self.id {
+                recon_slots.insert(peer, HashMap::new());
+            }
+        }
+
+        let mut slot_up_to = self.exec_bar;
+        for slot in self.exec_bar..(self.start_slot + self.insts.len()) {
+            slot_up_to = slot;
+            {
+                let inst = &self.insts[slot - self.start_slot];
+                if inst.status >= Status::Executed {
+                    continue;
+                } else if inst.status < Status::Committed {
+                    break;
+                }
+            }
+
+            let avail_shards_map = self.insts[slot - self.start_slot]
+                .reqs_cw
+                .avail_shards_map();
+            if avail_shards_map.count() < self.majority {
+                // decide which peers to ask for which shards from
+                let targets_excl = Self::gossip_targets_excl(
+                    slot,
+                    self.id,
+                    self.population,
+                    self.majority,
+                    self.shards_per_replica,
+                    avail_shards_map,
+                    &mut self.insts[slot - self.start_slot].replica_bk,
+                );
+
+                for (peer, exclude) in targets_excl {
+                    recon_slots.get_mut(&peer).unwrap().insert(slot, exclude);
+
+                    // send reconstruction read messages in chunks
+                    if recon_slots[&peer].len() == self.config.recon_chunk_size
+                    {
+                        self.transport_hub.send_msg(
+                            PeerMsg::Reconstruct {
+                                slots_excl: std::mem::take(
+                                    recon_slots.get_mut(&peer).unwrap(),
+                                ),
+                            },
+                            peer,
+                        )?;
+                        pf_trace!(self.id; "sent Reconstruct -> {} for {} slots",
+                                           peer, self.config.recon_chunk_size);
+                    }
+                }
+            }
+        }
+
+        // send reconstruction read message for remaining slots
+        for (peer, slots_excl) in recon_slots.drain() {
+            if !slots_excl.is_empty() {
+                let num_slots = slots_excl.len();
+                self.transport_hub
+                    .send_msg(PeerMsg::Reconstruct { slots_excl }, peer)?;
+                pf_trace!(self.id; "sent Reconstruct -> {} for {} slots", peer, num_slots);
+            }
+        }
+
+        // reset gossip trigger timer
+        self.kickoff_gossip_timer()?;
+
+        if slot_up_to > self.exec_bar {
+            pf_debug!(self.id; "triggered gossiping: slots {} - {}",
+                                   self.exec_bar, slot_up_to);
+        }
+        Ok(())
+    }
+}
+
+// CrosswordReplica control messages handling
+impl CrosswordReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -1541,6 +2018,7 @@ impl CrosswordReplica {
         pf_warn!(self.id; "server got resume req");
 
         // reset leader heartbeat timer
+        self.hb_hear_timer.cancel()?;
         self.kickoff_hb_hear_timer()?;
 
         *paused = false;
@@ -1593,7 +2071,10 @@ impl CrosswordReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// CrosswordReplica recovery from WAL log
+impl CrosswordReplica {
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
@@ -1601,6 +2082,9 @@ impl CrosswordReplica {
     ) -> Result<(), SummersetError> {
         match entry {
             LogEntry::PrepareBal { slot, ballot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance()?);
@@ -1624,6 +2108,9 @@ impl CrosswordReplica {
                 ballot,
                 reqs_cw,
             } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance()?);
@@ -1650,8 +2137,11 @@ impl CrosswordReplica {
             }
 
             LogEntry::CommitSlot { slot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 assert!(slot < self.start_slot + self.insts.len());
-                // update instance state
+                // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
@@ -1662,12 +2152,14 @@ impl CrosswordReplica {
                         if inst.status < Status::Committed {
                             break;
                         }
+                        // update commit_bar
+                        self.commit_bar += 1;
                         // check number of available shards
-                        if inst.reqs_cw.avail_shards() < self.quorum_cnt {
+                        if inst.reqs_cw.avail_shards() < self.majority {
                             // can't execute if I don't have the complete request batch
                             break;
                         } else if inst.reqs_cw.avail_data_shards()
-                            < self.quorum_cnt
+                            < self.majority
                         {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
@@ -1682,9 +2174,9 @@ impl CrosswordReplica {
                                 let _ = self.state_machine.get_result().await?;
                             }
                         }
-                        // update commit_bar and exec_bar
-                        self.commit_bar += 1;
+                        // update instance status and exec_bar
                         self.exec_bar += 1;
+                        inst.status = Status::Executed;
                     }
                 }
             }
@@ -1737,19 +2229,26 @@ impl CrosswordReplica {
             offset_ok: true, ..
         } = log_result
         {
+            if self.log_offset > 0 {
+                pf_info!(self.id; "recovered from wal log: commit {} exec {}",
+                                  self.commit_bar, self.exec_bar);
+            }
             Ok(())
         } else {
             logged_err!(self.id; "unexpected log result type or failed truncate")
         }
     }
+}
 
+// CrosswordReplica snapshotting & GC logic
+impl CrosswordReplica {
     /// Dump a new key-value pair to snapshot file.
     async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
         for slot in self.start_slot..self.exec_bar {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.reqs_cw.avail_data_shards() >= self.quorum_cnt);
+            assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
@@ -1833,7 +2332,8 @@ impl CrosswordReplica {
     /// to that index as well as outdate entries in the durable WAL log file.
     ///
     /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot.
+    /// middle of taking a snapshot. Production quality implementations should
+    /// make the snapshotting action "atomic".
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {}",
                            self.start_slot, self.exec_bar);
@@ -1843,18 +2343,40 @@ impl CrosswordReplica {
         }
 
         // collect and dump all Puts in executed instances
-        if self.is_leader {
+        if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
         self.snapshot_dump_kv_pairs().await?;
+
+        // write new slot info entry to the head of snapshot
+        self.snapshot_hub.submit_action(
+            0,
+            LogAction::Write {
+                entry: SnapEntry::SlotInfo {
+                    start_slot: self.exec_bar,
+                    commit_bar: self.commit_bar,
+                },
+                offset: 0,
+                sync: self.config.logger_sync,
+            },
+        )?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+        match log_result {
+            LogResult::Write {
+                offset_ok: true, ..
+            } => {}
+            _ => {
+                return logged_err!(self.id; "unexpected log result type or failed truncate");
+            }
+        }
 
         // update start_slot and discard all in-memory log instances up to exec_bar
         self.insts.drain(0..(self.exec_bar - self.start_slot));
         self.start_slot = self.exec_bar;
 
         // discarding everything older than start_slot in WAL log
-        if self.is_leader {
+        if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
@@ -1879,11 +2401,19 @@ impl CrosswordReplica {
 
         match log_result {
             LogResult::Read {
-                entry: Some(SnapEntry::StartSlot { slot }),
+                entry:
+                    Some(SnapEntry::SlotInfo {
+                        start_slot,
+                        commit_bar,
+                    }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
-                self.start_slot = slot; // get start slot index of in-mem log
+
+                // recover necessary slot indices info
+                self.start_slot = start_slot;
+                self.commit_bar = commit_bar;
+                self.exec_bar = start_slot;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -1926,6 +2456,11 @@ impl CrosswordReplica {
                 self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
                     new_start: self.start_slot,
                 })?;
+
+                if self.start_slot > 0 {
+                    pf_info!(self.id; "recovered from snapshot: start {} commit {} exec {}",
+                                      self.start_slot, self.commit_bar, self.exec_bar);
+                }
                 Ok(())
             }
 
@@ -1934,7 +2469,10 @@ impl CrosswordReplica {
                 self.snapshot_hub.submit_action(
                     0,
                     LogAction::Write {
-                        entry: SnapEntry::StartSlot { slot: 0 },
+                        entry: SnapEntry::SlotInfo {
+                            start_slot: 0,
+                            commit_bar: 0,
+                        },
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -1979,7 +2517,9 @@ impl GenericReplica for CrosswordReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
-                                    fault_tolerance, shards_per_replica,
+                                    gossip_timeout_min, gossip_timeout_max,
+                                    fault_tolerance, recon_chunk_size,
+                                    shards_per_replica,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_us == 0 {
@@ -2008,6 +2548,13 @@ impl GenericReplica for CrosswordReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.recon_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.recon_chunk_size '{}'",
+                config.recon_chunk_size
             );
         }
 
@@ -2058,20 +2605,20 @@ impl GenericReplica for CrosswordReplica {
 
         // create a Reed-Solomon coder with num_data_shards == quorum size and
         // num_parity shards == population - quorum
-        let quorum_cnt = (population / 2) + 1;
-        if config.fault_tolerance > (population - quorum_cnt) {
+        let majority = (population / 2) + 1;
+        if config.fault_tolerance > (population - majority) {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
         }
         if config.shards_per_replica == 0
-            || config.shards_per_replica > quorum_cnt
+            || config.shards_per_replica > majority
         {
             return logged_err!(id; "invalid config.shards_per_replica '{}'",
                                    config.shards_per_replica);
         }
         let rs_coder = ReedSolomon::new(
-            quorum_cnt as usize,
-            (population - quorum_cnt) as usize,
+            majority as usize,
+            (population - majority) as usize,
         )?;
 
         // proactively connect to some peers, then wait for all population
@@ -2111,10 +2658,15 @@ impl GenericReplica for CrosswordReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let hb_reply_cnts = (0..population)
+            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
+            .collect();
+
         Ok(CrosswordReplica {
             id,
             population,
-            quorum_cnt,
+            majority,
+            shards_per_replica: config.shards_per_replica,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
@@ -2124,12 +2676,15 @@ impl GenericReplica for CrosswordReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            leader: None,
             hb_hear_timer: Timer::new(),
             hb_send_interval,
-            is_leader: false,
+            hb_reply_cnts,
+            peer_alive: Bitmap::new(population, true),
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
+            gossip_timer: Timer::new(),
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
@@ -2153,6 +2708,9 @@ impl GenericReplica for CrosswordReplica {
 
         // kick off leader activity hearing timer
         self.kickoff_hb_hear_timer()?;
+
+        // kick off follower gossiping trigger timer
+        self.kickoff_gossip_timer()?;
 
         // main event loop
         let mut paused = false;
@@ -2215,7 +2773,7 @@ impl GenericReplica for CrosswordReplica {
                 },
 
                 // leader sending heartbeat
-                _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
+                _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.bcast_heartbeats() {
                         pf_error!(self.id; "error broadcasting heartbeats: {}", e);
                     }
@@ -2230,6 +2788,13 @@ impl GenericReplica for CrosswordReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
+                    }
+                },
+
+                // follower gossiping trigger
+                _ = self.gossip_timer.timeout(), if !paused && !self.is_leader() => {
+                    if let Err(e) = self.trigger_gossiping() {
+                        pf_error!(self.id; "error triggering gossiping: {}", e);
                     }
                 },
 

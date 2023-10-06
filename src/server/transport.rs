@@ -227,11 +227,12 @@ where
                     .map_err(|e| SummersetError(e.to_string()))?;
             }
             None => {
-                pf_error!(
-                    self.me;
-                    "peer ID {} not found among connected ones",
-                    peer
-                );
+                // NOTE: commented out to avoid spurious error messages
+                // pf_error!(
+                //     self.me;
+                //     "peer ID {} not found among connected ones",
+                //     peer
+                // );
             }
         }
 

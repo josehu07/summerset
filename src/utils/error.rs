@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 use std::net;
+use std::num;
 
 use crate::server::ReplicaId;
 
@@ -30,6 +31,7 @@ macro_rules! impl_from_error {
 }
 
 impl_from_error!(io::Error);
+impl_from_error!(num::ParseIntError);
 impl_from_error!(net::AddrParseError);
 impl_from_error!(rmp_serde::encode::Error);
 impl_from_error!(rmp_serde::decode::Error);

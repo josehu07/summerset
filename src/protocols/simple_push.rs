@@ -138,8 +138,10 @@ pub struct SimplePushReplica {
     log_offset: usize,
 }
 
+// SimplePushReplica common helpers
 impl SimplePushReplica {
     /// Compose CommandId from instance index & command index within.
+    #[inline]
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -147,12 +149,16 @@ impl SimplePushReplica {
     }
 
     /// Decompose CommandId into instance index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
     }
+}
 
+// SimplePushReplica client requests entrance
+impl SimplePushReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -208,7 +214,10 @@ impl SimplePushReplica {
 
         Ok(())
     }
+}
 
+// SimplePushReplica durable WAL logging
+impl SimplePushReplica {
     /// Handler of durable logging result chan recv.
     fn handle_log_result(
         &mut self,
@@ -265,7 +274,10 @@ impl SimplePushReplica {
 
         Ok(())
     }
+}
 
+// SimplePushReplica peer-peer messages handling
+impl SimplePushReplica {
     /// Handler of push message from peer.
     fn handle_push_msg(
         &mut self,
@@ -346,7 +358,10 @@ impl SimplePushReplica {
 
         Ok(())
     }
+}
 
+// SimplePushReplica state machine execution
+impl SimplePushReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -398,7 +413,10 @@ impl SimplePushReplica {
 
         Ok(())
     }
+}
 
+// SimplePushReplica control messages handling
+impl SimplePushReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -486,7 +504,10 @@ impl SimplePushReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// SimplePushReplica recovery from WAL log
+impl SimplePushReplica {
     /// Recover state from durable storage log.
     async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
         assert_eq!(self.log_offset, 0);

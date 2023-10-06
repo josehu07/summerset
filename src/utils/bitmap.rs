@@ -71,10 +71,25 @@ impl Bitmap {
         self.0.count_ones(..) as u8
     }
 
+    /// Flips all flags in the bitmap.
+    #[inline]
+    pub fn flip(&mut self) {
+        self.0.toggle_range(..)
+    }
+
     /// Allows `for (id, bit) in map.iter()`.
     #[inline]
     pub fn iter(&self) -> BitmapIter {
         BitmapIter { map: self, idx: 0 }
+    }
+
+    /// Convenience method for converting the bitmap to a vec of indexes where
+    /// the flag is true.
+    #[inline]
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.iter()
+            .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
+            .collect()
     }
 }
 
@@ -144,6 +159,14 @@ mod bitmap_tests {
     }
 
     #[test]
+    fn bitmap_flip() {
+        let mut map = Bitmap::new(5, false);
+        assert!(map.set(1, true).is_ok());
+        map.flip();
+        assert_eq!(map, Bitmap::from(5, vec![0, 2, 3, 4]));
+    }
+
+    #[test]
     fn bitmap_count() {
         let mut map = Bitmap::new(7, false);
         assert_eq!(map.count(), 0);
@@ -161,5 +184,6 @@ mod bitmap_tests {
         for (id, flag) in map.iter() {
             assert_eq!(ref_map[id as usize], flag);
         }
+        assert_eq!(map.to_vec(), [0, 1, 3, 4]);
     }
 }

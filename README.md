@@ -155,15 +155,20 @@ Complete cluster management and benchmarking scripts are available in another re
   - [ ] specialize read-only commands?
   - [ ] separate commit vs. exec responses?
   - [ ] membership discovery & view changes
+- [x] implementation of RS-Paxos
 - [ ] implementation of Raft
-- [ ] implementation of Crossword prototype
+- [ ] implementation of CRaft
+- [x] implementation of Crossword prototype
   - [x] fault recovery reads
   - [ ] follower gossiping
+  - [ ] fall-back mechanism
+  - [ ] workload adaptiveness
+  - [ ] unbalanced assignment
 - [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client
   - [x] testing client
-  - [ ] benchmarking with YCSB input
+  - [ ] YCSB-driven client
 - [ ] better README & documentation
 
 ---
