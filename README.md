@@ -160,8 +160,8 @@ Complete cluster management and benchmarking scripts are available in another re
 - [ ] implementation of CRaft
 - [x] implementation of Crossword prototype
   - [x] fault recovery reads
-  - [ ] follower gossiping
-  - [ ] fall-back mechanism
+  - [x] follower gossiping
+  - [x] fall-back mechanism
   - [ ] workload adaptiveness
   - [ ] unbalanced assignment
 - [x] client-side utilities
