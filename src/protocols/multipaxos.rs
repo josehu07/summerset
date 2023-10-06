@@ -1199,7 +1199,6 @@ impl MultiPaxosReplica {
         );
 
         // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
-        self.hb_hear_timer.cancel()?;
         self.hb_hear_timer
             .kickoff(Duration::from_millis(timeout_ms))?;
         Ok(())
@@ -1234,7 +1233,7 @@ impl MultiPaxosReplica {
             // reply back with a Heartbeat message
             self.transport_hub.send_msg(
                 PeerMsg::Heartbeat {
-                    ballot: self.bal_max_seen,
+                    ballot,
                     exec_bar: self.exec_bar,
                 },
                 peer,
@@ -1242,8 +1241,10 @@ impl MultiPaxosReplica {
 
             // if the peer has made a higher ballot number
             if ballot > self.bal_max_seen {
+                self.bal_max_seen = ballot;
+
                 // clear my leader status if I was one
-                if self.is_leader() && ballot > self.bal_max_seen {
+                if self.is_leader() {
                     self.control_hub
                         .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                     pf_info!(self.id; "no longer a leader...");
@@ -1320,6 +1321,7 @@ impl MultiPaxosReplica {
         pf_warn!(self.id; "server got resume req");
 
         // reset leader heartbeat timer
+        self.hb_hear_timer.cancel()?;
         self.kickoff_hb_hear_timer()?;
 
         *paused = false;
