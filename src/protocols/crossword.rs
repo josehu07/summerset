@@ -495,15 +495,14 @@ impl CrosswordReplica {
         let mut targets_excl = HashMap::new();
         for p in (me + 1)..(population + me) {
             let peer = p % population;
-            if peer == src_peer {
-                // skip leader who initially replicated this instance to me
-                continue;
-            }
-
             if !first_try {
                 // first try probably did not succeed, so do it conservatively
                 targets_excl.insert(peer, avail_shards_map.to_vec());
             } else {
+                // skip leader who initially replicated this instance to me
+                if peer == src_peer {
+                    continue;
+                }
                 // first try: only ask for a minimum number of data shards
                 let mut useful_shards = Vec::new();
                 for idx in Self::shards_for_replica(
@@ -1945,6 +1944,9 @@ impl CrosswordReplica {
     ) -> Result<(), SummersetError> {
         match entry {
             LogEntry::PrepareBal { slot, ballot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance()?);
@@ -1968,6 +1970,9 @@ impl CrosswordReplica {
                 ballot,
                 reqs_cw,
             } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance()?);
@@ -1994,6 +1999,9 @@ impl CrosswordReplica {
             }
 
             LogEntry::CommitSlot { slot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 assert!(slot < self.start_slot + self.insts.len());
                 // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;

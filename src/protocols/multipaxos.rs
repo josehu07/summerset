@@ -1385,6 +1385,9 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         match entry {
             LogEntry::PrepareBal { slot, ballot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
@@ -1404,6 +1407,9 @@ impl MultiPaxosReplica {
             }
 
             LogEntry::AcceptData { slot, ballot, reqs } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
@@ -1430,6 +1436,9 @@ impl MultiPaxosReplica {
             }
 
             LogEntry::CommitSlot { slot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 assert!(slot < self.start_slot + self.insts.len());
                 // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
