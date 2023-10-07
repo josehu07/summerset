@@ -1,8 +1,8 @@
 //! Replication protocol: Crossword.
 //!
-//! MultiPaxos with flexible Reed-Solomon erasure coding that supports tunable
-//! shard groups, asymmetric shard assignment, and follower gossiping for actual
-//! usability.
+//! MultiPaxos with flexible Reed-Solomon erasure code sharding that supports
+//! dynamically tunable shard assignment with the correct liveness constraints,
+//! plus follower gossiping for actual usability.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,8 +34,8 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ReplicaConfigCrossword {
-    /// Client request batching interval in microsecs.
-    pub batch_interval_us: u64,
+    /// Client request batching interval in millisecs.
+    pub batch_interval_ms: u64,
 
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
@@ -87,7 +87,7 @@ pub struct ReplicaConfigCrossword {
 impl Default for ReplicaConfigCrossword {
     fn default() -> Self {
         ReplicaConfigCrossword {
-            batch_interval_us: 1000,
+            batch_interval_ms: 10,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
@@ -176,14 +176,20 @@ struct Instance {
     external: bool,
 
     /// Offset of first durable WAL log entry related to this instance.
-    log_offset: usize,
+    wal_offset: usize,
 }
 
-/// Stable storage log entry type.
+/// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-enum LogEntry {
+enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
-    PrepareBal { slot: usize, ballot: Ballot },
+    PrepareBal {
+        /// Slot index in Prepare message is the triggering slot of this
+        /// Prepare. Once prepared, it means that all slots in the range
+        /// [slot, +infinity) are prepared under this ballot number.
+        slot: usize,
+        ballot: Ballot,
+    },
 
     /// Records a newly accepted request batch data shards at slot index.
     AcceptData {
@@ -197,6 +203,10 @@ enum LogEntry {
 }
 
 /// Snapshot file entry type.
+///
+/// NOTE: the current implementation simply appends a squashed log at the
+/// end of the snapshot file for simplicity. In production, the snapshot
+/// file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
@@ -290,7 +300,7 @@ pub struct CrosswordReplica {
     state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: StorageHub<LogEntry>,
+    storage_hub: StorageHub<WalEntry>,
 
     /// StorageHub module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
@@ -342,8 +352,8 @@ pub struct CrosswordReplica {
     /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
 
-    /// Current durable log file offset.
-    log_offset: usize,
+    /// Current durable WAL log file offset.
+    wal_offset: usize,
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
@@ -380,7 +390,7 @@ impl CrosswordReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
-            log_offset: 0,
+            wal_offset: 0,
         })
     }
 
@@ -462,75 +472,6 @@ impl CrosswordReplica {
         (first..(first + shards_per_replica))
             .map(|i| (i % population))
             .collect()
-    }
-
-    // TODO: should let leader incorporate assignment metadata in Accept
-    // messages. With more complex assignment policies, a follower probably
-    // does not know the assignment.
-    fn gossip_targets_excl(
-        slot: usize,
-        me: ReplicaId,
-        population: u8,
-        majority: u8,
-        shards_per_replica: u8,
-        mut avail_shards_map: Bitmap,
-        replica_bk: &mut Option<ReplicaBookkeeping>,
-    ) -> HashMap<ReplicaId, Vec<u8>> {
-        let mut src_peer = me;
-        let mut first_try = false;
-        if let Some(ReplicaBookkeeping {
-            source,
-            gossip_tried,
-        }) = replica_bk
-        {
-            if !*gossip_tried {
-                src_peer = *source;
-                first_try = true;
-                // first try: exclude all parity shards
-                for idx in majority..population {
-                    avail_shards_map.set(idx, true).unwrap();
-                }
-                *gossip_tried = true;
-            }
-        }
-
-        // greedily considers my peers, starting from the one with my ID + 1,
-        // until all data shards covered
-        let mut targets_excl = HashMap::new();
-        for p in (me + 1)..(population + me) {
-            let peer = p % population;
-            if !first_try {
-                // first try probably did not succeed, so do it conservatively
-                targets_excl.insert(peer, avail_shards_map.to_vec());
-            } else {
-                // skip leader who initially replicated this instance to me
-                if peer == src_peer {
-                    continue;
-                }
-                // first try: only ask for a minimum number of data shards
-                let mut useful_shards = Vec::new();
-                for idx in Self::shards_for_replica(
-                    slot,
-                    peer,
-                    population,
-                    shards_per_replica,
-                ) {
-                    if !avail_shards_map.get(idx).unwrap() {
-                        useful_shards.push(idx);
-                    }
-                }
-                // if this peer has data shards which I don't have right now
-                // and I have not asked others for in this round
-                if !useful_shards.is_empty() {
-                    targets_excl.insert(peer, avail_shards_map.to_vec());
-                    for idx in useful_shards {
-                        avail_shards_map.set(idx, true).unwrap();
-                    }
-                }
-            }
-        }
-
-        targets_excl
     }
 
     // TODO: think about how to allow unbalanced assignments.
@@ -638,7 +579,7 @@ impl CrosswordReplica {
                     self.storage_hub.submit_action(
                         Self::make_log_action_id(slot, Status::Accepting),
                         LogAction::Append {
-                            entry: LogEntry::AcceptData {
+                            entry: WalEntry::AcceptData {
                                 slot,
                                 ballot: inst.bal,
                                 // persist only some shards on myself
@@ -767,7 +708,7 @@ impl CrosswordReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Preparing),
                 LogAction::Append {
-                    entry: LogEntry::PrepareBal {
+                    entry: WalEntry::PrepareBal {
                         slot,
                         ballot: self.bal_prep_sent,
                     },
@@ -812,7 +753,7 @@ impl CrosswordReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: LogEntry::AcceptData {
+                    entry: WalEntry::AcceptData {
                         slot,
                         ballot: inst.bal,
                         // persist only some shards on myself
@@ -998,7 +939,7 @@ impl CrosswordReplica {
     fn handle_log_result(
         &mut self,
         action_id: LogActionId,
-        log_result: LogResult<LogEntry>,
+        log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
         let (slot, entry_type) = Self::split_log_action_id(action_id);
         if slot < self.start_slot {
@@ -1007,15 +948,15 @@ impl CrosswordReplica {
         assert!(slot < self.start_slot + self.insts.len());
 
         if let LogResult::Append { now_size } = log_result {
-            assert!(now_size >= self.log_offset);
-            // update first log_offset of slot
+            assert!(now_size >= self.wal_offset);
+            // update first wal_offset of slot
             let inst = &mut self.insts[slot - self.start_slot];
-            if inst.log_offset == 0 || inst.log_offset > self.log_offset {
-                inst.log_offset = self.log_offset;
+            if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
+                inst.wal_offset = self.wal_offset;
             }
-            assert!(inst.log_offset <= self.log_offset);
-            // then update self.log_offset
-            self.log_offset = now_size;
+            assert!(inst.wal_offset <= self.wal_offset);
+            // then update self.wal_offset
+            self.wal_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
         }
@@ -1069,7 +1010,7 @@ impl CrosswordReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Preparing),
                 LogAction::Append {
-                    entry: LogEntry::PrepareBal { slot, ballot },
+                    entry: WalEntry::PrepareBal { slot, ballot },
                     sync: self.config.logger_sync,
                 },
             )?;
@@ -1174,7 +1115,7 @@ impl CrosswordReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
-                        entry: LogEntry::AcceptData {
+                        entry: WalEntry::AcceptData {
                             slot,
                             ballot,
                             reqs_cw: subset_copy,
@@ -1257,7 +1198,7 @@ impl CrosswordReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: LogEntry::AcceptData {
+                    entry: WalEntry::AcceptData {
                         slot,
                         ballot,
                         reqs_cw: inst.reqs_cw.clone(),
@@ -1338,7 +1279,7 @@ impl CrosswordReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Committed),
                     LogAction::Append {
-                        entry: LogEntry::CommitSlot { slot },
+                        entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,
                     },
                 )?;
@@ -1387,7 +1328,7 @@ impl CrosswordReplica {
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::Committed),
             LogAction::Append {
-                entry: LogEntry::CommitSlot { slot },
+                entry: WalEntry::CommitSlot { slot },
                 sync: self.config.logger_sync,
             },
         )?;
@@ -1678,7 +1619,7 @@ impl CrosswordReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
-                        entry: LogEntry::PrepareBal {
+                        entry: WalEntry::PrepareBal {
                             slot,
                             ballot: self.bal_prep_sent,
                         },
@@ -1873,6 +1814,75 @@ impl CrosswordReplica {
         self.gossip_timer
             .kickoff(Duration::from_millis(timeout_ms))?;
         Ok(())
+    }
+
+    // TODO: should let leader incorporate assignment metadata in Accept
+    // messages. With more complex assignment policies, a follower probably
+    // does not know the assignment.
+    fn gossip_targets_excl(
+        slot: usize,
+        me: ReplicaId,
+        population: u8,
+        majority: u8,
+        shards_per_replica: u8,
+        mut avail_shards_map: Bitmap,
+        replica_bk: &mut Option<ReplicaBookkeeping>,
+    ) -> HashMap<ReplicaId, Vec<u8>> {
+        let mut src_peer = me;
+        let mut first_try = false;
+        if let Some(ReplicaBookkeeping {
+            source,
+            gossip_tried,
+        }) = replica_bk
+        {
+            if !*gossip_tried {
+                src_peer = *source;
+                first_try = true;
+                // first try: exclude all parity shards
+                for idx in majority..population {
+                    avail_shards_map.set(idx, true).unwrap();
+                }
+                *gossip_tried = true;
+            }
+        }
+
+        // greedily considers my peers, starting from the one with my ID + 1,
+        // until all data shards covered
+        let mut targets_excl = HashMap::new();
+        for p in (me + 1)..(population + me) {
+            let peer = p % population;
+            if !first_try {
+                // first try probably did not succeed, so do it conservatively
+                targets_excl.insert(peer, avail_shards_map.to_vec());
+            } else {
+                // skip leader who initially replicated this instance to me
+                if peer == src_peer {
+                    continue;
+                }
+                // first try: only ask for a minimum number of data shards
+                let mut useful_shards = Vec::new();
+                for idx in Self::shards_for_replica(
+                    slot,
+                    peer,
+                    population,
+                    shards_per_replica,
+                ) {
+                    if !avail_shards_map.get(idx).unwrap() {
+                        useful_shards.push(idx);
+                    }
+                }
+                // if this peer has data shards which I don't have right now
+                // and I have not asked others for in this round
+                if !useful_shards.is_empty() {
+                    targets_excl.insert(peer, avail_shards_map.to_vec());
+                    for idx in useful_shards {
+                        avail_shards_map.set(idx, true).unwrap();
+                    }
+                }
+            }
+        }
+
+        targets_excl
     }
 
     /// Triggers gossiping for my missing shards in committed but not-yet-
@@ -2078,10 +2088,10 @@ impl CrosswordReplica {
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
-        entry: LogEntry,
+        entry: WalEntry,
     ) -> Result<(), SummersetError> {
         match entry {
-            LogEntry::PrepareBal { slot, ballot } => {
+            WalEntry::PrepareBal { slot, ballot } => {
                 if slot < self.start_slot {
                     return Ok(()); // ignore if slot index outdated
                 }
@@ -2103,7 +2113,7 @@ impl CrosswordReplica {
                 self.bal_prepared = 0;
             }
 
-            LogEntry::AcceptData {
+            WalEntry::AcceptData {
                 slot,
                 ballot,
                 reqs_cw,
@@ -2136,7 +2146,7 @@ impl CrosswordReplica {
                 assert!(self.bal_prepared <= self.bal_prep_sent);
             }
 
-            LogEntry::CommitSlot { slot } => {
+            WalEntry::CommitSlot { slot } => {
                 if slot < self.start_slot {
                     return Ok(()); // ignore if slot index outdated
                 }
@@ -2185,15 +2195,15 @@ impl CrosswordReplica {
         Ok(())
     }
 
-    /// Recover state from durable storage log.
-    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+    /// Recover state from durable storage WAL log.
+    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
                 0,
                 LogAction::Read {
-                    offset: self.log_offset,
+                    offset: self.wal_offset,
                 },
             )?;
             let (_, log_result) = self.storage_hub.get_result().await?;
@@ -2205,7 +2215,7 @@ impl CrosswordReplica {
                 } => {
                     self.recover_apply_entry(entry).await?;
                     // update log offset
-                    self.log_offset = end_offset;
+                    self.wal_offset = end_offset;
                 }
                 LogResult::Read { entry: None, .. } => {
                     // end of log reached
@@ -2221,7 +2231,7 @@ impl CrosswordReplica {
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
-                offset: self.log_offset,
+                offset: self.wal_offset,
             },
         )?;
         let (_, log_result) = self.storage_hub.get_result().await?;
@@ -2229,7 +2239,7 @@ impl CrosswordReplica {
             offset_ok: true, ..
         } = log_result
         {
-            if self.log_offset > 0 {
+            if self.wal_offset > 0 {
                 pf_info!(self.id; "recovered from wal log: commit {} exec {}",
                                   self.commit_bar, self.exec_bar);
             }
@@ -2242,7 +2252,7 @@ impl CrosswordReplica {
 
 // CrosswordReplica snapshotting & GC logic
 impl CrosswordReplica {
-    /// Dump a new key-value pair to snapshot file.
+    /// Dump new key-value pairs to snapshot file.
     async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
@@ -2283,9 +2293,9 @@ impl CrosswordReplica {
     /// Discard everything older than start_slot in durable WAL log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         let cut_offset = if !self.insts.is_empty() {
-            self.insts[0].log_offset
+            self.insts[0].wal_offset
         } else {
-            self.log_offset
+            self.wal_offset
         };
 
         // discard the log before cut_offset
@@ -2304,8 +2314,8 @@ impl CrosswordReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.log_offset - cut_offset, now_size);
-                        self.log_offset = now_size;
+                        assert_eq!(self.wal_offset - cut_offset, now_size);
+                        self.wal_offset = now_size;
                     } else {
                         return logged_err!(
                             self.id;
@@ -2317,11 +2327,11 @@ impl CrosswordReplica {
             }
         }
 
-        // update inst.log_offset for all remaining in-mem instances
+        // update inst.wal_offset for all remaining in-mem instances
         for inst in &mut self.insts {
-            if inst.log_offset > 0 {
-                assert!(inst.log_offset >= cut_offset);
-                inst.log_offset -= cut_offset;
+            if inst.wal_offset > 0 {
+                assert!(inst.wal_offset >= cut_offset);
+                inst.wal_offset -= cut_offset;
             }
         }
 
@@ -2334,6 +2344,12 @@ impl CrosswordReplica {
     /// NOTE: the current implementation does not guard against crashes in the
     /// middle of taking a snapshot. Production quality implementations should
     /// make the snapshotting action "atomic".
+    ///
+    /// NOTE: the current implementation does not take care of InstallSnapshot
+    /// messages (which is needed when some lagging follower has some slot
+    /// which all other peers have snapshotted); we assume here that failed
+    /// Accept messages will be retried indefinitely until success before its
+    /// associated data gets discarded from leader's memory.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {}",
                            self.start_slot, self.exec_bar);
@@ -2512,7 +2528,7 @@ impl GenericReplica for CrosswordReplica {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigCrossword;
-                                    batch_interval_us, max_batch_size,
+                                    batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
@@ -2522,11 +2538,11 @@ impl GenericReplica for CrosswordReplica {
                                     shards_per_replica,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
-        if config.batch_interval_us == 0 {
+        if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
-                "invalid config.batch_interval_us '{}'",
-                config.batch_interval_us
+                "invalid config.batch_interval_ms '{}'",
+                config.batch_interval_ms
             );
         }
         if config.hb_hear_timeout_min < 100 {
@@ -2640,7 +2656,7 @@ impl GenericReplica for CrosswordReplica {
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,
-            Duration::from_micros(config.batch_interval_us),
+            Duration::from_millis(config.batch_interval_ms),
             config.max_batch_size,
         )
         .await?;
@@ -2690,7 +2706,7 @@ impl GenericReplica for CrosswordReplica {
             bal_max_seen: 0,
             commit_bar: 0,
             exec_bar: 0,
-            log_offset: 0,
+            wal_offset: 0,
             snap_offset: 0,
             rs_coder,
         })
@@ -2703,8 +2719,8 @@ impl GenericReplica for CrosswordReplica {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
-        // recover the tail-piece memory log & state from durable storage log
-        self.recover_from_log().await?;
+        // recover the tail-piece memory log & state from durable WAL log
+        self.recover_from_wal().await?;
 
         // kick off leader activity hearing timer
         self.kickoff_hb_hear_timer()?;
