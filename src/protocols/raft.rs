@@ -5,6 +5,7 @@
 //!   - <https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf>
 //!   - <https://decentralizedthoughts.github.io/2020-12-12-raft-liveness-full-omission/>
 
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::net::SocketAddr;
@@ -159,6 +160,8 @@ enum PeerMsg {
         prev_term: Term,
         entries: Vec<LogEntry>,
         leader_commit: usize,
+        /// For conservative snapshotting purpose.
+        last_snap: usize,
     },
 
     /// AppendEntries reply from follower to leader.
@@ -277,8 +280,17 @@ pub struct RaftReplica {
     /// For each server, index of the highest log entry known to be replicated.
     match_slot: HashMap<ReplicaId, usize>,
 
+    /// Slot index up to which it is safe to take snapshot.
+    /// NOTE: we are taking a conservative approach here that a snapshot
+    /// covering an entry can be taken only when all servers have durably
+    /// committed that entry.
+    last_snap: usize,
+
     /// Current durable log file end offset.
     log_offset: usize,
+
+    /// Current durable log end of offset of metadata.
+    log_meta_end: usize,
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
@@ -346,6 +358,7 @@ impl RaftReplica {
             self.heard_heartbeat(peer, term)?; // refresh election timer
             if self.role != Role::Follower {
                 self.role = Role::Follower;
+                pf_trace!(self.id; "converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -398,7 +411,7 @@ impl RaftReplica {
             term: self.curr_term,
             reqs: req_batch,
             external: true,
-            log_offset: self.log_offset,
+            log_offset: 0,
         };
         let slot = self.start_slot + self.log.len();
         self.log.push(entry.clone());
@@ -434,13 +447,13 @@ impl RaftReplica {
 
         // broadcast AppendEntries messages to followers
         for peer in 0..self.population {
-            if peer == self.id {
+            if peer == self.id || self.next_slot[&peer] < 1 {
                 continue;
             }
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                pf_error!(self.id; "snapshotted slot {} queried", prev_slot);
+                return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
@@ -458,6 +471,7 @@ impl RaftReplica {
                         prev_term,
                         entries,
                         leader_commit: self.last_commit,
+                        last_snap: self.last_snap,
                     },
                     peer,
                 )?;
@@ -485,21 +499,6 @@ impl RaftReplica {
         pf_trace!(self.id; "finished follower append logging for slot {} <= {}",
                            slot, slot_e);
         assert!(slot <= slot_e);
-
-        // submit newly committed entry for state machine execution
-        if slot > self.last_exec && slot <= self.last_commit {
-            let entry = &self.log[slot - self.start_slot];
-            for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
-                if let ApiRequest::Req { cmd, .. } = req {
-                    self.state_machine.submit_cmd(
-                        Self::make_command_id(slot, cmd_idx),
-                        cmd.clone(),
-                    )?;
-                } else {
-                    continue; // ignore other types of requests
-                }
-            }
-        }
 
         // if all consecutive entries are made durable, reply AppendEntries
         // success back to leader
@@ -534,10 +533,11 @@ impl RaftReplica {
         assert!(slot_e < self.start_slot + self.log.len());
 
         if let LogResult::Append { now_size } = log_result {
-            assert_eq!(
-                self.log[slot - self.start_slot].log_offset,
-                self.log_offset
-            );
+            let entry = &mut self.log[slot - self.start_slot];
+            if entry.log_offset != self.log_offset {
+                // entry has incorrect log_offset bookkept; update it
+                entry.log_offset = self.log_offset;
+            }
             assert!(now_size > self.log_offset);
             self.log_offset = now_size;
         } else {
@@ -557,6 +557,7 @@ impl RaftReplica {
 // RaftReplica peer-peer messages handling
 impl RaftReplica {
     /// Handler of AppendEntries message from leader.
+    #[allow(clippy::too_many_arguments)]
     async fn handle_msg_append_entries(
         &mut self,
         leader: ReplicaId,
@@ -565,9 +566,12 @@ impl RaftReplica {
         prev_term: Term,
         mut entries: Vec<LogEntry>,
         leader_commit: usize,
+        last_snap: usize,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received AcceptEntries <- {} for slot > {} term {}",
-                           leader, prev_slot, term);
+        if !entries.is_empty() {
+            pf_trace!(self.id; "received AcceptEntries <- {} for slots {} - {} term {}",
+                               leader, prev_slot + 1, prev_slot + entries.len(), term);
+        }
         if self.check_term(leader, term)? || self.role != Role::Follower {
             return Ok(());
         }
@@ -587,6 +591,8 @@ impl RaftReplica {
                 },
                 leader,
             )?;
+            pf_trace!(self.id; "sent AcceptEntriesReply -> {} term {} end_slot {} fail",
+                               leader, self.curr_term, prev_slot);
 
             if term >= self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
@@ -651,13 +657,14 @@ impl RaftReplica {
 
         // append new entries into my log, and submit logger actions to make
         // new entries durable
-        let (num_entries, mut num_appended) = (0, 0);
+        let (num_entries, mut num_appended) = (entries.len(), 0);
         for (slot, mut entry) in entries
             .drain((first_new - prev_slot - 1)..entries.len())
             .enumerate()
             .map(|(s, e)| (s + first_new, e))
         {
-            entry.external = false; // not from client
+            entry.log_offset = 0;
+
             self.log.push(entry.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(
@@ -670,6 +677,7 @@ impl RaftReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
+
             num_appended += 1;
         }
 
@@ -689,11 +697,29 @@ impl RaftReplica {
 
         // if leader_commit is larger than my last_commit, update last_commit
         if leader_commit > self.last_commit {
-            self.last_commit = if leader_commit < prev_slot + entries.len() {
-                leader_commit
-            } else {
-                prev_slot + entries.len()
-            };
+            let new_commit = cmp::min(leader_commit, prev_slot + entries.len());
+
+            // submit newly committed entries for state machine execution
+            for slot in (self.last_commit + 1)..=new_commit {
+                let entry = &self.log[slot - self.start_slot];
+                for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
+                    if let ApiRequest::Req { cmd, .. } = req {
+                        self.state_machine.submit_cmd(
+                            Self::make_command_id(slot, cmd_idx),
+                            cmd.clone(),
+                        )?;
+                    } else {
+                        continue; // ignore other types of requests
+                    }
+                }
+            }
+
+            self.last_commit = new_commit;
+        }
+
+        // if last_snap is larger than mine, update last_snap
+        if last_snap > self.last_snap {
+            self.last_snap = last_snap;
         }
 
         Ok(())
@@ -707,11 +733,14 @@ impl RaftReplica {
         end_slot: usize,
         success: bool,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
-                           peer, term, if success { "ok" } else { "fail" });
+        if !success || self.match_slot[&peer] != end_slot {
+            pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
+                               peer, term, if success { "ok" } else { "fail" });
+        }
         if self.check_term(peer, term)? || self.role != Role::Leader {
             return Ok(());
         }
+        self.heard_heartbeat(peer, term)?;
 
         if success {
             // success: update next_slot and match_slot for follower
@@ -720,6 +749,7 @@ impl RaftReplica {
 
             // since we updated some match_slot here, check if any additional
             // entries are now considered committed
+            let mut new_commit = self.last_commit;
             for slot in
                 (self.last_commit + 1)..(self.start_slot + self.log.len())
             {
@@ -734,13 +764,13 @@ impl RaftReplica {
                     .filter(|&&s| s >= slot)
                     .count() as u8;
                 if match_cnt >= self.quorum_cnt {
-                    // quorum size reached, set last_commit to here
-                    self.last_commit = slot;
+                    // quorum size reached, set new_commit to here
+                    new_commit = slot;
                 }
             }
 
             // submit newly committed commands, if any, for execution
-            for slot in (self.last_exec + 1)..=self.last_commit {
+            for slot in (self.last_commit + 1)..=new_commit {
                 let entry = &self.log[slot - self.start_slot];
                 for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
@@ -753,13 +783,34 @@ impl RaftReplica {
                     }
                 }
             }
+
+            self.last_commit = new_commit;
+
+            // also check if any additional entries are safe to snapshot
+            for slot in (self.last_snap + 1)..=end_slot {
+                let match_cnt = 1 + self
+                    .match_slot
+                    .values()
+                    .filter(|&&s| s >= slot)
+                    .count() as u8;
+                if match_cnt == self.population {
+                    // all servers have durably stored this entry
+                    self.last_snap = slot;
+                }
+            }
         } else {
             // failed: decrement next_slot for follower and retry
+            // NOTE: the optimization of fast-backward bypassing (instead of
+            //       always decrementing by 1) not implemented
+            if self.next_slot[&peer] == 1 {
+                return Ok(()); // cannot move backward any more
+            }
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                pf_error!(self.id; "snapshotted slot {} queried", prev_slot);
+                *self.next_slot.get_mut(&peer).unwrap() += 1;
+                return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
@@ -776,6 +827,7 @@ impl RaftReplica {
                     prev_term,
                     entries,
                     leader_commit: self.last_commit,
+                    last_snap: self.last_snap,
                 },
                 peer,
             )?;
@@ -808,7 +860,7 @@ impl RaftReplica {
                 },
                 candidate,
             )?;
-            pf_trace!(self.id; "sent RequestVote -> {} term {} false",
+            pf_trace!(self.id; "sent RequestVoteReply -> {} term {} false",
                                candidate, self.curr_term);
             return Ok(());
         }
@@ -828,8 +880,12 @@ impl RaftReplica {
                     },
                     candidate,
                 )?;
-                pf_trace!(self.id; "sent RequestVote -> {} term {} granted",
+                pf_trace!(self.id; "sent RequestVoteReply -> {} term {} granted",
                                candidate, self.curr_term);
+
+                // hear a heartbeat here to prevent me from starting an
+                // election soon
+                self.heard_heartbeat(candidate, term)?;
             }
         }
 
@@ -873,6 +929,7 @@ impl RaftReplica {
                 prev_term,
                 entries,
                 leader_commit,
+                last_snap,
             } => {
                 self.handle_msg_append_entries(
                     peer,
@@ -881,6 +938,7 @@ impl RaftReplica {
                     prev_term,
                     entries,
                     leader_commit,
+                    last_snap,
                 )
                 .await
             }
@@ -1024,7 +1082,8 @@ impl RaftReplica {
 
     /// Becomes the leader after enough votes granted for me.
     fn become_the_leader(&mut self) -> Result<(), SummersetError> {
-        pf_info!(self.id; "elected as leader with term {}", self.curr_term);
+        pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
+        self.role = Role::Leader;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         for cnts in self.hb_reply_cnts.values_mut() {
@@ -1055,6 +1114,7 @@ impl RaftReplica {
                 prev_term,
                 entries: vec![],
                 leader_commit: self.last_commit,
+                last_snap: self.last_snap,
             },
             None,
         )?;
@@ -1094,6 +1154,8 @@ impl RaftReplica {
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
     fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+        self.hb_hear_timer.cancel()?;
+
         let timeout_ms = thread_rng().gen_range(
             self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
         );
@@ -1187,7 +1249,6 @@ impl RaftReplica {
         pf_warn!(self.id; "server got resume req");
 
         // reset leader heartbeat timer
-        self.hb_hear_timer.cancel()?;
         self.kickoff_hb_hear_timer()?;
 
         *paused = false;
@@ -1264,6 +1325,7 @@ impl RaftReplica {
                 end_offset,
             } => {
                 self.log_offset = end_offset;
+                self.log_meta_end = end_offset;
 
                 // recover necessary metadata info
                 self.curr_term = curr_term;
@@ -1286,9 +1348,9 @@ impl RaftReplica {
                             end_offset,
                         } => {
                             entry.log_offset = self.log_offset;
+                            entry.external = false; // no re-replying to clients
                             self.log.push(entry);
-                            // update log offset
-                            self.log_offset = end_offset;
+                            self.log_offset = end_offset; // update log offset
                         }
                         LogResult::Read { entry: None, .. } => {
                             // end of log reached
@@ -1321,10 +1383,18 @@ impl RaftReplica {
                 } = log_result
                 {
                     self.log_offset = now_size;
+                    self.log_meta_end = now_size;
                 } else {
                     return logged_err!(self.id; "unexpected log result type or failed write");
                 }
-                // ... and write the 0-th dummy entry
+                // ... and push a 0-th dummy entry into in-mem log
+                self.log.push(LogEntry {
+                    term: 0,
+                    reqs: vec![],
+                    external: false,
+                    log_offset: 0,
+                });
+                // ... and write the 0-th dummy entry durably
                 self.storage_hub.submit_action(
                     0,
                     LogAction::Write {
@@ -1382,10 +1452,13 @@ impl RaftReplica {
 // RaftReplica snapshotting & GC logic
 impl RaftReplica {
     /// Dump new key-value pairs to snapshot file.
-    async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
+    async fn snapshot_dump_kv_pairs(
+        &mut self,
+        new_start_slot: usize,
+    ) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
-        for slot in self.start_slot..self.last_exec {
+        for slot in self.start_slot..new_start_slot {
             let entry = &self.log[slot - self.start_slot];
             for (_, req) in entry.reqs.clone() {
                 if let ApiRequest::Req {
@@ -1420,13 +1493,26 @@ impl RaftReplica {
 
     /// Discard everything lower than start_slot in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
+        // drain things currently in storage_hub's recv chan if head of log's
+        // durable file offset has not been set yet
         assert!(!self.log.is_empty());
+        while self.log[0].log_offset == 0 {
+            let (action_id, log_result) = self.storage_hub.get_result().await?;
+            self.handle_log_result(action_id, log_result)?;
+        }
         let cut_offset = self.log[0].log_offset;
 
-        // discard the log before cut_offset
+        // discard the log after meta_end and before cut_offset
         if cut_offset > 0 {
-            self.storage_hub
-                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
+            assert!(self.log_meta_end > 0);
+            assert!(self.log_meta_end <= cut_offset);
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Discard {
+                    offset: cut_offset,
+                    keep: self.log_meta_end,
+                },
+            )?;
             loop {
                 let (action_id, log_result) =
                     self.storage_hub.get_result().await?;
@@ -1439,7 +1525,10 @@ impl RaftReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.log_offset - cut_offset, now_size);
+                        assert_eq!(
+                            self.log_offset - cut_offset + self.log_meta_end,
+                            now_size
+                        );
                         self.log_offset = now_size;
                     } else {
                         return logged_err!(
@@ -1456,7 +1545,7 @@ impl RaftReplica {
         for entry in &mut self.log {
             if entry.log_offset > 0 {
                 assert!(entry.log_offset >= cut_offset);
-                entry.log_offset -= cut_offset;
+                entry.log_offset -= cut_offset - self.log_meta_end;
             }
         }
 
@@ -1472,15 +1561,18 @@ impl RaftReplica {
     ///
     /// NOTE: the current implementation does not take care of InstallSnapshot
     /// messages (which is needed when some lagging follower has some slot
-    /// which all other peers have snapshotted); we assume here that failed
-    /// Accept messages will be retried indefinitely until success before its
-    /// associated data gets discarded from leader's memory.
+    /// which all other peers have snapshotted); we take the conservative
+    /// approach that a snapshot is only taken when data has been durably
+    /// committed on all servers.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
-                           self.start_slot, self.last_exec);
+        pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
+                           self.start_slot, self.last_exec, self.last_snap);
         assert!(self.last_exec + 1 >= self.start_slot);
-        if self.last_exec < self.start_slot + 1 {
-            // always keep at least one entry in log to make indexing happy
+
+        // always keep at least one entry in log to make indexing happy
+        let new_start_slot = cmp::min(self.last_snap, self.last_exec);
+        assert!(new_start_slot < self.start_slot + self.log.len());
+        if new_start_slot < self.start_slot + 1 {
             return Ok(());
         }
 
@@ -1489,14 +1581,14 @@ impl RaftReplica {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
-        self.snapshot_dump_kv_pairs().await?;
+        self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
         // write new slot info entry to the head of snapshot
         self.snapshot_hub.submit_action(
             0,
             LogAction::Write {
                 entry: SnapEntry::SlotInfo {
-                    start_slot: self.last_exec,
+                    start_slot: new_start_slot,
                 },
                 offset: 0,
                 sync: self.config.logger_sync,
@@ -1513,9 +1605,9 @@ impl RaftReplica {
         }
 
         // update start_slot and discard all in-mem log entries up to
-        // last_exec - 1
-        self.log.drain(0..(self.last_exec - self.start_slot));
-        self.start_slot = self.last_exec;
+        // new_start_slot
+        self.log.drain(0..(new_start_slot - self.start_slot));
+        self.start_slot = new_start_slot;
 
         // discarding everything lower than start_slot in durable log
         if self.role == Role::Leader {
@@ -1550,6 +1642,11 @@ impl RaftReplica {
 
                 // recover start_slot info
                 self.start_slot = start_slot;
+                if start_slot > 0 {
+                    self.last_commit = start_slot - 1;
+                    self.last_exec = start_slot - 1;
+                    self.last_snap = start_slot - 1;
+                }
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -1601,11 +1698,11 @@ impl RaftReplica {
             }
 
             LogResult::Read { entry: None, .. } => {
-                // snapshot file is empty. Write a 1 as start_slot and return
+                // snapshot file is empty. Write a 0 as start_slot and return
                 self.snapshot_hub.submit_action(
                     0,
                     LogAction::Write {
-                        entry: SnapEntry::SlotInfo { start_slot: 1 },
+                        entry: SnapEntry::SlotInfo { start_slot: 0 },
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -1789,12 +1886,7 @@ impl GenericReplica for RaftReplica {
             curr_term: 0,
             voted_for: None,
             votes_granted: HashSet::new(),
-            log: vec![LogEntry {
-                term: 0,
-                reqs: vec![],
-                external: false,
-                log_offset: 0,
-            }],
+            log: vec![],
             start_slot: 0,
             snapshot_interval,
             last_commit: 0,
@@ -1805,7 +1897,9 @@ impl GenericReplica for RaftReplica {
             match_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
+            last_snap: 0,
             log_offset: 0,
+            log_meta_end: 0,
             snap_offset: 0,
         })
     }
@@ -1893,7 +1987,7 @@ impl GenericReplica for RaftReplica {
 
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused
-                        && self.config.snapshot_interval_s > 0 => {
+                                                      && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
                         pf_error!(self.id; "error taking a new snapshot: {}", e);
                     } else {

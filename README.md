@@ -160,8 +160,9 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] TLA+ spec
 - [x] implementation of RS-Paxos
   - [ ] TLA+ spec
-- [ ] implementation of Raft
-  - [ ] snapshotting & garbage collection
+- [x] implementation of Raft
+  - [x] state persistence & restart check
+  - [x] snapshotting & garbage collection
   - [ ] membership discovery & view changes
   - [ ] TLA+ spec
 - [ ] implementation of CRaft

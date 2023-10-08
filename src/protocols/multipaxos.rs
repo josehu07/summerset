@@ -1204,6 +1204,8 @@ impl MultiPaxosReplica {
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
     fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+        self.hb_hear_timer.cancel()?;
+
         let timeout_ms = thread_rng().gen_range(
             self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
         );
@@ -1331,7 +1333,6 @@ impl MultiPaxosReplica {
         pf_warn!(self.id; "server got resume req");
 
         // reset leader heartbeat timer
-        self.hb_hear_timer.cancel()?;
         self.kickoff_hb_hear_timer()?;
 
         *paused = false;
@@ -1586,8 +1587,13 @@ impl MultiPaxosReplica {
 
         // discard the log before cut_offset
         if cut_offset > 0 {
-            self.storage_hub
-                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Discard {
+                    offset: cut_offset,
+                    keep: 0,
+                },
+            )?;
             loop {
                 let (action_id, log_result) =
                     self.storage_hub.get_result().await?;
@@ -2049,7 +2055,7 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused
-                        && self.config.snapshot_interval_s > 0 => {
+                                                      && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
                         pf_error!(self.id; "error taking a new snapshot: {}", e);
                     } else {
