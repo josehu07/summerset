@@ -228,6 +228,10 @@ enum PeerMsg {
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
 
+    /// Request by a lagging replica to leader asking to re-send Accepts for
+    /// missing holes
+    FillHoles { slots: Vec<usize> },
+
     /// Leader activity heartbeat.
     Heartbeat {
         ballot: Ballot,
@@ -680,6 +684,21 @@ impl MultiPaxosReplica {
             }
         }
 
+        // if there are hole(s) between current commit_bar and newly committed
+        // slot, ask the leader to re-send Accept messages for those slots
+        if slot > self.commit_bar && !self.is_leader() {
+            if let Some(leader) = self.leader {
+                let holes: Vec<usize> = (self.commit_bar..slot).collect();
+                self.transport_hub.send_msg(
+                    PeerMsg::FillHoles {
+                        slots: holes.clone(),
+                    },
+                    leader,
+                )?;
+                pf_trace!(self.id; "sent FillHoles -> {} slots {:?}", leader, holes);
+            }
+        }
+
         Ok(())
     }
 
@@ -1007,6 +1026,43 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
+    /// Handler of FillHoles message from a lagging peer.
+    fn handle_msg_fill_holes(
+        &mut self,
+        peer: ReplicaId,
+        slots: Vec<usize>,
+    ) -> Result<(), SummersetError> {
+        if !self.is_leader() {
+            return Ok(());
+        }
+        pf_trace!(self.id; "received FillHoles <- {} for slots {:?}", peer, slots);
+
+        for slot in slots {
+            if slot < self.start_slot {
+                continue;
+            } else if slot >= self.start_slot + self.insts.len() {
+                break;
+            }
+            let inst = &self.insts[slot - self.start_slot];
+
+            if inst.status >= Status::Committed {
+                // re-send Accept message for this slot
+                self.transport_hub.send_msg(
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: self.bal_prepared,
+                        reqs: inst.reqs.clone(),
+                    },
+                    peer,
+                )?;
+                pf_trace!(self.id; "sent Accept -> {} for slot {} bal {}",
+                                   peer, slot, self.bal_prepared);
+            }
+        }
+
+        Ok(())
+    }
+
     /// Synthesized handler of receiving message from peer.
     fn handle_msg_recv(
         &mut self,
@@ -1029,6 +1085,9 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
+            PeerMsg::FillHoles { slots } => {
+                self.handle_msg_fill_holes(peer, slots)
+            }
             PeerMsg::Heartbeat {
                 ballot,
                 exec_bar,
