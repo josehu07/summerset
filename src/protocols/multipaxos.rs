@@ -1624,7 +1624,7 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
+    /// Take a snapshot up to current exec_bar, then discard the in-mem log up
     /// to that index as well as outdate entries in the durable WAL log file.
     ///
     /// NOTE: the current implementation does not guard against crashes in the
@@ -1669,7 +1669,7 @@ impl MultiPaxosReplica {
                 offset_ok: true, ..
             } => {}
             _ => {
-                return logged_err!(self.id; "unexpected log result type or failed truncate");
+                return logged_err!(self.id; "unexpected log result type or failed write");
             }
         }
 
@@ -1788,7 +1788,7 @@ impl MultiPaxosReplica {
                     self.snap_offset = now_size;
                     Ok(())
                 } else {
-                    logged_err!(self.id; "unexpected log result type or failed truncate")
+                    logged_err!(self.id; "unexpected log result type or failed write")
                 }
             }
 
