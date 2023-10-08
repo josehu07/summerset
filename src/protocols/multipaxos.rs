@@ -7,6 +7,7 @@
 //!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
 //!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 
+use std::cmp;
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
@@ -228,7 +229,13 @@ enum PeerMsg {
     Commit { slot: usize },
 
     /// Leader activity heartbeat.
-    Heartbeat { ballot: Ballot, exec_bar: usize },
+    Heartbeat {
+        ballot: Ballot,
+        /// For leader step-up as well as conservative snapshotting purpose.
+        exec_bar: usize,
+        /// For conservative snapshotting purpose.
+        snap_bar: usize,
+    },
 }
 
 /// MultiPaxos server replica module.
@@ -309,6 +316,16 @@ pub struct MultiPaxosReplica {
     /// Index of the first non-executed instance.
     /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
+
+    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// snapshotting purpose.
+    peer_exec_bar: HashMap<ReplicaId, usize>,
+
+    /// Slot index before which it is safe to take snapshot.
+    /// NOTE: we are taking a conservative approach here that a snapshot
+    /// covering an entry can be taken only when all servers have durably
+    /// committed (and executed) that entry.
+    snap_bar: usize,
 
     /// Current durable WAL log file offset.
     wal_offset: usize,
@@ -1012,9 +1029,11 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Heartbeat { ballot, exec_bar } => {
-                self.heard_heartbeat(peer, ballot, exec_bar)
-            }
+            PeerMsg::Heartbeat {
+                ballot,
+                exec_bar,
+                snap_bar,
+            } => self.heard_heartbeat(peer, ballot, exec_bar, snap_bar),
         }
     }
 }
@@ -1106,6 +1125,11 @@ impl MultiPaxosReplica {
         }
         self.bcast_heartbeats()?;
 
+        // re-initialize peer_exec_bar information
+        for slot in self.peer_exec_bar.values_mut() {
+            *slot = 0;
+        }
+
         // make a greater ballot number and invalidate all in-progress instances
         self.bal_prepared = 0;
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
@@ -1165,6 +1189,7 @@ impl MultiPaxosReplica {
             PeerMsg::Heartbeat {
                 ballot: self.bal_prep_sent,
                 exec_bar: self.exec_bar,
+                snap_bar: self.snap_bar,
             },
             None,
         )?;
@@ -1195,7 +1220,12 @@ impl MultiPaxosReplica {
         }
 
         // I also heard this heartbeat from myself
-        self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
+        self.heard_heartbeat(
+            self.id,
+            self.bal_prep_sent,
+            self.exec_bar,
+            self.snap_bar,
+        )?;
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1224,6 +1254,7 @@ impl MultiPaxosReplica {
         peer: ReplicaId,
         ballot: Ballot,
         exec_bar: usize,
+        snap_bar: usize,
     ) -> Result<(), SummersetError> {
         if peer != self.id {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
@@ -1247,9 +1278,26 @@ impl MultiPaxosReplica {
                 PeerMsg::Heartbeat {
                     ballot,
                     exec_bar: self.exec_bar,
+                    snap_bar: self.snap_bar,
                 },
                 peer,
             )?;
+
+            // update peer_exec_bar if larger then known; if all servers'
+            // exec_bar (including myself) have passed a slot, that slot
+            // is definitely safe to be snapshotted
+            if exec_bar > self.peer_exec_bar[&peer] {
+                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                let passed_cnt = 1 + self
+                    .peer_exec_bar
+                    .values()
+                    .filter(|&&e| e >= exec_bar)
+                    .count() as u8;
+                if passed_cnt == self.population {
+                    // all servers have executed up to exec_bar
+                    self.snap_bar = exec_bar;
+                }
+            }
 
             // if the peer has made a higher ballot number
             if ballot > self.bal_max_seen {
@@ -1265,6 +1313,11 @@ impl MultiPaxosReplica {
                 // set this peer to be the believed leader
                 self.leader = Some(peer);
             }
+        }
+
+        // if snap_bar is larger than mine, update snap_bar
+        if snap_bar > self.snap_bar {
+            self.snap_bar = snap_bar;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
@@ -1541,10 +1594,13 @@ impl MultiPaxosReplica {
 // MultiPaxosReplica snapshotting & GC logic
 impl MultiPaxosReplica {
     /// Dump new key-value pairs to snapshot file.
-    async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
+    async fn snapshot_dump_kv_pairs(
+        &mut self,
+        new_start_slot: usize,
+    ) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
-        for slot in self.start_slot..self.exec_bar {
+        for slot in self.start_slot..new_start_slot {
             let inst = &self.insts[slot - self.start_slot];
             for (_, req) in inst.reqs.clone() {
                 if let ApiRequest::Req {
@@ -1643,10 +1699,12 @@ impl MultiPaxosReplica {
     /// Accept messages will be retried indefinitely until success before its
     /// associated data gets discarded from leader's memory.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
-                           self.start_slot, self.exec_bar);
+        pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
+                           self.start_slot, self.exec_bar, self.snap_bar);
         assert!(self.exec_bar >= self.start_slot);
-        if self.exec_bar == self.start_slot {
+
+        let new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
+        if new_start_slot == self.start_slot {
             return Ok(());
         }
 
@@ -1655,14 +1713,14 @@ impl MultiPaxosReplica {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
-        self.snapshot_dump_kv_pairs().await?;
+        self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
         // write new slot info entry to the head of snapshot
         self.snapshot_hub.submit_action(
             0,
             LogAction::Write {
                 entry: SnapEntry::SlotInfo {
-                    start_slot: self.exec_bar,
+                    start_slot: new_start_slot,
                     commit_bar: self.commit_bar,
                 },
                 offset: 0,
@@ -1680,8 +1738,8 @@ impl MultiPaxosReplica {
         }
 
         // update start_slot and discard all in-memory log instances up to exec_bar
-        self.insts.drain(0..(self.exec_bar - self.start_slot));
-        self.start_slot = self.exec_bar;
+        self.insts.drain(0..(new_start_slot - self.start_slot));
+        self.start_slot = new_start_slot;
 
         // discarding everything older than start_slot in WAL log
         if self.is_leader() {
@@ -1722,6 +1780,7 @@ impl MultiPaxosReplica {
                 self.start_slot = start_slot;
                 self.commit_bar = commit_bar;
                 self.exec_bar = start_slot;
+                self.snap_bar = start_slot;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -1968,6 +2027,10 @@ impl GenericReplica for MultiPaxosReplica {
             bal_max_seen: 0,
             commit_bar: 0,
             exec_bar: 0,
+            peer_exec_bar: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
+                .collect(),
+            snap_bar: 0,
             wal_offset: 0,
             snap_offset: 0,
         })
