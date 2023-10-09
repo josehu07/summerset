@@ -277,9 +277,6 @@ pub struct MultiPaxosReplica {
     /// StorageHub module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// StorageHub module for the snapshot file.
-    snapshot_hub: StorageHub<SnapEntry>,
-
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 

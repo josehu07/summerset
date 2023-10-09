@@ -292,9 +292,6 @@ pub struct RSPaxosReplica {
     /// StorageHub module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// StorageHub module for the snapshot file.
-    snapshot_hub: StorageHub<SnapEntry>,
-
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
@@ -351,9 +348,6 @@ pub struct RSPaxosReplica {
 
     /// Current durable WAL log file offset.
     wal_offset: usize,
-
-    /// Current durable snapshot file offset.
-    snap_offset: usize,
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
@@ -1540,11 +1534,8 @@ impl RSPaxosReplica {
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
     fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
-<<<<<<< HEAD
-=======
         self.hb_hear_timer.cancel()?;
 
->>>>>>> cb7f7384ce0f94e2d3bc15a486d794092f95f47d
         let timeout_ms = thread_rng().gen_range(
             self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
         );
