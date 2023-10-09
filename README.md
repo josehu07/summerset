@@ -6,7 +6,7 @@
 [![Proc tests status](https://github.com/josehu07/summerset/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests_proc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Summerset is a distributed key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
+Summerset is a distributed, replicated, protocol-generic key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
 
 <p align="center">
   <img width="360" src="./README.png">
@@ -21,6 +21,7 @@ Summerset is a distributed key-value store supporting a wide range of state mach
 | `SimplePush` | Pushing to peers w/o any consistency guarantees |
 | `MultiPaxos` | Classic [MultiPaxos](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf) protocol |
 | `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding |
+| `Raft` | [Raft](https://raft.github.io/raft.pdf) on explicit log and strong leadership |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
@@ -32,6 +33,7 @@ Formal TLA+ specification of some protocols are provided in `tla+/`.
 - **Async Rust**: Summerset is written in Rust and demonstrates canonical usage of async programming structures backed by the [`tokio`](https://tokio.rs/) framework;
 - **Event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop;
 - **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels.
+- **Protocol-generic**: With the above two points combined, Summerset is able to support a set of different replication protocols in one codebase, each being just a single file, with common functionalities abstracted out.
 
 These design choices make protocol implementation in Summerset surprisingly straight-forward and **understandable**, without any sacrifice on performance. Comments / issues / PRs are always welcome!
 
@@ -118,12 +120,15 @@ Complete cluster management and benchmarking scripts are available in another re
   - [ ] specialize read-only commands?
   - [ ] separate commit vs. exec responses?
   - [ ] membership discovery & view changes?
-- [ ] implementation of Raft
+- [x] implementation of Raft
+  - [x] state persistence & restart check
+  - [x] snapshotting & garbage collection
+  - [ ] membership discovery & view changes?
 - [x] client-side utilities
   - [x] REPL-style client
   - [x] random benchmarking client
   - [x] testing client
-  - [ ] YCSB-driven benchmarking
+  - [ ] YCSB-driven client
 - [ ] better README & documentation
 
 ---

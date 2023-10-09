@@ -168,37 +168,45 @@ impl DriverOpenLoop {
 
     /// Waits for the next reply.
     pub async fn wait_reply(&mut self) -> Result<DriverReply, SummersetError> {
-        let reply = self.recv_reply_with_timeout().await?;
-        match reply {
-            Some(ApiReply::Reply {
-                id: reply_id,
-                result: cmd_result,
-                redirect,
-            }) => {
-                if !self.pending_reqs.contains_key(&reply_id) {
-                    logged_err!(self.id; "request ID {} not in pending set",
-                                         reply_id)
-                } else {
-                    let issue_ts = self.pending_reqs.remove(&reply_id).unwrap();
-                    let latency = Instant::now().duration_since(issue_ts);
-
-                    if let Some(res) = cmd_result {
-                        Ok(DriverReply::Success {
-                            req_id: reply_id,
-                            cmd_result: res,
-                            latency,
-                        })
-                    } else if let Some(server) = redirect {
-                        Ok(DriverReply::Redirect { server })
+        loop {
+            let reply = self.recv_reply_with_timeout().await?;
+            match reply {
+                Some(ApiReply::Reply {
+                    id: reply_id,
+                    result: cmd_result,
+                    redirect,
+                }) => {
+                    if !self.pending_reqs.contains_key(&reply_id) {
+                        // logged_err!(self.id; "request ID {} not in pending set",
+                        //                      reply_id)
+                        continue;
                     } else {
-                        Ok(DriverReply::Failure)
+                        let issue_ts =
+                            self.pending_reqs.remove(&reply_id).unwrap();
+                        let latency = Instant::now().duration_since(issue_ts);
+
+                        if let Some(res) = cmd_result {
+                            return Ok(DriverReply::Success {
+                                req_id: reply_id,
+                                cmd_result: res,
+                                latency,
+                            });
+                        } else if let Some(server) = redirect {
+                            return Ok(DriverReply::Redirect { server });
+                        } else {
+                            return Ok(DriverReply::Failure);
+                        }
                     }
                 }
+
+                None => {
+                    return Ok(DriverReply::Timeout);
+                }
+
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
+                }
             }
-
-            None => Ok(DriverReply::Timeout),
-
-            _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 

@@ -21,7 +21,7 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::{mpsc, Notify};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::task::JoinHandle;
-use tokio::time::{self, Duration};
+use tokio::time::{self, Duration, MissedTickBehavior};
 
 /// External API request ID type.
 pub type RequestId = u64;
@@ -490,6 +490,7 @@ impl ExternalApi {
         batch_notify: Arc<Notify>,
     ) {
         let mut interval = time::interval(batch_interval);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             interval.tick().await;

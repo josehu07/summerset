@@ -467,6 +467,7 @@ impl ClientTester {
         self.checked_put("Jose", &v, Some(None), 0).await?;
         for (s, is_leader) in self.query_servers().await? {
             if !is_leader {
+                // picked a non-leader replica
                 self.driver.leave(false).await?;
                 self.reset_servers(HashSet::from([s]), true).await?;
                 time::sleep(Duration::from_secs(1)).await;
@@ -484,6 +485,7 @@ impl ClientTester {
         self.checked_put("Jose", &v, Some(None), 0).await?;
         for (s, is_leader) in self.query_servers().await? {
             if is_leader {
+                // picked a leader replica
                 self.driver.leave(false).await?;
                 self.reset_servers(HashSet::from([s]), true).await?;
                 time::sleep(Duration::from_secs(1)).await;
@@ -515,6 +517,7 @@ impl ClientTester {
             }
         }
         if resets.len() == 2 {
+            // picked two replicas, one leader and one non-leader
             self.driver.leave(false).await?;
             self.reset_servers(resets, true).await?;
             time::sleep(Duration::from_secs(1)).await;
@@ -543,6 +546,7 @@ impl ClientTester {
         time::sleep(Duration::from_millis(500)).await;
         for (s, is_leader) in self.query_servers().await? {
             if !is_leader {
+                // picked a non-leader replica
                 self.driver.leave(false).await?;
                 self.pause_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
@@ -563,6 +567,7 @@ impl ClientTester {
         time::sleep(Duration::from_millis(500)).await;
         for (s, is_leader) in self.query_servers().await? {
             if is_leader {
+                // picked a leader replica
                 self.driver.leave(false).await?;
                 self.pause_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
@@ -583,24 +588,28 @@ impl ClientTester {
         time::sleep(Duration::from_millis(500)).await;
         for (s, is_leader) in self.query_servers().await? {
             if is_leader {
+                // picked a leader replica
                 self.driver.leave(false).await?;
                 self.pause_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
                 self.driver.connect().await?;
                 let v1 = Self::gen_rand_string(8);
                 self.checked_put("Jose", &v1, Some(Some(&v0)), 0).await?;
+                // resuming old leader replica
                 self.driver.leave(false).await?;
                 self.resume_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
                 self.driver.connect().await?;
                 let v2 = Self::gen_rand_string(8);
                 self.checked_put("Jose", &v2, Some(Some(&v1)), 1).await?;
+                // pausing that replica again
                 self.driver.leave(false).await?;
                 self.pause_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
                 self.driver.connect().await?;
                 let v3 = Self::gen_rand_string(8);
                 self.checked_put("Jose", &v3, Some(Some(&v2)), 0).await?;
+                // resuming that replica again
                 self.driver.leave(false).await?;
                 self.resume_servers(HashSet::from([s])).await?;
                 time::sleep(Duration::from_secs(1)).await;
@@ -619,9 +628,21 @@ impl ClientTester {
         self.checked_put("Jose", &v0, Some(None), 0).await?;
         let v1 = Self::gen_rand_string(8);
         self.checked_put("Shawn", &v1, Some(None), 0).await?;
+        // forcing all nodes to take snapshot
         time::sleep(Duration::from_millis(500)).await;
         self.force_snapshot(HashSet::new()).await?;
         self.checked_put("Jose", &v1, Some(Some(&v0)), 0).await?;
+        // reseting all nodes and see if things are there
+        self.driver.leave(false).await?;
+        self.reset_servers(HashSet::new(), true).await?;
+        time::sleep(Duration::from_secs(1)).await;
+        self.driver.connect().await?;
+        self.checked_get("Shawn", Some(Some(&v1)), 0).await?;
+        self.checked_get("Jose", Some(Some(&v1)), 0).await?;
+        // forcing all nodes to take snapshot again
+        time::sleep(Duration::from_millis(500)).await;
+        self.force_snapshot(HashSet::new()).await?;
+        // reseting all nodes again and check again
         self.driver.leave(false).await?;
         self.reset_servers(HashSet::new(), true).await?;
         time::sleep(Duration::from_secs(1)).await;

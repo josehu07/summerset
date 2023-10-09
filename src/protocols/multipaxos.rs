@@ -7,6 +7,7 @@
 //!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
 //!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 
+use std::cmp;
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
@@ -35,8 +36,8 @@ use tokio::sync::watch;
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ReplicaConfigMultiPaxos {
-    /// Client request batching interval in microsecs.
-    pub batch_interval_us: u64,
+    /// Client request batching interval in millisecs.
+    pub batch_interval_ms: u64,
 
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
@@ -49,7 +50,6 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Min timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_min: u64,
-
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_max: u64,
 
@@ -74,7 +74,7 @@ pub struct ReplicaConfigMultiPaxos {
 impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
         ReplicaConfigMultiPaxos {
-            batch_interval_us: 1000,
+            batch_interval_ms: 10,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,
@@ -154,12 +154,12 @@ struct Instance {
     external: bool,
 
     /// Offset of first durable WAL log entry related to this instance.
-    log_offset: usize,
+    wal_offset: usize,
 }
 
-/// Stable storage log entry type.
+/// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-enum LogEntry {
+enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -175,11 +175,20 @@ enum LogEntry {
 }
 
 /// Snapshot file entry type.
+///
+/// NOTE: the current implementation simply appends a squashed log at the
+/// end of the snapshot file for simplicity. In production, the snapshot
+/// file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum SnapEntry {
-    /// First entry at the start of file: number of log instances covered by
-    /// this snapshot file == the start slot index of in-mem log.
-    StartSlot { slot: usize },
+    /// Necessary slot indices to remember.
+    SlotInfo {
+        /// First entry at the start of file: number of log instances covered
+        /// by this snapshot file == the start slot index of in-mem log.
+        start_slot: usize,
+        /// Index of the first non-committed slot.
+        commit_bar: usize,
+    },
 
     /// Set of key-value pairs to apply to the state.
     KVPairSet { pairs: HashMap<String, String> },
@@ -189,7 +198,13 @@ enum SnapEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
-    Prepare { slot: usize, ballot: Ballot },
+    Prepare {
+        /// Slot index in Prepare message is the triggering slot of this
+        /// Prepare. Once prepared, it means that all slots in the range
+        /// [slot, +infinity) are prepared under this ballot number.
+        slot: usize,
+        ballot: Ballot,
+    },
 
     /// Prepare reply from replica to leader.
     PrepareReply {
@@ -213,8 +228,18 @@ enum PeerMsg {
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
 
+    /// Request by a lagging replica to leader asking to re-send Accepts for
+    /// missing holes
+    FillHoles { slots: Vec<usize> },
+
     /// Leader activity heartbeat.
-    Heartbeat { ballot: Ballot, exec_bar: usize },
+    Heartbeat {
+        ballot: Ballot,
+        /// For leader step-up as well as conservative snapshotting purpose.
+        exec_bar: usize,
+        /// For conservative snapshotting purpose.
+        snap_bar: usize,
+    },
 }
 
 /// MultiPaxos server replica module.
@@ -247,7 +272,7 @@ pub struct MultiPaxosReplica {
     state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: StorageHub<LogEntry>,
+    storage_hub: StorageHub<WalEntry>,
 
     /// StorageHub module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
@@ -255,14 +280,21 @@ pub struct MultiPaxosReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Who do I think is the effective leader of the cluster right now?
+    leader: Option<ReplicaId>,
+
     /// Timer for hearing heartbeat from leader.
     hb_hear_timer: Timer,
 
     /// Interval for sending heartbeat to followers.
     hb_send_interval: Interval,
 
-    /// Do I think I am the leader?
-    is_leader: bool,
+    /// Heartbeat reply counters for approximate detection of follower health.
+    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
+    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
+
+    /// Approximate health status tracking of peer replicas.
+    peer_alive: Bitmap,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -289,15 +321,33 @@ pub struct MultiPaxosReplica {
     /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
 
-    /// Current durable log file offset.
-    log_offset: usize,
+    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// snapshotting purpose.
+    peer_exec_bar: HashMap<ReplicaId, usize>,
+
+    /// Slot index before which it is safe to take snapshot.
+    /// NOTE: we are taking a conservative approach here that a snapshot
+    /// covering an entry can be taken only when all servers have durably
+    /// committed (and executed) that entry.
+    snap_bar: usize,
+
+    /// Current durable WAL log file offset.
+    wal_offset: usize,
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
 }
 
+// MultiPaxosReplica common helpers
 impl MultiPaxosReplica {
+    /// Do I think I am the current effective leader?
+    #[inline]
+    fn is_leader(&self) -> bool {
+        self.leader == Some(self.id)
+    }
+
     /// Create an empty null instance.
+    #[inline]
     fn null_instance(&self) -> Instance {
         Instance {
             bal: 0,
@@ -307,22 +357,36 @@ impl MultiPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
-            log_offset: 0,
+            wal_offset: 0,
         }
     }
 
+    /// Locate the first null slot or append a null instance if no holes exist.
+    fn first_null_slot(&mut self) -> usize {
+        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+            if self.insts[s - self.start_slot].status == Status::Null {
+                return s;
+            }
+        }
+        self.insts.push(self.null_instance());
+        self.start_slot + self.insts.len() - 1
+    }
+
     /// Compose a unique ballot number from base.
+    #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
         ((base << 8) | ((self.id + 1) as u64)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
+    #[inline]
     fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
     /// Compose LogActionId from slot index & entry type.
     /// Uses the `Status` enum type to represent differnet entry types.
+    #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {
             Status::Preparing => 1,
@@ -334,6 +398,7 @@ impl MultiPaxosReplica {
     }
 
     /// Decompose LogActionId into slot index & entry type.
+    #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
         let type_num = log_action_id & ((1 << 2) - 1);
@@ -347,6 +412,7 @@ impl MultiPaxosReplica {
     }
 
     /// Compose CommandId from slot index & command index within.
+    #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
         assert!(slot <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -354,12 +420,16 @@ impl MultiPaxosReplica {
     }
 
     /// Decompose CommandId into slot index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
+}
 
+// MultiPaxosReplica client requests entrance
+impl MultiPaxosReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -370,52 +440,44 @@ impl MultiPaxosReplica {
         pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
-        if !self.is_leader {
+        if !self.is_leader() {
             for (client, req) in req_batch {
                 if let ApiRequest::Req { id: req_id, .. } = req {
-                    // tell the client to try on the next replica
-                    let next_replica = (self.id + 1) % self.population;
+                    // tell the client to try on known leader or just the
+                    // next ID replica
+                    let target = if let Some(peer) = self.leader {
+                        peer
+                    } else {
+                        (self.id + 1) % self.population
+                    };
                     self.external_api.send_reply(
                         ApiReply::Reply {
                             id: req_id,
                             result: None,
-                            redirect: Some(next_replica),
+                            redirect: Some(target),
                         },
                         client,
                     )?;
                     pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, next_replica);
+                                       client, target);
                 }
             }
             return Ok(());
         }
 
         // create a new instance in the first null slot (or append a new one
-        // at the end if no holes exist)
-        let mut slot = self.start_slot + self.insts.len();
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
-            let old_inst = &mut self.insts[s - self.start_slot];
-            if old_inst.status == Status::Null {
-                old_inst.reqs = req_batch.clone();
-                old_inst.leader_bk = Some(LeaderBookkeeping {
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                });
-                slot = s;
-                break;
-            }
-        }
-        if slot == self.start_slot + self.insts.len() {
-            let mut new_inst = self.null_instance();
-            new_inst.reqs = req_batch.clone();
-            new_inst.leader_bk = Some(LeaderBookkeeping {
+        // at the end if no holes exist); fill it up with incoming data
+        let slot = self.first_null_slot();
+        {
+            let inst = &mut self.insts[slot - self.start_slot];
+            assert_eq!(inst.status, Status::Null);
+            inst.reqs = req_batch.clone();
+            inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: Bitmap::new(self.population, false),
             });
-            new_inst.external = true;
-            self.insts.push(new_inst);
+            inst.external = true;
         }
 
         // decide whether we can enter fast path for this instance
@@ -439,7 +501,7 @@ impl MultiPaxosReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Preparing),
                 LogAction::Append {
-                    entry: LogEntry::PrepareBal {
+                    entry: WalEntry::PrepareBal {
                         slot,
                         ballot: self.bal_prep_sent,
                     },
@@ -472,7 +534,7 @@ impl MultiPaxosReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: LogEntry::AcceptData {
+                    entry: WalEntry::AcceptData {
                         slot,
                         ballot: inst.bal,
                         reqs: req_batch.clone(),
@@ -498,7 +560,10 @@ impl MultiPaxosReplica {
 
         Ok(())
     }
+}
 
+// MultiPaxosReplica durable WAL logging
+impl MultiPaxosReplica {
     /// Handler of PrepareBal logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
@@ -516,7 +581,7 @@ impl MultiPaxosReplica {
             None
         };
 
-        if self.is_leader {
+        if self.is_leader() {
             // on leader, finishing the logging of a PrepareBal entry
             // is equivalent to receiving a Prepare reply from myself
             // (as an acceptor role)
@@ -553,7 +618,7 @@ impl MultiPaxosReplica {
                            slot, self.insts[slot - self.start_slot].bal);
         let inst = &self.insts[slot - self.start_slot];
 
-        if self.is_leader {
+        if self.is_leader() {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
@@ -619,6 +684,21 @@ impl MultiPaxosReplica {
             }
         }
 
+        // if there are hole(s) between current commit_bar and newly committed
+        // slot, ask the leader to re-send Accept messages for those slots
+        if slot > self.commit_bar && !self.is_leader() {
+            if let Some(leader) = self.leader {
+                let holes: Vec<usize> = (self.commit_bar..slot).collect();
+                self.transport_hub.send_msg(
+                    PeerMsg::FillHoles {
+                        slots: holes.clone(),
+                    },
+                    leader,
+                )?;
+                pf_trace!(self.id; "sent FillHoles -> {} slots {:?}", leader, holes);
+            }
+        }
+
         Ok(())
     }
 
@@ -626,7 +706,7 @@ impl MultiPaxosReplica {
     fn handle_log_result(
         &mut self,
         action_id: LogActionId,
-        log_result: LogResult<LogEntry>,
+        log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
         let (slot, entry_type) = Self::split_log_action_id(action_id);
         if slot < self.start_slot {
@@ -635,15 +715,15 @@ impl MultiPaxosReplica {
         assert!(slot < self.start_slot + self.insts.len());
 
         if let LogResult::Append { now_size } = log_result {
-            assert!(now_size >= self.log_offset);
-            // update first log_offset of slot
+            assert!(now_size >= self.wal_offset);
+            // update first wal_offset of slot
             let inst = &mut self.insts[slot - self.start_slot];
-            if inst.log_offset == 0 || inst.log_offset > self.log_offset {
-                inst.log_offset = self.log_offset;
+            if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
+                inst.wal_offset = self.wal_offset;
             }
-            assert!(inst.log_offset <= self.log_offset);
-            // then update self.log_offset
-            self.log_offset = now_size;
+            assert!(inst.wal_offset <= self.wal_offset);
+            // then update self.wal_offset
+            self.wal_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
         }
@@ -657,7 +737,10 @@ impl MultiPaxosReplica {
             }
         }
     }
+}
 
+// MultiPaxosReplica peer-peer messages handling
+impl MultiPaxosReplica {
     /// Handler of Prepare message from leader.
     fn handle_msg_prepare(
         &mut self,
@@ -691,7 +774,7 @@ impl MultiPaxosReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Preparing),
                 LogAction::Append {
-                    entry: LogEntry::PrepareBal { slot, ballot },
+                    entry: WalEntry::PrepareBal { slot, ballot },
                     sync: self.config.logger_sync,
                 },
             )?;
@@ -719,10 +802,11 @@ impl MultiPaxosReplica {
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
             assert!(slot < self.start_slot + self.insts.len());
+            let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !self.is_leader
+            if !is_leader
                 || (inst.status != Status::Preparing)
                 || (ballot < inst.bal)
             {
@@ -761,7 +845,7 @@ impl MultiPaxosReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
-                        entry: LogEntry::AcceptData {
+                        entry: WalEntry::AcceptData {
                             slot,
                             ballot,
                             reqs: inst.reqs.clone(),
@@ -825,7 +909,7 @@ impl MultiPaxosReplica {
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: LogEntry::AcceptData { slot, ballot, reqs },
+                    entry: WalEntry::AcceptData { slot, ballot, reqs },
                     sync: self.config.logger_sync,
                 },
             )?;
@@ -852,10 +936,11 @@ impl MultiPaxosReplica {
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
             assert!(slot < self.start_slot + self.insts.len());
+            let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !self.is_leader
+            if !is_leader
                 || (inst.status != Status::Accepting)
                 || (ballot < inst.bal)
             {
@@ -882,7 +967,7 @@ impl MultiPaxosReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Committed),
                     LogAction::Append {
-                        entry: LogEntry::CommitSlot { slot },
+                        entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,
                     },
                 )?;
@@ -931,12 +1016,49 @@ impl MultiPaxosReplica {
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::Committed),
             LogAction::Append {
-                entry: LogEntry::CommitSlot { slot },
+                entry: WalEntry::CommitSlot { slot },
                 sync: self.config.logger_sync,
             },
         )?;
         pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
                            slot, inst.bal);
+
+        Ok(())
+    }
+
+    /// Handler of FillHoles message from a lagging peer.
+    fn handle_msg_fill_holes(
+        &mut self,
+        peer: ReplicaId,
+        slots: Vec<usize>,
+    ) -> Result<(), SummersetError> {
+        if !self.is_leader() {
+            return Ok(());
+        }
+        pf_trace!(self.id; "received FillHoles <- {} for slots {:?}", peer, slots);
+
+        for slot in slots {
+            if slot < self.start_slot {
+                continue;
+            } else if slot >= self.start_slot + self.insts.len() {
+                break;
+            }
+            let inst = &self.insts[slot - self.start_slot];
+
+            if inst.status >= Status::Committed {
+                // re-send Accept message for this slot
+                self.transport_hub.send_msg(
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: self.bal_prepared,
+                        reqs: inst.reqs.clone(),
+                    },
+                    peer,
+                )?;
+                pf_trace!(self.id; "sent Accept -> {} for slot {} bal {}",
+                                   peer, slot, self.bal_prepared);
+            }
+        }
 
         Ok(())
     }
@@ -963,12 +1085,20 @@ impl MultiPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::Heartbeat { ballot, exec_bar } => {
-                self.heard_heartbeat(peer, ballot, exec_bar)
+            PeerMsg::FillHoles { slots } => {
+                self.handle_msg_fill_holes(peer, slots)
             }
+            PeerMsg::Heartbeat {
+                ballot,
+                exec_bar,
+                snap_bar,
+            } => self.heard_heartbeat(peer, ballot, exec_bar, snap_bar),
         }
     }
+}
 
+// MultiPaxosReplica state machine execution
+impl MultiPaxosReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -1026,21 +1156,38 @@ impl MultiPaxosReplica {
 
         Ok(())
     }
+}
 
+// MultiPaxosReplica leadership related logic
+impl MultiPaxosReplica {
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
-        if self.is_leader {
+        if self.is_leader() {
             return Ok(());
+        } else if let Some(peer) = self.leader {
+            // mark old leader as dead
+            if self.peer_alive.get(peer)? {
+                self.peer_alive.set(peer, false)?;
+                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+            }
         }
 
-        self.is_leader = true; // this starts broadcasting heartbeats
+        self.leader = Some(self.id); // this starts broadcasting heartbeats
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_info!(self.id; "becoming a leader...");
 
-        // broadcast a heartbeat right now
+        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
+        for cnts in self.hb_reply_cnts.values_mut() {
+            *cnts = (1, 0, 0);
+        }
         self.bcast_heartbeats()?;
+
+        // re-initialize peer_exec_bar information
+        for slot in self.peer_exec_bar.values_mut() {
+            *slot = 0;
+        }
 
         // make a greater ballot number and invalidate all in-progress instances
         self.bal_prepared = 0;
@@ -1069,7 +1216,7 @@ impl MultiPaxosReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
-                        entry: LogEntry::PrepareBal {
+                        entry: WalEntry::PrepareBal {
                             slot,
                             ballot: self.bal_prep_sent,
                         },
@@ -1091,7 +1238,6 @@ impl MultiPaxosReplica {
                                    slot, inst.bal);
             }
         }
-
         Ok(())
     }
 
@@ -1101,10 +1247,43 @@ impl MultiPaxosReplica {
             PeerMsg::Heartbeat {
                 ballot: self.bal_prep_sent,
                 exec_bar: self.exec_bar,
+                snap_bar: self.snap_bar,
             },
             None,
         )?;
-        self.heard_heartbeat(self.id, self.bal_prep_sent, self.exec_bar)?;
+
+        // update max heartbeat reply counters and their repetitions seen
+        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
+            if cnts.0 > cnts.1 {
+                // more hb replies have been received from this peer; it is
+                // probably alive
+                cnts.1 = cnts.0;
+                cnts.2 = 0;
+            } else {
+                // did not receive hb reply from this peer at least for the
+                // last sent hb from me; increment repetition count
+                cnts.2 += 1;
+                let repeat_threshold = (self.config.hb_hear_timeout_min
+                    / self.config.hb_send_interval_ms)
+                    as u8;
+                if cnts.2 > repeat_threshold {
+                    // did not receive hb reply from this peer for too many
+                    // past hbs sent from me; this peer is probably dead
+                    if self.peer_alive.get(peer)? {
+                        self.peer_alive.set(peer, false)?;
+                        pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                    }
+                }
+            }
+        }
+
+        // I also heard this heartbeat from myself
+        self.heard_heartbeat(
+            self.id,
+            self.bal_prep_sent,
+            self.exec_bar,
+            self.snap_bar,
+        )?;
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -1113,6 +1292,8 @@ impl MultiPaxosReplica {
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
     fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+        self.hb_hear_timer.cancel()?;
+
         let timeout_ms = thread_rng().gen_range(
             self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
         );
@@ -1128,10 +1309,19 @@ impl MultiPaxosReplica {
     /// leader status if I currently think I'm a leader.
     fn heard_heartbeat(
         &mut self,
-        _peer: ReplicaId,
+        peer: ReplicaId,
         ballot: Ballot,
         exec_bar: usize,
+        snap_bar: usize,
     ) -> Result<(), SummersetError> {
+        if peer != self.id {
+            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
+            if !self.peer_alive.get(peer)? {
+                self.peer_alive.set(peer, true)?;
+                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+            }
+        }
+
         // ignore outdated heartbeats and those from peers with exec_bar < mine
         if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
             return Ok(());
@@ -1140,18 +1330,61 @@ impl MultiPaxosReplica {
         // reset hearing timer
         self.kickoff_hb_hear_timer()?;
 
-        // clear my leader status if it carries a higher ballot number
-        if self.is_leader && ballot > self.bal_max_seen {
-            self.is_leader = false;
-            self.control_hub
-                .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-            pf_info!(self.id; "no longer a leader...");
+        if peer != self.id {
+            // reply back with a Heartbeat message
+            self.transport_hub.send_msg(
+                PeerMsg::Heartbeat {
+                    ballot,
+                    exec_bar: self.exec_bar,
+                    snap_bar: self.snap_bar,
+                },
+                peer,
+            )?;
+
+            // update peer_exec_bar if larger then known; if all servers'
+            // exec_bar (including myself) have passed a slot, that slot
+            // is definitely safe to be snapshotted
+            if exec_bar > self.peer_exec_bar[&peer] {
+                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                let passed_cnt = 1 + self
+                    .peer_exec_bar
+                    .values()
+                    .filter(|&&e| e >= exec_bar)
+                    .count() as u8;
+                if passed_cnt == self.population {
+                    // all servers have executed up to exec_bar
+                    self.snap_bar = exec_bar;
+                }
+            }
+
+            // if the peer has made a higher ballot number
+            if ballot > self.bal_max_seen {
+                self.bal_max_seen = ballot;
+
+                // clear my leader status if I was one
+                if self.is_leader() {
+                    self.control_hub
+                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                    pf_info!(self.id; "no longer a leader...");
+                }
+
+                // set this peer to be the believed leader
+                self.leader = Some(peer);
+            }
+        }
+
+        // if snap_bar is larger than mine, update snap_bar
+        if snap_bar > self.snap_bar {
+            self.snap_bar = snap_bar;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
+}
 
+// MultiPaxosReplica control messages handling
+impl MultiPaxosReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -1263,14 +1496,20 @@ impl MultiPaxosReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
+// MultiPaxosReplica recovery from WAL log
+impl MultiPaxosReplica {
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
-        entry: LogEntry,
+        entry: WalEntry,
     ) -> Result<(), SummersetError> {
         match entry {
-            LogEntry::PrepareBal { slot, ballot } => {
+            WalEntry::PrepareBal { slot, ballot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
@@ -1289,7 +1528,10 @@ impl MultiPaxosReplica {
                 self.bal_prepared = 0;
             }
 
-            LogEntry::AcceptData { slot, ballot, reqs } => {
+            WalEntry::AcceptData { slot, ballot, reqs } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 // locate instance in memory, filling in null instances if needed
                 while self.start_slot + self.insts.len() <= slot {
                     self.insts.push(self.null_instance());
@@ -1315,9 +1557,12 @@ impl MultiPaxosReplica {
                 assert!(self.bal_prepared <= self.bal_prep_sent);
             }
 
-            LogEntry::CommitSlot { slot } => {
+            WalEntry::CommitSlot { slot } => {
+                if slot < self.start_slot {
+                    return Ok(()); // ignore if slot index outdated
+                }
                 assert!(slot < self.start_slot + self.insts.len());
-                // update instance state
+                // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
@@ -1337,9 +1582,10 @@ impl MultiPaxosReplica {
                                 let _ = self.state_machine.get_result().await?;
                             }
                         }
-                        // update commit_bar and exec_bar
+                        // update instance status, commit_bar and exec_bar
                         self.commit_bar += 1;
                         self.exec_bar += 1;
+                        inst.status = Status::Executed;
                     }
                 }
             }
@@ -1348,15 +1594,15 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Recover state from durable storage log.
-    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+    /// Recover state from durable storage WAL log.
+    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
                 0,
                 LogAction::Read {
-                    offset: self.log_offset,
+                    offset: self.wal_offset,
                 },
             )?;
             let (_, log_result) = self.storage_hub.get_result().await?;
@@ -1368,7 +1614,7 @@ impl MultiPaxosReplica {
                 } => {
                     self.recover_apply_entry(entry).await?;
                     // update log offset
-                    self.log_offset = end_offset;
+                    self.wal_offset = end_offset;
                 }
                 LogResult::Read { entry: None, .. } => {
                     // end of log reached
@@ -1384,7 +1630,7 @@ impl MultiPaxosReplica {
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
-                offset: self.log_offset,
+                offset: self.wal_offset,
             },
         )?;
         let (_, log_result) = self.storage_hub.get_result().await?;
@@ -1392,17 +1638,27 @@ impl MultiPaxosReplica {
             offset_ok: true, ..
         } = log_result
         {
+            if self.wal_offset > 0 {
+                pf_info!(self.id; "recovered from wal log: commit {} exec {}",
+                                  self.commit_bar, self.exec_bar);
+            }
             Ok(())
         } else {
             logged_err!(self.id; "unexpected log result type or failed truncate")
         }
     }
+}
 
-    /// Dump a new key-value pair to snapshot file.
-    async fn snapshot_dump_kv_pairs(&mut self) -> Result<(), SummersetError> {
+// MultiPaxosReplica snapshotting & GC logic
+impl MultiPaxosReplica {
+    /// Dump new key-value pairs to snapshot file.
+    async fn snapshot_dump_kv_pairs(
+        &mut self,
+        new_start_slot: usize,
+    ) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
-        for slot in self.start_slot..self.exec_bar {
+        for slot in self.start_slot..new_start_slot {
             let inst = &self.insts[slot - self.start_slot];
             for (_, req) in inst.reqs.clone() {
                 if let ApiRequest::Req {
@@ -1438,15 +1694,20 @@ impl MultiPaxosReplica {
     /// Discard everything older than start_slot in durable WAL log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         let cut_offset = if !self.insts.is_empty() {
-            self.insts[0].log_offset
+            self.insts[0].wal_offset
         } else {
-            self.log_offset
+            self.wal_offset
         };
 
         // discard the log before cut_offset
         if cut_offset > 0 {
-            self.storage_hub
-                .submit_action(0, LogAction::Discard { offset: cut_offset })?;
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Discard {
+                    offset: cut_offset,
+                    keep: 0,
+                },
+            )?;
             loop {
                 let (action_id, log_result) =
                     self.storage_hub.get_result().await?;
@@ -1459,8 +1720,8 @@ impl MultiPaxosReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.log_offset - cut_offset, now_size);
-                        self.log_offset = now_size;
+                        assert_eq!(self.wal_offset - cut_offset, now_size);
+                        self.wal_offset = now_size;
                     } else {
                         return logged_err!(
                             self.id;
@@ -1472,43 +1733,74 @@ impl MultiPaxosReplica {
             }
         }
 
-        // update inst.log_offset for all remaining in-mem instances
+        // update inst.wal_offset for all remaining in-mem instances
         for inst in &mut self.insts {
-            if inst.log_offset > 0 {
-                assert!(inst.log_offset >= cut_offset);
-                inst.log_offset -= cut_offset;
+            if inst.wal_offset > 0 {
+                assert!(inst.wal_offset >= cut_offset);
+                inst.wal_offset -= cut_offset;
             }
         }
 
         Ok(())
     }
 
-    /// Take a snapshot up to current exec_idx, then discard the in-mem log up
+    /// Take a snapshot up to current exec_bar, then discard the in-mem log up
     /// to that index as well as outdate entries in the durable WAL log file.
     ///
     /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot.
+    /// middle of taking a snapshot. Production quality implementations should
+    /// make the snapshotting action "atomic".
+    ///
+    /// NOTE: the current implementation does not take care of InstallSnapshot
+    /// messages (which is needed when some lagging follower has some slot
+    /// which all other peers have snapshotted); we assume here that failed
+    /// Accept messages will be retried indefinitely until success before its
+    /// associated data gets discarded from leader's memory.
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking new snapshot: start {} exec {}",
-                           self.start_slot, self.exec_bar);
+        pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
+                           self.start_slot, self.exec_bar, self.snap_bar);
         assert!(self.exec_bar >= self.start_slot);
-        if self.exec_bar == self.start_slot {
+
+        let new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
+        if new_start_slot == self.start_slot {
             return Ok(());
         }
 
         // collect and dump all Puts in executed instances
-        if self.is_leader {
+        if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
-        self.snapshot_dump_kv_pairs().await?;
+        self.snapshot_dump_kv_pairs(new_start_slot).await?;
+
+        // write new slot info entry to the head of snapshot
+        self.snapshot_hub.submit_action(
+            0,
+            LogAction::Write {
+                entry: SnapEntry::SlotInfo {
+                    start_slot: new_start_slot,
+                    commit_bar: self.commit_bar,
+                },
+                offset: 0,
+                sync: self.config.logger_sync,
+            },
+        )?;
+        let (_, log_result) = self.snapshot_hub.get_result().await?;
+        match log_result {
+            LogResult::Write {
+                offset_ok: true, ..
+            } => {}
+            _ => {
+                return logged_err!(self.id; "unexpected log result type or failed write");
+            }
+        }
 
         // update start_slot and discard all in-memory log instances up to exec_bar
-        self.insts.drain(0..(self.exec_bar - self.start_slot));
-        self.start_slot = self.exec_bar;
+        self.insts.drain(0..(new_start_slot - self.start_slot));
+        self.start_slot = new_start_slot;
 
         // discarding everything older than start_slot in WAL log
-        if self.is_leader {
+        if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
             self.bcast_heartbeats()?;
         }
@@ -1533,11 +1825,20 @@ impl MultiPaxosReplica {
 
         match log_result {
             LogResult::Read {
-                entry: Some(SnapEntry::StartSlot { slot }),
+                entry:
+                    Some(SnapEntry::SlotInfo {
+                        start_slot,
+                        commit_bar,
+                    }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
-                self.start_slot = slot; // get start slot index of in-mem log
+
+                // recover necessary slot indices info
+                self.start_slot = start_slot;
+                self.commit_bar = commit_bar;
+                self.exec_bar = start_slot;
+                self.snap_bar = start_slot;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -1580,6 +1881,11 @@ impl MultiPaxosReplica {
                 self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
                     new_start: self.start_slot,
                 })?;
+
+                if self.start_slot > 0 {
+                    pf_info!(self.id; "recovered from snapshot: start {} commit {} exec {}",
+                                      self.start_slot, self.commit_bar, self.exec_bar);
+                }
                 Ok(())
             }
 
@@ -1588,7 +1894,10 @@ impl MultiPaxosReplica {
                 self.snapshot_hub.submit_action(
                     0,
                     LogAction::Write {
-                        entry: SnapEntry::StartSlot { slot: 0 },
+                        entry: SnapEntry::SlotInfo {
+                            start_slot: 0,
+                            commit_bar: 0,
+                        },
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -1602,7 +1911,7 @@ impl MultiPaxosReplica {
                     self.snap_offset = now_size;
                     Ok(())
                 } else {
-                    logged_err!(self.id; "unexpected log result type or failed truncate")
+                    logged_err!(self.id; "unexpected log result type or failed write")
                 }
             }
 
@@ -1628,18 +1937,39 @@ impl GenericReplica for MultiPaxosReplica {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigMultiPaxos;
-                                    batch_interval_us, max_batch_size,
+                                    batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
-        if config.batch_interval_us == 0 {
+        if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
-                "invalid config.batch_interval_us '{}'",
-                config.batch_interval_us
+                "invalid config.batch_interval_ms '{}'",
+                config.batch_interval_ms
+            );
+        }
+        if config.hb_hear_timeout_min < 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_min '{}'",
+                config.hb_hear_timeout_min
+            );
+        }
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+            return logged_err!(
+                id;
+                "invalid config.hb_hear_timeout_max '{}'",
+                config.hb_hear_timeout_max
+            );
+        }
+        if config.hb_send_interval_ms == 0 {
+            return logged_err!(
+                id;
+                "invalid config.hb_send_interval_ms '{}'",
+                config.hb_send_interval_ms
             );
         }
         if config.hb_hear_timeout_min < 100 {
@@ -1728,7 +2058,7 @@ impl GenericReplica for MultiPaxosReplica {
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,
-            Duration::from_micros(config.batch_interval_us),
+            Duration::from_millis(config.batch_interval_ms),
             config.max_batch_size,
         )
         .await?;
@@ -1746,6 +2076,10 @@ impl GenericReplica for MultiPaxosReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let hb_reply_cnts = (0..population)
+            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
+            .collect();
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -1759,9 +2093,11 @@ impl GenericReplica for MultiPaxosReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            leader: None,
             hb_hear_timer: Timer::new(),
             hb_send_interval,
-            is_leader: false,
+            hb_reply_cnts,
+            peer_alive: Bitmap::new(population, true),
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -1770,7 +2106,11 @@ impl GenericReplica for MultiPaxosReplica {
             bal_max_seen: 0,
             commit_bar: 0,
             exec_bar: 0,
-            log_offset: 0,
+            peer_exec_bar: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
+                .collect(),
+            snap_bar: 0,
+            wal_offset: 0,
             snap_offset: 0,
         })
     }
@@ -1782,8 +2122,8 @@ impl GenericReplica for MultiPaxosReplica {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
-        // recover the tail-piece memory log & state from durable storage log
-        self.recover_from_log().await?;
+        // recover the tail-piece memory log & state from durable WAL log
+        self.recover_from_wal().await?;
 
         // kick off leader activity hearing timer
         self.kickoff_hb_hear_timer()?;
@@ -1849,7 +2189,7 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // leader sending heartbeat
-                _ = self.hb_send_interval.tick(), if !paused && self.is_leader => {
+                _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.bcast_heartbeats() {
                         pf_error!(self.id; "error broadcasting heartbeats: {}", e);
                     }
@@ -1857,7 +2197,7 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused
-                        && self.config.snapshot_interval_s > 0 => {
+                                                      && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
                         pf_error!(self.id; "error taking a new snapshot: {}", e);
                     } else {

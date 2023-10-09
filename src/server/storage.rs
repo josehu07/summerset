@@ -44,8 +44,9 @@ pub enum LogAction<Ent> {
     /// Truncate the log at given offset, keeping the head part.
     Truncate { offset: usize },
 
-    /// Discard the log before given offset, keeping the tail part.
-    Discard { offset: usize },
+    /// Discard the log before given offset, keeping the tail part (and
+    /// optionally a head part).
+    Discard { offset: usize, keep: usize },
 }
 
 /// Action result returned by the logger.
@@ -337,12 +338,14 @@ where
         }
     }
 
-    /// Discard the file before given index, keeping the tail part.
+    /// Discard the file before given index, keeping the tail part (and
+    /// optionally a head part).
     async fn discard_log(
         me: ReplicaId,
         backer: &mut File,
         file_size: usize,
         offset: usize,
+        keep: usize,
     ) -> Result<(bool, usize), SummersetError> {
         if offset > file_size {
             pf_warn!(
@@ -352,25 +355,32 @@ where
                 file_size
             );
             Ok((false, file_size))
+        } else if keep >= offset {
+            pf_warn!(
+                me;
+                "discard keeping {} while offset is {}",
+                keep, offset
+            );
+            Ok((false, file_size))
         } else {
             let tail_size = file_size - offset;
             if tail_size > 0 {
                 // due to the limited interfaces provided by `tokio::fs`, we
-                // read out the tail part and write it back to offset 0 to
+                // read out the tail part and write it back to offset keep to
                 // achieve the effect of discarding
                 let mut tail_buf: Vec<u8> = vec![0; tail_size];
                 backer.seek(SeekFrom::Start(offset as u64)).await?;
                 backer.read_exact(&mut tail_buf[..]).await?;
 
-                backer.seek(SeekFrom::Start(0)).await?;
+                backer.seek(SeekFrom::Start(keep as u64)).await?;
                 backer.write_all(&tail_buf[..]).await?;
             }
 
-            backer.set_len(tail_size as u64).await?;
+            backer.set_len((keep + tail_size) as u64).await?;
             backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
 
             backer.sync_all().await?;
-            Ok((true, tail_size))
+            Ok((true, keep + tail_size))
         }
     }
 
@@ -422,16 +432,16 @@ where
                         }
                     })
             }
-            LogAction::Discard { offset } => {
-                Self::discard_log(me, backer, *file_size, offset).await.map(
-                    |(offset_ok, now_size)| {
+            LogAction::Discard { offset, keep } => {
+                Self::discard_log(me, backer, *file_size, offset, keep)
+                    .await
+                    .map(|(offset_ok, now_size)| {
                         *file_size = now_size;
                         LogResult::Discard {
                             offset_ok,
                             now_size,
                         }
-                    },
-                )
+                    })
             }
         }
     }
@@ -658,24 +668,55 @@ mod storage_tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-4.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid_offset =
+        let mid1_offset =
             StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
+        let mid2_offset = StorageHub::append_entry(
+            0,
+            &mut backer_file,
+            mid1_offset,
+            &entry,
+            false,
+        )
+        .await?;
         let end_offset = StorageHub::append_entry(
             0,
             &mut backer_file,
-            mid_offset,
+            mid2_offset,
             &entry,
             true,
         )
         .await?;
-        let tail_size = end_offset - mid_offset;
+        let tail_size = end_offset - mid2_offset;
         assert_eq!(
             StorageHub::<TestEntry>::discard_log(
                 0,
                 &mut backer_file,
                 end_offset,
-                mid_offset
+                mid2_offset,
+                mid1_offset,
+            )
+            .await?,
+            (true, 2 * tail_size)
+        );
+        assert_eq!(
+            StorageHub::<TestEntry>::discard_log(
+                0,
+                &mut backer_file,
+                2 * tail_size,
+                mid1_offset,
+                end_offset,
+            )
+            .await?,
+            (false, 2 * tail_size)
+        );
+        assert_eq!(
+            StorageHub::<TestEntry>::discard_log(
+                0,
+                &mut backer_file,
+                2 * tail_size,
+                mid1_offset,
+                0,
             )
             .await?,
             (true, tail_size)
@@ -685,7 +726,8 @@ mod storage_tests {
                 0,
                 &mut backer_file,
                 tail_size,
-                end_offset
+                end_offset,
+                0
             )
             .await?,
             (false, tail_size)
@@ -695,7 +737,8 @@ mod storage_tests {
                 0,
                 &mut backer_file,
                 tail_size,
-                tail_size
+                tail_size,
+                0
             )
             .await?,
             (true, 0)

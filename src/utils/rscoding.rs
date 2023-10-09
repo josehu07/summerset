@@ -305,15 +305,20 @@ where
         self.shards.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    /// Gets a bitmap of available shard indexes set true.
+    /// Gets a vec of available shard indexes.
     #[inline]
-    pub fn avail_shards_map(&self) -> Bitmap {
-        let ones: Vec<u8> = self
-            .shards
+    pub fn avail_shards_vec(&self) -> Vec<u8> {
+        self.shards
             .iter()
             .enumerate()
             .filter_map(|(i, s)| if s.is_some() { Some(i as u8) } else { None })
-            .collect();
+            .collect()
+    }
+
+    /// Gets a bitmap of available shard indexes set true.
+    #[inline]
+    pub fn avail_shards_map(&self) -> Bitmap {
+        let ones = self.avail_shards_vec();
         Bitmap::from(self.num_shards(), ones)
     }
 

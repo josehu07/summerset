@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 import subprocess
 
 
@@ -76,6 +77,12 @@ def run_tester_client(protocol, test_name):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-p", "--protocol", type=str, required=True, help="protocol name"
+    )
+    args = parser.parse_args()
+
     do_cargo_build()
 
     kill_all_matching("local_client.py", force=True)
@@ -85,6 +92,13 @@ if __name__ == "__main__":
     kill_all_matching("summerset_manager", force=True)
 
     PROTOCOL = "MultiPaxos"
+    if args.protocol == "MultiPaxos":
+        pass
+    elif args.protocol == "Raft":
+        PROTOCOL = "Raft"
+    else:
+        raise ValueError(f"unrecognized protocol {args.protocol} to run workflow test")
+
     NUM_REPLICAS = 3
     TEST_NAME = "primitive_ops"
     TIMEOUT = 300
