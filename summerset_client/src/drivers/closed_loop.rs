@@ -99,46 +99,55 @@ impl DriverClosedLoop {
         })?;
         let issue_ts = Instant::now();
 
-        let reply = self.recv_reply_with_timeout().await?;
-        match reply {
-            Some(ApiReply::Reply {
-                id: reply_id,
-                result: cmd_result,
-                redirect,
-            }) => {
-                if reply_id != req_id {
-                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
-                                         req_id, reply_id)
-                } else {
-                    match cmd_result {
-                        None => {
-                            if let Some(server) = redirect {
-                                Ok(DriverReply::Redirect { server })
-                            } else {
-                                Ok(DriverReply::Failure)
+        loop {
+            let reply = self.recv_reply_with_timeout().await?;
+            match reply {
+                Some(ApiReply::Reply {
+                    id: reply_id,
+                    result: cmd_result,
+                    redirect,
+                }) => {
+                    if reply_id != req_id {
+                        // logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
+                        //                      req_id, reply_id)
+                        continue;
+                    } else {
+                        match cmd_result {
+                            None => {
+                                if let Some(server) = redirect {
+                                    return Ok(DriverReply::Redirect {
+                                        server,
+                                    });
+                                } else {
+                                    return Ok(DriverReply::Failure);
+                                }
                             }
-                        }
 
-                        Some(CommandResult::Get { value }) => {
-                            let latency =
-                                Instant::now().duration_since(issue_ts);
-                            Ok(DriverReply::Success {
-                                req_id,
-                                cmd_result: CommandResult::Get { value },
-                                latency,
-                            })
-                        }
+                            Some(CommandResult::Get { value }) => {
+                                let latency =
+                                    Instant::now().duration_since(issue_ts);
+                                return Ok(DriverReply::Success {
+                                    req_id,
+                                    cmd_result: CommandResult::Get { value },
+                                    latency,
+                                });
+                            }
 
-                        _ => {
-                            logged_err!(self.id; "command type mismatch: expected Get")
+                            _ => {
+                                return logged_err!(self.id; "command type mismatch: expected Get");
+                            }
                         }
                     }
                 }
+
+                None => {
+                    return Ok(DriverReply::Timeout);
+                }
+
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
+                }
             }
-
-            None => Ok(DriverReply::Timeout),
-
-            _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 
@@ -160,46 +169,57 @@ impl DriverClosedLoop {
         })?;
         let issue_ts = Instant::now();
 
-        let reply = self.recv_reply_with_timeout().await?;
-        match reply {
-            Some(ApiReply::Reply {
-                id: reply_id,
-                result: cmd_result,
-                redirect,
-            }) => {
-                if reply_id != req_id {
-                    logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
-                                         req_id, reply_id)
-                } else {
-                    match cmd_result {
-                        None => {
-                            if let Some(server) = redirect {
-                                Ok(DriverReply::Redirect { server })
-                            } else {
-                                Ok(DriverReply::Failure)
+        loop {
+            let reply = self.recv_reply_with_timeout().await?;
+            match reply {
+                Some(ApiReply::Reply {
+                    id: reply_id,
+                    result: cmd_result,
+                    redirect,
+                }) => {
+                    if reply_id != req_id {
+                        // logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
+                        //                      req_id, reply_id)
+                        continue;
+                    } else {
+                        match cmd_result {
+                            None => {
+                                if let Some(server) = redirect {
+                                    return Ok(DriverReply::Redirect {
+                                        server,
+                                    });
+                                } else {
+                                    return Ok(DriverReply::Failure);
+                                }
                             }
-                        }
 
-                        Some(CommandResult::Put { old_value }) => {
-                            let latency =
-                                Instant::now().duration_since(issue_ts);
-                            Ok(DriverReply::Success {
-                                req_id,
-                                cmd_result: CommandResult::Put { old_value },
-                                latency,
-                            })
-                        }
+                            Some(CommandResult::Put { old_value }) => {
+                                let latency =
+                                    Instant::now().duration_since(issue_ts);
+                                return Ok(DriverReply::Success {
+                                    req_id,
+                                    cmd_result: CommandResult::Put {
+                                        old_value,
+                                    },
+                                    latency,
+                                });
+                            }
 
-                        _ => {
-                            logged_err!(self.id; "command type mismatch: expected Put")
+                            _ => {
+                                return logged_err!(self.id; "command type mismatch: expected Put");
+                            }
                         }
                     }
                 }
+
+                None => {
+                    return Ok(DriverReply::Timeout);
+                }
+
+                _ => {
+                    return logged_err!(self.id; "unexpected reply type received");
+                }
             }
-
-            None => Ok(DriverReply::Timeout),
-
-            _ => logged_err!(self.id; "unexpected reply type received"),
         }
     }
 

@@ -44,12 +44,14 @@ PROTOCOL_BACKER_PATH = {
     "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
     "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
     "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
     "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
 
 PROTOCOL_SNAPSHOT_PATH = {
     "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
     "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
     "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
 }

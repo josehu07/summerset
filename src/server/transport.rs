@@ -1,9 +1,10 @@
 //! Summerset server internal TCP transport module implementation.
 //!
-//! In concept, all messages are sent through unstable communication channels,
-//! and are retried if the sender did not receive an ACK in a timely manner.
-//! Here, we use TCP as the communication protocol to get the same effect of
-//! "every message a sender wants to send will eventually be delivered".
+//! NOTE: In concept, all messages are sent through unstable communication
+//! channels, and are retried if the sender did not receive an ACK in a timely
+//! manner. Here, we use TCP as the communication protocol to get the same
+//! effect of "every message a sender wants to send will be retried until
+//! eventually delivered".
 
 use std::fmt;
 use std::net::SocketAddr;

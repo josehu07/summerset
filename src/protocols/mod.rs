@@ -22,6 +22,10 @@ mod multipaxos;
 use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
 pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 
+mod raft;
+use raft::{RaftReplica, RaftClient};
+pub use raft::{ReplicaConfigRaft, ClientConfigRaft};
+
 mod rs_paxos;
 use rs_paxos::{RSPaxosReplica, RSPaxosClient};
 pub use rs_paxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
@@ -36,6 +40,7 @@ pub enum SmrProtocol {
     RepNothing,
     SimplePush,
     MultiPaxos,
+    Raft,
     RSPaxos,
     Crossword,
 }
@@ -56,6 +61,7 @@ impl SmrProtocol {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
             "MultiPaxos" => Some(Self::MultiPaxos),
+            "Raft" => Some(Self::Raft),
             "RSPaxos" => Some(Self::RSPaxos),
             "Crossword" => Some(Self::Crossword),
             _ => None,
@@ -106,6 +112,14 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::Raft => {
+                box_if_ok!(
+                    RaftReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosReplica::new_and_setup(
@@ -147,6 +161,9 @@ impl SmrProtocol {
                     MultiPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
+            Self::Raft => {
+                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
+            }
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosClient::new_and_setup(manager, config_str).await
@@ -185,6 +202,7 @@ mod protocols_name_tests {
         valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
         valid_name_test!(MultiPaxos);
+        valid_name_test!(Raft);
         valid_name_test!(RSPaxos);
         valid_name_test!(Crossword);
     }

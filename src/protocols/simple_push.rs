@@ -29,8 +29,8 @@ use tokio::sync::watch;
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ReplicaConfigSimplePush {
-    /// Client request batching interval in microsecs.
-    pub batch_interval_us: u64,
+    /// Client request batching interval in millisecs.
+    pub batch_interval_ms: u64,
 
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
@@ -52,7 +52,7 @@ pub struct ReplicaConfigSimplePush {
 impl Default for ReplicaConfigSimplePush {
     fn default() -> Self {
         ReplicaConfigSimplePush {
-            batch_interval_us: 1000,
+            batch_interval_ms: 10,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,
@@ -64,9 +64,9 @@ impl Default for ReplicaConfigSimplePush {
     }
 }
 
-/// Log entry type.
+/// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-enum LogEntry {
+enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
     },
@@ -126,7 +126,7 @@ pub struct SimplePushReplica {
     state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: StorageHub<LogEntry>,
+    storage_hub: StorageHub<WalEntry>,
 
     /// TransportHub module.
     transport_hub: TransportHub<PushMsg>,
@@ -134,8 +134,8 @@ pub struct SimplePushReplica {
     /// In-memory log of instances.
     insts: Vec<Instance>,
 
-    /// Current durable log file offset.
-    log_offset: usize,
+    /// Current durable WAL log file offset.
+    wal_offset: usize,
 }
 
 // SimplePushReplica common helpers
@@ -192,13 +192,13 @@ impl SimplePushReplica {
         self.insts.push(inst);
 
         // submit log action to make this instance durable
-        let log_entry = LogEntry::FromClient {
+        let wal_entry = WalEntry::FromClient {
             reqs: req_batch.clone(),
         };
         self.storage_hub.submit_action(
             inst_idx as LogActionId,
             LogAction::Append {
-                entry: log_entry,
+                entry: wal_entry,
                 sync: true,
             },
         )?;
@@ -222,7 +222,7 @@ impl SimplePushReplica {
     fn handle_log_result(
         &mut self,
         action_id: LogActionId,
-        log_result: LogResult<LogEntry>,
+        log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
         let inst_idx = action_id as usize;
         if inst_idx >= self.insts.len() {
@@ -231,8 +231,8 @@ impl SimplePushReplica {
 
         match log_result {
             LogResult::Append { now_size } => {
-                assert!(now_size >= self.log_offset);
-                self.log_offset = now_size;
+                assert!(now_size >= self.wal_offset);
+                self.wal_offset = now_size;
             }
             _ => {
                 return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
@@ -296,7 +296,7 @@ impl SimplePushReplica {
         self.insts.push(inst);
 
         // submit log action to make this instance durable
-        let log_entry = LogEntry::PeerPushed {
+        let wal_entry = WalEntry::PeerPushed {
             peer,
             src_inst_idx,
             reqs: req_batch.clone(),
@@ -304,7 +304,7 @@ impl SimplePushReplica {
         self.storage_hub.submit_action(
             inst_idx as LogActionId,
             LogAction::Append {
-                entry: log_entry,
+                entry: wal_entry,
                 sync: true,
             },
         )?;
@@ -508,15 +508,15 @@ impl SimplePushReplica {
 
 // SimplePushReplica recovery from WAL log
 impl SimplePushReplica {
-    /// Recover state from durable storage log.
-    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+    /// Recover state from durable storage WAL log.
+    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
                 0,
                 LogAction::Read {
-                    offset: self.log_offset,
+                    offset: self.wal_offset,
                 },
             )?;
             let (_, log_result) = self.storage_hub.get_result().await?;
@@ -527,8 +527,8 @@ impl SimplePushReplica {
                     end_offset,
                 } => {
                     let (from_peer, reqs) = match entry {
-                        LogEntry::FromClient { reqs } => (None, reqs),
-                        LogEntry::PeerPushed {
+                        WalEntry::FromClient { reqs } => (None, reqs),
+                        WalEntry::PeerPushed {
                             peer,
                             src_inst_idx,
                             reqs,
@@ -552,7 +552,7 @@ impl SimplePushReplica {
                         from_peer,
                     });
                     // update log offset
-                    self.log_offset = end_offset;
+                    self.wal_offset = end_offset;
                 }
                 LogResult::Read { entry: None, .. } => {
                     // end of log reached
@@ -568,7 +568,7 @@ impl SimplePushReplica {
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
-                offset: self.log_offset,
+                offset: self.wal_offset,
             },
         )?;
         let (_, log_result) = self.storage_hub.get_result().await?;
@@ -598,15 +598,15 @@ impl GenericReplica for SimplePushReplica {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigSimplePush;
-                                    batch_interval_us, max_batch_size,
+                                    batch_interval_ms, max_batch_size,
                                     backer_path, rep_degree,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
-        if config.batch_interval_us == 0 {
+        if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
-                "invalid config.batch_interval_us '{}'",
-                config.batch_interval_us
+                "invalid config.batch_interval_ms '{}'",
+                config.batch_interval_ms
             );
         }
 
@@ -666,7 +666,7 @@ impl GenericReplica for SimplePushReplica {
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,
-            Duration::from_micros(config.batch_interval_us),
+            Duration::from_millis(config.batch_interval_ms),
             config.max_batch_size,
         )
         .await?;
@@ -683,7 +683,7 @@ impl GenericReplica for SimplePushReplica {
             storage_hub,
             transport_hub,
             insts: vec![],
-            log_offset: 0,
+            wal_offset: 0,
         })
     }
 
@@ -691,8 +691,8 @@ impl GenericReplica for SimplePushReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
-        // recover state from durable storage log
-        self.recover_from_log().await?;
+        // recover state from durable storage WAL log
+        self.recover_from_wal().await?;
 
         // main event loop
         let mut paused = false;
