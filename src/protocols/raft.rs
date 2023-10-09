@@ -1427,6 +1427,7 @@ impl RaftReplica {
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
+        assert!(self.log_offset >= self.log_meta_end);
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
@@ -1438,7 +1439,7 @@ impl RaftReplica {
             offset_ok: true, ..
         } = log_result
         {
-            if self.log_offset > 0 {
+            if self.log_offset > self.log_meta_end {
                 pf_info!(self.id; "recovered from wal log: term {} voted {:?} |log| {}",
                                   self.curr_term, self.voted_for, self.log.len());
             }
