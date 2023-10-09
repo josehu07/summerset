@@ -28,8 +28,8 @@ use tokio::sync::watch;
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ReplicaConfigRepNothing {
-    /// Client request batching interval in microsecs.
-    pub batch_interval_us: u64,
+    /// Client request batching interval in millisecs.
+    pub batch_interval_ms: u64,
 
     /// Client request batching maximum batch size.
     pub max_batch_size: usize,
@@ -49,7 +49,7 @@ pub struct ReplicaConfigRepNothing {
 impl Default for ReplicaConfigRepNothing {
     fn default() -> Self {
         ReplicaConfigRepNothing {
-            batch_interval_us: 1000,
+            batch_interval_ms: 10,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,
@@ -59,9 +59,9 @@ impl Default for ReplicaConfigRepNothing {
     }
 }
 
-/// Log entry type.
+/// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-struct LogEntry {
+struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
 
@@ -97,17 +97,19 @@ pub struct RepNothingReplica {
     state_machine: StateMachine,
 
     /// StorageHub module.
-    storage_hub: StorageHub<LogEntry>,
+    storage_hub: StorageHub<WalEntry>,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
 
-    /// Current durable log file offset.
-    log_offset: usize,
+    /// Current durable WAL log file offset.
+    wal_offset: usize,
 }
 
+// RepNothingReplica common helpers
 impl RepNothingReplica {
     /// Compose CommandId from instance index & command index within.
+    #[inline]
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
         assert!(inst_idx <= (u32::MAX as usize));
         assert!(cmd_idx <= (u32::MAX as usize));
@@ -115,12 +117,16 @@ impl RepNothingReplica {
     }
 
     /// Decompose CommandId into instance index & command index within.
+    #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
     }
+}
 
+// RepNothingReplica client requests entrance
+impl RepNothingReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -138,23 +144,26 @@ impl RepNothingReplica {
         self.insts.push(inst);
 
         // submit log action to make this instance durable
-        let log_entry = LogEntry { reqs: req_batch };
+        let wal_entry = WalEntry { reqs: req_batch };
         self.storage_hub.submit_action(
             inst_idx as LogActionId,
             LogAction::Append {
-                entry: log_entry,
+                entry: wal_entry,
                 sync: self.config.logger_sync,
             },
         )?;
 
         Ok(())
     }
+}
 
+// RepNothingReplica durable WAL logging
+impl RepNothingReplica {
     /// Handler of durable logging result chan recv.
     fn handle_log_result(
         &mut self,
         action_id: LogActionId,
-        log_result: LogResult<LogEntry>,
+        log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
         let inst_idx = action_id as usize;
         if inst_idx >= self.insts.len() {
@@ -163,8 +172,8 @@ impl RepNothingReplica {
 
         match log_result {
             LogResult::Append { now_size } => {
-                assert!(now_size >= self.log_offset);
-                self.log_offset = now_size;
+                assert!(now_size >= self.wal_offset);
+                self.wal_offset = now_size;
             }
             _ => {
                 return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
@@ -190,7 +199,10 @@ impl RepNothingReplica {
 
         Ok(())
     }
+}
 
+// RepNothingReplica state machine execution
+impl RepNothingReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -236,7 +248,10 @@ impl RepNothingReplica {
 
         Ok(())
     }
+}
 
+// RepNothingReplica control messages handling
+impl RepNothingReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -321,16 +336,19 @@ impl RepNothingReplica {
             _ => Ok(None), // ignore all other types
         }
     }
+}
 
-    /// Recover state from durable storage log.
-    async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+// RepNothingReplica recovery from WAL log
+impl RepNothingReplica {
+    /// Recover state from durable storage WAL log.
+    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+        assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
                 0,
                 LogAction::Read {
-                    offset: self.log_offset,
+                    offset: self.wal_offset,
                 },
             )?;
             let (_, log_result) = self.storage_hub.get_result().await?;
@@ -356,7 +374,7 @@ impl RepNothingReplica {
                         execed: vec![true; num_reqs],
                     });
                     // update log offset
-                    self.log_offset = end_offset;
+                    self.wal_offset = end_offset;
                 }
                 LogResult::Read { entry: None, .. } => {
                     // end of log reached
@@ -372,7 +390,7 @@ impl RepNothingReplica {
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
-                offset: self.log_offset,
+                offset: self.wal_offset,
             },
         )?;
         let (_, log_result) = self.storage_hub.get_result().await?;
@@ -401,14 +419,14 @@ impl GenericReplica for RepNothingReplica {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
-                                    batch_interval_us, max_batch_size,
+                                    batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     perf_storage_a, perf_storage_b)?;
-        if config.batch_interval_us == 0 {
+        if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
-                "invalid config.batch_interval_us '{}'",
-                config.batch_interval_us
+                "invalid config.batch_interval_ms '{}'",
+                config.batch_interval_ms
             );
         }
 
@@ -442,7 +460,7 @@ impl GenericReplica for RepNothingReplica {
         let external_api = ExternalApi::new_and_setup(
             id,
             api_addr,
-            Duration::from_micros(config.batch_interval_us),
+            Duration::from_millis(config.batch_interval_ms),
             config.max_batch_size,
         )
         .await?;
@@ -457,7 +475,7 @@ impl GenericReplica for RepNothingReplica {
             state_machine,
             storage_hub,
             insts: vec![],
-            log_offset: 0,
+            wal_offset: 0,
         })
     }
 
@@ -465,8 +483,8 @@ impl GenericReplica for RepNothingReplica {
         &mut self,
         mut rx_term: watch::Receiver<bool>,
     ) -> Result<bool, SummersetError> {
-        // recover state from durable storage log
-        self.recover_from_log().await?;
+        // recover state from durable storage WAL log
+        self.recover_from_wal().await?;
 
         // main event loop
         let mut paused = false;

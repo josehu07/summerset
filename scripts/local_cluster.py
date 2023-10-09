@@ -44,11 +44,13 @@ PROTOCOL_BACKER_PATH = {
     "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
     "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
     "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
 }
 
 PROTOCOL_SNAPSHOT_PATH = {
     "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
     "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
 }
 
@@ -63,19 +65,6 @@ def config_with_file_paths(protocol, config, replica):
         if "backer_path" in config or "snapshot_path" in config:
             result_config = config  # use user-supplied path
             # NOTE: ignores the other one
-        else:
-            result_config += "+"
-            result_config += config
-
-    return result_config
-
-
-def config_with_backer_path(protocol, config, replica):
-    result_config = PROTOCOL_BACKER_PATH[protocol](replica)
-
-    if config is not None and len(config) > 0:
-        if "backer_path" in config:
-            result_config = config  # use user-supplied path
         else:
             result_config += "+"
             result_config += config

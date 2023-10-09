@@ -1,9 +1,10 @@
 //! Summerset server internal TCP transport module implementation.
 //!
-//! In concept, all messages are sent through unstable communication channels,
-//! and are retried if the sender did not receive an ACK in a timely manner.
-//! Here, we use TCP as the communication protocol to get the same effect of
-//! "every message a sender wants to send will eventually be delivered".
+//! NOTE: In concept, all messages are sent through unstable communication
+//! channels, and are retried if the sender did not receive an ACK in a timely
+//! manner. Here, we use TCP as the communication protocol to get the same
+//! effect of "every message a sender wants to send will be retried until
+//! eventually delivered".
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -227,11 +228,12 @@ where
                     .map_err(|e| SummersetError(e.to_string()))?;
             }
             None => {
-                pf_error!(
-                    self.me;
-                    "peer ID {} not found among connected ones",
-                    peer
-                );
+                // NOTE: commented out to avoid spurious error messages
+                // pf_error!(
+                //     self.me;
+                //     "peer ID {} not found among connected ones",
+                //     peer
+                // );
             }
         }
 

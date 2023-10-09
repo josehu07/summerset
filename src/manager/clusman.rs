@@ -186,19 +186,12 @@ impl ClusterManager {
                                     protocol);
         }
 
-        // tell it to connect to all existing known servers
+        // gather the list of all existing known servers
         let to_peers: HashMap<ReplicaId, SocketAddr> = self
             .server_info
             .iter()
             .map(|(&server, info)| (server, info.p2p_addr))
             .collect();
-        self.server_reigner.send_ctrl(
-            CtrlMsg::ConnectToPeers {
-                population: self.population,
-                to_peers,
-            },
-            server,
-        )?;
 
         // save new server's info
         self.server_info.insert(
@@ -211,6 +204,16 @@ impl ClusterManager {
                 start_slot: 0,
             },
         );
+
+        // tell it to connect to all other existing known servers
+        self.server_reigner.send_ctrl(
+            CtrlMsg::ConnectToPeers {
+                population: self.population,
+                to_peers,
+            },
+            server,
+        )?;
+
         Ok(())
     }
 
@@ -406,9 +409,13 @@ impl ClusterManager {
             self.server_info.get_mut(&s).unwrap().is_paused = true;
 
             // wait for dummy reply
-            let (_, reply) = self.server_reigner.recv_ctrl().await?;
-            if reply != CtrlMsg::PauseReply {
-                return logged_err!("m"; "unexpected reply type received");
+            loop {
+                let (server, reply) = self.server_reigner.recv_ctrl().await?;
+                if server != s || reply != CtrlMsg::PauseReply {
+                    self.handle_ctrl_msg(server, reply).await?;
+                } else {
+                    break;
+                }
             }
 
             pause_done.insert(s);
@@ -442,9 +449,13 @@ impl ClusterManager {
             self.server_reigner.send_ctrl(CtrlMsg::Resume, s)?;
 
             // wait for dummy reply
-            let (_, reply) = self.server_reigner.recv_ctrl().await?;
-            if reply != CtrlMsg::ResumeReply {
-                return logged_err!("m"; "unexpected reply type received");
+            loop {
+                let (server, reply) = self.server_reigner.recv_ctrl().await?;
+                if server != s || reply != CtrlMsg::ResumeReply {
+                    self.handle_ctrl_msg(server, reply).await?;
+                } else {
+                    break;
+                }
             }
 
             // clear the is_paused flag
@@ -482,22 +493,27 @@ impl ClusterManager {
             self.server_reigner.send_ctrl(CtrlMsg::TakeSnapshot, s)?;
 
             // wait for reply
-            let (_, reply) = self.server_reigner.recv_ctrl().await?;
-            if let CtrlMsg::SnapshotUpTo { new_start } = reply {
-                // update the log start index info
-                assert!(self.server_info.contains_key(&s));
-                if new_start < self.server_info[&s].start_slot {
-                    return logged_err!("m"; "server {} snapshot up to {} < {}",
-                                            s, new_start,
-                                            self.server_info[&s].start_slot);
-                } else {
-                    self.server_info.get_mut(&s).unwrap().start_slot =
-                        new_start;
-                }
+            loop {
+                let (server, reply) = self.server_reigner.recv_ctrl().await?;
+                match reply {
+                    CtrlMsg::SnapshotUpTo { new_start } if server == s => {
+                        // update the log start index info
+                        assert!(self.server_info.contains_key(&s));
+                        if new_start < self.server_info[&s].start_slot {
+                            return logged_err!("m"; "server {} snapshot up to {} < {}",
+                                                    s, new_start,
+                                                    self.server_info[&s].start_slot);
+                        } else {
+                            self.server_info.get_mut(&s).unwrap().start_slot =
+                                new_start;
+                        }
 
-                snapshot_up_to.insert(s, new_start);
-            } else {
-                return logged_err!("m"; "unexpected reply type received");
+                        snapshot_up_to.insert(s, new_start);
+                        break;
+                    }
+
+                    _ => self.handle_ctrl_msg(server, reply).await?,
+                }
             }
         }
 
