@@ -215,8 +215,6 @@ enum SnapEntry {
         /// First entry at the start of file: number of log instances covered
         /// by this snapshot file == the start slot index of in-mem log.
         start_slot: usize,
-        /// Index of the first non-committed slot.
-        commit_bar: usize,
     },
 
     /// Set of key-value pairs to apply to the state.
@@ -2223,8 +2221,6 @@ impl CrosswordReplica {
                         if inst.status < Status::Committed {
                             break;
                         }
-                        // update commit_bar
-                        self.commit_bar += 1;
                         // check number of available shards
                         if inst.reqs_cw.avail_shards() < self.majority {
                             // can't execute if I don't have the complete request batch
@@ -2245,7 +2241,8 @@ impl CrosswordReplica {
                                 let _ = self.state_machine.get_result().await?;
                             }
                         }
-                        // update instance status and exec_bar
+                        // update instance status, commit_bar, and exec_bar
+                        self.commit_bar += 1;
                         self.exec_bar += 1;
                         inst.status = Status::Executed;
                     }
@@ -2442,7 +2439,6 @@ impl CrosswordReplica {
             LogAction::Write {
                 entry: SnapEntry::SlotInfo {
                     start_slot: new_start_slot,
-                    commit_bar: self.commit_bar,
                 },
                 offset: 0,
                 sync: self.config.logger_sync,
@@ -2488,18 +2484,14 @@ impl CrosswordReplica {
 
         match log_result {
             LogResult::Read {
-                entry:
-                    Some(SnapEntry::SlotInfo {
-                        start_slot,
-                        commit_bar,
-                    }),
+                entry: Some(SnapEntry::SlotInfo { start_slot }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
 
                 // recover necessary slot indices info
                 self.start_slot = start_slot;
-                self.commit_bar = commit_bar;
+                self.commit_bar = start_slot;
                 self.exec_bar = start_slot;
                 self.snap_bar = start_slot;
 
@@ -2557,10 +2549,7 @@ impl CrosswordReplica {
                 self.snapshot_hub.submit_action(
                     0,
                     LogAction::Write {
-                        entry: SnapEntry::SlotInfo {
-                            start_slot: 0,
-                            commit_bar: 0,
-                        },
+                        entry: SnapEntry::SlotInfo { start_slot: 0 },
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
