@@ -678,6 +678,7 @@ impl RaftReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
+            pf_trace!(self.id; "submitted follower append log action for slot {}", slot);
 
             num_appended += 1;
         }
@@ -785,6 +786,8 @@ impl RaftReplica {
                         continue; // ignore other types of requests
                     }
                 }
+                pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                   entry.reqs.len(), slot);
             }
 
             self.last_commit = new_commit;

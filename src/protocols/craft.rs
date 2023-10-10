@@ -727,6 +727,7 @@ impl CRaftReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
+            pf_trace!(self.id; "submitted follower append log action for slot {}", slot);
 
             num_appended += 1;
         }
