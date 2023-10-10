@@ -1,16 +1,14 @@
-//! Replication protocol: Raft.
+//! Replication protocol: CRaft (Coded-Raft).
 //!
-//! ATC '14 version of Raft. References:
-//!   - <https://raft.github.io/raft.pdf>
-//!   - <https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf>
-//!   - <https://decentralizedthoughts.github.io/2020-12-12-raft-liveness-full-omission/>
+//! Raft with erasure coding and fall-back mechanism. References:
+//!   - <https://www.usenix.org/conference/fast20/presentation/wang-zizhong>
 
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap, Timer};
+use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
@@ -31,9 +29,11 @@ use serde::{Serialize, Deserialize};
 use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
+use reed_solomon_erasure::galois_8::ReedSolomon;
+
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ReplicaConfigRaft {
+pub struct ReplicaConfigCRaft {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
 
@@ -61,6 +61,12 @@ pub struct ReplicaConfigRaft {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
+    /// Fault-tolerance level.
+    pub fault_tolerance: u8,
+
+    /// Maximum chunk size of a ReconstructRead message.
+    pub recon_chunk_size: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -69,18 +75,20 @@ pub struct ReplicaConfigRaft {
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ReplicaConfigRaft {
+impl Default for ReplicaConfigCRaft {
     fn default() -> Self {
-        ReplicaConfigRaft {
+        ReplicaConfigCRaft {
             batch_interval_ms: 10,
             max_batch_size: 5000,
-            backer_path: "/tmp/summerset.raft.wal".into(),
+            backer_path: "/tmp/summerset.craft.wal".into(),
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
             hb_send_interval_ms: 50,
-            snapshot_path: "/tmp/summerset.raft.snap".into(),
+            snapshot_path: "/tmp/summerset.craft.snap".into(),
             snapshot_interval_s: 0,
+            fault_tolerance: 0,
+            recon_chunk_size: 1000,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -101,14 +109,15 @@ type Term = u64;
 /// MultiPaxos, we trigger batching also explicitly.
 type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
-/// In-mem + persistent entry of log, containing a term and a commands batch.
+/// In-mem + persistent entry of log, containing a term and a (possibly
+/// partial) commands batch.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 struct LogEntry {
     /// Term number.
     term: Term,
 
-    /// Batch of client requests.
-    reqs: ReqBatch,
+    /// Shards of a batch of client requests.
+    reqs_cw: RSCodeword<ReqBatch>,
 
     /// True if from external client, else false.
     external: bool,
@@ -181,6 +190,15 @@ enum PeerMsg {
 
     /// RequestVote reply from follower to leader.
     RequestVoteReply { term: Term, granted: bool },
+
+    /// Reconstruction read from new leader to followers.
+    Reconstruct { slots: Vec<(usize, Term)> },
+
+    /// Reconstruction read reply from follower to leader.
+    ReconstructReply {
+        /// Map from slot -> req batch shards data the follower has.
+        slots_data: HashMap<usize, RSCodeword<ReqBatch>>,
+    },
 }
 
 /// Replica role type.
@@ -193,8 +211,8 @@ enum Role {
     Leader,
 }
 
-/// Raft server replica module.
-pub struct RaftReplica {
+/// CRaft server replica module.
+pub struct CRaftReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -202,10 +220,10 @@ pub struct RaftReplica {
     population: u8,
 
     /// Majority quorum size.
-    quorum_cnt: u8,
+    majority: u8,
 
     /// Configuration parameters struct.
-    config: ReplicaConfigRaft,
+    config: ReplicaConfigCRaft,
 
     /// Address string for client requests API.
     _api_addr: SocketAddr,
@@ -294,10 +312,13 @@ pub struct RaftReplica {
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
+
+    /// Fixed Reed-Solomon coder.
+    rs_coder: ReedSolomon,
 }
 
-// RaftReplica common helpers
-impl RaftReplica {
+// CRaftReplica common helpers
+impl CRaftReplica {
     /// Compose LogActionId from (slot, end_slot) pair & entry type.
     /// Uses the `Role` enum type to represent differnet entry types.
     #[inline]
@@ -369,8 +390,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica client requests entrance
-impl RaftReplica {
+// CRaftReplica client requests entrance
+impl CRaftReplica {
     /// Handler of client request batch chan recv.
     fn handle_req_batch(
         &mut self,
@@ -406,32 +427,48 @@ impl RaftReplica {
             return Ok(());
         }
 
-        // append an entry to in-memory log
-        let entry = LogEntry {
-            term: self.curr_term,
-            reqs: req_batch,
-            external: true,
-            log_offset: 0,
-        };
-        let slot = self.start_slot + self.log.len();
-        self.log.push(entry.clone());
+        // compute the complete Reed-Solomon codeword for the batch data
+        let mut reqs_cw = RSCodeword::from_data(
+            req_batch,
+            self.majority,
+            self.population - self.majority,
+        )?;
+        reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
         // submit logger action to make this log entry durable
+        let slot = self.start_slot + self.log.len();
+        let subset_copy = reqs_cw
+            .subset_copy(Bitmap::from(self.population, vec![self.id]), false)?;
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, slot, Role::Leader),
             LogAction::Append {
-                entry: DurEntry::LogEntry { entry },
+                entry: DurEntry::LogEntry {
+                    entry: LogEntry {
+                        term: self.curr_term,
+                        reqs_cw: subset_copy,
+                        external: true,
+                        log_offset: 0,
+                    },
+                },
                 sync: self.config.logger_sync,
             },
         )?;
         pf_trace!(self.id; "submitted leader append log action for slot {}", slot);
 
+        // append an entry to in-memory log
+        self.log.push(LogEntry {
+            term: self.curr_term,
+            reqs_cw,
+            external: true,
+            log_offset: 0,
+        });
+
         Ok(())
     }
 }
 
-// RaftReplica durable logging
-impl RaftReplica {
+// CRaftReplica durable logging
+impl CRaftReplica {
     /// Handler of leader append logging result chan recv.
     fn handle_logged_leader_append(
         &mut self,
@@ -445,7 +482,8 @@ impl RaftReplica {
                            slot, slot_e);
         assert_eq!(slot, slot_e);
 
-        // broadcast AppendEntries messages to followers
+        // broadcast AppendEntries messages to followers, each containing just
+        // the one shard of each entry for that follower
         for peer in 0..self.population {
             if peer == self.id || self.next_slot[&peer] < 1 {
                 continue;
@@ -461,7 +499,18 @@ impl RaftReplica {
                 .iter()
                 .take(slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
-                .cloned()
+                .map(|e| LogEntry {
+                    term: e.term,
+                    reqs_cw: e
+                        .reqs_cw
+                        .subset_copy(
+                            Bitmap::from(self.population, vec![peer]),
+                            false,
+                        )
+                        .unwrap(),
+                    external: false,
+                    log_offset: e.log_offset,
+                })
                 .collect();
 
             if slot >= self.next_slot[&peer] {
@@ -555,8 +604,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica peer-peer messages handling
-impl RaftReplica {
+// CRaftReplica peer-peer messages handling
+impl CRaftReplica {
     /// Handler of AppendEntries message from leader.
     #[allow(clippy::too_many_arguments)]
     async fn handle_msg_append_entries(
@@ -702,8 +751,20 @@ impl RaftReplica {
 
             // submit newly committed entries for state machine execution
             for slot in (self.last_commit + 1)..=new_commit {
-                let entry = &self.log[slot - self.start_slot];
-                for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
+                let entry = &mut self.log[slot - self.start_slot];
+
+                if entry.reqs_cw.avail_shards() < self.majority {
+                    // can't execute if I don't have the complete request batch
+                    pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
+                                       slot, entry.reqs_cw.avail_shards(), self.majority);
+                    break;
+                } else if entry.reqs_cw.avail_data_shards() < self.majority {
+                    // have enough shards but need reconstruction
+                    entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                }
+                let reqs = entry.reqs_cw.get_data()?;
+
+                for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
                         self.state_machine.submit_cmd(
                             Self::make_command_id(slot, cmd_idx),
@@ -714,10 +775,12 @@ impl RaftReplica {
                     }
                 }
                 pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                   entry.reqs.len(), slot);
-            }
+                                   reqs.len(), slot);
 
-            self.last_commit = new_commit;
+                // last_commit update stops at the last slot successfully
+                // submitted for execution
+                self.last_commit = slot;
+            }
         }
 
         // if last_snap is larger than mine, update last_snap
@@ -761,21 +824,44 @@ impl RaftReplica {
                     continue; // cannot decide commit using non-latest term
                 }
 
+                // if quorum size reached AND enough number of shards are
+                // remembered, mark this instance as committed; in CRaft, this
+                // means match_cnt >= self.majority + fault_tolerance
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
                     .filter(|&&s| s >= slot)
                     .count() as u8;
-                if match_cnt >= self.quorum_cnt {
+                if match_cnt >= self.majority + self.config.fault_tolerance {
                     // quorum size reached, set new_commit to here
                     new_commit = slot;
                 }
             }
 
             // submit newly committed commands, if any, for execution
+            let mut recon_slots = Vec::new();
             for slot in (self.last_commit + 1)..=new_commit {
-                let entry = &self.log[slot - self.start_slot];
-                for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
+                let entry = &mut self.log[slot - self.start_slot];
+
+                if entry.reqs_cw.avail_shards() < self.majority {
+                    // can't execute because I don't have the complete request
+                    // batch. Because I am the leader, this means I need to
+                    // issue reconstruction reads to followers to recover this
+                    // log entry
+                    recon_slots.push((slot, entry.term));
+                } else if entry.reqs_cw.avail_data_shards() < self.majority {
+                    // have enough shards but need reconstruction
+                    entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                }
+
+                if !recon_slots.is_empty() {
+                    // have encountered insufficient shards; cannot do any
+                    // further execution right now
+                    continue;
+                }
+                let reqs = entry.reqs_cw.get_data()?;
+
+                for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
                         self.state_machine.submit_cmd(
                             Self::make_command_id(slot, cmd_idx),
@@ -785,9 +871,23 @@ impl RaftReplica {
                         continue; // ignore other types of requests
                     }
                 }
+                pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                   reqs.len(), slot);
+
+                // last_commit update stops at the last slot successfully
+                // submitted for execution
+                self.last_commit = slot;
             }
 
-            self.last_commit = new_commit;
+            // send reconstruction read messages in chunks
+            for chunk in recon_slots.chunks(self.config.recon_chunk_size) {
+                let slots = chunk.to_vec();
+                let num_slots = slots.len();
+                self.transport_hub
+                    .bcast_msg(PeerMsg::Reconstruct { slots }, None)?;
+                pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
+                                   num_slots);
+            }
 
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
@@ -822,7 +922,18 @@ impl RaftReplica {
                 .iter()
                 .take(end_slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
-                .cloned()
+                .map(|e| LogEntry {
+                    term: e.term,
+                    reqs_cw: e
+                        .reqs_cw
+                        .subset_copy(
+                            Bitmap::from(self.population, vec![peer]),
+                            false,
+                        )
+                        .unwrap(),
+                    external: false,
+                    log_offset: e.log_offset,
+                })
                 .collect();
 
             self.transport_hub.send_msg(
@@ -914,8 +1025,115 @@ impl RaftReplica {
         self.votes_granted.insert(peer);
 
         // if a majority of servers have voted for me, become the leader
-        if self.votes_granted.len() as u8 >= self.quorum_cnt {
+        if self.votes_granted.len() as u8 >= self.majority {
             self.become_the_leader()?;
+        }
+
+        Ok(())
+    }
+
+    /// Handler of Reconstruct message from leader.
+    fn handle_msg_reconstruct(
+        &mut self,
+        peer: ReplicaId,
+        slots: Vec<(usize, Term)>,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(self.id; "received Reconstruct <- {} for slots {:?}", peer, slots);
+        let mut slots_data = HashMap::new();
+
+        for (slot, term) in slots {
+            if slot < self.start_slot
+                || slot >= self.start_slot + self.log.len()
+                || term != self.log[slot - self.start_slot].term
+            {
+                // NOTE: this has one caveat: a new leader trying to do
+                // reconstruction reads might find that all other peers have
+                // snapshotted that slot. Proper InstallSnapshot-style messages
+                // will be needed to deal with this; but since this scenario is
+                // just too rare, it is not implemented yet
+                continue;
+            }
+
+            // term match, send back my available shards to requester
+            slots_data
+                .insert(slot, self.log[slot - self.start_slot].reqs_cw.clone());
+        }
+
+        if !slots_data.is_empty() {
+            let num_slots = slots_data.len();
+            self.transport_hub
+                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
+            pf_trace!(self.id; "sent ReconstructReply -> {} for {} slots",
+                               peer, num_slots);
+        }
+        Ok(())
+    }
+
+    /// Handler of Reconstruct reply from replica.
+    fn handle_msg_reconstruct_reply(
+        &mut self,
+        peer: ReplicaId,
+        slots_data: HashMap<usize, RSCodeword<ReqBatch>>,
+    ) -> Result<(), SummersetError> {
+        // shadow_last_commit is the position of where last_commit should be
+        // at if without sharding issues
+        let shadow_last_commit = {
+            let mut match_slots: Vec<usize> =
+                self.match_slot.values().copied().collect();
+            match_slots.sort();
+            match_slots.reverse();
+            match_slots
+                [(self.majority + self.config.fault_tolerance - 2) as usize]
+        };
+
+        for (slot, reqs_cw) in slots_data {
+            if slot < self.start_slot {
+                continue; // ignore if slot index outdated
+            }
+            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} shards {:?}",
+                               peer, slot, reqs_cw.avail_shards_map());
+            assert!(slot < self.start_slot + self.log.len());
+            let entry = &mut self.log[slot - self.start_slot];
+
+            // absorb the shards from this replica
+            entry.reqs_cw.absorb_other(reqs_cw)?;
+
+            // if enough shards have been gathered, can push execution forward
+            if slot == self.last_commit + 1 {
+                while self.last_commit < shadow_last_commit {
+                    let entry =
+                        &mut self.log[self.last_commit + 1 - self.start_slot];
+                    if entry.reqs_cw.avail_shards() < self.majority {
+                        break;
+                    }
+
+                    if entry.reqs_cw.avail_data_shards() < self.majority {
+                        // have enough shards but need reconstruction
+                        entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                    }
+                    let reqs = entry.reqs_cw.get_data()?;
+
+                    // submit commands in committed instance to the state machine
+                    // for execution
+                    for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
+                        if let ApiRequest::Req { cmd, .. } = req {
+                            self.state_machine.submit_cmd(
+                                Self::make_command_id(
+                                    self.last_commit + 1,
+                                    cmd_idx,
+                                ),
+                                cmd.clone(),
+                            )?;
+                        } else {
+                            continue; // ignore other types of requests
+                        }
+                    }
+                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                       reqs.len(), self.last_commit + 1);
+
+                    self.last_commit += 1;
+                }
+            }
         }
 
         Ok(())
@@ -961,12 +1179,18 @@ impl RaftReplica {
             PeerMsg::RequestVoteReply { term, granted } => {
                 self.handle_msg_request_vote_reply(peer, term, granted)
             }
+            PeerMsg::Reconstruct { slots } => {
+                self.handle_msg_reconstruct(peer, slots)
+            }
+            PeerMsg::ReconstructReply { slots_data } => {
+                self.handle_msg_reconstruct_reply(peer, slots_data)
+            }
         }
     }
 }
 
-// RaftReplica state machine execution
-impl RaftReplica {
+// CRaftReplica state machine execution
+impl CRaftReplica {
     /// Handler of state machine exec result chan recv.
     fn handle_cmd_result(
         &mut self,
@@ -982,8 +1206,9 @@ impl RaftReplica {
                            slot, cmd_idx);
 
         let entry = &mut self.log[slot - self.start_slot];
-        assert!(cmd_idx < entry.reqs.len());
-        let (client, ref req) = entry.reqs[cmd_idx];
+        let reqs = entry.reqs_cw.get_data()?;
+        assert!(cmd_idx < reqs.len());
+        let (client, ref req) = reqs[cmd_idx];
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
@@ -1004,7 +1229,7 @@ impl RaftReplica {
         }
 
         // if all commands in this entry have been executed, update last_exec
-        if cmd_idx == entry.reqs.len() - 1 {
+        if cmd_idx == reqs.len() - 1 {
             pf_debug!(self.id; "executed all cmds in entry at slot {}", slot);
             self.last_exec = slot;
         }
@@ -1013,8 +1238,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica leader election timeout logic
-impl RaftReplica {
+// CRaftReplica leader election timeout logic
+impl CRaftReplica {
     /// Becomes a candidate and starts the election procedure.
     async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
         if self.role != Role::Follower {
@@ -1193,8 +1418,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica control messages handling
-impl RaftReplica {
+// CRaftReplica control messages handling
+impl CRaftReplica {
     /// Handler of ResetState control message.
     async fn handle_ctrl_reset_state(
         &mut self,
@@ -1308,8 +1533,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica recovery from durable log
-impl RaftReplica {
+// CRaftReplica recovery from durable log
+impl CRaftReplica {
     /// Recover state from durable storage log.
     async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
         assert_eq!(self.log_offset, 0);
@@ -1395,7 +1620,10 @@ impl RaftReplica {
                 // ... and push a 0-th dummy entry into in-mem log
                 let null_entry = LogEntry {
                     term: 0,
-                    reqs: vec![],
+                    reqs_cw: RSCodeword::from_null(
+                        self.majority,
+                        self.population - self.majority,
+                    )?,
                     external: false,
                     log_offset: 0,
                 };
@@ -1449,8 +1677,8 @@ impl RaftReplica {
     }
 }
 
-// RaftReplica snapshotting & GC logic
-impl RaftReplica {
+// CRaftReplica snapshotting & GC logic
+impl CRaftReplica {
     /// Dump new key-value pairs to snapshot file.
     async fn snapshot_dump_kv_pairs(
         &mut self,
@@ -1459,8 +1687,9 @@ impl RaftReplica {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
         for slot in self.start_slot..new_start_slot {
-            let entry = &self.log[slot - self.start_slot];
-            for (_, req) in entry.reqs.clone() {
+            let entry = &mut self.log[slot - self.start_slot];
+            assert!(entry.reqs_cw.avail_data_shards() >= self.majority);
+            for (_, req) in entry.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
                     ..
@@ -1728,7 +1957,7 @@ impl RaftReplica {
 }
 
 #[async_trait]
-impl GenericReplica for RaftReplica {
+impl GenericReplica for CRaftReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -1741,12 +1970,13 @@ impl GenericReplica for RaftReplica {
         let population = control_hub.population;
 
         // parse protocol-specific configs
-        let config = parsed_config!(config_str => ReplicaConfigRaft;
+        let config = parsed_config!(config_str => ReplicaConfigCRaft;
                                     batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
+                                    fault_tolerance, recon_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -1775,6 +2005,13 @@ impl GenericReplica for RaftReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.recon_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.recon_chunk_size '{}'",
+                config.recon_chunk_size
             );
         }
 
@@ -1811,7 +2048,7 @@ impl GenericReplica for RaftReplica {
         // later peer connections
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
-            protocol: SmrProtocol::Raft,
+            protocol: SmrProtocol::CRaft,
             api_addr,
             p2p_addr,
         })?;
@@ -1822,6 +2059,18 @@ impl GenericReplica for RaftReplica {
         } else {
             return logged_err!(id; "unexpected ctrl msg type received");
         };
+
+        // create a Reed-Solomon coder with num_data_shards == quorum size and
+        // num_parity shards == population - quorum
+        let majority = (population / 2) + 1;
+        if config.fault_tolerance > (population - majority) {
+            return logged_err!(id; "invalid config.fault_tolerance '{}'",
+                                   config.fault_tolerance);
+        }
+        let rs_coder = ReedSolomon::new(
+            majority as usize,
+            (population - majority) as usize,
+        )?;
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -1864,10 +2113,10 @@ impl GenericReplica for RaftReplica {
             .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
             .collect();
 
-        Ok(RaftReplica {
+        Ok(CRaftReplica {
             id,
             population,
-            quorum_cnt: (population / 2) + 1,
+            majority,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
@@ -1901,6 +2150,7 @@ impl GenericReplica for RaftReplica {
             log_offset: 0,
             log_meta_end: 0,
             snap_offset: 0,
+            rs_coder,
         })
     }
 
@@ -2032,25 +2282,25 @@ impl GenericReplica for RaftReplica {
 
 /// Configuration parameters struct.
 #[derive(Debug, Deserialize)]
-pub struct ClientConfigRaft {
+pub struct ClientConfigCRaft {
     /// Which server to pick initially.
     pub init_server_id: ReplicaId,
 }
 
 #[allow(clippy::derivable_impls)]
-impl Default for ClientConfigRaft {
+impl Default for ClientConfigCRaft {
     fn default() -> Self {
-        ClientConfigRaft { init_server_id: 0 }
+        ClientConfigCRaft { init_server_id: 0 }
     }
 }
 
-/// Raft client-side module.
-pub struct RaftClient {
+/// CRaft client-side module.
+pub struct CRaftClient {
     /// Client ID.
     id: ClientId,
 
     /// Configuration parameters struct.
-    _config: ClientConfigRaft,
+    _config: ClientConfigCRaft,
 
     /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -2066,7 +2316,7 @@ pub struct RaftClient {
 }
 
 #[async_trait]
-impl GenericEndpoint for RaftClient {
+impl GenericEndpoint for CRaftClient {
     async fn new_and_setup(
         manager: SocketAddr,
         config_str: Option<&str>,
@@ -2077,11 +2327,11 @@ impl GenericEndpoint for RaftClient {
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
-        let config = parsed_config!(config_str => ClientConfigRaft;
+        let config = parsed_config!(config_str => ClientConfigCRaft;
                                     init_server_id)?;
         let init_server_id = config.init_server_id;
 
-        Ok(RaftClient {
+        Ok(CRaftClient {
             id,
             _config: config,
             servers: HashMap::new(),

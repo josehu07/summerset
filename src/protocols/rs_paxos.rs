@@ -234,10 +234,6 @@ enum PeerMsg {
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
 
-    /// Request by a lagging replica to leader asking to re-send Accepts for
-    /// missing holes
-    FillHoles { slots: Vec<usize> },
-
     /// Reconstruction read from new leader to replicas.
     Reconstruct { slots: Vec<usize> },
 
@@ -708,8 +704,6 @@ impl RSPaxosReplica {
                 if inst.status < Status::Committed {
                     break;
                 }
-                let now_slot = self.commit_bar;
-                self.commit_bar += 1;
 
                 if inst.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
@@ -730,7 +724,7 @@ impl RSPaxosReplica {
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
-                                Self::make_command_id(now_slot, cmd_idx),
+                                Self::make_command_id(self.commit_bar, cmd_idx),
                                 cmd.clone(),
                             )?;
                         } else {
@@ -738,23 +732,10 @@ impl RSPaxosReplica {
                         }
                     }
                     pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), now_slot);
+                                       reqs.len(), self.commit_bar);
                 }
-            }
-        }
 
-        // if there are hole(s) between current commit_bar and newly committed
-        // slot, ask the leader to re-send Accept messages for those slots
-        if slot > self.commit_bar && !self.is_leader() {
-            if let Some(leader) = self.leader {
-                let holes: Vec<usize> = (self.commit_bar..slot).collect();
-                self.transport_hub.send_msg(
-                    PeerMsg::FillHoles {
-                        slots: holes.clone(),
-                    },
-                    leader,
-                )?;
-                pf_trace!(self.id; "sent FillHoles -> {} slots {:?}", leader, holes);
+                self.commit_bar += 1;
             }
         }
 
@@ -1127,46 +1108,6 @@ impl RSPaxosReplica {
         Ok(())
     }
 
-    /// Handler of FillHoles message from a lagging peer.
-    fn handle_msg_fill_holes(
-        &mut self,
-        peer: ReplicaId,
-        slots: Vec<usize>,
-    ) -> Result<(), SummersetError> {
-        if !self.is_leader() {
-            return Ok(());
-        }
-        pf_trace!(self.id; "received FillHoles <- {} for slots {:?}", peer, slots);
-
-        for slot in slots {
-            if slot < self.start_slot {
-                continue;
-            } else if slot >= self.start_slot + self.insts.len() {
-                break;
-            }
-            let inst = &self.insts[slot - self.start_slot];
-
-            if inst.status >= Status::Committed {
-                // re-send Accept message for this slot
-                self.transport_hub.send_msg(
-                    PeerMsg::Accept {
-                        slot,
-                        ballot: self.bal_prepared,
-                        reqs_cw: inst.reqs_cw.subset_copy(
-                            Bitmap::from(self.population, vec![peer]),
-                            false,
-                        )?,
-                    },
-                    peer,
-                )?;
-                pf_trace!(self.id; "sent Accept -> {} for slot {} bal {}",
-                                   peer, slot, self.bal_prepared);
-            }
-        }
-
-        Ok(())
-    }
-
     /// Handler of Reconstruct message from leader.
     fn handle_msg_reconstruct(
         &mut self,
@@ -1178,7 +1119,12 @@ impl RSPaxosReplica {
 
         for slot in slots {
             if slot < self.start_slot {
-                continue; // ignore if slot index outdated
+                // NOTE: this has one caveat: a new leader trying to do
+                // reconstruction reads might find that all other peers have
+                // snapshotted that slot. Proper InstallSnapshot-style messages
+                // will be needed to deal with this; but since this scenario is
+                // just too rare, it is not implemented yet
+                continue;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -1202,7 +1148,8 @@ impl RSPaxosReplica {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(self.id; "sent ReconstructReply message for {} slots", num_slots);
+            pf_trace!(self.id; "sent ReconstructReply -> {} for {} slots",
+                               peer, num_slots);
         }
         Ok(())
     }
@@ -1231,10 +1178,10 @@ impl RSPaxosReplica {
                 inst.reqs_cw.absorb_other(reqs_cw)?;
 
                 // if enough shards have been gathered, can push execution forward
-                if slot == self.exec_bar {
-                    let mut now_slot = self.exec_bar;
-                    while now_slot < self.start_slot + self.insts.len() {
-                        let inst = &mut self.insts[now_slot - self.start_slot];
+                if slot == self.commit_bar {
+                    while self.commit_bar < self.start_slot + self.insts.len() {
+                        let inst =
+                            &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed
                             || inst.reqs_cw.avail_shards() < self.majority
                         {
@@ -1257,7 +1204,8 @@ impl RSPaxosReplica {
                                 if let ApiRequest::Req { cmd, .. } = req {
                                     self.state_machine.submit_cmd(
                                         Self::make_command_id(
-                                            now_slot, cmd_idx,
+                                            self.commit_bar,
+                                            cmd_idx,
                                         ),
                                         cmd.clone(),
                                     )?;
@@ -1266,10 +1214,10 @@ impl RSPaxosReplica {
                                 }
                             }
                             pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                               reqs.len(), now_slot);
+                                               reqs.len(), self.commit_bar);
                         }
 
-                        now_slot += 1;
+                        self.commit_bar += 1;
                     }
                 }
             }
@@ -1302,9 +1250,6 @@ impl RSPaxosReplica {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::FillHoles { slots } => {
-                self.handle_msg_fill_holes(peer, slots)
-            }
             PeerMsg::Reconstruct { slots } => {
                 self.handle_msg_reconstruct(peer, slots)
             }
