@@ -8,6 +8,7 @@ use std::cmp;
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
+use std::mem;
 
 use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
@@ -1689,7 +1690,7 @@ impl CrosswordReplica {
                 if recon_slots.len() == self.config.recon_chunk_size {
                     self.transport_hub.bcast_msg(
                         PeerMsg::Reconstruct {
-                            slots_excl: std::mem::take(&mut recon_slots),
+                            slots_excl: mem::take(&mut recon_slots),
                         },
                         None,
                     )?;
@@ -1999,7 +2000,7 @@ impl CrosswordReplica {
                     {
                         self.transport_hub.send_msg(
                             PeerMsg::Reconstruct {
-                                slots_excl: std::mem::take(
+                                slots_excl: mem::take(
                                     recon_slots.get_mut(&peer).unwrap(),
                                 ),
                             },
