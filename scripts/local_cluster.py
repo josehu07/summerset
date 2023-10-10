@@ -46,6 +46,7 @@ PROTOCOL_BACKER_PATH = {
     "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
     "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
     "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
+    "CRaft": lambda r: f"backer_path='/tmp/summerset.craft.{r}.wal'",
     "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
 }
 
@@ -53,25 +54,45 @@ PROTOCOL_SNAPSHOT_PATH = {
     "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
     "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
     "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
+    "CRaft": lambda r: f"snapshot_path='/tmp/summerset.craft.{r}.snap'",
     "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
 }
 
+PROTOCOL_EXTRA_DEFAULTS = {
+    "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
+    "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
+    "Crossword": lambda n, _: f"fault_tolerance={n//2}",
+}
 
-def config_with_file_paths(protocol, config, replica):
-    result_config = PROTOCOL_BACKER_PATH[protocol](replica)
+
+def config_with_defaults(protocol, config, num_replicas, replica_id):
+    def config_str_to_dict(s):
+        l = s.strip().split("+")
+        l = [c.strip().split("=") for c in l]
+        for c in l:
+            assert len(c) == 2
+        return {c[0]: c[1] for c in l}
+
+    def config_dict_to_str(d):
+        l = ["=".join([k, v]) for k, v in d.items()]
+        return "+".join(l)
+
+    config_dict = config_str_to_dict(PROTOCOL_BACKER_PATH[protocol](replica_id))
     if protocol in PROTOCOL_SNAPSHOT_PATH:
-        result_config += "+"
-        result_config += PROTOCOL_SNAPSHOT_PATH[protocol](replica)
+        config_dict.update(
+            config_str_to_dict(PROTOCOL_SNAPSHOT_PATH[protocol](replica_id))
+        )
+    if protocol in PROTOCOL_EXTRA_DEFAULTS:
+        config_dict.update(
+            config_str_to_dict(
+                PROTOCOL_EXTRA_DEFAULTS[protocol](num_replicas, replica_id)
+            )
+        )
 
     if config is not None and len(config) > 0:
-        if "backer_path" in config or "snapshot_path" in config:
-            result_config = config  # use user-supplied path
-            # NOTE: ignores the other one
-        else:
-            result_config += "+"
-            result_config += config
+        config_dict.update(config_str_to_dict(config))
 
-    return result_config
+    return config_dict_to_str(config_dict)
 
 
 def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
@@ -144,7 +165,7 @@ def launch_servers(protocol, num_replicas, release, config):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            config_with_file_paths(protocol, config, replica),
+            config_with_defaults(protocol, config, num_replicas, replica),
             release,
         )
         proc = run_process(cmd)
