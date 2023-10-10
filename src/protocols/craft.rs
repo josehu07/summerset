@@ -222,6 +222,11 @@ pub struct CRaftReplica {
     /// Majority quorum size.
     majority: u8,
 
+    /// True if we are in full-copy replication fallback mode.
+    // NOTE: works that follow CRaft proposed more gradual fallback mechanisms,
+    //       but for the sake of CRaft, a boolean flag is enough.
+    full_copy_mode: bool,
+
     /// Configuration parameters struct.
     config: ReplicaConfigCRaft,
 
@@ -388,6 +393,35 @@ impl CRaftReplica {
             Ok(false)
         }
     }
+
+    /// Switch between normal "1 shard per replica" mode and full-copy mode.
+    /// If falling back to full-copy, also re-persist and re-send all shards
+    /// in my current log.
+    fn switch_assignment_mode(
+        &mut self,
+        to_full_copy: bool,
+    ) -> Result<(), SummersetError> {
+        pf_info!(self.id; "switching assignment config to: {}",
+                          if to_full_copy { "full-copy" } else { "1-shard" });
+        self.full_copy_mode = to_full_copy;
+
+        if to_full_copy {
+            // you might already notice that such fallback mechanism does not
+            // guarantee to guard against extra failures during this period
+            for (slot, inst) in self
+                .log
+                .iter_mut()
+                .enumerate()
+                .map(|(s, i)| (self.start_slot + s, i))
+            {
+                // TODO: re-persist
+
+                // TODO: re-send shards
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // CRaftReplica client requests entrance
@@ -437,15 +471,26 @@ impl CRaftReplica {
 
         // submit logger action to make this log entry durable
         let slot = self.start_slot + self.log.len();
-        let subset_copy = reqs_cw
-            .subset_copy(Bitmap::from(self.population, vec![self.id]), false)?;
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, slot, Role::Leader),
             LogAction::Append {
                 entry: DurEntry::LogEntry {
                     entry: LogEntry {
                         term: self.curr_term,
-                        reqs_cw: subset_copy,
+                        reqs_cw: if self.full_copy_mode {
+                            reqs_cw.subset_copy(
+                                Bitmap::from(
+                                    self.population,
+                                    (0..self.majority).collect(),
+                                ),
+                                false,
+                            )?
+                        } else {
+                            reqs_cw.subset_copy(
+                                Bitmap::from(self.population, vec![self.id]),
+                                false,
+                            )?
+                        },
                         external: true,
                         log_offset: 0,
                     },
@@ -499,17 +544,23 @@ impl CRaftReplica {
                 .iter()
                 .take(slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
-                .map(|e| LogEntry {
-                    term: e.term,
-                    reqs_cw: e
-                        .reqs_cw
-                        .subset_copy(
-                            Bitmap::from(self.population, vec![peer]),
-                            false,
-                        )
-                        .unwrap(),
-                    external: false,
-                    log_offset: e.log_offset,
+                .map(|e| {
+                    if self.full_copy_mode {
+                        e.clone()
+                    } else {
+                        LogEntry {
+                            term: e.term,
+                            reqs_cw: e
+                                .reqs_cw
+                                .subset_copy(
+                                    Bitmap::from(self.population, vec![peer]),
+                                    false,
+                                )
+                                .unwrap(),
+                            external: false,
+                            log_offset: e.log_offset,
+                        }
+                    }
                 })
                 .collect();
 
@@ -925,17 +976,23 @@ impl CRaftReplica {
                 .iter()
                 .take(end_slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
-                .map(|e| LogEntry {
-                    term: e.term,
-                    reqs_cw: e
-                        .reqs_cw
-                        .subset_copy(
-                            Bitmap::from(self.population, vec![peer]),
-                            false,
-                        )
-                        .unwrap(),
-                    external: false,
-                    log_offset: e.log_offset,
+                .map(|e| {
+                    if self.full_copy_mode {
+                        e.clone()
+                    } else {
+                        LogEntry {
+                            term: e.term,
+                            reqs_cw: e
+                                .reqs_cw
+                                .subset_copy(
+                                    Bitmap::from(self.population, vec![peer]),
+                                    false,
+                                )
+                                .unwrap(),
+                            external: false,
+                            log_offset: e.log_offset,
+                        }
+                    }
                 })
                 .collect();
 
@@ -1252,6 +1309,12 @@ impl CRaftReplica {
             if self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, false)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                // check if we need to fall back to full-copy replication
+                if self.population - self.peer_alive.count()
+                    >= self.config.fault_tolerance
+                {
+                    self.switch_assignment_mode(true)?;
+                }
             }
         }
 
@@ -1380,6 +1443,13 @@ impl CRaftReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(self.id, self.curr_term)?;
 
+        // check if we need to fall back to full-copy replication
+        if self.population - self.peer_alive.count()
+            >= self.config.fault_tolerance
+        {
+            self.switch_assignment_mode(true)?;
+        }
+
         // pf_trace!(self.id; "broadcast heartbeats term {}", self.curr_term);
         Ok(())
     }
@@ -1410,6 +1480,12 @@ impl CRaftReplica {
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                // check if we can move back to 1-shard replication
+                if self.population - self.peer_alive.count()
+                    < self.config.fault_tolerance
+                {
+                    self.switch_assignment_mode(false)?;
+                }
             }
         }
 
@@ -2123,6 +2199,7 @@ impl GenericReplica for CRaftReplica {
             id,
             population,
             majority,
+            full_copy_mode: false,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,

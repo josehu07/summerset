@@ -564,6 +564,12 @@ impl CrosswordReplica {
                           if redo_accepts { "redo" } else { "" });
 
         if redo_accepts {
+            // redo the Accept phase of all instances currently in Accepting
+            // state. It is totally fine to care nothing about committed
+            // intances: Crossword always maintains the correct liveness
+            // constraint, so falling back to a smaller quorum size is not
+            // to guard against "losing data" on a future failure, but just
+            // to make the quorum size small enough to be reachable
             for (slot, inst) in self
                 .insts
                 .iter_mut()
@@ -575,7 +581,7 @@ impl CrosswordReplica {
                     inst.bal = self.bal_prepared;
                     inst.leader_bk.as_mut().unwrap().accept_acks.clear();
                     pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                               slot, inst.bal);
+                                       slot, inst.bal);
 
                     // record update to largest accepted ballot and corresponding data
                     let subset_copy = inst.reqs_cw.subset_copy(
@@ -604,7 +610,7 @@ impl CrosswordReplica {
                         },
                     )?;
                     pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                               slot, inst.bal);
+                                       slot, inst.bal);
 
                     // send Accept messages to all peers, each getting its subset of
                     // shards of data
@@ -633,7 +639,7 @@ impl CrosswordReplica {
                         )?;
                     }
                     pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                               slot, inst.bal);
+                                       slot, inst.bal);
                 }
             }
         }
