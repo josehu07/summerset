@@ -1038,6 +1038,24 @@ impl RaftReplica {
         self.votes_granted = HashSet::from([self.id]);
         pf_info!(self.id; "starting election with term {}...", self.curr_term);
 
+        // reset election timeout timer
+        self.heard_heartbeat(self.id, self.curr_term)?;
+
+        // send RequestVote messages to all other peers
+        let last_slot = self.start_slot + self.log.len() - 1;
+        assert!(last_slot >= self.start_slot);
+        let last_term = self.log[last_slot - self.start_slot].term;
+        self.transport_hub.bcast_msg(
+            PeerMsg::RequestVote {
+                term: self.curr_term,
+                last_slot,
+                last_term,
+            },
+            None,
+        )?;
+        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
+                           self.curr_term, last_slot, last_term);
+
         // also make the two critical fields durable, synchronously
         self.storage_hub.submit_action(
             0,
@@ -1066,24 +1084,6 @@ impl RaftReplica {
                 break;
             }
         }
-
-        // reset election timeout timer
-        self.heard_heartbeat(self.id, self.curr_term)?;
-
-        // send RequestVote messages to all other peers
-        let last_slot = self.start_slot + self.log.len() - 1;
-        assert!(last_slot >= self.start_slot);
-        let last_term = self.log[last_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::RequestVote {
-                term: self.curr_term,
-                last_slot,
-                last_term,
-            },
-            None,
-        )?;
-        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
-                           self.curr_term, last_slot, last_term);
 
         Ok(())
     }

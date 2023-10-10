@@ -756,8 +756,10 @@ impl CRaftReplica {
 
                 if entry.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
-                    pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, entry.reqs_cw.avail_shards(), self.majority);
+                    if !entries.is_empty() {
+                        pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
+                                           slot, entry.reqs_cw.avail_shards(), self.majority);
+                    }
                     break;
                 } else if entry.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
@@ -1261,6 +1263,24 @@ impl CRaftReplica {
         self.votes_granted = HashSet::from([self.id]);
         pf_info!(self.id; "starting election with term {}...", self.curr_term);
 
+        // reset election timeout timer
+        self.heard_heartbeat(self.id, self.curr_term)?;
+
+        // send RequestVote messages to all other peers
+        let last_slot = self.start_slot + self.log.len() - 1;
+        assert!(last_slot >= self.start_slot);
+        let last_term = self.log[last_slot - self.start_slot].term;
+        self.transport_hub.bcast_msg(
+            PeerMsg::RequestVote {
+                term: self.curr_term,
+                last_slot,
+                last_term,
+            },
+            None,
+        )?;
+        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
+                           self.curr_term, last_slot, last_term);
+
         // also make the two critical fields durable, synchronously
         self.storage_hub.submit_action(
             0,
@@ -1289,24 +1309,6 @@ impl CRaftReplica {
                 break;
             }
         }
-
-        // reset election timeout timer
-        self.heard_heartbeat(self.id, self.curr_term)?;
-
-        // send RequestVote messages to all other peers
-        let last_slot = self.start_slot + self.log.len() - 1;
-        assert!(last_slot >= self.start_slot);
-        let last_term = self.log[last_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::RequestVote {
-                term: self.curr_term,
-                last_slot,
-                last_term,
-            },
-            None,
-        )?;
-        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
-                           self.curr_term, last_slot, last_term);
 
         Ok(())
     }
@@ -1689,14 +1691,17 @@ impl CRaftReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..new_start_slot {
             let entry = &mut self.log[slot - self.start_slot];
-            assert!(entry.reqs_cw.avail_data_shards() >= self.majority);
-            for (_, req) in entry.reqs_cw.get_data()?.clone() {
-                if let ApiRequest::Req {
-                    cmd: Command::Put { key, value },
-                    ..
-                } = req
-                {
-                    pairs.insert(key, value);
+            // do nothing for dummy entry at slot 0
+            if entry.term > 0 {
+                assert!(entry.reqs_cw.avail_data_shards() >= self.majority);
+                for (_, req) in entry.reqs_cw.get_data()?.clone() {
+                    if let ApiRequest::Req {
+                        cmd: Command::Put { key, value },
+                        ..
+                    } = req
+                    {
+                        pairs.insert(key, value);
+                    }
                 }
             }
         }

@@ -60,7 +60,7 @@ PROTOCOL_SNAPSHOT_PATH = {
 
 PROTOCOL_EXTRA_DEFAULTS = {
     "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
-    "CRaft": lambda n, _: f"fault_tolerance={(n//2)}",
+    "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
     "Crossword": lambda n, _: f"fault_tolerance={n//2}",
 }
 
