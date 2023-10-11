@@ -5,11 +5,11 @@ import statistics
 import math
 import pickle
 
-import matplotlib
+import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 
 
 ##############
