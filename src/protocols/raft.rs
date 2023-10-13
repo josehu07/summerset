@@ -862,7 +862,6 @@ impl RaftReplica {
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                *self.next_slot.get_mut(&peer).unwrap() += 1;
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
             let prev_term = self.log[prev_slot - self.start_slot].term;
