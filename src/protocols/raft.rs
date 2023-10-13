@@ -169,7 +169,9 @@ enum PeerMsg {
         term: Term,
         /// For correct tracking of which AppendEntries this reply is for.
         end_slot: usize,
-        success: bool,
+        /// If success, `None`; otherwise, contains a pair of the conflicting
+        /// entry's term and my first index for that term.
+        conflict: Option<(Term, usize)>,
     },
 
     /// RequestVote from leader to followers.
@@ -520,7 +522,7 @@ impl RaftReplica {
                     PeerMsg::AppendEntriesReply {
                         term: self.curr_term,
                         end_slot: slot_e,
-                        success: true,
+                        conflict: None,
                     },
                     leader,
                 )?;
@@ -595,11 +597,30 @@ impl RaftReplica {
             || prev_slot >= self.start_slot + self.log.len()
             || self.log[prev_slot - self.start_slot].term != prev_term
         {
+            // figure out the conflict info to send back
+            let conflict_term = if prev_slot >= self.start_slot
+                && prev_slot < self.start_slot + self.log.len()
+            {
+                self.log[prev_slot - self.start_slot].term
+            } else {
+                0
+            };
+            let mut conflict_slot = prev_slot;
+            while conflict_term > 0 && conflict_slot > self.start_slot {
+                if self.log[conflict_slot - 1 - self.start_slot].term
+                    == conflict_term
+                {
+                    conflict_slot -= 1;
+                } else {
+                    break;
+                }
+            }
+
             self.transport_hub.send_msg(
                 PeerMsg::AppendEntriesReply {
                     term: self.curr_term,
                     end_slot: prev_slot + entries.len(),
-                    success: false,
+                    conflict: Some((conflict_term, conflict_slot)),
                 },
                 leader,
             )?;
@@ -702,7 +723,7 @@ impl RaftReplica {
                 PeerMsg::AppendEntriesReply {
                     term: self.curr_term,
                     end_slot: first_new - 1,
-                    success: true,
+                    conflict: None,
                 },
                 leader,
             )?;
@@ -746,18 +767,18 @@ impl RaftReplica {
         peer: ReplicaId,
         term: Term,
         end_slot: usize,
-        success: bool,
+        conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
-        if !success || self.match_slot[&peer] != end_slot {
+        if conflict.is_some() || self.match_slot[&peer] != end_slot {
             pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
-                               peer, term, if success { "ok" } else { "fail" });
+                               peer, term, if conflict.is_none() { "ok" } else { "fail" });
         }
         if self.check_term(peer, term)? || self.role != Role::Leader {
             return Ok(());
         }
         self.heard_heartbeat(peer, term)?;
 
-        if success {
+        if conflict.is_none() {
             // success: update next_slot and match_slot for follower
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
             if self.try_next_slot[&peer] < end_slot + 1 {
@@ -820,13 +841,22 @@ impl RaftReplica {
             }
         } else {
             // failed: decrement next_slot for follower and retry
-            // NOTE: the optimization of fast-backward bypassing (instead of
-            //       always decrementing by 1) not implemented
             if self.next_slot[&peer] == 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = 1;
                 return Ok(()); // cannot move backward any more
             }
+
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
+            if let Some((conflict_term, conflict_slot)) = conflict {
+                while self.next_slot[&peer] > self.start_slot
+                    && self.log[self.next_slot[&peer] - self.start_slot].term
+                        == conflict_term
+                    && self.next_slot[&peer] >= conflict_slot
+                {
+                    // bypass all conflicting entries in the conflicting term
+                    *self.next_slot.get_mut(&peer).unwrap() -= 1;
+                }
+            }
             *self.try_next_slot.get_mut(&peer).unwrap() = self.next_slot[&peer];
             debug_assert!(end_slot >= self.next_slot[&peer]);
 
@@ -974,9 +1004,10 @@ impl RaftReplica {
             PeerMsg::AppendEntriesReply {
                 term,
                 end_slot,
-                success,
-            } => self
-                .handle_msg_append_entries_reply(peer, term, end_slot, success),
+                conflict,
+            } => self.handle_msg_append_entries_reply(
+                peer, term, end_slot, conflict,
+            ),
             PeerMsg::RequestVote {
                 term,
                 last_slot,
