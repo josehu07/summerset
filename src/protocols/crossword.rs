@@ -463,8 +463,8 @@ impl CrosswordReplica {
     /// Compose CommandId from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        assert!(slot <= (u32::MAX as usize));
-        assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(slot <= (u32::MAX as usize));
+        debug_assert!(cmd_idx <= (u32::MAX as usize));
         ((slot << 32) | cmd_idx) as CommandId
     }
 
@@ -504,7 +504,7 @@ impl CrosswordReplica {
 
         // if assuming balanced assignment
         if let Some(shards_per_replica) = shards_per_replica {
-            assert!(shards_per_replica > 0);
+            debug_assert!(shards_per_replica > 0);
             return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
         }
 
@@ -552,7 +552,7 @@ impl CrosswordReplica {
         shards_per_replica: u8,
         redo_accepts: bool,
     ) -> Result<(), SummersetError> {
-        assert!(shards_per_replica > 0);
+        debug_assert!(shards_per_replica > 0);
         if shards_per_replica > self.majority {
             return Ok(()); // invalid, ignore
         }
@@ -578,7 +578,7 @@ impl CrosswordReplica {
                 .map(|(s, i)| (self.start_slot + s, i))
             {
                 if inst.status == Status::Accepting {
-                    assert!(inst.leader_bk.is_some());
+                    debug_assert!(inst.leader_bk.is_some());
                     inst.bal = self.bal_prepared;
                     inst.leader_bk.as_mut().unwrap().accept_acks.clear();
                     pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
@@ -657,7 +657,7 @@ impl CrosswordReplica {
         req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        assert!(batch_size > 0);
+        debug_assert!(batch_size > 0);
         pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
@@ -967,16 +967,16 @@ impl CrosswordReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot < self.start_slot + self.insts.len());
+        debug_assert!(slot < self.start_slot + self.insts.len());
 
         if let LogResult::Append { now_size } = log_result {
-            assert!(now_size >= self.wal_offset);
+            debug_assert!(now_size >= self.wal_offset);
             // update first wal_offset of slot
             let inst = &mut self.insts[slot - self.start_slot];
             if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
                 inst.wal_offset = self.wal_offset;
             }
-            assert!(inst.wal_offset <= self.wal_offset);
+            debug_assert!(inst.wal_offset <= self.wal_offset);
             // then update self.wal_offset
             self.wal_offset = now_size;
         } else {
@@ -1016,7 +1016,7 @@ impl CrosswordReplica {
                 self.insts.push(self.null_instance()?);
             }
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.bal <= ballot);
+            debug_assert!(inst.bal <= ballot);
 
             inst.bal = ballot;
             inst.status = Status::Preparing;
@@ -1060,7 +1060,7 @@ impl CrosswordReplica {
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
-            assert!(slot < self.start_slot + self.insts.len());
+            debug_assert!(slot < self.start_slot + self.insts.len());
             let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
@@ -1072,8 +1072,8 @@ impl CrosswordReplica {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
-            assert!(self.bal_max_seen >= ballot);
-            assert!(inst.leader_bk.is_some());
+            debug_assert!(self.bal_max_seen >= ballot);
+            debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
             if leader_bk.prepare_acks.get(peer)? {
                 return Ok(());
@@ -1112,7 +1112,7 @@ impl CrosswordReplica {
                                    slot, inst.bal);
 
                 // update bal_prepared
-                assert!(self.bal_prepared <= ballot);
+                debug_assert!(self.bal_prepared <= ballot);
                 self.bal_prepared = ballot;
 
                 // if parity shards not computed yet, compute them now
@@ -1202,7 +1202,7 @@ impl CrosswordReplica {
                 self.insts.push(self.null_instance()?);
             }
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.bal <= ballot);
+            debug_assert!(inst.bal <= ballot);
 
             inst.bal = ballot;
             inst.status = Status::Accepting;
@@ -1250,7 +1250,7 @@ impl CrosswordReplica {
 
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
-            assert!(slot < self.start_slot + self.insts.len());
+            debug_assert!(slot < self.start_slot + self.insts.len());
             let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
@@ -1262,8 +1262,8 @@ impl CrosswordReplica {
                 return Ok(());
             }
             assert_eq!(inst.bal, ballot);
-            assert!(self.bal_max_seen >= ballot);
-            assert!(inst.leader_bk.is_some());
+            debug_assert!(self.bal_max_seen >= ballot);
+            debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
             if leader_bk.accept_acks.contains_key(&peer) {
                 return Ok(());
@@ -1423,8 +1423,8 @@ impl CrosswordReplica {
             }
             pf_trace!(self.id; "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
                                peer, slot, ballot, reqs_cw.avail_shards_map());
-            assert!(slot < self.start_slot + self.insts.len());
-            assert!(
+            debug_assert!(slot < self.start_slot + self.insts.len());
+            debug_assert!(
                 self.insts[slot - self.start_slot].status >= Status::Committed
             );
             let inst = &mut self.insts[slot - self.start_slot];
@@ -1534,13 +1534,13 @@ impl CrosswordReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot < self.start_slot + self.insts.len());
+        debug_assert!(slot < self.start_slot + self.insts.len());
         pf_trace!(self.id; "executed cmd in instance at slot {} idx {}",
                            slot, cmd_idx);
 
         let inst = &mut self.insts[slot - self.start_slot];
         let reqs = inst.reqs_cw.get_data()?;
-        assert!(cmd_idx < reqs.len());
+        debug_assert!(cmd_idx < reqs.len());
         let (client, ref req) = reqs[cmd_idx];
 
         // reply command result back to client
@@ -2209,14 +2209,14 @@ impl CrosswordReplica {
                 if self.bal_max_seen < ballot {
                     self.bal_max_seen = ballot;
                 }
-                assert!(self.bal_prepared <= self.bal_prep_sent);
+                debug_assert!(self.bal_prepared <= self.bal_prep_sent);
             }
 
             WalEntry::CommitSlot { slot } => {
                 if slot < self.start_slot {
                     return Ok(()); // ignore if slot index outdated
                 }
-                assert!(slot < self.start_slot + self.insts.len());
+                debug_assert!(slot < self.start_slot + self.insts.len());
                 // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
@@ -2326,7 +2326,7 @@ impl CrosswordReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..new_start_slot {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
+            debug_assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
@@ -2403,7 +2403,7 @@ impl CrosswordReplica {
         // update inst.wal_offset for all remaining in-mem instances
         for inst in &mut self.insts {
             if inst.wal_offset > 0 {
-                assert!(inst.wal_offset >= cut_offset);
+                debug_assert!(inst.wal_offset >= cut_offset);
                 inst.wal_offset -= cut_offset;
             }
         }
@@ -2426,7 +2426,7 @@ impl CrosswordReplica {
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
                            self.start_slot, self.exec_bar, self.snap_bar);
-        assert!(self.exec_bar >= self.start_slot);
+        debug_assert!(self.exec_bar >= self.start_slot);
 
         let new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
         if new_start_slot == self.start_slot {
@@ -3000,7 +3000,7 @@ impl GenericEndpoint for CrosswordClient {
                 servers,
             } => {
                 // shift to a new server_id if current one not active
-                assert!(!servers.is_empty());
+                debug_assert!(!servers.is_empty());
                 while !servers.contains_key(&self.server_id) {
                     self.server_id = (self.server_id + 1) % population;
                 }
@@ -3084,7 +3084,7 @@ impl GenericEndpoint for CrosswordClient {
                 // if the current server redirects me to a different server
                 if result.is_none() && redirect.is_some() {
                     let redirect_id = redirect.unwrap();
-                    assert!(self.servers.contains_key(&redirect_id));
+                    debug_assert!(self.servers.contains_key(&redirect_id));
                     self.server_id = redirect_id;
                     pf_debug!(self.id; "redirected to replica {} '{}'",
                                        redirect_id, self.servers[&redirect_id]);

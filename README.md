@@ -59,6 +59,7 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 | `MultiPaxos` | Classic [MultiPaxos](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf) protocol |
 | `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding |
 | `Raft` | [Raft](https://raft.github.io/raft.pdf) on explicit log and strong leadership |
+| `CRaft` | Raft w/ erasure code sharding and fallback support |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
@@ -165,7 +166,7 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] snapshotting & garbage collection
   - [ ] membership discovery & view changes
   - [ ] TLA+ spec
-- [ ] implementation of CRaft
+- [x] implementation of CRaft
   - [ ] TLA+ spec
 - [x] implementation of Crossword prototype
   - [x] fault recovery reads

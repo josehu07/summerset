@@ -169,7 +169,9 @@ enum PeerMsg {
         term: Term,
         /// For correct tracking of which AppendEntries this reply is for.
         end_slot: usize,
-        success: bool,
+        /// If success, `None`; otherwise, contains a pair of the conflicting
+        /// entry's term and my first index for that term.
+        conflict: Option<(Term, usize)>,
     },
 
     /// RequestVote from leader to followers.
@@ -277,6 +279,12 @@ pub struct RaftReplica {
     /// For each server, index of the next log entry to send.
     next_slot: HashMap<ReplicaId, usize>,
 
+    /// For each server, index of the next log entry to try to send for an
+    /// AppendEntries message. This is added due to the asynchronous nature
+    /// of Summerset's implementation.
+    /// It is always true that next_slot[r] <= try_next_slot[r]
+    try_next_slot: HashMap<ReplicaId, usize>,
+
     /// For each server, index of the highest log entry known to be replicated.
     match_slot: HashMap<ReplicaId, usize>,
 
@@ -331,8 +339,8 @@ impl RaftReplica {
     /// Compose CommandId from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        assert!(slot <= (u32::MAX as usize));
-        assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(slot <= (u32::MAX as usize));
+        debug_assert!(cmd_idx <= (u32::MAX as usize));
         ((slot << 32) | cmd_idx) as CommandId
     }
 
@@ -377,7 +385,7 @@ impl RaftReplica {
         req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        assert!(batch_size > 0);
+        debug_assert!(batch_size > 0);
         pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
@@ -447,11 +455,11 @@ impl RaftReplica {
 
         // broadcast AppendEntries messages to followers
         for peer in 0..self.population {
-            if peer == self.id || self.next_slot[&peer] < 1 {
+            if peer == self.id || self.try_next_slot[&peer] < 1 {
                 continue;
             }
 
-            let prev_slot = self.next_slot[&peer] - 1;
+            let prev_slot = self.try_next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
@@ -460,11 +468,11 @@ impl RaftReplica {
                 .log
                 .iter()
                 .take(slot + 1 - self.start_slot)
-                .skip(self.next_slot[&peer] - self.start_slot)
+                .skip(self.try_next_slot[&peer] - self.start_slot)
                 .cloned()
                 .collect();
 
-            if slot >= self.next_slot[&peer] {
+            if slot >= self.try_next_slot[&peer] {
                 self.transport_hub.send_msg(
                     PeerMsg::AppendEntries {
                         term: self.curr_term,
@@ -477,8 +485,13 @@ impl RaftReplica {
                     peer,
                 )?;
                 pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.next_slot[&peer],
+                                   peer, self.try_next_slot[&peer],
                                    self.start_slot + self.log.len() - 1);
+
+                // update try_next_slot to avoid blindly sending the same
+                // entries again on future triggers
+                *self.try_next_slot.get_mut(&peer).unwrap() =
+                    self.start_slot + self.log.len();
             }
         }
 
@@ -499,7 +512,7 @@ impl RaftReplica {
         }
         pf_trace!(self.id; "finished follower append logging for slot {} <= {}",
                            slot, slot_e);
-        assert!(slot <= slot_e);
+        debug_assert!(slot <= slot_e);
 
         // if all consecutive entries are made durable, reply AppendEntries
         // success back to leader
@@ -509,7 +522,7 @@ impl RaftReplica {
                     PeerMsg::AppendEntriesReply {
                         term: self.curr_term,
                         end_slot: slot_e,
-                        success: true,
+                        conflict: None,
                     },
                     leader,
                 )?;
@@ -531,7 +544,7 @@ impl RaftReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot_e < self.start_slot + self.log.len());
+        debug_assert!(slot_e < self.start_slot + self.log.len());
 
         if let LogResult::Append { now_size } = log_result {
             let entry = &mut self.log[slot - self.start_slot];
@@ -539,7 +552,7 @@ impl RaftReplica {
                 // entry has incorrect log_offset bookkept; update it
                 entry.log_offset = self.log_offset;
             }
-            assert!(now_size > self.log_offset);
+            debug_assert!(now_size > self.log_offset);
             self.log_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
@@ -584,11 +597,30 @@ impl RaftReplica {
             || prev_slot >= self.start_slot + self.log.len()
             || self.log[prev_slot - self.start_slot].term != prev_term
         {
+            // figure out the conflict info to send back
+            let conflict_term = if prev_slot >= self.start_slot
+                && prev_slot < self.start_slot + self.log.len()
+            {
+                self.log[prev_slot - self.start_slot].term
+            } else {
+                0
+            };
+            let mut conflict_slot = prev_slot;
+            while conflict_term > 0 && conflict_slot > self.start_slot {
+                if self.log[conflict_slot - 1 - self.start_slot].term
+                    == conflict_term
+                {
+                    conflict_slot -= 1;
+                } else {
+                    break;
+                }
+            }
+
             self.transport_hub.send_msg(
                 PeerMsg::AppendEntriesReply {
                     term: self.curr_term,
                     end_slot: prev_slot + entries.len(),
-                    success: false,
+                    conflict: Some((conflict_term, conflict_slot)),
                 },
                 leader,
             )?;
@@ -691,7 +723,7 @@ impl RaftReplica {
                 PeerMsg::AppendEntriesReply {
                     term: self.curr_term,
                     end_slot: first_new - 1,
-                    success: true,
+                    conflict: None,
                 },
                 leader,
             )?;
@@ -735,20 +767,23 @@ impl RaftReplica {
         peer: ReplicaId,
         term: Term,
         end_slot: usize,
-        success: bool,
+        conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
-        if !success || self.match_slot[&peer] != end_slot {
+        if conflict.is_some() || self.match_slot[&peer] != end_slot {
             pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
-                               peer, term, if success { "ok" } else { "fail" });
+                               peer, term, if conflict.is_none() { "ok" } else { "fail" });
         }
         if self.check_term(peer, term)? || self.role != Role::Leader {
             return Ok(());
         }
         self.heard_heartbeat(peer, term)?;
 
-        if success {
+        if conflict.is_none() {
             // success: update next_slot and match_slot for follower
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
+            if self.try_next_slot[&peer] < end_slot + 1 {
+                *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
+            }
             *self.match_slot.get_mut(&peer).unwrap() = end_slot;
 
             // since we updated some match_slot here, check if any additional
@@ -806,17 +841,27 @@ impl RaftReplica {
             }
         } else {
             // failed: decrement next_slot for follower and retry
-            // NOTE: the optimization of fast-backward bypassing (instead of
-            //       always decrementing by 1) not implemented
             if self.next_slot[&peer] == 1 {
+                *self.try_next_slot.get_mut(&peer).unwrap() = 1;
                 return Ok(()); // cannot move backward any more
             }
+
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
-            assert!(end_slot >= self.next_slot[&peer]);
+            if let Some((conflict_term, conflict_slot)) = conflict {
+                while self.next_slot[&peer] > self.start_slot
+                    && self.log[self.next_slot[&peer] - self.start_slot].term
+                        == conflict_term
+                    && self.next_slot[&peer] >= conflict_slot
+                {
+                    // bypass all conflicting entries in the conflicting term
+                    *self.next_slot.get_mut(&peer).unwrap() -= 1;
+                }
+            }
+            *self.try_next_slot.get_mut(&peer).unwrap() = self.next_slot[&peer];
+            debug_assert!(end_slot >= self.next_slot[&peer]);
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                *self.next_slot.get_mut(&peer).unwrap() += 1;
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
             let prev_term = self.log[prev_slot - self.start_slot].term;
@@ -842,6 +887,11 @@ impl RaftReplica {
             pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
                                peer, self.next_slot[&peer],
                                self.start_slot + self.log.len() - 1);
+
+            // update try_next_slot to avoid blindly sending the same
+            // entries again on future triggers
+            *self.try_next_slot.get_mut(&peer).unwrap() =
+                self.start_slot + self.log.len();
         }
 
         Ok(())
@@ -953,9 +1003,10 @@ impl RaftReplica {
             PeerMsg::AppendEntriesReply {
                 term,
                 end_slot,
-                success,
-            } => self
-                .handle_msg_append_entries_reply(peer, term, end_slot, success),
+                conflict,
+            } => self.handle_msg_append_entries_reply(
+                peer, term, end_slot, conflict,
+            ),
             PeerMsg::RequestVote {
                 term,
                 last_slot,
@@ -980,12 +1031,12 @@ impl RaftReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot < self.start_slot + self.log.len());
+        debug_assert!(slot < self.start_slot + self.log.len());
         pf_trace!(self.id; "executed cmd in entry at slot {} idx {}",
                            slot, cmd_idx);
 
         let entry = &mut self.log[slot - self.start_slot];
-        assert!(cmd_idx < entry.reqs.len());
+        debug_assert!(cmd_idx < entry.reqs.len());
         let (client, ref req) = entry.reqs[cmd_idx];
 
         // reply command result back to client
@@ -1043,7 +1094,7 @@ impl RaftReplica {
 
         // send RequestVote messages to all other peers
         let last_slot = self.start_slot + self.log.len() - 1;
-        assert!(last_slot >= self.start_slot);
+        debug_assert!(last_slot >= self.start_slot);
         let last_term = self.log[last_slot - self.start_slot].term;
         self.transport_hub.bcast_msg(
             PeerMsg::RequestVote {
@@ -1103,6 +1154,9 @@ impl RaftReplica {
         for slot in self.next_slot.values_mut() {
             *slot = self.start_slot + self.log.len();
         }
+        for slot in self.try_next_slot.values_mut() {
+            *slot = self.start_slot + self.log.len();
+        }
         for slot in self.match_slot.values_mut() {
             *slot = 0;
         }
@@ -1113,7 +1167,7 @@ impl RaftReplica {
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         let prev_slot = self.start_slot + self.log.len() - 1;
-        assert!(prev_slot >= self.start_slot);
+        debug_assert!(prev_slot >= self.start_slot);
         let prev_term = self.log[prev_slot - self.start_slot].term;
         self.transport_hub.bcast_msg(
             PeerMsg::AppendEntries {
@@ -1429,7 +1483,7 @@ impl RaftReplica {
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
-        assert!(self.log_offset >= self.log_meta_end);
+        debug_assert!(self.log_offset >= self.log_meta_end);
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
@@ -1498,7 +1552,7 @@ impl RaftReplica {
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         // drain things currently in storage_hub's recv chan if head of log's
         // durable file offset has not been set yet
-        assert!(!self.log.is_empty());
+        debug_assert!(!self.log.is_empty());
         while self.log[0].log_offset == 0 {
             let (action_id, log_result) = self.storage_hub.get_result().await?;
             self.handle_log_result(action_id, log_result)?;
@@ -1507,8 +1561,8 @@ impl RaftReplica {
 
         // discard the log after meta_end and before cut_offset
         if cut_offset > 0 {
-            assert!(self.log_meta_end > 0);
-            assert!(self.log_meta_end <= cut_offset);
+            debug_assert!(self.log_meta_end > 0);
+            debug_assert!(self.log_meta_end <= cut_offset);
             self.storage_hub.submit_action(
                 0,
                 LogAction::Discard {
@@ -1547,7 +1601,7 @@ impl RaftReplica {
         // update entry.log_offset for all remaining in-mem entries
         for entry in &mut self.log {
             if entry.log_offset > 0 {
-                assert!(entry.log_offset >= cut_offset);
+                debug_assert!(entry.log_offset >= cut_offset);
                 entry.log_offset -= cut_offset - self.log_meta_end;
             }
         }
@@ -1570,11 +1624,11 @@ impl RaftReplica {
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
                            self.start_slot, self.last_exec, self.last_snap);
-        assert!(self.last_exec + 1 >= self.start_slot);
+        debug_assert!(self.last_exec + 1 >= self.start_slot);
 
         // always keep at least one entry in log to make indexing happy
         let new_start_slot = cmp::min(self.last_snap, self.last_exec);
-        assert!(new_start_slot < self.start_slot + self.log.len());
+        debug_assert!(new_start_slot < self.start_slot + self.log.len());
         if new_start_slot < self.start_slot + 1 {
             return Ok(());
         }
@@ -1897,6 +1951,9 @@ impl GenericReplica for RaftReplica {
             next_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 1)) })
                 .collect(),
+            try_next_slot: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 1)) })
+                .collect(),
             match_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
@@ -2114,7 +2171,7 @@ impl GenericEndpoint for RaftClient {
                 servers,
             } => {
                 // shift to a new server_id if current one not active
-                assert!(!servers.is_empty());
+                debug_assert!(!servers.is_empty());
                 while !servers.contains_key(&self.server_id) {
                     self.server_id = (self.server_id + 1) % population;
                 }
@@ -2198,7 +2255,7 @@ impl GenericEndpoint for RaftClient {
                 // if the current server redirects me to a different server
                 if result.is_none() && redirect.is_some() {
                     let redirect_id = redirect.unwrap();
-                    assert!(self.servers.contains_key(&redirect_id));
+                    debug_assert!(self.servers.contains_key(&redirect_id));
                     self.server_id = redirect_id;
                     pf_debug!(self.id; "redirected to replica {} '{}'",
                                        redirect_id, self.servers[&redirect_id]);

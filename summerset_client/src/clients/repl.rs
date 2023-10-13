@@ -134,7 +134,7 @@ impl ClientRepl {
 
         // get command type, match case-insensitively
         let cmd_type = segs.next();
-        assert!(cmd_type.is_some());
+        debug_assert!(cmd_type.is_some());
 
         match &cmd_type.unwrap().to_lowercase()[..] {
             "get" => {

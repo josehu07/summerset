@@ -62,12 +62,12 @@ def plot_cstr_bound(idx, cluster_size):
         label="Crossword configs",
         zorder=20,
     )
-    plt.vlines(m, ymin=m, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
-    plt.vlines(n, ymin=1, ymax=2.4, linestyles="-", color=line_color, zorder=20)
+    plt.vlines(m, ymin=m, ymax=m + 1, linestyles="-", color=line_color, zorder=20)
+    plt.vlines(n, ymin=1, ymax=m + 1, linestyles="-", color=line_color, zorder=20)
 
     # correct region
     xs = [m, m, n, n]
-    ys = [m, m + 1.7, 2.7, 1]
+    ys = [m, m + 1.3, m + 1.3, 1]
     plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
 
     # unused x-axis ranges
@@ -93,8 +93,8 @@ def plot_cstr_bound(idx, cluster_size):
         label="Tradeoff decisions",
     )
     plt.text(
-        m + 0.3 if n < 9 else m + 0.6,
-        m + 2.5 if n < 9 else m + 2.2,
+        m + 0.3 if n < 9 else m + 0.5,
+        m + 2.5 if n < 9 else m + 2.4,
         "Lat.\noptim.",
         horizontalalignment="left",
         verticalalignment="center",
@@ -178,7 +178,7 @@ def make_legend(fig, handles, labels):
                 [
                     [0.2 * width, 0.5 * height],
                     [0.2 * width, 1.2 * height],
-                    [0.8 * width, 0.5 * height],
+                    [0.8 * width, 1.2 * height],
                     [0.8 * width, -0.2 * height],
                 ]
             ),

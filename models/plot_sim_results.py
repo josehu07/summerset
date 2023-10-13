@@ -1,10 +1,10 @@
-import matplotlib
+import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
 
 import pickle
 import math
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 
 
 def protocol_style(protocol, cluster_size):

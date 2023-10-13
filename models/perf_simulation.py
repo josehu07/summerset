@@ -5,11 +5,11 @@ import statistics
 import math
 import pickle
 
-import matplotlib
+import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # type: ignore
 
 
 ##############
@@ -900,7 +900,6 @@ def simulate(params):
 if __name__ == "__main__":
     random.seed()
 
-    # TODO: real adaptiveness design
     print("NOTE: adaptiveness hardcoded for 5!")
 
     # for num_replicas in (3, 5, 7, 9):
