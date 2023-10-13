@@ -176,7 +176,7 @@ impl ExternalApi {
             }
         }
 
-        assert!(!batch.is_empty());
+        debug_assert!(!batch.is_empty());
         Ok(batch)
     }
 
@@ -530,7 +530,7 @@ mod external_tests {
             }
             let client = reqs[0].0;
             assert_eq!(client, 2857);
-            assert!(api.has_client(2857));
+            debug_assert!(api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -657,7 +657,7 @@ mod external_tests {
             }
             let client = reqs[0].0;
             assert_eq!(client, 2857);
-            assert!(api.has_client(2857));
+            debug_assert!(api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {
@@ -685,8 +685,8 @@ mod external_tests {
             }
             let client = reqs[0].0;
             assert_eq!(client, 2858);
-            assert!(api.has_client(2858));
-            assert!(!api.has_client(2857));
+            debug_assert!(api.has_client(2858));
+            debug_assert!(!api.has_client(2857));
             assert_eq!(
                 reqs[0].1,
                 ApiRequest::Req {

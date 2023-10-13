@@ -475,7 +475,7 @@ mod reactor_tests {
             barrier2.wait().await;
             // recv request from client
             let (client, req) = reactor.recv_req().await?;
-            assert!(reactor.has_client(client));
+            debug_assert!(reactor.has_client(client));
             assert_eq!(req, CtrlRequest::QueryInfo);
             // send reply to client
             reactor.send_reply(
@@ -562,7 +562,7 @@ mod reactor_tests {
         barrier.wait().await;
         // recv request from client
         let (client, req) = reactor.recv_req().await?;
-        assert!(reactor.has_client(client));
+        debug_assert!(reactor.has_client(client));
         assert_eq!(req, CtrlRequest::QueryInfo);
         // send reply to client
         reactor.send_reply(
@@ -577,8 +577,8 @@ mod reactor_tests {
         )?;
         // recv request from new client
         let (client2, req2) = reactor.recv_req().await?;
-        assert!(reactor.has_client(client2));
-        assert!(!reactor.has_client(client));
+        debug_assert!(reactor.has_client(client2));
+        debug_assert!(!reactor.has_client(client));
         assert_eq!(req2, CtrlRequest::QueryInfo);
         // send reply to new client
         reactor.send_reply(

@@ -350,8 +350,8 @@ impl ClusterManager {
                 .send_ctrl(CtrlMsg::ResetState { durable }, s)?;
 
             // remove information about this server
-            assert!(self.assigned_ids.contains(&s));
-            assert!(self.server_info.contains_key(&s));
+            debug_assert!(self.assigned_ids.contains(&s));
+            debug_assert!(self.server_info.contains_key(&s));
             self.assigned_ids.remove(&s);
             self.server_info.remove(&s);
 
@@ -404,7 +404,7 @@ impl ClusterManager {
             self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
 
             // set the is_paused flag
-            assert!(self.server_info.contains_key(&s));
+            debug_assert!(self.server_info.contains_key(&s));
             self.server_info.get_mut(&s).unwrap().is_paused = true;
 
             // wait for dummy reply
@@ -458,7 +458,7 @@ impl ClusterManager {
             }
 
             // clear the is_paused flag
-            assert!(self.server_info.contains_key(&s));
+            debug_assert!(self.server_info.contains_key(&s));
             self.server_info.get_mut(&s).unwrap().is_paused = false;
 
             resume_done.insert(s);
@@ -497,7 +497,7 @@ impl ClusterManager {
                 match reply {
                     CtrlMsg::SnapshotUpTo { new_start } if server == s => {
                         // update the log start index info
-                        assert!(self.server_info.contains_key(&s));
+                        debug_assert!(self.server_info.contains_key(&s));
                         if new_start < self.server_info[&s].start_slot {
                             return logged_err!("m"; "server {} snapshot up to {} < {}",
                                                     s, new_start,

@@ -111,8 +111,8 @@ impl RepNothingReplica {
     /// Compose CommandId from instance index & command index within.
     #[inline]
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
-        assert!(inst_idx <= (u32::MAX as usize));
-        assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(inst_idx <= (u32::MAX as usize));
+        debug_assert!(cmd_idx <= (u32::MAX as usize));
         (inst_idx << 32 | cmd_idx) as CommandId
     }
 
@@ -133,7 +133,7 @@ impl RepNothingReplica {
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        assert!(batch_size > 0);
+        debug_assert!(batch_size > 0);
 
         let inst = Instance {
             reqs: req_batch.clone(),
@@ -172,7 +172,7 @@ impl RepNothingReplica {
 
         match log_result {
             LogResult::Append { now_size } => {
-                assert!(now_size >= self.wal_offset);
+                debug_assert!(now_size >= self.wal_offset);
                 self.wal_offset = now_size;
             }
             _ => {
@@ -635,7 +635,7 @@ impl GenericEndpoint for RepNothingClient {
                 servers,
             } => {
                 // find a server to connect to, starting from provided server_id
-                assert!(!servers.is_empty());
+                debug_assert!(!servers.is_empty());
                 while !servers.contains_key(&self.config.server_id) {
                     self.config.server_id =
                         (self.config.server_id + 1) % population;

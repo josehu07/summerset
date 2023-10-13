@@ -115,7 +115,7 @@ where
         write_buf.extend_from_slice(write_bytes.as_slice());
     } else {
         // retrying last unsuccessful write
-        assert!(*write_buf_cursor < write_buf.len());
+        debug_assert!(*write_buf_cursor < write_buf.len());
     }
 
     // try until the length + the object are all written

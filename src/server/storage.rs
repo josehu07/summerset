@@ -510,7 +510,7 @@ mod storage_tests {
         let (offset_ok, now_size) =
             StorageHub::write_entry(0, &mut backer_file, 0, &entry, 0, false)
                 .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, now_size) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -520,7 +520,7 @@ mod storage_tests {
             false,
         )
         .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, now_size) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -530,7 +530,7 @@ mod storage_tests {
             true,
         )
         .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, _) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -540,7 +540,7 @@ mod storage_tests {
             false,
         )
         .await?;
-        assert!(!offset_ok);
+        debug_assert!(!offset_ok);
         Ok(())
     }
 
@@ -553,7 +553,7 @@ mod storage_tests {
         let mid_size =
             StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        assert!(mid_size >= entry_bytes.len());
+        debug_assert!(mid_size >= entry_bytes.len());
         let end_size = StorageHub::append_entry(
             0,
             &mut backer_file,
@@ -562,7 +562,7 @@ mod storage_tests {
             true,
         )
         .await?;
-        assert!(end_size - mid_size >= entry_bytes.len());
+        debug_assert!(end_size - mid_size >= entry_bytes.len());
         Ok(())
     }
 

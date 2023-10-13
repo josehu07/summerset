@@ -357,8 +357,8 @@ impl CRaftReplica {
     /// Compose CommandId from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        assert!(slot <= (u32::MAX as usize));
-        assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(slot <= (u32::MAX as usize));
+        debug_assert!(cmd_idx <= (u32::MAX as usize));
         ((slot << 32) | cmd_idx) as CommandId
     }
 
@@ -497,7 +497,7 @@ impl CRaftReplica {
         req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
-        assert!(batch_size > 0);
+        debug_assert!(batch_size > 0);
         pf_debug!(self.id; "got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
@@ -664,7 +664,7 @@ impl CRaftReplica {
         }
         pf_trace!(self.id; "finished follower append logging for slot {} <= {}",
                            slot, slot_e);
-        assert!(slot <= slot_e);
+        debug_assert!(slot <= slot_e);
 
         // if all consecutive entries are made durable, reply AppendEntries
         // success back to leader
@@ -696,7 +696,7 @@ impl CRaftReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot_e < self.start_slot + self.log.len());
+        debug_assert!(slot_e < self.start_slot + self.log.len());
 
         if let LogResult::Append { now_size } = log_result {
             let entry = &mut self.log[slot - self.start_slot];
@@ -704,7 +704,7 @@ impl CRaftReplica {
                 // entry has incorrect log_offset bookkept; update it
                 entry.log_offset = self.log_offset;
             }
-            assert!(now_size > self.log_offset);
+            debug_assert!(now_size > self.log_offset);
             self.log_offset = now_size;
         } else {
             return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
@@ -1043,7 +1043,7 @@ impl CRaftReplica {
                 return Ok(()); // cannot move backward any more
             }
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
-            assert!(end_slot >= self.next_slot[&peer]);
+            debug_assert!(end_slot >= self.next_slot[&peer]);
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
@@ -1232,7 +1232,7 @@ impl CRaftReplica {
             }
             pf_trace!(self.id; "in ReconstructReply <- {} for slot {} shards {:?}",
                                peer, slot, reqs_cw.avail_shards_map());
-            assert!(slot < self.start_slot + self.log.len());
+            debug_assert!(slot < self.start_slot + self.log.len());
             let entry = &mut self.log[slot - self.start_slot];
 
             // absorb the shards from this replica
@@ -1349,13 +1349,13 @@ impl CRaftReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        assert!(slot < self.start_slot + self.log.len());
+        debug_assert!(slot < self.start_slot + self.log.len());
         pf_trace!(self.id; "executed cmd in entry at slot {} idx {}",
                            slot, cmd_idx);
 
         let entry = &mut self.log[slot - self.start_slot];
         let reqs = entry.reqs_cw.get_data()?;
-        assert!(cmd_idx < reqs.len());
+        debug_assert!(cmd_idx < reqs.len());
         let (client, ref req) = reqs[cmd_idx];
 
         // reply command result back to client
@@ -1419,7 +1419,7 @@ impl CRaftReplica {
 
         // send RequestVote messages to all other peers
         let last_slot = self.start_slot + self.log.len() - 1;
-        assert!(last_slot >= self.start_slot);
+        debug_assert!(last_slot >= self.start_slot);
         let last_term = self.log[last_slot - self.start_slot].term;
         self.transport_hub.bcast_msg(
             PeerMsg::RequestVote {
@@ -1489,7 +1489,7 @@ impl CRaftReplica {
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         let prev_slot = self.start_slot + self.log.len() - 1;
-        assert!(prev_slot >= self.start_slot);
+        debug_assert!(prev_slot >= self.start_slot);
         let prev_term = self.log[prev_slot - self.start_slot].term;
         self.transport_hub.bcast_msg(
             PeerMsg::AppendEntries {
@@ -1821,7 +1821,7 @@ impl CRaftReplica {
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
-        assert!(self.log_offset >= self.log_meta_end);
+        debug_assert!(self.log_offset >= self.log_meta_end);
         self.storage_hub.submit_action(
             0,
             LogAction::Truncate {
@@ -1857,7 +1857,9 @@ impl CRaftReplica {
             let entry = &mut self.log[slot - self.start_slot];
             // do nothing for dummy entry at slot 0
             if entry.term > 0 {
-                assert!(entry.reqs_cw.avail_data_shards() >= self.majority);
+                debug_assert!(
+                    entry.reqs_cw.avail_data_shards() >= self.majority
+                );
                 for (_, req) in entry.reqs_cw.get_data()?.clone() {
                     if let ApiRequest::Req {
                         cmd: Command::Put { key, value },
@@ -1892,9 +1894,8 @@ impl CRaftReplica {
 
     /// Discard everything lower than start_slot in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
-        // drain things currently in storage_hub's recv chan if head of log's
         // durable file offset has not been set yet
-        assert!(!self.log.is_empty());
+        debug_assert!(!self.log.is_empty());
         while self.log[0].log_offset == 0 {
             let (action_id, log_result) = self.storage_hub.get_result().await?;
             self.handle_log_result(action_id, log_result)?;
@@ -1903,8 +1904,8 @@ impl CRaftReplica {
 
         // discard the log after meta_end and before cut_offset
         if cut_offset > 0 {
-            assert!(self.log_meta_end > 0);
-            assert!(self.log_meta_end <= cut_offset);
+            debug_assert!(self.log_meta_end > 0);
+            debug_assert!(self.log_meta_end <= cut_offset);
             self.storage_hub.submit_action(
                 0,
                 LogAction::Discard {
@@ -1943,7 +1944,7 @@ impl CRaftReplica {
         // update entry.log_offset for all remaining in-mem entries
         for entry in &mut self.log {
             if entry.log_offset > 0 {
-                assert!(entry.log_offset >= cut_offset);
+                debug_assert!(entry.log_offset >= cut_offset);
                 entry.log_offset -= cut_offset - self.log_meta_end;
             }
         }
@@ -1966,11 +1967,11 @@ impl CRaftReplica {
     async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
                            self.start_slot, self.last_exec, self.last_snap);
-        assert!(self.last_exec + 1 >= self.start_slot);
+        debug_assert!(self.last_exec + 1 >= self.start_slot);
 
         // always keep at least one entry in log to make indexing happy
         let new_start_slot = cmp::min(self.last_snap, self.last_exec);
-        assert!(new_start_slot < self.start_slot + self.log.len());
+        debug_assert!(new_start_slot < self.start_slot + self.log.len());
         if new_start_slot < self.start_slot + 1 {
             return Ok(());
         }
@@ -2532,7 +2533,7 @@ impl GenericEndpoint for CRaftClient {
                 servers,
             } => {
                 // shift to a new server_id if current one not active
-                assert!(!servers.is_empty());
+                debug_assert!(!servers.is_empty());
                 while !servers.contains_key(&self.server_id) {
                     self.server_id = (self.server_id + 1) % population;
                 }
@@ -2616,7 +2617,7 @@ impl GenericEndpoint for CRaftClient {
                 // if the current server redirects me to a different server
                 if result.is_none() && redirect.is_some() {
                     let redirect_id = redirect.unwrap();
-                    assert!(self.servers.contains_key(&redirect_id));
+                    debug_assert!(self.servers.contains_key(&redirect_id));
                     self.server_id = redirect_id;
                     pf_debug!(self.id; "redirected to replica {} '{}'",
                                        redirect_id, self.servers[&redirect_id]);
