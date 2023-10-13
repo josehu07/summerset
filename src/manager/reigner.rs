@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
-// TODO: later add membership/view change, link drop, etc.
+// TODO: later add basic lease, membership/view change, link drop, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses

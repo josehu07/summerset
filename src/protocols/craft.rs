@@ -448,7 +448,7 @@ impl CRaftReplica {
             // guarantee to guard against extra failures during this period
 
             // TODO: should re-persist all data shards, but not really that
-            // important; skipped in current implementation
+            // important for evaluation; skipped in current implementation
 
             // re-send AppendEntries covering all entries, containing all
             // data shards of each entry, to followers

@@ -277,6 +277,12 @@ pub struct RaftReplica {
     /// For each server, index of the next log entry to send.
     next_slot: HashMap<ReplicaId, usize>,
 
+    /// For each server, index of the next log entry to try to send for an
+    /// AppendEntries message. This is added due to the asynchronous nature
+    /// of Summerset's implementation.
+    /// It is always true that next_slot[r] <= try_next_slot[r]
+    try_next_slot: HashMap<ReplicaId, usize>,
+
     /// For each server, index of the highest log entry known to be replicated.
     match_slot: HashMap<ReplicaId, usize>,
 
@@ -447,11 +453,11 @@ impl RaftReplica {
 
         // broadcast AppendEntries messages to followers
         for peer in 0..self.population {
-            if peer == self.id || self.next_slot[&peer] < 1 {
+            if peer == self.id || self.try_next_slot[&peer] < 1 {
                 continue;
             }
 
-            let prev_slot = self.next_slot[&peer] - 1;
+            let prev_slot = self.try_next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
@@ -460,11 +466,11 @@ impl RaftReplica {
                 .log
                 .iter()
                 .take(slot + 1 - self.start_slot)
-                .skip(self.next_slot[&peer] - self.start_slot)
+                .skip(self.try_next_slot[&peer] - self.start_slot)
                 .cloned()
                 .collect();
 
-            if slot >= self.next_slot[&peer] {
+            if slot >= self.try_next_slot[&peer] {
                 self.transport_hub.send_msg(
                     PeerMsg::AppendEntries {
                         term: self.curr_term,
@@ -477,8 +483,13 @@ impl RaftReplica {
                     peer,
                 )?;
                 pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.next_slot[&peer],
+                                   peer, self.try_next_slot[&peer],
                                    self.start_slot + self.log.len() - 1);
+
+                // update try_next_slot to avoid blindly sending the same
+                // entries again on future triggers
+                *self.try_next_slot.get_mut(&peer).unwrap() =
+                    self.start_slot + self.log.len();
             }
         }
 
@@ -749,6 +760,9 @@ impl RaftReplica {
         if success {
             // success: update next_slot and match_slot for follower
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
+            if self.try_next_slot[&peer] < end_slot + 1 {
+                *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
+            }
             *self.match_slot.get_mut(&peer).unwrap() = end_slot;
 
             // since we updated some match_slot here, check if any additional
@@ -809,9 +823,11 @@ impl RaftReplica {
             // NOTE: the optimization of fast-backward bypassing (instead of
             //       always decrementing by 1) not implemented
             if self.next_slot[&peer] == 1 {
+                *self.try_next_slot.get_mut(&peer).unwrap() = 1;
                 return Ok(()); // cannot move backward any more
             }
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
+            *self.try_next_slot.get_mut(&peer).unwrap() = self.next_slot[&peer];
             debug_assert!(end_slot >= self.next_slot[&peer]);
 
             let prev_slot = self.next_slot[&peer] - 1;
@@ -842,6 +858,11 @@ impl RaftReplica {
             pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
                                peer, self.next_slot[&peer],
                                self.start_slot + self.log.len() - 1);
+
+            // update try_next_slot to avoid blindly sending the same
+            // entries again on future triggers
+            *self.try_next_slot.get_mut(&peer).unwrap() =
+                self.start_slot + self.log.len();
         }
 
         Ok(())
@@ -1101,6 +1122,9 @@ impl RaftReplica {
 
         // re-initialize next_slot and match_slot information
         for slot in self.next_slot.values_mut() {
+            *slot = self.start_slot + self.log.len();
+        }
+        for slot in self.try_next_slot.values_mut() {
             *slot = self.start_slot + self.log.len();
         }
         for slot in self.match_slot.values_mut() {
@@ -1895,6 +1919,9 @@ impl GenericReplica for RaftReplica {
             last_commit: 0,
             last_exec: 0,
             next_slot: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 1)) })
+                .collect(),
+            try_next_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 1)) })
                 .collect(),
             match_slot: (0..population)
