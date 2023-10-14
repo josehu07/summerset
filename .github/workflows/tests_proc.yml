@@ -17,6 +17,6 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Run proc tests (MultiPaxos)
-      run: python3 scripts/workflow_test.py -p MultiPaxos
+      run: python3 .github/workflow_test.py -p MultiPaxos
     - name: Run proc tests (Raft)
-      run: python3 scripts/workflow_test.py -p Raft
+      run: python3 .github/workflow_test.py -p Raft
