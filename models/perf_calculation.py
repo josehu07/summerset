@@ -9,13 +9,13 @@ CLUSTER = 5
 
 # instance size in KBs
 SIZES = [2**i for i in range(3, 10)]
-SIZES += [1024 * i for i in range(1, 21)]
+SIZES += [1024 * i for i in range(1, 51)]
 
 # tuples of (min_delay in ms, max bandwidth in Gbps)
-POWERS = [(10, 25), (20, 10), (40, 1)]
+POWERS = [(10, 40), (50, 10), (100, 1)]
 
 # standard deviations of the half-normal distribution
-SIGMAS = [5, 10, 20]
+SIGMAS = [5, 15, 30]
 
 
 def min_individual_time(c, s, d, b):

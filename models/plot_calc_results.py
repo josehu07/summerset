@@ -8,6 +8,12 @@ import pickle
 
 CLUSTER = 5
 
+QUORUM_COLOR_WIDTH = {
+    5: ("red", 1.2),
+    4: ("steelblue", 1.5),
+    3: ("dimgray", 1.8),
+}
+
 
 def plot_env_result_subplot(i, j, results):
     POWERS = results["powers"]
@@ -22,7 +28,13 @@ def plot_env_result_subplot(i, j, results):
     for q, c in results[(i, j)]:
         xs = [s / 1024 for s in VSIZES]
         ys = [t[0] for t in results[(i, j)][(q, c)]]
-        plt.plot(xs, ys, label=f"|Q|={q}  l={c}")
+        plt.plot(
+            xs,
+            ys,
+            label=f"|Q|={q}  l={c}",
+            color=QUORUM_COLOR_WIDTH[q][0],
+            linewidth=QUORUM_COLOR_WIDTH[q][1],
+        )
 
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -141,7 +153,7 @@ def plot_all_env_results(results):
         labels,
         loc="center left",
         bbox_to_anchor=(0.76, 0.5),
-        handlelength=1,
+        handlelength=0.5,
         title="Configs",
     )
 
