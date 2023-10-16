@@ -3,7 +3,43 @@ import os
 import signal
 import argparse
 import subprocess
+import multiprocessing
 from pathlib import Path
+
+
+MANAGER_SRV_PORT = 52600
+MANAGER_CLI_PORT = 52601
+
+SERVER_API_PORT = lambda r: 52700 + r
+SERVER_P2P_PORT = lambda r: 52800 + r
+
+
+CORES_PER_SERVER = 4
+
+
+PROTOCOL_BACKER_PATH = {
+    "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
+    "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
+    "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
+    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
+    "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
+    "CRaft": lambda r: f"backer_path='/tmp/summerset.craft.{r}.wal'",
+    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
+}
+
+PROTOCOL_SNAPSHOT_PATH = {
+    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
+    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
+    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
+    "CRaft": lambda r: f"snapshot_path='/tmp/summerset.craft.{r}.snap'",
+    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
+}
+
+PROTOCOL_EXTRA_DEFAULTS = {
+    "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
+    "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
+    "Crossword": lambda n, _: f"fault_tolerance={n//2}",
+}
 
 
 def do_cargo_build(release):
@@ -33,36 +69,23 @@ def kill_all_matching(name, force=False):
     os.system(cmd)
 
 
-MANAGER_SRV_PORT = 52600
-MANAGER_CLI_PORT = 52601
-
-SERVER_API_PORT = lambda r: 52700 + r
-SERVER_P2P_PORT = lambda r: 52800 + r
-
-
-PROTOCOL_BACKER_PATH = {
-    "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
-    "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
-    "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
-    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
-    "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
-    "CRaft": lambda r: f"backer_path='/tmp/summerset.craft.{r}.wal'",
-    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
-}
-
-PROTOCOL_SNAPSHOT_PATH = {
-    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
-    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
-    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
-    "CRaft": lambda r: f"snapshot_path='/tmp/summerset.craft.{r}.snap'",
-    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
-}
-
-PROTOCOL_EXTRA_DEFAULTS = {
-    "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
-    "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
-    "Crossword": lambda n, _: f"fault_tolerance={n//2}",
-}
+def pin_cores_for(i, pid):
+    # pin servers from CPU 0 up
+    num_cpus = multiprocessing.cpu_count()
+    core_start = i * CORES_PER_SERVER
+    core_end = core_start + CORES_PER_SERVER - 1
+    assert core_end <= num_cpus - 1
+    print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
+    cmd = [
+        "sudo",
+        "taskset",
+        "-p",
+        "-c",
+        f"{core_start}-{core_end}",
+        f"{pid}",
+    ]
+    proc = subprocess.Popen(cmd)
+    return proc.wait()
 
 
 def config_with_defaults(protocol, config, num_replicas, replica_id):
@@ -157,7 +180,10 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
     return cmd
 
 
-def launch_servers(protocol, num_replicas, release, config):
+def launch_servers(protocol, num_replicas, release, config, pin_cores):
+    if num_replicas not in (3, 5, 7, 9):
+        raise ValueError(f"invalid num_replicas: {num_replicas}")
+
     server_procs = []
     for replica in range(num_replicas):
         cmd = compose_server_cmd(
@@ -169,6 +195,10 @@ def launch_servers(protocol, num_replicas, release, config):
             release,
         )
         proc = run_process(cmd)
+
+        if pin_cores:
+            pin_cores_for(replica, proc.pid)
+
         server_procs.append(proc)
 
     return server_procs
@@ -187,6 +217,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-c", "--config", type=str, help="protocol-specific TOML config string"
+    )
+    parser.add_argument(
+        "--pin_cores", action="store_true", help="if set, set CPU cores affinity"
     )
     args = parser.parse_args()
 
@@ -212,7 +245,7 @@ if __name__ == "__main__":
 
     # then launch server replicas
     server_procs = launch_servers(
-        args.protocol, args.num_replicas, args.release, args.config
+        args.protocol, args.num_replicas, args.release, args.config, args.pin_cores
     )
 
     # register termination signals handler

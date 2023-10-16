@@ -1,6 +1,20 @@
 import sys
 import argparse
 import subprocess
+import multiprocessing
+
+
+MANAGER_CLI_PORT = 52601
+
+
+CORES_PER_CLIENT = 2
+
+
+UTILITY_PARAM_NAMES = {
+    "repl": [],
+    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
+    "tester": ["test_name", "keep_going", "logger_on"],
+}
 
 
 def do_cargo_build(release):
@@ -18,14 +32,23 @@ def run_process(cmd):
     return proc
 
 
-MANAGER_CLI_PORT = 52601
-
-
-UTILITY_PARAM_NAMES = {
-    "repl": [],
-    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
-    "tester": ["test_name", "keep_going", "logger_on"],
-}
+def pin_cores_for(i, pid):
+    # pin client cores from last CPU down
+    num_cpus = multiprocessing.cpu_count()
+    core_end = num_cpus - 1 - i * CORES_PER_CLIENT
+    core_start = core_end - CORES_PER_CLIENT + 1
+    assert core_start >= 0
+    print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
+    cmd = [
+        "sudo",
+        "taskset",
+        "-p",
+        "-c",
+        f"{core_start}-{core_end}",
+        f"{pid}",
+    ]
+    proc = subprocess.Popen(cmd)
+    return proc.wait()
 
 
 def glue_params_str(cli_args, params_list):
@@ -68,18 +91,28 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
     return cmd
 
 
-def run_client(protocol, utility, params, release, config):
-    cmd = compose_client_cmd(
-        protocol,
-        f"127.0.0.1:{MANAGER_CLI_PORT}",
-        config,
-        utility,
-        params,
-        release,
-    )
-    proc = run_process(cmd)
+def run_clients(protocol, utility, num_clients, params, release, config, pin_cores):
+    if num_clients < 1:
+        raise ValueError(f"invalid num_clients: {num_clients}")
 
-    return proc
+    client_procs = []
+    for i in range(num_clients):
+        cmd = compose_client_cmd(
+            protocol,
+            f"127.0.0.1:{MANAGER_CLI_PORT}",
+            config,
+            utility,
+            params,
+            release,
+        )
+        proc = run_process(cmd)
+
+        if pin_cores:
+            pin_cores_for(i, proc.pid)
+
+        client_procs.append()
+
+    return client_procs
 
 
 if __name__ == "__main__":
@@ -91,6 +124,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
+    parser.add_argument(
+        "--pin_cores", action="store_true", help="if set, set CPU cores affinity"
+    )
 
     subparsers = parser.add_subparsers(
         required=True,
@@ -101,6 +137,13 @@ if __name__ == "__main__":
     parser_repl = subparsers.add_parser("repl", help="REPL mode")
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
+    parser_bench.add_argument(
+        "-n",
+        "--num_clients",
+        type=int,
+        required=True,
+        help="number of client processes",
+    )
     parser_bench.add_argument(
         "-f", "--freq_target", type=int, help="frequency target reqs per sec"
     )
@@ -129,14 +172,22 @@ if __name__ == "__main__":
         print("ERROR: cargo build failed")
         sys.exit(rc)
 
-    # run client executable
-    client_proc = run_client(
+    # run client executable(s)
+    client_procs = run_clients(
         args.protocol,
         args.utility,
+        args.num_clients if args.utility == "bench" else 1,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
         args.config,
+        args.pin_cores,
     )
 
-    rc = client_proc.wait()
-    sys.exit(rc)
+    rcs = []
+    for client_proc in client_procs:
+        rcs.append(client_proc.wait())
+
+    if any(map(lambda rc: rc != 0, rcs)):
+        sys.exit(1)
+    else:
+        sys.exit(0)
