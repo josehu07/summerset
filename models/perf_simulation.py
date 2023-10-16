@@ -1,3 +1,5 @@
+import os
+import sys
 import simpy  # type: ignore
 from enum import Enum
 import random
@@ -10,6 +12,26 @@ import matplotlib  # type: ignore
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # type: ignore
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 ##############
@@ -898,6 +920,8 @@ def simulate(params):
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     random.seed()
 
     print("NOTE: adaptiveness hardcoded for 5!")

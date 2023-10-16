@@ -1,9 +1,31 @@
+import os
+import sys
 import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # type: ignore
 import pickle
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 CLUSTER = 5
@@ -167,6 +189,8 @@ def plot_all_env_results(results):
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     with open(f"results/calc.envs.r_{CLUSTER}.pkl", "rb") as fpkl:
         results = pickle.load(fpkl)
         plot_all_env_results(results)

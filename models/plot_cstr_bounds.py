@@ -1,3 +1,5 @@
+import os
+import sys
 import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
@@ -7,6 +9,26 @@ import matplotlib.pyplot as plt  # type: ignore
 import matplotlib.patches as mpatches  # type: ignore
 from matplotlib.legend_handler import HandlerPatch  # type: ignore
 import math
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 SUBPLOT_ARG = lambda idx: 141 + idx
@@ -243,4 +265,6 @@ def plot_all_cstr_bounds():
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     plot_all_cstr_bounds()

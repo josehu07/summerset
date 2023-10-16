@@ -1,7 +1,7 @@
 #! /bin/bash
 
 kill_all_matching () {
-    for pid in $(sudo pgrep -f $1)
+    for pid in $(pgrep -f $1)
     do
         sudo kill -9 $pid
     done

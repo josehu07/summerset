@@ -1,3 +1,4 @@
+import os
 import sys
 import argparse
 import subprocess
@@ -7,14 +8,31 @@ import multiprocessing
 MANAGER_CLI_PORT = 52601
 
 
-CORES_PER_CLIENT = 2
-
-
 UTILITY_PARAM_NAMES = {
     "repl": [],
     "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
     "tester": ["test_name", "keep_going", "logger_on"],
 }
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 def do_cargo_build(release):
@@ -32,11 +50,11 @@ def run_process(cmd):
     return proc
 
 
-def pin_cores_for(i, pid):
+def pin_cores_for(i, pid, cores_per_proc):
     # pin client cores from last CPU down
     num_cpus = multiprocessing.cpu_count()
-    core_end = num_cpus - 1 - i * CORES_PER_CLIENT
-    core_start = core_end - CORES_PER_CLIENT + 1
+    core_end = num_cpus - 1 - i * cores_per_proc
+    core_start = core_end - cores_per_proc + 1
     assert core_start >= 0
     print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
     cmd = [
@@ -107,8 +125,8 @@ def run_clients(protocol, utility, num_clients, params, release, config, pin_cor
         )
         proc = run_process(cmd)
 
-        if pin_cores:
-            pin_cores_for(i, proc.pid)
+        if pin_cores > 0:
+            pin_cores_for(i, proc.pid, pin_cores)
 
         client_procs.append()
 
@@ -116,6 +134,8 @@ def run_clients(protocol, utility, num_clients, params, release, config, pin_cor
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
@@ -125,7 +145,7 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--pin_cores", action="store_true", help="if set, set CPU cores affinity"
+        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
 
     subparsers = parser.add_subparsers(

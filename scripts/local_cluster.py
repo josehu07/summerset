@@ -14,9 +14,6 @@ SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 
 
-CORES_PER_SERVER = 4
-
-
 PROTOCOL_BACKER_PATH = {
     "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
     "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
@@ -35,11 +32,32 @@ PROTOCOL_SNAPSHOT_PATH = {
     "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
 }
 
+
 PROTOCOL_EXTRA_DEFAULTS = {
     "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
     "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
     "Crossword": lambda n, _: f"fault_tolerance={n//2}",
 }
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 def do_cargo_build(release):
@@ -69,11 +87,11 @@ def kill_all_matching(name, force=False):
     os.system(cmd)
 
 
-def pin_cores_for(i, pid):
+def pin_cores_for(i, pid, cores_per_proc):
     # pin servers from CPU 0 up
     num_cpus = multiprocessing.cpu_count()
-    core_start = i * CORES_PER_SERVER
-    core_end = core_start + CORES_PER_SERVER - 1
+    core_start = i * cores_per_proc
+    core_end = core_start + cores_per_proc - 1
     assert core_end <= num_cpus - 1
     print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
     cmd = [
@@ -145,6 +163,7 @@ def launch_manager(protocol, num_replicas, release):
 
 
 def wait_manager_setup(proc):
+    # print("Waiting for manager setup...")
     accepting_servers, accepting_clients = False, False
 
     for line in iter(proc.stderr.readline, b""):
@@ -196,8 +215,8 @@ def launch_servers(protocol, num_replicas, release, config, pin_cores):
         )
         proc = run_process(cmd)
 
-        if pin_cores:
-            pin_cores_for(replica, proc.pid)
+        if pin_cores > 0:
+            pin_cores_for(replica, proc.pid, pin_cores)
 
         server_procs.append(proc)
 
@@ -205,6 +224,8 @@ def launch_servers(protocol, num_replicas, release, config, pin_cores):
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
@@ -219,7 +240,7 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--pin_cores", action="store_true", help="if set, set CPU cores affinity"
+        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
     args = parser.parse_args()
 

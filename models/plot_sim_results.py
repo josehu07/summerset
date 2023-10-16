@@ -1,3 +1,5 @@
+import os
+import sys
 import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
@@ -5,6 +7,26 @@ matplotlib.use("Agg")
 import pickle
 import math
 import matplotlib.pyplot as plt  # type: ignore
+
+
+def path_get_last_segment(path):
+    if "/" not in path:
+        return None
+    eidx = len(path) - 1
+    while eidx > 0 and path[eidx] == "/":
+        eidx -= 1
+    bidx = path[:eidx].rfind("/")
+    bidx += 1
+    return path[bidx : eidx + 1]
+
+
+def check_proper_cwd():
+    cwd = os.getcwd()
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
+        print(
+            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
+        )
+        sys.exit(1)
 
 
 def protocol_style(protocol, cluster_size):
@@ -99,6 +121,8 @@ def plot_x_vsize(num_replicas, results):
 
 
 if __name__ == "__main__":
+    check_proper_cwd()
+
     for num_replicas in (5,):
         with open(f"results/sim.x_vsize.r_{num_replicas}.pkl", "rb") as fpkl:
             results = pickle.load(fpkl)
