@@ -168,13 +168,14 @@ def launch_manager(protocol, num_replicas, release):
     return run_process(cmd, capture_stderr=True)
 
 
-def wait_manager_setup(proc):
+def wait_manager_setup(proc, print_stderr=True):
     # print("Waiting for manager setup...")
     accepting_servers, accepting_clients = False, False
 
     for line in iter(proc.stderr.readline, b""):
-        sys.stderr.buffer.write(line)
-        sys.stderr.flush()
+        if print_stderr:
+            sys.stderr.buffer.write(line)
+            sys.stderr.flush()
 
         l = line.decode()
         if "(m) accepting servers" in l:
@@ -210,6 +211,7 @@ def launch_servers(
 ):
     if num_replicas not in (3, 5, 7, 9):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
+    capture_stderr = pin_cores > 0
 
     server_procs = []
     for replica in range(num_replicas):
@@ -223,7 +225,7 @@ def launch_servers(
             ),
             release,
         )
-        proc = run_process(cmd)
+        proc = run_process(cmd, capture_stderr=capture_stderr)
 
         if pin_cores > 0:
             pin_cores_for(replica, proc.pid, pin_cores)
@@ -279,7 +281,7 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    wait_manager_setup(manager_proc)
+    wait_manager_setup(manager_proc, (args.pin_cores == 0))
 
     # then launch server replicas
     server_procs = launch_servers(
@@ -306,8 +308,9 @@ if __name__ == "__main__":
 
     # since we piped manager proc's output, re-print it out
     for line in iter(manager_proc.stderr.readline, b""):
-        sys.stderr.buffer.write(line)
-        sys.stderr.flush()
+        if args.pin_cores == 0:
+            sys.stderr.buffer.write(line)
+            sys.stderr.flush()
 
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()

@@ -22,7 +22,7 @@ VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
 LENGTH_SECS = 60
 
-PROTOCOLS = {"MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"}
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 def path_get_last_segment(path):
@@ -90,7 +90,7 @@ def wait_cluster_setup(proc, num_replicas):
 
     for line in iter(proc.stderr.readline, b""):
         l = line.decode()
-        print(l, end="", file=sys.stderr)
+        # print(l, end="", file=sys.stderr)
         if "manager" not in l and "accepting clients" in l:
             replica = int(l[l.find("(") + 1 : l.find(")")])
             assert not accepting_clients[replica]
@@ -135,10 +135,9 @@ def bench_round(
     length_s,
 ):
     print(
-        f"{EXPER_NAME}  {protocol:<10s}  n={num_replicas:1d}  v={value_size:<9d}  "
-        + f"w%={put_ratio:<3d}  {length_s:3d}s"
+        f"{EXPER_NAME}  {protocol:<10s}  {num_replicas:1d}  v={value_size:<9d}  "
+        + f"w%={put_ratio:<3d}  {length_s:3d}s  {num_clients:2d}"
     )
-
     kill_all_local_procs()
 
     proc_cluster = launch_cluster(protocol, num_replicas)
@@ -150,7 +149,7 @@ def bench_round(
     out, err = proc_clients.communicate()
 
     proc_cluster.terminate()
-    proc_cluster.wait()
+    kill_all_local_procs()
 
     if proc_clients.returncode != 0:
         print("Experiment FAILED!")

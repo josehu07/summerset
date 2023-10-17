@@ -136,7 +136,7 @@ def run_clients(
         if pin_cores > 0:
             pin_cores_for(i, proc.pid, pin_cores)
 
-        client_procs.append()
+        client_procs.append(proc)
 
     return client_procs
 
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
-    parser.add_argument(
+    parser_bench.add_argument(
         "--file_prefix",
         type=str,
         default="",
