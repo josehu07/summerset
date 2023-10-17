@@ -1,10 +1,8 @@
-import os
-import sys
-import simpy  # type: ignore
 from enum import Enum
 import random
 import statistics
 import math
+import argparse
 import pickle
 
 import matplotlib  # type: ignore
@@ -12,26 +10,7 @@ import matplotlib  # type: ignore
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # type: ignore
-
-
-def path_get_last_segment(path):
-    if "/" not in path:
-        return None
-    eidx = len(path) - 1
-    while eidx > 0 and path[eidx] == "/":
-        eidx -= 1
-    bidx = path[:eidx].rfind("/")
-    bidx += 1
-    return path[bidx : eidx + 1]
-
-
-def check_proper_cwd():
-    cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
-        sys.exit(1)
+import simpy  # type: ignore
 
 
 ##############
@@ -919,39 +898,148 @@ def simulate(params):
     return results
 
 
-if __name__ == "__main__":
-    check_proper_cwd()
+def protocol_style(protocol, cluster_size):
+    m = cluster_size // 2 + 1
+    f = cluster_size - m
+    if "MultiPaxos" in protocol:
+        return ("-", "dimgray", "s", f"MultiPaxos/Raft\nf={f}  |Q|={m}  l={m}")
+    elif "RS-Paxos" in protocol:
+        if "forced" in protocol:
+            return (
+                "-",
+                "red",
+                "x",
+                f"RS-Paxos/CRaft (f-forced)\nf={f}  |Q|={cluster_size}  l=1",
+            )
+        else:
+            q = math.ceil((cluster_size + m) // 2)
+            lower_f = q - m
+            return (
+                ":",
+                "orange",
+                "x",
+                f"RS-Paxos/CRaft (original)\nf={lower_f}  |Q|={q}  l=1",
+            )
+    elif "Crossword" in protocol:
+        return ("-", "steelblue", "o", f"Crossword\nf={f}  |Q|,l=adaptive")
+    else:
+        raise RuntimeError(f"unrecognized protocol {protocol}")
 
-    random.seed()
 
-    print("NOTE: adaptiveness hardcoded for 5!")
+def params_display(params):
+    if params == "lat_bounded":
+        return "Latency bounded"
+    elif params == "tput_bounded":
+        return "Throughput bounded"
+    elif params == "lat_tput_mix":
+        return "Both moderate"
+    else:
+        raise RuntimeError(f"unrecognized params {params}")
 
-    # for num_replicas in (3, 5, 7, 9):
-    for num_replicas in (5,):
-        results = {
-            "vsizes": [],
-            "lat_bounded": [],
-            "tput_bounded": [],
-            "lat_tput_mix": [],
+
+def plot_x_vsize(num_replicas, results, output_dir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (11, 3),
+            "font.size": 10,
         }
+    )
 
-        vsizes = [v * 1000 for v in (2**p for p in range(3, 11))]
-        vsizes += [v * 1000 for v in (100 * i for i in range(1, 51))]
-        vsizes.sort()
+    plt.figure()
 
-        for vsize in vsizes:
-            results["vsizes"].append(vsize)
-            results["lat_bounded"].append(
-                simulate(ParamsLatBounded(num_replicas, vsize))
-            )
-            results["tput_bounded"].append(
-                simulate(ParamsTputBounded(num_replicas, vsize))
-            )
-            results["lat_tput_mix"].append(
-                simulate(ParamsLatTputMix(num_replicas, vsize))
-            )
-            print(f"Ran: {num_replicas} {vsize // 1000}")
+    xs = list(map(lambda s: s / 1000, results["vsizes"]))
+    protocols = results["lat_bounded"][0].keys()
 
-        with open(f"results/sim.x_vsize.r_{num_replicas}.pkl", "wb") as fpkl:
-            pickle.dump(results, fpkl)
-            print(f"Dumped: {num_replicas}")
+    for idx, params in enumerate(("lat_bounded", "lat_tput_mix", "tput_bounded")):
+        plt.subplot(131 + idx)
+
+        for protocol in protocols:
+            ys = [r[protocol][0] for r in results[params]]
+            yerrs = [r[protocol][2] for r in results[params]]
+            linestyle, color, marker, label = protocol_style(protocol, num_replicas)
+
+            plt.errorbar(
+                xs,
+                ys,
+                # yerr=yerrs,
+                label=label,
+                linestyle=linestyle,
+                linewidth=2,
+                color=color,
+                # marker=marker,
+                # markersize=3,
+                ecolor="darkgray",
+                elinewidth=1,
+                capsize=2,
+            )
+
+        plt.ylim(0, 420)
+
+        plt.xlabel("Instance size (kB)")
+        plt.ylabel("Response time (ms)")
+
+        title = params_display(params)
+        plt.title(title)
+
+    plt.legend(loc="center left", bbox_to_anchor=(1.1, 0.5), labelspacing=1.2)
+
+    plt.tight_layout()
+
+    plt.savefig(f"{output_dir}/sim.x_vsize.r_{num_replicas}.png", dpi=300)
+    plt.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument(
+        "-o", "--output_dir", type=str, default="./results", help="output folder"
+    )
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+    )
+    args = parser.parse_args()
+
+    if not args.plot:
+        random.seed()
+
+        print("NOTE: adaptiveness hardcoded for 5!")
+
+        # for num_replicas in (3, 5, 7, 9):
+        for num_replicas in (5,):
+            results = {
+                "vsizes": [],
+                "lat_bounded": [],
+                "tput_bounded": [],
+                "lat_tput_mix": [],
+            }
+
+            vsizes = [v * 1000 for v in (2**p for p in range(3, 11))]
+            vsizes += [v * 1000 for v in (100 * i for i in range(1, 51))]
+            vsizes.sort()
+
+            for vsize in vsizes:
+                results["vsizes"].append(vsize)
+                results["lat_bounded"].append(
+                    simulate(ParamsLatBounded(num_replicas, vsize))
+                )
+                results["tput_bounded"].append(
+                    simulate(ParamsTputBounded(num_replicas, vsize))
+                )
+                results["lat_tput_mix"].append(
+                    simulate(ParamsLatTputMix(num_replicas, vsize))
+                )
+                print(f"Ran: {num_replicas} {vsize // 1000}")
+
+            with open(
+                f"{args.output_dir}/sim.x_vsize.r_{num_replicas}.pkl", "wb"
+            ) as fpkl:
+                pickle.dump(results, fpkl)
+                print(f"Dumped: {num_replicas}")
+
+    else:
+        for num_replicas in (5,):
+            with open(
+                f"{args.output_dir}/sim.x_vsize.r_{num_replicas}.pkl", "rb"
+            ) as fpkl:
+                results = pickle.load(fpkl)
+                plot_x_vsize(num_replicas, results, args.output_dir)

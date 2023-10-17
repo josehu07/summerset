@@ -14,24 +14,22 @@ SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 
 
-PROTOCOL_BACKER_PATH = {
-    "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
-    "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
-    "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
-    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
-    "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
-    "CRaft": lambda r: f"backer_path='/tmp/summerset.craft.{r}.wal'",
-    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
-}
+PROTOCOL_BACKER_PATH = (
+    lambda protocol, prefix, r: f"backer_path='{prefix}/{protocol}.{r}.wal'"
+)
+PROTOCOL_SNAPSHOT_PATH = (
+    lambda protocol, prefix, r: f"snapshot_path='{prefix}/{protocol}.{r}.snap'"
+)
 
-PROTOCOL_SNAPSHOT_PATH = {
-    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
-    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
-    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
-    "CRaft": lambda r: f"snapshot_path='/tmp/summerset.craft.{r}.snap'",
-    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
+PROTOCOL_MAY_SNAPSHOT = {
+    "RepNothing": False,
+    "SimplePush": False,
+    "MultiPaxos": True,
+    "Raft": True,
+    "RSPaxos": True,
+    "CRaft": True,
+    "Crossword": True,
 }
-
 
 PROTOCOL_EXTRA_DEFAULTS = {
     "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
@@ -106,7 +104,9 @@ def pin_cores_for(i, pid, cores_per_proc):
     return proc.wait()
 
 
-def config_with_defaults(protocol, config, num_replicas, replica_id):
+def config_with_defaults(
+    protocol, config, num_replicas, replica_id, file_prefix, fresh_files
+):
     def config_str_to_dict(s):
         l = s.strip().split("+")
         l = [c.strip().split("=") for c in l]
@@ -118,11 +118,17 @@ def config_with_defaults(protocol, config, num_replicas, replica_id):
         l = ["=".join([k, v]) for k, v in d.items()]
         return "+".join(l)
 
-    config_dict = config_str_to_dict(PROTOCOL_BACKER_PATH[protocol](replica_id))
-    if protocol in PROTOCOL_SNAPSHOT_PATH:
-        config_dict.update(
-            config_str_to_dict(PROTOCOL_SNAPSHOT_PATH[protocol](replica_id))
-        )
+    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, replica_id)
+    config_dict = config_str_to_dict(backer_path)
+    if fresh_files and os.path.isfile(backer_path):
+        os.remove(backer_path)
+
+    if PROTOCOL_MAY_SNAPSHOT[protocol]:
+        snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, file_prefix, replica_id)
+        config_dict.update(config_str_to_dict(snapshot_path))
+        if fresh_files and os.path.isfile(snapshot_path):
+            os.remove(snapshot_path)
+
     if protocol in PROTOCOL_EXTRA_DEFAULTS:
         config_dict.update(
             config_str_to_dict(
@@ -199,7 +205,9 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
     return cmd
 
 
-def launch_servers(protocol, num_replicas, release, config, pin_cores):
+def launch_servers(
+    protocol, num_replicas, release, config, file_prefix, fresh_files, pin_cores
+):
     if num_replicas not in (3, 5, 7, 9):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
@@ -210,7 +218,9 @@ def launch_servers(protocol, num_replicas, release, config, pin_cores):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            config_with_defaults(protocol, config, num_replicas, replica),
+            config_with_defaults(
+                protocol, config, num_replicas, replica, file_prefix, fresh_files
+            ),
             release,
         )
         proc = run_process(cmd)
@@ -240,6 +250,15 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
+        "--file_prefix",
+        type=str,
+        default="/tmp/summerset",
+        help="states file prefix folder path",
+    )
+    parser.add_argument(
+        "--keep_files", action="store_true", help="if set, keep any old durable files"
+    )
+    parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
     args = parser.parse_args()
@@ -248,11 +267,9 @@ if __name__ == "__main__":
     kill_all_matching("summerset_server", force=True)
     kill_all_matching("summerset_manager", force=True)
 
-    # remove all existing wal log & snapshot files
-    for path in Path("/tmp").glob("summerset.*.wal"):
-        path.unlink()
-    for path in Path("/tmp").glob("summerset.*.snap"):
-        path.unlink()
+    # check that the prefix folder path exists, or create it if not
+    if not os.path.isdir(args.file_prefix):
+        os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
     rc = do_cargo_build(args.release)
@@ -266,7 +283,13 @@ if __name__ == "__main__":
 
     # then launch server replicas
     server_procs = launch_servers(
-        args.protocol, args.num_replicas, args.release, args.config, args.pin_cores
+        args.protocol,
+        args.num_replicas,
+        args.release,
+        args.config,
+        args.file_prefix,
+        not args.keep_files,
+        args.pin_cores,
     )
 
     # register termination signals handler

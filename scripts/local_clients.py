@@ -8,6 +8,8 @@ import multiprocessing
 MANAGER_CLI_PORT = 52601
 
 
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, i: f"{prefix}/{protocol}.{i}.out"
+
 UTILITY_PARAM_NAMES = {
     "repl": [],
     "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
@@ -44,9 +46,13 @@ def do_cargo_build(release):
     return proc.wait()
 
 
-def run_process(cmd):
+def run_process(cmd, capture_stdout=False):
     print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd)
+    proc = None
+    if capture_stdout:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    else:
+        proc = subprocess.Popen(cmd)
     return proc
 
 
@@ -109,7 +115,9 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
     return cmd
 
 
-def run_clients(protocol, utility, num_clients, params, release, config, pin_cores):
+def run_clients(
+    protocol, utility, num_clients, params, release, config, capture_stdout, pin_cores
+):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
@@ -123,7 +131,7 @@ def run_clients(protocol, utility, num_clients, params, release, config, pin_cor
             params,
             release,
         )
-        proc = run_process(cmd)
+        proc = run_process(cmd, capture_stdout)
 
         if pin_cores > 0:
             pin_cores_for(i, proc.pid, pin_cores)
@@ -172,6 +180,12 @@ if __name__ == "__main__":
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser.add_argument(
+        "--file_prefix",
+        type=str,
+        default="",
+        help="output file prefix folder path",
+    )
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
     parser_tester.add_argument(
@@ -186,6 +200,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # check that the prefix folder path exists, or create it if not
+    if len(args.file_prefix) > 0 and not os.path.isdir(args.file_prefix):
+        os.system(f"mkdir -p {args.file_prefix}")
+
     # build everything
     rc = do_cargo_build(args.release)
     if rc != 0:
@@ -193,6 +211,7 @@ if __name__ == "__main__":
         sys.exit(rc)
 
     # run client executable(s)
+    capture_stdout = len(args.file_prefix) > 0
     client_procs = run_clients(
         args.protocol,
         args.utility,
@@ -200,12 +219,21 @@ if __name__ == "__main__":
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
         args.config,
+        capture_stdout,
         args.pin_cores,
     )
 
     rcs = []
-    for client_proc in client_procs:
-        rcs.append(client_proc.wait())
+    for i, client_proc in enumerate(client_procs):
+        if not capture_stdout:
+            rcs.append(client_proc.wait())
+        else:
+            out, _ = client_proc.communicate()
+            with open(
+                CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, i), "w+"
+            ) as fout:
+                fout.write(out.decode())
+            rcs.append(client_proc.returncode)
 
     if any(map(lambda rc: rc != 0, rcs)):
         sys.exit(1)

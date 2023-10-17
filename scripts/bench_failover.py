@@ -1,10 +1,14 @@
 import sys
 import os
+import argparse
 import subprocess
 import statistics
 
 
 BASE_PATH = "/mnt/eval"
+SERVER_STATES_FOLDER = "states"
+CLIENT_OUTPUT_FOLDER = "output"
+
 EXPER_NAME = "failover"
 
 
@@ -12,35 +16,13 @@ SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
 NUM_REPLICAS = 5
-VALUE_SIZE = 1024 * 1024  # 1MB
+NUM_CLIENTS = 2
+
+VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
 LENGTH_SECS = 60
 
-
-PROTOCOL_BACKER_PATH = {
-    "MultiPaxos": lambda r: f"backer_path='{BASE_PATH}/wals/{EXPER_NAME}/multipaxos.{r}.wal'",
-    "Raft": lambda r: f"backer_path='{BASE_PATH}/wals/{EXPER_NAME}/raft.{r}.wal'",
-    "RSPaxos": lambda r: f"backer_path='{BASE_PATH}/wals/{EXPER_NAME}/rs_paxos.{r}.wal'",
-    "CRaft": lambda r: f"backer_path='{BASE_PATH}/wals/{EXPER_NAME}/craft.{r}.wal'",
-    "Crossword": lambda r: f"backer_path='{BASE_PATH}/wals/{EXPER_NAME}/crossword.{r}.wal'",
-}
-
-PROTOCOL_SNAPSHOT_PATH = {
-    "MultiPaxos": lambda r: f"snapshot_path='{BASE_PATH}/snaps/{EXPER_NAME}/multipaxos.{r}.snap'",
-    "Raft": lambda r: f"snapshot_path='{BASE_PATH}/snaps/{EXPER_NAME}/raft.{r}.snap'",
-    "RSPaxos": lambda r: f"snapshot_path='{BASE_PATH}/snaps/{EXPER_NAME}/rs_paxos.{r}.snap'",
-    "CRaft": lambda r: f"snapshot_path='{BASE_PATH}/snaps/{EXPER_NAME}/craft.{r}.snap'",
-    "Crossword": lambda r: f"snapshot_path='{BASE_PATH}/snaps/{EXPER_NAME}/crossword.{r}.snap'",
-}
-
-
-CLIENT_OUTPUT_PATH = {
-    "MultiPaxos": lambda c: f"{BASE_PATH}/output/{EXPER_NAME}/multipaxos.{c}.log",
-    "Raft": lambda c: f"{BASE_PATH}/output/{EXPER_NAME}/raft.{c}.log",
-    "RSPaxos": lambda c: f"{BASE_PATH}/output/{EXPER_NAME}/rs_paxos.{c}.log",
-    "CRaft": lambda c: f"{BASE_PATH}/output/{EXPER_NAME}/craft.{c}.log",
-    "Crossword": lambda c: f"{BASE_PATH}/output/{EXPER_NAME}/crossword.{c}.log",
-}
+PROTOCOLS = {"MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"}
 
 
 def path_get_last_segment(path):
@@ -83,7 +65,7 @@ def kill_all_local_procs():
     proc.wait()
 
 
-def launch_cluster(protocol, num_replicas, files_config):
+def launch_cluster(protocol, num_replicas, config=None):
     cmd = [
         "python3",
         "./scripts/local_cluster.py",
@@ -92,11 +74,13 @@ def launch_cluster(protocol, num_replicas, files_config):
         "-n",
         str(num_replicas),
         "-r",
-        "-c",
-        files_config,
+        "--file_prefix",
+        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
     ]
+    if config is not None and len(config) > 0:
+        cmd += ["-c", config]
     return run_process(cmd)
 
 
@@ -128,12 +112,16 @@ def run_bench_clients(protocol, num_clients, value_size, put_ratio, length_s):
         "bench",
         "-n",
         str(num_clients),
+        "-f",
+        str(0),
         "-v",
         str(value_size),
         "-w",
         str(put_ratio),
         "-l",
         str(length_s),
+        "--file_prefix",
+        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
     return run_process(cmd)
 
@@ -141,11 +129,10 @@ def run_bench_clients(protocol, num_clients, value_size, put_ratio, length_s):
 def bench_round(
     protocol,
     num_replicas,
+    num_clients,
     value_size,
     put_ratio,
     length_s,
-    fault_tolerance=None,
-    shards_per_replica=None,
 ):
     print(
         f"{EXPER_NAME}  {protocol:<10s}  n={num_replicas:1d}  v={value_size:<9d}  "
@@ -154,36 +141,47 @@ def bench_round(
 
     kill_all_local_procs()
 
-    file_configs = [PROTOCOL_BACKER_PATH[protocol]()]
-    configs.append(f"perf_storage_a={PERF_STORAGE_ALPHA}")
-    configs.append(f"perf_storage_b={PERF_STORAGE_BETA}")
-    configs.append(f"perf_network_a={PERF_NETWORK_ALPHA}")
-    configs.append(f"perf_network_b={PERF_NETWORK_BETA}")
-
-    proc_cluster = launch_cluster(protocol, num_replicas, "+".join(configs))
+    proc_cluster = launch_cluster(protocol, num_replicas)
     wait_cluster_setup(proc_cluster, num_replicas)
 
-    proc_client = run_bench_client(protocol, value_size, put_ratio, length_s)
-    out, err = proc_client.communicate()
+    proc_clients = run_bench_clients(
+        protocol, num_clients, value_size, put_ratio, length_s
+    )
+    out, err = proc_clients.communicate()
 
     proc_cluster.terminate()
     proc_cluster.wait()
 
-    if proc_client.returncode != 0:
+    if proc_clients.returncode != 0:
+        print("Experiment FAILED!")
+        print(out.decode())
         print(err.decode())
+        sys.exit(1)
     else:
-        parse_output(out.decode())
+        print("  Done")
 
 
 if __name__ == "__main__":
     check_proper_cwd()
-    do_cargo_build()
 
-    for protocol in PROTOCOL_BACKER_PATH:
-        bench_round(
-            protocol,
-            NUM_REPLICAS,
-            VALUE_SIZE,
-            PUT_RATIO,
-            LENGTH_SECS,
-        )
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+    )
+    args = parser.parse_args()
+
+    if not args.plot:
+        do_cargo_build()
+
+        for protocol in PROTOCOLS:
+            bench_round(
+                protocol,
+                NUM_REPLICAS,
+                NUM_CLIENTS,
+                VALUE_SIZE,
+                PUT_RATIO,
+                LENGTH_SECS,
+            )
+
+    else:
+        pass
