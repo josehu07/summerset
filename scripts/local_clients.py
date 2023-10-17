@@ -46,7 +46,15 @@ def do_cargo_build(release):
     return proc.wait()
 
 
-def run_process(cmd, capture_stdout=False):
+def run_process(i, cmd, capture_stdout=False, cores_per_proc=0):
+    if cores_per_proc > 0:
+        # pin client cores from last CPU down
+        num_cpus = multiprocessing.cpu_count()
+        core_end = num_cpus - 1 - i * cores_per_proc
+        core_start = core_end - cores_per_proc + 1
+        assert core_start >= 0
+        cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
+
     print("Run:", " ".join(cmd))
     proc = None
     if capture_stdout:
@@ -54,25 +62,6 @@ def run_process(cmd, capture_stdout=False):
     else:
         proc = subprocess.Popen(cmd)
     return proc
-
-
-def pin_cores_for(i, pid, cores_per_proc):
-    # pin client cores from last CPU down
-    num_cpus = multiprocessing.cpu_count()
-    core_end = num_cpus - 1 - i * cores_per_proc
-    core_start = core_end - cores_per_proc + 1
-    assert core_start >= 0
-    print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
-    cmd = [
-        "sudo",
-        "taskset",
-        "-p",
-        "-c",
-        f"{core_start}-{core_end}",
-        f"{pid}",
-    ]
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
 
 
 def glue_params_str(cli_args, params_list):
@@ -108,9 +97,9 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
     if len(params) > 0:
         cmd += ["--params", params]
 
-    # if in benchmarking mode, lower the client's CPU scheduling priority
-    if utility == "bench":
-        cmd = ["nice", "-n", "19"] + cmd
+    # if in benchmarking mode, lower the client's CPU scheduling priority?
+    # if utility == "bench":
+    #     cmd = ["nice", "-n", "19"] + cmd
 
     return cmd
 
@@ -131,10 +120,9 @@ def run_clients(
             params,
             release,
         )
-        proc = run_process(cmd, capture_stdout)
-
-        if pin_cores > 0:
-            pin_cores_for(i, proc.pid, pin_cores)
+        proc = run_process(
+            i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
+        )
 
         client_procs.append(proc)
 
@@ -201,7 +189,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # check that the prefix folder path exists, or create it if not
-    if len(args.file_prefix) > 0 and not os.path.isdir(args.file_prefix):
+    if (
+        args.utility == "bench"
+        and len(args.file_prefix) > 0
+        and not os.path.isdir(args.file_prefix)
+    ):
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
@@ -210,12 +202,14 @@ if __name__ == "__main__":
         print("ERROR: cargo build failed")
         sys.exit(rc)
 
+    capture_stdout = args.utility == "bench" and len(args.file_prefix) > 0
+    num_clients = args.num_clients if args.utility == "bench" else 1
+
     # run client executable(s)
-    capture_stdout = len(args.file_prefix) > 0
     client_procs = run_clients(
         args.protocol,
         args.utility,
-        args.num_clients if args.utility == "bench" else 1,
+        num_clients,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
         args.config,
@@ -223,17 +217,29 @@ if __name__ == "__main__":
         args.pin_cores,
     )
 
-    rcs = []
-    for i, client_proc in enumerate(client_procs):
-        if not capture_stdout:
-            rcs.append(client_proc.wait())
+    timeout = None
+    if args.utility == "bench":
+        if args.length_s is None:
+            timeout = 75
         else:
-            out, _ = client_proc.communicate()
-            with open(
-                CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, i), "w+"
-            ) as fout:
-                fout.write(out.decode())
-            rcs.append(client_proc.returncode)
+            timeout = args.length_s + 15
+
+    try:
+        rcs = []
+        for i, client_proc in enumerate(client_procs):
+            if not capture_stdout:
+                rcs.append(client_proc.wait(timeout=timeout))
+            else:
+                # doing automated experiments, so capture output
+                out, _ = client_proc.communicate(timeout=timeout)
+                with open(
+                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, i), "w+"
+                ) as fout:
+                    fout.write(out.decode())
+                rcs.append(client_proc.returncode)
+    except subprocess.TimeoutExpired:
+        print(f"ERROR: some client(s) timed-out {timeout} secs")
+        sys.exit(1)
 
     if any(map(lambda rc: rc != 0, rcs)):
         sys.exit(1)

@@ -1947,6 +1947,7 @@ impl CRaftReplica {
 
     /// Discard everything lower than start_slot in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
+        // drain things currently in storage_hub's recv chan if head of log's
         // durable file offset has not been set yet
         debug_assert!(!self.log.is_empty());
         while self.log[0].log_offset == 0 {
@@ -2618,7 +2619,9 @@ impl GenericEndpoint for CRaftClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            // NOTE: commented out the following wait to avoid accidental
+            // hanging upon leaving
+            // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_info!(self.id; "left server connection {}", id);
             api_stub.forget();
         }

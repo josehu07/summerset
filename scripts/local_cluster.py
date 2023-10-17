@@ -14,12 +14,8 @@ SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 
 
-PROTOCOL_BACKER_PATH = (
-    lambda protocol, prefix, r: f"backer_path='{prefix}/{protocol}.{r}.wal'"
-)
-PROTOCOL_SNAPSHOT_PATH = (
-    lambda protocol, prefix, r: f"snapshot_path='{prefix}/{protocol}.{r}.snap'"
-)
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.wal"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.snap"
 
 PROTOCOL_MAY_SNAPSHOT = {
     "RepNothing": False,
@@ -67,13 +63,22 @@ def do_cargo_build(release):
     return proc.wait()
 
 
-def run_process(cmd, capture_stderr=False):
+def run_process(i, cmd, capture_stderr=False, cores_per_proc=0):
+    if cores_per_proc > 0:
+        # pin servers from CPU 0 up
+        num_cpus = multiprocessing.cpu_count()
+        core_start = i * cores_per_proc
+        core_end = core_start + cores_per_proc - 1
+        assert core_end <= num_cpus - 1
+        cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
+
     print("Run:", " ".join(cmd))
     proc = None
     if capture_stderr:
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
     else:
         proc = subprocess.Popen(cmd)
+
     return proc
 
 
@@ -83,25 +88,6 @@ def kill_all_matching(name, force=False):
     cmd = "killall -9" if force else "killall"
     cmd += f" {name} > /dev/null 2>&1"
     os.system(cmd)
-
-
-def pin_cores_for(i, pid, cores_per_proc):
-    # pin servers from CPU 0 up
-    num_cpus = multiprocessing.cpu_count()
-    core_start = i * cores_per_proc
-    core_end = core_start + cores_per_proc - 1
-    assert core_end <= num_cpus - 1
-    print(f"Pinning cores: {i} ({pid}) -> {core_start}-{core_end}")
-    cmd = [
-        "sudo",
-        "taskset",
-        "-p",
-        "-c",
-        f"{core_start}-{core_end}",
-        f"{pid}",
-    ]
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
 
 
 def config_with_defaults(
@@ -119,14 +105,16 @@ def config_with_defaults(
         return "+".join(l)
 
     backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, replica_id)
-    config_dict = config_str_to_dict(backer_path)
+    config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files and os.path.isfile(backer_path):
+        print(f"Delete: {backer_path}")
         os.remove(backer_path)
 
     if PROTOCOL_MAY_SNAPSHOT[protocol]:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, file_prefix, replica_id)
-        config_dict.update(config_str_to_dict(snapshot_path))
+        config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files and os.path.isfile(snapshot_path):
+            print(f"Delete: {snapshot_path}")
             os.remove(snapshot_path)
 
     if protocol in PROTOCOL_EXTRA_DEFAULTS:
@@ -157,7 +145,7 @@ def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release):
+def launch_manager(protocol, num_replicas, release, pin_cores):
     cmd = compose_manager_cmd(
         protocol,
         MANAGER_SRV_PORT,
@@ -165,7 +153,7 @@ def launch_manager(protocol, num_replicas, release):
         num_replicas,
         release,
     )
-    return run_process(cmd, capture_stderr=True)
+    return run_process(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
 
 
 def wait_manager_setup(proc, print_stderr=True):
@@ -211,7 +199,6 @@ def launch_servers(
 ):
     if num_replicas not in (3, 5, 7, 9):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
-    capture_stderr = pin_cores > 0
 
     server_procs = []
     for replica in range(num_replicas):
@@ -225,10 +212,9 @@ def launch_servers(
             ),
             release,
         )
-        proc = run_process(cmd, capture_stderr=capture_stderr)
-
-        if pin_cores > 0:
-            pin_cores_for(replica, proc.pid, pin_cores)
+        proc = run_process(
+            replica + 1, cmd, capture_stderr=False, cores_per_proc=pin_cores
+        )
 
         server_procs.append(proc)
 
@@ -266,8 +252,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # kill all existing server and manager processes
-    kill_all_matching("summerset_server", force=True)
-    kill_all_matching("summerset_manager", force=True)
+    if args.pin_cores == 0:
+        kill_all_matching("summerset_server", force=True)
+        kill_all_matching("summerset_manager", force=True)
 
     # check that the prefix folder path exists, or create it if not
     if not os.path.isdir(args.file_prefix):
@@ -280,7 +267,9 @@ if __name__ == "__main__":
         sys.exit(rc)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
+    manager_proc = launch_manager(
+        args.protocol, args.num_replicas, args.release, args.pin_cores
+    )
     wait_manager_setup(manager_proc, (args.pin_cores == 0))
 
     # then launch server replicas

@@ -20,7 +20,7 @@ NUM_CLIENTS = 2
 
 VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
-LENGTH_SECS = 60
+LENGTH_SECS = 30
 
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 

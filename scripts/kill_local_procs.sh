@@ -3,7 +3,7 @@
 kill_all_matching () {
     for pid in $(pgrep -f $1)
     do
-        sudo kill -9 $pid
+        sudo kill -9 $pid > /dev/null 2>&1
     done
 }
 

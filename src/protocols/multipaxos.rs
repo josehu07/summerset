@@ -2320,7 +2320,9 @@ impl GenericEndpoint for MultiPaxosClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            // NOTE: commented out the following wait to avoid accidental
+            // hanging upon leaving
+            // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_info!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
