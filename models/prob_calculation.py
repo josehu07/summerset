@@ -111,7 +111,7 @@ def plot_env_result_subplot(i, j, results):
         plt.plot(
             xs,
             ys,
-            label=f"|Q|={q}  l={c}",
+            label=f"|Q|={q}  c={c}",
             color=QUORUM_COLOR_WIDTH[q][0],
             linewidth=QUORUM_COLOR_WIDTH[q][1],
         )
@@ -233,7 +233,7 @@ def plot_all_env_results(results, output_dir):
         labels,
         loc="center left",
         bbox_to_anchor=(0.76, 0.5),
-        handlelength=0.5,
+        handlelength=0.8,
         title="Configs",
     )
 
