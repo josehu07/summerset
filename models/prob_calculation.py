@@ -14,19 +14,16 @@ CLUSTER = 5
 
 # instance size in KBs
 SIZES = [2**i for i in range(3, 10)]
-SIZES += [1024 * i for i in range(1, 51)]
+SIZES += [1024 * i for i in range(1, 61)]
 
 # tuples of (min_delay in ms, max bandwidth in Gbps)
-POWERS = [(10, 40), (50, 10), (100, 1)]
+POWERS = [(10, 50), (40, 10), (120, 1)]
 
 # standard deviations of the half-normal distribution
-SIGMAS = [5, 15, 30]
+# values are percentages w.r.t. min_delay
+SIGMAS = [5, 30, 100]
 
-NUM_TRIALS = {
-    10: 50000,
-    50: 20000,
-    100: 5000,
-}
+NUM_TRIALS = 10000
 
 QUORUM_COLOR_WIDTH = {
     5: ("red", 1.2),
@@ -41,7 +38,8 @@ def min_individual_time(c, s, d, b):
 
 def rand_individual_time(c, s, d, b, sigma):
     mu = min_individual_time(c, s, d, b)
-    t = random.gauss(mu, sigma)
+    stdev = mu * (sigma / 100)
+    t = random.gauss(mu, stdev)
     if t < mu:
         t = mu + (mu - t)
     return t
@@ -55,7 +53,7 @@ def response_time_sample(n, q, c, s, d, b, sigma):
 
 def response_time_mean_stdev(n, q, c, s, d, b, sigma):
     rts = []
-    for _ in range(NUM_TRIALS[d]):
+    for _ in range(NUM_TRIALS):
         rts.append(response_time_sample(n, q, c, s, d, b, sigma))
     mean = sum(rts) / len(rts)
     stdev = statistics.stdev(rts)
@@ -161,7 +159,7 @@ def plot_env_result_subplot(i, j, results):
         plt.text(
             xright * 0.5 if j > 0 else xright * 0.7,
             -ytop * 0.5,
-            f"{sigma}ms",
+            f"+{sigma / 100:.1f}d",
             horizontalalignment="center",
             verticalalignment="center",
             # color="dimgray",
