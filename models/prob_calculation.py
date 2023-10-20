@@ -14,7 +14,7 @@ CLUSTER = 5
 
 # instance size in KBs
 SIZES = [2**i for i in range(3, 10)]
-SIZES += [1024 * i for i in range(1, 51)]
+SIZES += [1024 * i for i in range(1, 26)]
 
 # tuples of (min_delay in ms, max bandwidth in Gbps)
 POWERS = [(10, 50), (50, 10), (100, 1)]
