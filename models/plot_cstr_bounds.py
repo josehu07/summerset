@@ -104,7 +104,7 @@ def plot_cstr_bound(idx, cluster_size):
     plt.text(
         m + 0.3 if n <= 5 else m + 0.5,
         n + 1.1 if n <= 5 else m + 2.5,
-        "Lat.\noptim.",
+        "Var.\noptim.",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
