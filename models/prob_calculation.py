@@ -10,25 +10,25 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore
 
 
-CLUSTER = 5
+CLUSTER = 7
 
 # instance size in KBs
 SIZES = [2**i for i in range(3, 10)]
-SIZES += [1024 * i for i in range(1, 26)]
+SIZES += [1024 * i for i in range(1, 201)]
 
 # tuples of (min_delay in ms, max bandwidth in Gbps)
 POWERS = [(10, 50), (50, 10), (100, 1)]
 
-# standard deviations of the half-normal distribution
-# values are percentages w.r.t. min_delay
-JITTERS = [10, 20, 50]
+# TODO: fix me
+JITTERS = [5, 4, 3]
 
-NUM_TRIALS = 10000
+NUM_TRIALS = 1000
 
 QUORUM_COLOR_WIDTH = {
-    5: ("red", 1.2),
-    4: ("steelblue", 1.5),
-    3: ("dimgray", 1.8),
+    7: ("red", 0.2),
+    6: ("forestgreen", 0.2),
+    5: ("steelblue", 0.2),
+    4: ("dimgray", 0.2),
 }
 
 
@@ -38,16 +38,22 @@ def mean_individual_time(c, s, d, b):
 
 def rand_individual_time(c, s, d, b, jit):
     mu = mean_individual_time(c, s, d, b)
-    jit = mu * (jit / 100)
-    t = random.gauss(mu, jit)
-    while t < mu - jit or t > mu + jit:
-        t = random.gauss(mu, jit)
+    # jit = mu * (jit / 100)
+    # t = random.gauss(mu, jit)
+    # while t < mu - jit:
+    #     t = random.gauss(mu, jit)
+    pareto = random.paretovariate(jit)
+    while pareto > 10:
+        pareto = random.paretovariate(jit)
+    t = pareto * mu
     return t
 
 
 def response_time_sample(n, q, c, s, d, b, jit):
     ts = [rand_individual_time(c, s, d, b, jit) for _ in range(n - 1)]
     ts.sort()
+    # diffs = [ts[i] - ts[i - 1] for i in range(1, len(ts))]
+    # print([int(t) for t in ts], [int(diff) for diff in diffs])
     return ts[q - 2]  # assuming leader itself must have accepted
 
 
