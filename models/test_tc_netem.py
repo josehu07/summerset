@@ -22,10 +22,10 @@ MSG_LEN = 1024
 REPLY_LEN = 32
 
 GAP_MS = 5
-NUM_MSGS = 1000
+NUM_MSGS = 10000
 
-DELAY_MEAN = 50
-DELAY_JITTER = 10
+DELAY_MEAN = 10
+DELAY_JITTER = 2
 DISTRIBUTIONS = ["normal", "pareto", "paretonormal", "experimental"]
 RATE_GBIT = 10
 
@@ -124,12 +124,12 @@ class Requester(Host):
         self.send_ts = [0 for _ in range(num_msgs)]
         self.recv_ts = [0 for _ in range(num_msgs)]
 
-    def req_sender_func(self):
-        for i in range(self.num_msgs):
-            self.send_ts[i] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-            self.send_msg(i, self.gen_bytes(self.msg_len))
+    # def req_sender_func(self):
+    #     for i in range(self.num_msgs):
+    #         self.send_ts[i] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    #         self.send_msg(i, self.gen_bytes(self.msg_len))
 
-            time.sleep(self.gap_ms / 1000)
+    #         time.sleep(self.gap_ms / 1000)
 
     def run(self):
         # t = threading.Thread(target=Requester.req_sender_func, args=[self])
