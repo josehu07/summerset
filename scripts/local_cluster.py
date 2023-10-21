@@ -4,7 +4,9 @@ import signal
 import argparse
 import subprocess
 import multiprocessing
-from pathlib import Path
+
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import common_utils as utils
 
 
 MANAGER_SRV_PORT = 52600
@@ -34,36 +36,7 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def path_get_last_segment(path):
-    if "/" not in path:
-        return None
-    eidx = len(path) - 1
-    while eidx > 0 and path[eidx] == "/":
-        eidx -= 1
-    bidx = path[:eidx].rfind("/")
-    bidx += 1
-    return path[bidx : eidx + 1]
-
-
-def check_proper_cwd():
-    cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
-        sys.exit(1)
-
-
-def do_cargo_build(release):
-    print("Building everything...")
-    cmd = ["cargo", "build", "--workspace"]
-    if release:
-        cmd.append("-r")
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
-
-
-def run_process(i, cmd, capture_stderr=False, cores_per_proc=0):
+def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0):
     if cores_per_proc > 0:
         # pin servers from CPU 0 up
         num_cpus = multiprocessing.cpu_count()
@@ -71,23 +44,7 @@ def run_process(i, cmd, capture_stderr=False, cores_per_proc=0):
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
-
-    print("Run:", " ".join(cmd))
-    proc = None
-    if capture_stderr:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
-    else:
-        proc = subprocess.Popen(cmd)
-
-    return proc
-
-
-def kill_all_matching(name, force=False):
-    print("Kill all:", name)
-    assert name.count(" ") == 0
-    cmd = "killall -9" if force else "killall"
-    cmd += f" {name} > /dev/null 2>&1"
-    os.system(cmd)
+    return utils.run_process(cmd, capture_stderr=capture_stderr)
 
 
 def config_with_defaults(
@@ -153,7 +110,7 @@ def launch_manager(protocol, num_replicas, release, pin_cores):
         num_replicas,
         release,
     )
-    return run_process(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
+    return run_process_pinned(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
 
 
 def wait_manager_setup(proc, print_stderr=True):
@@ -212,7 +169,7 @@ def launch_servers(
             ),
             release,
         )
-        proc = run_process(
+        proc = run_process_pinned(
             replica + 1, cmd, capture_stderr=False, cores_per_proc=pin_cores
         )
 
@@ -222,7 +179,7 @@ def launch_servers(
 
 
 if __name__ == "__main__":
-    check_proper_cwd()
+    utils.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -253,15 +210,15 @@ if __name__ == "__main__":
 
     # kill all existing server and manager processes
     if args.pin_cores == 0:
-        kill_all_matching("summerset_server", force=True)
-        kill_all_matching("summerset_manager", force=True)
+        utils.kill_all_matching("summerset_server")
+        utils.kill_all_matching("summerset_manager")
 
     # check that the prefix folder path exists, or create it if not
     if not os.path.isdir(args.file_prefix):
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = do_cargo_build(args.release)
+    rc = utils.do_cargo_build(args.release)
     if rc != 0:
         print("ERROR: cargo build failed")
         sys.exit(rc)

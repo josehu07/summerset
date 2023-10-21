@@ -4,6 +4,8 @@
 **/*.rs.bk
 *.pdb
 
+**/__pycache__/
+
 /.vscode/
 
 /tla+/**/states/
@@ -11,3 +13,4 @@
 /tla+/**/*.old
 
 /results/
+

@@ -1,48 +1,21 @@
-import os
 import sys
+import os
 import argparse
-import subprocess
+
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import common_utils as utils
 
 
 BASE_PATH = "/mnt/eval"
 
-EXCLUDE_NAMES = ["results/", "target/", ".git/", "tla+/*/states/"]
-
-
-def run_process(cmd):
-    print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd)
-    return proc
-
-
-def parse_comma_separated(l):
-    l = l.strip().split(",")
-    if len(l) == 0:
-        raise ValueError("comma separated list is empty")
-    for seg in l:
-        if len(seg) == 0:
-            raise ValueError(f"comma separated list has empty segment: {l}")
-    return l
-
-
-def path_get_last_segment(path):
-    if "/" not in path:
-        return None
-    eidx = len(path) - 1
-    while eidx > 0 and path[eidx] == "/":
-        eidx -= 1
-    bidx = path[:eidx].rfind("/")
-    bidx += 1
-    return path[bidx : eidx + 1]
-
-
-def check_proper_cwd():
-    cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
-        sys.exit(1)
+EXCLUDE_NAMES = [
+    "results/",
+    "target/",
+    ".git/",
+    ".vscode/",
+    "tla+/*/states/",
+    "*/__pycache__/",
+]
 
 
 def compose_rsync_cmd(src_path, dst_path, target):
@@ -59,7 +32,7 @@ def mirror_folder(targets, src_path, dst_path, repo_name):
     if not os.path.isdir(src_path):
         raise ValueError(f"source path '{src_path}' is not an existing directory")
     src_path = os.path.realpath(src_path)
-    src_seg = path_get_last_segment(src_path)
+    src_seg = utils.path_get_last_segment(src_path)
     if src_seg != repo_name:
         raise ValueError(
             f"source folder '{src_seg}' does not match project name '{repo_name}'"
@@ -71,7 +44,7 @@ def mirror_folder(targets, src_path, dst_path, repo_name):
     # followed by a trailing '/'
     if not os.path.isabs(dst_path):
         raise ValueError(f"target path '{dst_path}' is not an absolute path")
-    dst_seg = path_get_last_segment(dst_path)
+    dst_seg = utils.path_get_last_segment(dst_path)
     if dst_seg != repo_name:
         raise ValueError(
             f"target folder '{dst_seg}' does not match project name '{repo_name}'"
@@ -86,12 +59,12 @@ def mirror_folder(targets, src_path, dst_path, repo_name):
         cmds.append(cmd)
 
     for cmd in cmds:
-        proc = run_process(cmd)
+        proc = utils.run_process(cmd)
         proc.wait()
 
 
 if __name__ == "__main__":
-    check_proper_cwd()
+    utils.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -120,5 +93,5 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    targets = parse_comma_separated(args.targets)
+    targets = utils.parse_comma_separated(args.targets)
     mirror_folder(targets, args.src_path, args.dst_path, args.repo_name)

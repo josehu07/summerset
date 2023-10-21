@@ -4,6 +4,9 @@ import argparse
 import subprocess
 import statistics
 
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import common_utils as utils
+
 
 BASE_PATH = "/mnt/eval"
 SERVER_STATES_FOLDER = "states"
@@ -25,46 +28,6 @@ LENGTH_SECS = 30
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
-def path_get_last_segment(path):
-    if "/" not in path:
-        return None
-    eidx = len(path) - 1
-    while eidx > 0 and path[eidx] == "/":
-        eidx -= 1
-    bidx = path[:eidx].rfind("/")
-    bidx += 1
-    return path[bidx : eidx + 1]
-
-
-def check_proper_cwd():
-    cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
-        sys.exit(1)
-
-
-def do_cargo_build():
-    print("Building everything...")
-    cmd = ["cargo", "build", "--workspace", "-r"]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
-
-
-def run_process(cmd):
-    # print("Run:", " ".join(cmd))
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return proc
-
-
-def kill_all_local_procs():
-    # print("Killing all local procs...")
-    cmd = ["sudo", "./scripts/kill_local_procs.sh"]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
-
-
 def launch_cluster(protocol, num_replicas, config=None):
     cmd = [
         "python3",
@@ -81,7 +44,9 @@ def launch_cluster(protocol, num_replicas, config=None):
     ]
     if config is not None and len(config) > 0:
         cmd += ["-c", config]
-    return run_process(cmd)
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
 
 
 def wait_cluster_setup(proc, num_replicas):
@@ -123,7 +88,9 @@ def run_bench_clients(protocol, num_clients, value_size, put_ratio, length_s):
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
-    return run_process(cmd)
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
 
 
 def bench_round(
@@ -138,7 +105,7 @@ def bench_round(
         f"{EXPER_NAME}  {protocol:<10s}  {num_replicas:1d}  v={value_size:<9d}  "
         + f"w%={put_ratio:<3d}  {length_s:3d}s  {num_clients:2d}"
     )
-    kill_all_local_procs()
+    utils.kill_all_local_procs()
 
     proc_cluster = launch_cluster(protocol, num_replicas)
     wait_cluster_setup(proc_cluster, num_replicas)
@@ -149,7 +116,7 @@ def bench_round(
     out, err = proc_clients.communicate()
 
     proc_cluster.terminate()
-    kill_all_local_procs()
+    utils.kill_all_local_procs()
 
     if proc_clients.returncode != 0:
         print("Experiment FAILED!")
@@ -161,7 +128,7 @@ def bench_round(
 
 
 if __name__ == "__main__":
-    check_proper_cwd()
+    utils.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -170,7 +137,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
-        do_cargo_build()
+        utils.do_cargo_build(release=True)
 
         for protocol in PROTOCOLS:
             bench_round(

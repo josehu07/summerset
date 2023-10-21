@@ -4,6 +4,9 @@ import argparse
 import subprocess
 import multiprocessing
 
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import common_utils as utils
+
 
 MANAGER_CLI_PORT = 52601
 
@@ -17,36 +20,7 @@ UTILITY_PARAM_NAMES = {
 }
 
 
-def path_get_last_segment(path):
-    if "/" not in path:
-        return None
-    eidx = len(path) - 1
-    while eidx > 0 and path[eidx] == "/":
-        eidx -= 1
-    bidx = path[:eidx].rfind("/")
-    bidx += 1
-    return path[bidx : eidx + 1]
-
-
-def check_proper_cwd():
-    cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
-        sys.exit(1)
-
-
-def do_cargo_build(release):
-    print("Building everything...")
-    cmd = ["cargo", "build", "--workspace"]
-    if release:
-        cmd.append("-r")
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
-
-
-def run_process(i, cmd, capture_stdout=False, cores_per_proc=0):
+def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
     if cores_per_proc > 0:
         # pin client cores from last CPU down
         num_cpus = multiprocessing.cpu_count()
@@ -54,14 +28,7 @@ def run_process(i, cmd, capture_stdout=False, cores_per_proc=0):
         core_start = core_end - cores_per_proc + 1
         assert core_start >= 0
         cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
-
-    print("Run:", " ".join(cmd))
-    proc = None
-    if capture_stdout:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    else:
-        proc = subprocess.Popen(cmd)
-    return proc
+    return utils.run_process(cmd, capture_stdout=capture_stdout)
 
 
 def glue_params_str(cli_args, params_list):
@@ -120,7 +87,7 @@ def run_clients(
             params,
             release,
         )
-        proc = run_process(
+        proc = run_process_pinned(
             i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
         )
 
@@ -130,7 +97,7 @@ def run_clients(
 
 
 if __name__ == "__main__":
-    check_proper_cwd()
+    utils.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -197,7 +164,7 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = do_cargo_build(args.release)
+    rc = utils.do_cargo_build(args.release)
     if rc != 0:
         print("ERROR: cargo build failed")
         sys.exit(rc)
