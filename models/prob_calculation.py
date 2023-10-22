@@ -14,50 +14,51 @@ CLUSTER = 5
 
 # instance size in KBs
 SIZES = [2**i for i in range(3, 10)]
-SIZES += [1024 * i for i in range(1, 257)]
+SIZES += [1024 * i for i in range(1, 101)]
 
-# tuples of (min_delay in ms, max bandwidth in Gbps)
+# tuples of (min_delay in ms, max_bandwidth in Gbps)
 POWERS = [(10, 100), (50, 10), (120, 1)]
 
-# Pareto distribution alpha value
-ALPHAS = [3, 2, 1]
+# delay jitter value (in percentage of min_delay)
+JITTERS = [10, 25, 50]
 
+PARETO_ALPHA = 1.16  # log_4(5)
 NUM_TRIALS = 10000
 
 QUORUM_COLOR_WIDTH = {
-    5: ("red", 1.2),
-    4: ("steelblue", 1.5),
-    3: ("dimgray", 1.8),
+    5: ("red", 1),
+    4: ("steelblue", 1.25),
+    3: ("dimgray", 1.5),
 }
 
 
-def rand_individual_time(c, s, d, b, alpha):
-    pareto = random.paretovariate(alpha)
+def rand_individual_time(c, s, d, b, jitter):
+    pareto = random.paretovariate(PARETO_ALPHA)
     while pareto > 10:
-        pareto = random.paretovariate(alpha)
-    t = pareto * d
+        pareto = random.paretovariate(PARETO_ALPHA)
+    t = d + d * (jitter / 100) * (pareto - 1)
     t += (s * c) / (b * 1024 / 8)
     return t
 
 
-def response_time_sample(n, q, c, s, d, b, alpha):
-    ts = [rand_individual_time(c, s, d, b, alpha) for _ in range(n - 1)]
+def response_time_sample(n, q, c, s, d, b, jitter):
+    ts = [rand_individual_time(c, s, d, b, jitter) for _ in range(n - 1)]
     ts.sort()
     # diffs = [ts[i] - ts[i - 1] for i in range(1, len(ts))]
     # print([int(t) for t in ts], [int(diff) for diff in diffs])
     return ts[q - 2]  # assuming leader itself must have accepted
 
 
-def response_time_mean_stdev(n, q, c, s, d, b, alpha):
+def response_time_mean_stdev(n, q, c, s, d, b, jitter):
     rts = []
     for _ in range(NUM_TRIALS):
-        rts.append(response_time_sample(n, q, c, s, d, b, alpha))
+        rts.append(response_time_sample(n, q, c, s, d, b, jitter))
     mean = sum(rts) / len(rts)
     stdev = statistics.stdev(rts)
     return mean, stdev
 
 
-def calc_fixed_env_result(n, d, b, alpha):
+def calc_fixed_env_result(n, d, b, jitter):
     m = n // 2 + 1
     result = dict()
     for q in range(m, n + 1):
@@ -65,7 +66,7 @@ def calc_fixed_env_result(n, d, b, alpha):
         result[(q, c)] = []
         for v in SIZES:
             s = v / m
-            mean, stdev = response_time_mean_stdev(n, q, c, s, d, b, alpha)
+            mean, stdev = response_time_mean_stdev(n, q, c, s, d, b, jitter)
             result[(q, c)].append((mean, stdev))
     return result
 
@@ -73,17 +74,17 @@ def calc_fixed_env_result(n, d, b, alpha):
 def calc_all_env_results(n):
     results = dict()
     for i, (d, b) in enumerate(POWERS):
-        for j, alpha in enumerate(ALPHAS):
-            result = calc_fixed_env_result(n, d, b, alpha)
+        for j, jitter in enumerate(JITTERS):
+            result = calc_fixed_env_result(n, d, b, jitter)
             results[(i, j)] = result
-            print(f"calculated {d} {b} {alpha}")
+            print(f"calculated {d} {b} {jitter}")
     return results
 
 
 def print_all_env_results(results):
     for i, (d, b) in enumerate(POWERS):
-        for j, alpha in enumerate(ALPHAS):
-            print(f"Env {i},{j}:  d={d}  b={b}  alpha={alpha}")
+        for j, jitter in enumerate(JITTERS):
+            print(f"Env {i},{j}:  d={d}  b={b}  jitter={jitter}")
             for q, c in results[(i, j)]:
                 print(f"  config  q={q}  c={c} ", end="")
                 for mean, stdev in results[(i, j)][(q, c)]:
@@ -93,12 +94,12 @@ def print_all_env_results(results):
 
 def plot_env_result_subplot(i, j, results):
     POWERS = results["powers"]
-    ALPHAS = results["alphas"]
+    JITTERS = results["jitters"]
     VSIZES = results["vsizes"]
     results = results["results"]
 
-    subplot_id = len(POWERS) * 100 + len(ALPHAS) * 10
-    subplot_id += i * len(ALPHAS) + j + 1
+    subplot_id = len(POWERS) * 100 + len(JITTERS) * 10
+    subplot_id += i * len(JITTERS) + j + 1
     ax = plt.subplot(subplot_id)
 
     for q, c in results[(i, j)]:
@@ -116,9 +117,9 @@ def plot_env_result_subplot(i, j, results):
     ax.spines["right"].set_visible(False)
     ax.tick_params(direction="in")
 
-    if i == len(POWERS) - 1 and j == len(ALPHAS) - 1:
+    if i == len(POWERS) - 1 and j == len(JITTERS) - 1:
         plt.xlabel("Instance\nsize (MB)", loc="right", multialignment="left")
-        ax.xaxis.set_label_coords(1.95, 0.18)
+        ax.xaxis.set_label_coords(2, 0.18)
     if i < len(POWERS) - 1:
         ax.tick_params(bottom=False, labelbottom=False)
 
@@ -136,7 +137,7 @@ def plot_env_result_subplot(i, j, results):
 
     xright = max(VSIZES) / 1024
     ybottom, ytop = float("inf"), 0
-    for jj in range(len(ALPHAS)):
+    for jj in range(len(JITTERS)):
         for cf in results[(i, j)]:
             for v in range(len(VSIZES)):
                 y = results[(i, jj)][cf][v][0]
@@ -159,7 +160,7 @@ def plot_env_result_subplot(i, j, results):
     )
 
     if i == len(POWERS) - 1:
-        alpha = ALPHAS[j]
+        jitter = JITTERS[j]
         j_var_strs = {
             0: "low",
             1: "medium",
@@ -167,8 +168,8 @@ def plot_env_result_subplot(i, j, results):
         }
         plt.text(
             xright * 0.5 if j > 0 else xright * 0.65,
-            -ytop * 0.6,
-            f"α={alpha}\n{j_var_strs[j]}",
+            -ytop * 0.55,
+            f"+{jitter / 100:.1f}d\n{j_var_strs[j]}",
             horizontalalignment="center",
             verticalalignment="center",
         )
@@ -176,11 +177,11 @@ def plot_env_result_subplot(i, j, results):
         d, b = POWERS[i]
         i_env_strs = {
             0: "datacenter",
-            1: "moderate",
+            1: "regional",
             2: "wide-area",
         }
         plt.text(
-            -xright,
+            -xright * 1.05,
             ytop * 0.6 if i < len(POWERS) - 1 else ytop * 0.8,
             f"{i_env_strs[i]}\n{d}ms\n{b}Gbps",
             horizontalalignment="center",
@@ -197,7 +198,7 @@ def plot_env_result_subplot(i, j, results):
         #     weight="bold",
         # )
         plt.text(
-            -xright,
+            -xright * 1.05,
             0,
             "RTT (d)\nBW (b)",
             horizontalalignment="center",
@@ -206,8 +207,8 @@ def plot_env_result_subplot(i, j, results):
         )
         plt.text(
             -xright * 0.3,
-            -ytop * 0.6,
-            "Pareto α\nVariance",
+            -ytop * 0.55,
+            "Jitter\nVariance",
             horizontalalignment="center",
             verticalalignment="center",
             weight="bold",
@@ -229,7 +230,7 @@ def plot_all_env_results(results, output_dir):
 
     handles, labels = None, None
     for i in range(len(results["powers"])):
-        for j in range(len(results["alphas"])):
+        for j in range(len(results["jitters"])):
             ax = plot_env_result_subplot(i, j, results)
             if i == 0 and j == 0:
                 handles, labels = ax.get_legend_handles_labels()
@@ -264,12 +265,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         results = calc_all_env_results(CLUSTER)
-        print_all_env_results(results)
+        # print_all_env_results(results)
 
         results = {
             "vsizes": SIZES,
             "powers": POWERS,
-            "alphas": ALPHAS,
+            "jitters": JITTERS,
             "results": results,
         }
 

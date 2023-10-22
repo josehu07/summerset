@@ -18,11 +18,15 @@ SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 2
+NUM_CLIENTS = 5
 
-VALUE_SIZE = 1024 * 1024
+VALUE_SIZE = 100 * 1024 * 1024
 PUT_RATIO = 100
 LENGTH_SECS = 30
+
+NETEM_MEAN = 50
+NETEM_JITTER = 5
+NETEM_RATE = 10
 
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
@@ -138,6 +142,8 @@ if __name__ == "__main__":
     if not args.plot:
         utils.do_cargo_build(release=True)
 
+        utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
+
         for protocol in PROTOCOLS:
             bench_round(
                 protocol,
@@ -147,6 +153,8 @@ if __name__ == "__main__":
                 PUT_RATIO,
                 LENGTH_SECS,
             )
+
+        utils.clear_tc_qdisc_netem()
 
     else:
         pass

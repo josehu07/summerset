@@ -24,7 +24,7 @@ REPLY_LEN = 32
 GAP_MS = 10
 NUM_MSGS = 20000
 
-DELAY_MEAN = 10
+DELAY_BASE = 10
 DELAY_JITTERS = [1, 2, 3, 4, 5]
 DISTRIBUTIONS = ["normal", "pareto", "paretonormal", "experimental"]
 RATE_GBIT = 10
@@ -180,7 +180,7 @@ if __name__ == "__main__":
 
     for distribution in DISTRIBUTIONS:
         for jitter in DELAY_JITTERS:
-            set_tc_qdisc_netem(DELAY_MEAN, jitter, distribution, RATE_GBIT)
+            set_tc_qdisc_netem(DELAY_BASE, jitter, distribution, RATE_GBIT)
 
             responder_proc = multiprocessing.Process(target=Responder.responder_func)
             responder_proc.start()
