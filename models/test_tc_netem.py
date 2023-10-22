@@ -21,11 +21,11 @@ MSG_ID_LEN = 8
 MSG_LEN = 1024
 REPLY_LEN = 32
 
-GAP_MS = 5
-NUM_MSGS = 10000
+GAP_MS = 10
+NUM_MSGS = 20000
 
 DELAY_MEAN = 10
-DELAY_JITTER = 2
+DELAY_JITTERS = [1, 2, 3, 4, 5]
 DISTRIBUTIONS = ["normal", "pareto", "paretonormal", "experimental"]
 RATE_GBIT = 10
 
@@ -45,9 +45,9 @@ def clear_tc_qdisc_netem():
 class Host:
     def __init__(self, conn_send, conn_recv):
         self.conn_send = conn_send
-        # self.conn_send.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
+        self.conn_send.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
         self.conn_recv = conn_recv
-        # self.conn_recv.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
+        self.conn_recv.setsockopt(socket.SOL_TCP, socket.TCP_NODELAY, 1)
 
     def gen_bytes(self, l):
         return bytearray((random.getrandbits(8) for _ in range(l)))
@@ -124,42 +124,45 @@ class Requester(Host):
         self.send_ts = [0 for _ in range(num_msgs)]
         self.recv_ts = [0 for _ in range(num_msgs)]
 
-    # def req_sender_func(self):
-    #     for i in range(self.num_msgs):
-    #         self.send_ts[i] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-    #         self.send_msg(i, self.gen_bytes(self.msg_len))
-
-    #         time.sleep(self.gap_ms / 1000)
-
-    def run(self):
-        # t = threading.Thread(target=Requester.req_sender_func, args=[self])
-        # t.start()
-
+    def req_sender_func(self):
         for i in range(self.num_msgs):
             self.send_ts[i] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
             self.send_msg(i, self.gen_bytes(self.msg_len))
+
+            time.sleep(self.gap_ms / 1000)
+
+    def run(self, do_async=False):
+        if do_async:
+            t = threading.Thread(target=Requester.req_sender_func, args=[self])
+            t.start()
+
+        for i in range(self.num_msgs):
+            if not do_async:
+                self.send_ts[i] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+                self.send_msg(i, self.gen_bytes(self.msg_len))
 
             msg_id, _ = self.recv_msg()
             assert msg_id == i
             self.recv_ts[msg_id] = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
 
-        # t.join()
+        if do_async:
+            t.join()
         self.send_msg(0, b"TERMINATE")
 
         nanosecs = [self.recv_ts[i] - self.send_ts[i] for i in range(self.num_msgs)]
         return nanosecs
 
 
-def plot_histogram(nanosecs, distribution, output_dir):
+def plot_histogram(nanosecs, distribution, jitter, output_dir):
     millisecs = [s / 1000000 for s in nanosecs]
     # print(millisecs)
 
     plt.hist(millisecs, bins=100)
 
     plt.xlabel("ms")
-    plt.xlim(min(millisecs), max(millisecs))
+    plt.xlim(0, max(millisecs) * 1.1)
 
-    plt.savefig(f"{output_dir}/netem.{distribution}.png")
+    plt.savefig(f"{output_dir}/netem.{distribution}.{jitter}.png")
     plt.close()
 
 
@@ -168,26 +171,32 @@ if __name__ == "__main__":
     parser.add_argument(
         "-o", "--output_dir", type=str, default="./results", help="output folder"
     )
+    parser.add_argument(
+        "--do_async",
+        action="store_true",
+        help="if set, use 2-threads async mode requester",
+    )
     args = parser.parse_args()
 
     for distribution in DISTRIBUTIONS:
-        set_tc_qdisc_netem(DELAY_MEAN, DELAY_JITTER, distribution, RATE_GBIT)
+        for jitter in DELAY_JITTERS:
+            set_tc_qdisc_netem(DELAY_MEAN, jitter, distribution, RATE_GBIT)
 
-        responder_proc = multiprocessing.Process(target=Responder.responder_func)
-        responder_proc.start()
-        time.sleep(1)
+            responder_proc = multiprocessing.Process(target=Responder.responder_func)
+            responder_proc.start()
+            time.sleep(1)
 
-        requester = None
-        while requester is None:
-            try:
-                requester = Requester(MSG_LEN, NUM_MSGS, GAP_MS)
-            except ConnectionRefusedError:
-                requester = None
-        nanosecs = requester.run()
+            requester = None
+            while requester is None:
+                try:
+                    requester = Requester(MSG_LEN, NUM_MSGS, GAP_MS)
+                except ConnectionRefusedError:
+                    requester = None
+            nanosecs = requester.run(do_async=args.do_async)
 
-        responder_proc.join()
+            responder_proc.join()
 
-        plot_histogram(nanosecs, distribution, args.output_dir)
-        print(f"plotted {distribution}")
+            plot_histogram(nanosecs, distribution, jitter, args.output_dir)
+            print(f"plotted {distribution} {jitter}")
 
     clear_tc_qdisc_netem()

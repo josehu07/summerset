@@ -1,7 +1,6 @@
 import sys
 import os
 import argparse
-import subprocess
 import statistics
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))

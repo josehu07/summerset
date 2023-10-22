@@ -17,6 +17,7 @@ UTILITY_PARAM_NAMES = {
     "repl": [],
     "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
     "tester": ["test_name", "keep_going", "logger_on"],
+    "mess": ["pause", "resume"],
 }
 
 
@@ -114,7 +115,7 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(
         required=True,
         dest="utility",
-        description="client utility mode: repl|bench|tester",
+        description="client utility mode: repl|bench|tester|mess",
     )
 
     parser_repl = subparsers.add_parser("repl", help="REPL mode")
@@ -153,6 +154,14 @@ if __name__ == "__main__":
         "--logger_on", action="store_true", help="do not suppress logger output"
     )
 
+    parser_mess = subparsers.add_parser("mess", help="one-shot control mode")
+    parser_mess.add_argument(
+        "--pause", type=str, help="comma-separated list of servers to pause"
+    )
+    parser_mess.add_argument(
+        "--resume", type=str, help="comma-separated list of servers to resume"
+    )
+
     args = parser.parse_args()
 
     # check that the prefix folder path exists, or create it if not
@@ -184,13 +193,13 @@ if __name__ == "__main__":
         args.pin_cores,
     )
 
+    # if running bench client, add proper timeout on wait
     timeout = None
     if args.utility == "bench":
         if args.length_s is None:
             timeout = 75
         else:
             timeout = args.length_s + 15
-
     try:
         rcs = []
         for i, client_proc in enumerate(client_procs):

@@ -9,12 +9,16 @@ pub use bench::ClientBench;
 mod tester;
 pub use tester::ClientTester;
 
+mod mess;
+pub use mess::ClientMess;
+
 /// Enum of supported client utility modes.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ClientMode {
     Repl,
     Bench,
     Tester,
+    Mess,
 }
 
 impl ClientMode {
@@ -24,6 +28,7 @@ impl ClientMode {
             "repl" => Some(Self::Repl),
             "bench" => Some(Self::Bench),
             "tester" => Some(Self::Tester),
+            "mess" => Some(Self::Mess),
             _ => None,
         }
     }
@@ -47,6 +52,7 @@ mod modes_name_tests {
         valid_name_test!(Repl);
         valid_name_test!(Bench);
         valid_name_test!(Tester);
+        valid_name_test!(Mess);
     }
 
     #[test]

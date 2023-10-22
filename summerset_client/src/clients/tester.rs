@@ -83,7 +83,7 @@ impl ClientTester {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsTester;
-                                     test_name, keep_going, logger_on)?;
+                                    test_name, keep_going, logger_on)?;
 
         // suppress all logger levels if not logger_on
         if !params.logger_on {
