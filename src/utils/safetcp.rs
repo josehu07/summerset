@@ -166,6 +166,9 @@ pub async fn tcp_connect_with_retry(
     mut retries: u8,
 ) -> Result<TcpStream, SummersetError> {
     loop {
+        // let socket = TcpSocket::new_v4()?;
+        // pf_info!("X"; "{} {}", socket.send_buffer_size()?, socket.recv_buffer_size()?);
+        // match socket.connect(addr).await {
         match TcpStream::connect(addr).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {

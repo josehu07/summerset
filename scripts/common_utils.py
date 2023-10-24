@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import statistics
 
 
 def parse_comma_separated(l):
@@ -78,3 +79,66 @@ def set_tc_qdisc_netem(mean, jitter, rate, distribution="pareto"):
 
 def clear_tc_qdisc_netem():
     os.system("sudo tc qdisc delete dev lo root")
+
+
+def gather_outputs(protocol, num_clients, path_prefix, tb, te):
+    outputs = dict()
+    for c in range(num_clients):
+        outputs[c] = {"time": [], "tput": [], "lat": []}
+        with open(f"{path_prefix}/{protocol}.{c}.out", "r") as fout:
+            started = False
+            for line in fout:
+                line = line.strip()
+                if not started and line.startswith("Elapsed"):
+                    started = True
+                elif started and len(line) > 0:
+                    segs = line.split()
+                    outputs[c]["time"].append(float(segs[0]))
+                    outputs[c]["tput"].append(float(segs[2]))
+                    outputs[c]["lat"].append(float(segs[4]))
+
+    result = {
+        "time": [],
+        "tput_sum": [],
+        "tput_min": [],
+        "tput_max": [],
+        "tput_avg": [],
+        "tput_stdev": [],
+        "lat_min": [],
+        "lat_max": [],
+        "lat_avg": [],
+        "lat_stdev": [],
+    }
+    t = 0
+    cidxs = [0 for _ in range(num_clients)]
+    while t + tb < te:
+        tputs, lats = [], []
+        for c in range(num_clients):
+            while t + tb > outputs[c]["time"][cidxs[c]]:
+                cidxs[c] += 1
+            tputs.append(outputs[c]["tput"][cidxs[c]])
+            lats.append(outputs[c]["lat"][cidxs[c]])
+        result["time"].append(t)
+        result["tput_sum"].append(sum(tputs))
+        result["tput_min"].append(min(tputs))
+        result["tput_max"].append(max(tputs))
+        result["tput_avg"].append(sum(tputs) / len(tputs))
+        result["tput_stdev"].append(statistics.stdev(tputs))
+        result["lat_min"].append(min(lats))
+        result["lat_max"].append(max(lats))
+        result["lat_avg"].append(sum(lats) / len(lats))
+        result["lat_stdev"].append(statistics.stdev(lats))
+        t += 0.5
+    return result
+
+
+def list_smoothing(l, d):
+    assert d > 0
+    result = []
+    for i in range(len(l)):
+        nums = []
+        for j in range(i - d, i + d + 1):
+            if j >= 0 and j < len(l):
+                nums.append(l[j])
+        result.append(sum(nums) / len(nums))
+    return result

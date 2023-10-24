@@ -1163,12 +1163,6 @@ impl MultiPaxosReplica {
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
-        } else if let Some(peer) = self.leader {
-            // mark old leader as dead
-            if self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, false)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-            }
         }
 
         self.leader = Some(self.id); // this starts broadcasting heartbeats
@@ -1272,6 +1266,7 @@ impl MultiPaxosReplica {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
+                    cnts.2 = 0;
                 }
             }
         }

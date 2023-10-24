@@ -611,6 +611,9 @@ impl CRaftReplica {
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
+            if prev_slot >= self.start_slot + self.log.len() {
+                continue;
+            }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
                 .log
@@ -1095,6 +1098,9 @@ impl CRaftReplica {
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
+            if prev_slot >= self.start_slot + self.log.len() {
+                return Ok(());
+            }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
                 .log
@@ -1442,18 +1448,6 @@ impl CRaftReplica {
     async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
         if self.role != Role::Follower {
             return Ok(());
-        } else if let Some(peer) = self.leader {
-            // mark old leader as dead
-            if self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, false)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-                // check if we need to fall back to full-copy replication
-                if self.population - self.peer_alive.count()
-                    >= self.config.fault_tolerance
-                {
-                    self.switch_assignment_mode(true)?;
-                }
-            }
         }
 
         self.role = Role::Candidate;
@@ -1577,6 +1571,7 @@ impl CRaftReplica {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
+                    cnts.2 = 0;
                 }
             }
         }

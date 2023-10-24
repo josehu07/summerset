@@ -577,8 +577,8 @@ impl CrosswordReplica {
                 .enumerate()
                 .map(|(s, i)| (self.start_slot + s, i))
             {
-                if inst.status == Status::Accepting {
-                    debug_assert!(inst.leader_bk.is_some());
+                if inst.status == Status::Accepting && inst.leader_bk.is_some()
+                {
                     inst.bal = self.bal_prepared;
                     inst.leader_bk.as_mut().unwrap().accept_acks.clear();
                     pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
@@ -1591,24 +1591,6 @@ impl CrosswordReplica {
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
-        } else if let Some(peer) = self.leader {
-            // mark old leader as dead
-            if self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, false)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-                // check if we need to fall back to a config with smaller
-                // fast-path quorum size
-                let curr_quorum_size =
-                    self.majority + self.config.fault_tolerance + 1
-                        - self.shards_per_replica;
-                if self.peer_alive.count() < curr_quorum_size {
-                    self.change_assignment_config(
-                        self.shards_per_replica + curr_quorum_size
-                            - self.peer_alive.count(),
-                        true,
-                    )?;
-                }
-            }
         }
 
         self.leader = Some(self.id); // this starts broadcasting heartbeats
@@ -1746,6 +1728,7 @@ impl CrosswordReplica {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
+                    cnts.2 = 0;
                 }
             }
         }
