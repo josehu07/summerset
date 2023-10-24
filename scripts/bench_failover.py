@@ -23,17 +23,16 @@ BATCH_INTERVAL = 1
 NUM_REPLICAS = 5
 NUM_CLIENTS = 8
 
-VALUE_SIZE = 1024 * 1024
+VALUE_SIZE = 10 * 1024 * 1024
 PUT_RATIO = 100
-LENGTH_SECS = 10
+LENGTH_SECS = 30
 
-NETEM_MEAN = 5
+NETEM_MEAN = 1
 NETEM_JITTER = 1
 NETEM_RATE = 1
 
 
-# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["RSPaxos", "Crossword"]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 def launch_cluster(protocol, config=None):
