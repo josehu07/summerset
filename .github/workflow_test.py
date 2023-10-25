@@ -12,7 +12,7 @@ def do_cargo_build():
 
 
 def run_process(cmd):
-    # print("Run:", " ".join(cmd))
+    print("Run:", " ".join(cmd))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return proc
 
@@ -66,7 +66,7 @@ def wait_cluster_setup(proc, num_replicas):
 def run_tester_client(protocol, test_name):
     cmd = [
         "python3",
-        "./scripts/local_client.py",
+        "./scripts/local_clients.py",
         "-p",
         protocol,
         "tester",

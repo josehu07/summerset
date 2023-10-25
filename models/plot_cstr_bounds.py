@@ -1,3 +1,6 @@
+import argparse
+import math
+
 import matplotlib  # type: ignore
 
 matplotlib.use("Agg")
@@ -6,7 +9,6 @@ import numpy as np  # type: ignore
 import matplotlib.pyplot as plt  # type: ignore
 import matplotlib.patches as mpatches  # type: ignore
 from matplotlib.legend_handler import HandlerPatch  # type: ignore
-import math
 
 
 SUBPLOT_ARG = lambda idx: 141 + idx
@@ -62,12 +64,19 @@ def plot_cstr_bound(idx, cluster_size):
         label="Crossword configs",
         zorder=20,
     )
-    plt.vlines(m, ymin=m, ymax=m + 1, linestyles="-", color=line_color, zorder=20)
-    plt.vlines(n, ymin=1, ymax=m + 1, linestyles="-", color=line_color, zorder=20)
+    if n <= 5:
+        plt.vlines(m, ymin=m, ymax=n, linestyles="-", color=line_color, zorder=20)
+        plt.vlines(n, ymin=1, ymax=n, linestyles="-", color=line_color, zorder=20)
+        plt.hlines(
+            n, xmin=m - 0.05, xmax=n + 0.05, linestyles="-", color=line_color, zorder=20
+        )
+    else:
+        plt.vlines(m, ymin=m, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
+        plt.vlines(n, ymin=1, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
 
     # correct region
     xs = [m, m, n, n]
-    ys = [m, m + 1.3, m + 1.3, 1]
+    ys = [m, n, n, 1] if n <= 5 else [m, m + 1.4, m + 1.4, 1]
     plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
 
     # unused x-axis ranges
@@ -81,7 +90,7 @@ def plot_cstr_bound(idx, cluster_size):
     # latency & throughput optimized arrows
     plt.arrow(
         m + 0.1,
-        m + 2.4,
+        n + 0.68 if n <= 5 else m + 2.4,
         -1.3,
         0,
         linewidth=1,
@@ -93,9 +102,9 @@ def plot_cstr_bound(idx, cluster_size):
         label="Tradeoff decisions",
     )
     plt.text(
-        m + 0.3 if n < 9 else m + 0.5,
-        m + 2.5 if n < 9 else m + 2.4,
-        "Lat.\noptim.",
+        m + 0.3 if n <= 5 else m + 0.5,
+        n + 1.1 if n <= 5 else m + 2.5,
+        "Var.\noptim.",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
@@ -212,7 +221,7 @@ def make_legend(fig, handles, labels):
         h.set_color("dimgray")
 
 
-def plot_all_cstr_bounds():
+def plot_all_cstr_bounds(output_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (10, 3),
@@ -232,8 +241,14 @@ def plot_all_cstr_bounds():
     make_legend(fig, handles, labels)
 
     plt.tight_layout(pad=1.0)
-    plt.savefig(f"results/cstr_bounds.png", dpi=300)
+    plt.savefig(f"{output_dir}/cstr_bounds.png", dpi=300)
 
 
 if __name__ == "__main__":
-    plot_all_cstr_bounds()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument(
+        "-o", "--output_dir", type=str, default="./results", help="output folder"
+    )
+    args = parser.parse_args()
+
+    plot_all_cstr_bounds(args.output_dir)

@@ -91,17 +91,17 @@ impl Default for ReplicaConfigCrossword {
         ReplicaConfigCrossword {
             batch_interval_ms: 10,
             max_batch_size: 5000,
-            backer_path: "/tmp/summerset.rs_paxos.wal".into(),
+            backer_path: "/tmp/summerset.crossword.wal".into(),
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
             hb_send_interval_ms: 50,
-            snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
+            snapshot_path: "/tmp/summerset.crossword.snap".into(),
             snapshot_interval_s: 0,
-            gossip_timeout_min: 1200,
-            gossip_timeout_max: 1800,
+            gossip_timeout_min: 100,
+            gossip_timeout_max: 300,
             fault_tolerance: 0,
-            recon_chunk_size: 2000,
+            recon_chunk_size: 100,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,
@@ -354,8 +354,13 @@ pub struct CrosswordReplica {
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
+    /// Index of the first instance starting from which gossiping might be needed.
+    /// The "Gossiped" status is captured by this variable implicitly.
+    gossip_bar: usize,
+
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
+    /// The following is always true:
+    ///   exec_bar <= gossip_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
 
     /// Map from peer ID -> its latest exec_bar I know; this is for conservative
@@ -577,8 +582,8 @@ impl CrosswordReplica {
                 .enumerate()
                 .map(|(s, i)| (self.start_slot + s, i))
             {
-                if inst.status == Status::Accepting {
-                    debug_assert!(inst.leader_bk.is_some());
+                if inst.status == Status::Accepting && inst.leader_bk.is_some()
+                {
                     inst.bal = self.bal_prepared;
                     inst.leader_bk.as_mut().unwrap().accept_acks.clear();
                     pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
@@ -1591,24 +1596,6 @@ impl CrosswordReplica {
     fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
-        } else if let Some(peer) = self.leader {
-            // mark old leader as dead
-            if self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, false)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-                // check if we need to fall back to a config with smaller
-                // fast-path quorum size
-                let curr_quorum_size =
-                    self.majority + self.config.fault_tolerance + 1
-                        - self.shards_per_replica;
-                if self.peer_alive.count() < curr_quorum_size {
-                    self.change_assignment_config(
-                        self.shards_per_replica + curr_quorum_size
-                            - self.peer_alive.count(),
-                        true,
-                    )?;
-                }
-            }
         }
 
         self.leader = Some(self.id); // this starts broadcasting heartbeats
@@ -1746,6 +1733,7 @@ impl CrosswordReplica {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
+                    cnts.2 = 0;
                 }
             }
         }
@@ -1965,8 +1953,8 @@ impl CrosswordReplica {
             }
         }
 
-        let mut slot_up_to = self.exec_bar;
-        for slot in self.exec_bar..(self.start_slot + self.insts.len()) {
+        let mut slot_up_to = self.gossip_bar;
+        for slot in self.gossip_bar..self.commit_bar {
             slot_up_to = slot;
             {
                 let inst = &self.insts[slot - self.start_slot];
@@ -2026,10 +2014,13 @@ impl CrosswordReplica {
         // reset gossip trigger timer
         self.kickoff_gossip_timer()?;
 
-        if slot_up_to > self.exec_bar {
+        // update gossip_bar
+        if slot_up_to > self.gossip_bar {
             pf_debug!(self.id; "triggered gossiping: slots {} - {}",
-                                   self.exec_bar, slot_up_to);
+                               self.gossip_bar, slot_up_to - 1);
+            self.gossip_bar = slot_up_to;
         }
+
         Ok(())
     }
 }
@@ -2250,6 +2241,7 @@ impl CrosswordReplica {
                         }
                         // update instance status, commit_bar, and exec_bar
                         self.commit_bar += 1;
+                        self.gossip_bar += 1;
                         self.exec_bar += 1;
                         inst.status = Status::Executed;
                     }
@@ -2499,6 +2491,7 @@ impl CrosswordReplica {
                 // recover necessary slot indices info
                 self.start_slot = start_slot;
                 self.commit_bar = start_slot;
+                self.gossip_bar = start_slot;
                 self.exec_bar = start_slot;
                 self.snap_bar = start_slot;
 
@@ -2773,6 +2766,7 @@ impl GenericReplica for CrosswordReplica {
             bal_prepared: 0,
             bal_max_seen: 0,
             commit_bar: 0,
+            gossip_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
@@ -3029,7 +3023,9 @@ impl GenericEndpoint for CrosswordClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            // NOTE: commented out the following wait to avoid accidental
+            // hanging upon leaving
+            // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_info!(self.id; "left server connection {}", id);
             api_stub.forget();
         }

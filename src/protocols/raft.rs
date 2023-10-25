@@ -356,14 +356,49 @@ impl RaftReplica {
     /// back to follower. Returns true if my role was not follower but now
     /// converted to follower, and false otherwise.
     #[inline]
-    fn check_term(
+    async fn check_term(
         &mut self,
         peer: ReplicaId,
         term: Term,
     ) -> Result<bool, SummersetError> {
         if term > self.curr_term {
             self.curr_term = term;
-            self.heard_heartbeat(peer, term)?; // refresh election timer
+            self.voted_for = None;
+            self.votes_granted.clear();
+
+            // also make the two critical fields durable, synchronously
+            self.storage_hub.submit_action(
+                0,
+                LogAction::Write {
+                    entry: DurEntry::Metadata {
+                        curr_term: self.curr_term,
+                        voted_for: self.voted_for,
+                    },
+                    offset: 0,
+                    sync: self.config.logger_sync,
+                },
+            )?;
+            loop {
+                let (action_id, log_result) =
+                    self.storage_hub.get_result().await?;
+                if action_id != 0 {
+                    // normal log action previously in queue; process it
+                    self.handle_log_result(action_id, log_result)?;
+                } else {
+                    if let LogResult::Write {
+                        offset_ok: true, ..
+                    } = log_result
+                    {
+                    } else {
+                        return logged_err!(self.id; "unexpected log result type or failed write");
+                    }
+                    break;
+                }
+            }
+
+            // refresh heartbeat hearing timer
+            self.heard_heartbeat(peer, term)?;
+
             if self.role != Role::Follower {
                 self.role = Role::Follower;
                 pf_trace!(self.id; "converted back to follower");
@@ -463,6 +498,9 @@ impl RaftReplica {
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
+            if prev_slot >= self.start_slot + self.log.len() {
+                continue;
+            }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
                 .log
@@ -470,6 +508,10 @@ impl RaftReplica {
                 .take(slot + 1 - self.start_slot)
                 .skip(self.try_next_slot[&peer] - self.start_slot)
                 .cloned()
+                .map(|e| LogEntry {
+                    external: false,
+                    ..e
+                })
                 .collect();
 
             if slot >= self.try_next_slot[&peer] {
@@ -485,13 +527,11 @@ impl RaftReplica {
                     peer,
                 )?;
                 pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.try_next_slot[&peer],
-                                   self.start_slot + self.log.len() - 1);
+                                   peer, self.try_next_slot[&peer], slot);
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
-                *self.try_next_slot.get_mut(&peer).unwrap() =
-                    self.start_slot + self.log.len();
+                *self.try_next_slot.get_mut(&peer).unwrap() = slot + 1;
             }
         }
 
@@ -586,16 +626,17 @@ impl RaftReplica {
             pf_trace!(self.id; "received AcceptEntries <- {} for slots {} - {} term {}",
                                leader, prev_slot + 1, prev_slot + entries.len(), term);
         }
-        if self.check_term(leader, term)? || self.role != Role::Follower {
+        if self.check_term(leader, term).await? || self.role != Role::Follower {
             return Ok(());
         }
 
         // reply false if term smaller than mine, or if my log does not
         // contain an entry at prev_slot matching prev_term
-        if term < self.curr_term
-            || prev_slot < self.start_slot
-            || prev_slot >= self.start_slot + self.log.len()
-            || self.log[prev_slot - self.start_slot].term != prev_term
+        if !entries.is_empty()
+            && (term < self.curr_term
+                || prev_slot < self.start_slot
+                || prev_slot >= self.start_slot + self.log.len()
+                || self.log[prev_slot - self.start_slot].term != prev_term)
         {
             // figure out the conflict info to send back
             let conflict_term = if prev_slot >= self.start_slot
@@ -731,7 +772,10 @@ impl RaftReplica {
 
         // if leader_commit is larger than my last_commit, update last_commit
         if leader_commit > self.last_commit {
-            let new_commit = cmp::min(leader_commit, prev_slot + entries.len());
+            let mut new_commit =
+                cmp::min(leader_commit, prev_slot + entries.len());
+            new_commit =
+                cmp::min(new_commit, self.start_slot + self.log.len() - 1);
 
             // submit newly committed entries for state machine execution
             for slot in (self.last_commit + 1)..=new_commit {
@@ -762,7 +806,7 @@ impl RaftReplica {
     }
 
     /// Handler of AppendEntries reply from follower.
-    fn handle_msg_append_entries_reply(
+    async fn handle_msg_append_entries_reply(
         &mut self,
         peer: ReplicaId,
         term: Term,
@@ -770,16 +814,18 @@ impl RaftReplica {
         conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
         if conflict.is_some() || self.match_slot[&peer] != end_slot {
-            pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
-                               peer, term, if conflict.is_none() { "ok" } else { "fail" });
+            pf_trace!(self.id; "received AcceptEntriesReply <- {} term {} end_slot {} {}",
+                               peer, term, end_slot,
+                               if conflict.is_none() { "ok" } else { "fail" });
         }
-        if self.check_term(peer, term)? || self.role != Role::Leader {
+        if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
         }
         self.heard_heartbeat(peer, term)?;
 
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
+            debug_assert!(self.next_slot[&peer] <= end_slot + 1);
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
             if self.try_next_slot[&peer] < end_slot + 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
@@ -841,6 +887,7 @@ impl RaftReplica {
             }
         } else {
             // failed: decrement next_slot for follower and retry
+            debug_assert!(self.next_slot[&peer] >= 1);
             if self.next_slot[&peer] == 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = 1;
                 return Ok(()); // cannot move backward any more
@@ -852,6 +899,7 @@ impl RaftReplica {
                     && self.log[self.next_slot[&peer] - self.start_slot].term
                         == conflict_term
                     && self.next_slot[&peer] >= conflict_slot
+                    && self.next_slot[&peer] > 1
                 {
                     // bypass all conflicting entries in the conflicting term
                     *self.next_slot.get_mut(&peer).unwrap() -= 1;
@@ -864,6 +912,9 @@ impl RaftReplica {
             if prev_slot < self.start_slot {
                 return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
             }
+            if prev_slot >= self.start_slot + self.log.len() {
+                return Ok(());
+            }
             let prev_term = self.log[prev_slot - self.start_slot].term;
             let entries = self
                 .log
@@ -871,6 +922,10 @@ impl RaftReplica {
                 .take(end_slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
                 .cloned()
+                .map(|e| LogEntry {
+                    external: false,
+                    ..e
+                })
                 .collect();
 
             self.transport_hub.send_msg(
@@ -885,20 +940,18 @@ impl RaftReplica {
                 peer,
             )?;
             pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                               peer, self.next_slot[&peer],
-                               self.start_slot + self.log.len() - 1);
+                               peer, self.next_slot[&peer], end_slot);
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
-            *self.try_next_slot.get_mut(&peer).unwrap() =
-                self.start_slot + self.log.len();
+            *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
         }
 
         Ok(())
     }
 
     /// Handler of RequestVote message from candidate.
-    fn handle_msg_request_vote(
+    async fn handle_msg_request_vote(
         &mut self,
         candidate: ReplicaId,
         term: Term,
@@ -907,7 +960,7 @@ impl RaftReplica {
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received RequestVote <- {} with term {} last {} term {}",
                            candidate, term, last_slot, last_term);
-        self.check_term(candidate, term)?;
+        self.check_term(candidate, term).await?;
 
         // if the given term is smaller than mine, reply false
         if term < self.curr_term {
@@ -939,11 +992,42 @@ impl RaftReplica {
                     candidate,
                 )?;
                 pf_trace!(self.id; "sent RequestVoteReply -> {} term {} granted",
-                               candidate, self.curr_term);
+                                   candidate, self.curr_term);
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
                 self.heard_heartbeat(candidate, term)?;
+
+                // update voted_for and make the field durable, synchronously
+                self.voted_for = Some(candidate);
+                self.storage_hub.submit_action(
+                    0,
+                    LogAction::Write {
+                        entry: DurEntry::Metadata {
+                            curr_term: self.curr_term,
+                            voted_for: self.voted_for,
+                        },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                loop {
+                    let (action_id, log_result) =
+                        self.storage_hub.get_result().await?;
+                    if action_id != 0 {
+                        // normal log action previously in queue; process it
+                        self.handle_log_result(action_id, log_result)?;
+                    } else {
+                        if let LogResult::Write {
+                            offset_ok: true, ..
+                        } = log_result
+                        {
+                        } else {
+                            return logged_err!(self.id; "unexpected log result type or failed write");
+                        }
+                        break;
+                    }
+                }
             }
         }
 
@@ -951,7 +1035,7 @@ impl RaftReplica {
     }
 
     /// Handler of RequestVote reply from peer.
-    fn handle_msg_request_vote_reply(
+    async fn handle_msg_request_vote_reply(
         &mut self,
         peer: ReplicaId,
         term: Term,
@@ -959,7 +1043,7 @@ impl RaftReplica {
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received RequestVoteReply <- {} with term {} {}",
                            peer, term, if granted { "granted" } else { "false" });
-        if self.check_term(peer, term)? || self.role != Role::Candidate {
+        if self.check_term(peer, term).await? || self.role != Role::Candidate {
             return Ok(());
         }
 
@@ -1004,16 +1088,23 @@ impl RaftReplica {
                 term,
                 end_slot,
                 conflict,
-            } => self.handle_msg_append_entries_reply(
-                peer, term, end_slot, conflict,
-            ),
+            } => {
+                self.handle_msg_append_entries_reply(
+                    peer, term, end_slot, conflict,
+                )
+                .await
+            }
             PeerMsg::RequestVote {
                 term,
                 last_slot,
                 last_term,
-            } => self.handle_msg_request_vote(peer, term, last_slot, last_term),
+            } => {
+                self.handle_msg_request_vote(peer, term, last_slot, last_term)
+                    .await
+            }
             PeerMsg::RequestVoteReply { term, granted } => {
                 self.handle_msg_request_vote_reply(peer, term, granted)
+                    .await
             }
         }
     }
@@ -1073,12 +1164,6 @@ impl RaftReplica {
     async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
         if self.role != Role::Follower {
             return Ok(());
-        } else if let Some(peer) = self.leader {
-            // mark old leader as dead
-            if self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, false)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-            }
         }
 
         self.role = Role::Candidate;
@@ -1202,6 +1287,7 @@ impl RaftReplica {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
+                    cnts.2 = 0;
                 }
             }
         }
@@ -2200,7 +2286,9 @@ impl GenericEndpoint for RaftClient {
                 sent = api_stub.send_req(None)?;
             }
 
-            while api_stub.recv_reply().await? != ApiReply::Leave {}
+            // NOTE: commented out the following wait to avoid accidental
+            // hanging upon leaving
+            // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_info!(self.id; "left server connection {}", id);
             api_stub.forget();
         }

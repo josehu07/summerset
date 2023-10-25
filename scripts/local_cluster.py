@@ -3,34 +3,10 @@ import os
 import signal
 import argparse
 import subprocess
-from pathlib import Path
+import multiprocessing
 
-
-def do_cargo_build(release):
-    print("Building everything...")
-    cmd = ["cargo", "build", "--workspace"]
-    if release:
-        cmd.append("-r")
-    proc = subprocess.Popen(cmd)
-    return proc.wait()
-
-
-def run_process(cmd, capture_stderr=False):
-    print("Run:", " ".join(cmd))
-    proc = None
-    if capture_stderr:
-        proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)
-    else:
-        proc = subprocess.Popen(cmd)
-    return proc
-
-
-def kill_all_matching(name, force=False):
-    print("Kill all:", name)
-    assert name.count(" ") == 0
-    cmd = "killall -9" if force else "killall"
-    cmd += f" {name} > /dev/null 2>&1"
-    os.system(cmd)
+sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+import common_utils as utils
 
 
 MANAGER_SRV_PORT = 52600
@@ -40,22 +16,17 @@ SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 
 
-PROTOCOL_BACKER_PATH = {
-    "RepNothing": lambda r: f"backer_path='/tmp/summerset.rep_nothing.{r}.wal'",
-    "SimplePush": lambda r: f"backer_path='/tmp/summerset.simple_push.{r}.wal'",
-    "MultiPaxos": lambda r: f"backer_path='/tmp/summerset.multipaxos.{r}.wal'",
-    "Raft": lambda r: f"backer_path='/tmp/summerset.raft.{r}.wal'",
-    "RSPaxos": lambda r: f"backer_path='/tmp/summerset.rs_paxos.{r}.wal'",
-    "CRaft": lambda r: f"backer_path='/tmp/summerset.craft.{r}.wal'",
-    "Crossword": lambda r: f"backer_path='/tmp/summerset.crossword.{r}.wal'",
-}
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.wal"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.snap"
 
-PROTOCOL_SNAPSHOT_PATH = {
-    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
-    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
-    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
-    "CRaft": lambda r: f"snapshot_path='/tmp/summerset.craft.{r}.snap'",
-    "Crossword": lambda r: f"snapshot_path='/tmp/summerset.crossword.{r}.snap'",
+PROTOCOL_MAY_SNAPSHOT = {
+    "RepNothing": False,
+    "SimplePush": False,
+    "MultiPaxos": True,
+    "Raft": True,
+    "RSPaxos": True,
+    "CRaft": True,
+    "Crossword": True,
 }
 
 PROTOCOL_EXTRA_DEFAULTS = {
@@ -65,7 +36,20 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def config_with_defaults(protocol, config, num_replicas, replica_id):
+def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0):
+    if cores_per_proc > 0:
+        # pin servers from CPU 0 up
+        num_cpus = multiprocessing.cpu_count()
+        core_start = i * cores_per_proc
+        core_end = core_start + cores_per_proc - 1
+        assert core_end <= num_cpus - 1
+        cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
+    return utils.run_process(cmd, capture_stderr=capture_stderr)
+
+
+def config_with_defaults(
+    protocol, config, num_replicas, replica_id, file_prefix, fresh_files
+):
     def config_str_to_dict(s):
         l = s.strip().split("+")
         l = [c.strip().split("=") for c in l]
@@ -77,11 +61,19 @@ def config_with_defaults(protocol, config, num_replicas, replica_id):
         l = ["=".join([k, v]) for k, v in d.items()]
         return "+".join(l)
 
-    config_dict = config_str_to_dict(PROTOCOL_BACKER_PATH[protocol](replica_id))
-    if protocol in PROTOCOL_SNAPSHOT_PATH:
-        config_dict.update(
-            config_str_to_dict(PROTOCOL_SNAPSHOT_PATH[protocol](replica_id))
-        )
+    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, replica_id)
+    config_dict = {"backer_path": f"'{backer_path}'"}
+    if fresh_files and os.path.isfile(backer_path):
+        print(f"Delete: {backer_path}")
+        os.remove(backer_path)
+
+    if PROTOCOL_MAY_SNAPSHOT[protocol]:
+        snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, file_prefix, replica_id)
+        config_dict["snapshot_path"] = f"'{snapshot_path}'"
+        if fresh_files and os.path.isfile(snapshot_path):
+            print(f"Delete: {snapshot_path}")
+            os.remove(snapshot_path)
+
     if protocol in PROTOCOL_EXTRA_DEFAULTS:
         config_dict.update(
             config_str_to_dict(
@@ -110,7 +102,7 @@ def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release):
+def launch_manager(protocol, num_replicas, release, pin_cores):
     cmd = compose_manager_cmd(
         protocol,
         MANAGER_SRV_PORT,
@@ -118,15 +110,17 @@ def launch_manager(protocol, num_replicas, release):
         num_replicas,
         release,
     )
-    return run_process(cmd, capture_stderr=True)
+    return run_process_pinned(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
 
 
-def wait_manager_setup(proc):
+def wait_manager_setup(proc, print_stderr=True):
+    # print("Waiting for manager setup...")
     accepting_servers, accepting_clients = False, False
 
     for line in iter(proc.stderr.readline, b""):
-        sys.stderr.buffer.write(line)
-        sys.stderr.flush()
+        if print_stderr:
+            sys.stderr.buffer.write(line)
+            sys.stderr.flush()
 
         l = line.decode()
         if "(m) accepting servers" in l:
@@ -157,7 +151,12 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
     return cmd
 
 
-def launch_servers(protocol, num_replicas, release, config):
+def launch_servers(
+    protocol, num_replicas, release, config, file_prefix, fresh_files, pin_cores
+):
+    if num_replicas not in (3, 5, 7, 9):
+        raise ValueError(f"invalid num_replicas: {num_replicas}")
+
     server_procs = []
     for replica in range(num_replicas):
         cmd = compose_server_cmd(
@@ -165,16 +164,23 @@ def launch_servers(protocol, num_replicas, release, config):
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             f"127.0.0.1:{MANAGER_SRV_PORT}",
-            config_with_defaults(protocol, config, num_replicas, replica),
+            config_with_defaults(
+                protocol, config, num_replicas, replica, file_prefix, fresh_files
+            ),
             release,
         )
-        proc = run_process(cmd)
+        proc = run_process_pinned(
+            replica + 1, cmd, capture_stderr=False, cores_per_proc=pin_cores
+        )
+
         server_procs.append(proc)
 
     return server_procs
 
 
 if __name__ == "__main__":
+    utils.check_proper_cwd()
+
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
@@ -188,31 +194,50 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
+    parser.add_argument(
+        "--file_prefix",
+        type=str,
+        default="/tmp/summerset",
+        help="states file prefix folder path",
+    )
+    parser.add_argument(
+        "--keep_files", action="store_true", help="if set, keep any old durable files"
+    )
+    parser.add_argument(
+        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
     args = parser.parse_args()
 
     # kill all existing server and manager processes
-    kill_all_matching("summerset_server", force=True)
-    kill_all_matching("summerset_manager", force=True)
+    if args.pin_cores == 0:
+        utils.kill_all_matching("summerset_server")
+        utils.kill_all_matching("summerset_manager")
 
-    # remove all existing wal log & snapshot files
-    for path in Path("/tmp").glob("summerset.*.wal"):
-        path.unlink()
-    for path in Path("/tmp").glob("summerset.*.snap"):
-        path.unlink()
+    # check that the prefix folder path exists, or create it if not
+    if not os.path.isdir(args.file_prefix):
+        os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = do_cargo_build(args.release)
+    rc = utils.do_cargo_build(args.release)
     if rc != 0:
         print("ERROR: cargo build failed")
         sys.exit(rc)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
-    wait_manager_setup(manager_proc)
+    manager_proc = launch_manager(
+        args.protocol, args.num_replicas, args.release, args.pin_cores
+    )
+    wait_manager_setup(manager_proc, (args.pin_cores == 0))
 
     # then launch server replicas
     server_procs = launch_servers(
-        args.protocol, args.num_replicas, args.release, args.config
+        args.protocol,
+        args.num_replicas,
+        args.release,
+        args.config,
+        args.file_prefix,
+        not args.keep_files,
+        args.pin_cores,
     )
 
     # register termination signals handler
@@ -229,8 +254,9 @@ if __name__ == "__main__":
 
     # since we piped manager proc's output, re-print it out
     for line in iter(manager_proc.stderr.readline, b""):
-        sys.stderr.buffer.write(line)
-        sys.stderr.flush()
+        if args.pin_cores == 0:
+            sys.stderr.buffer.write(line)
+            sys.stderr.flush()
 
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()

@@ -15,7 +15,9 @@ use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 mod drivers;
 mod clients;
 
-use crate::clients::{ClientMode, ClientRepl, ClientBench, ClientTester};
+use crate::clients::{
+    ClientMode, ClientRepl, ClientBench, ClientTester, ClientMess,
+};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -143,6 +145,15 @@ fn client_main() -> Result<(), SummersetError> {
                     params_str,
                 )?;
                 tester.run().await?;
+            }
+            ClientMode::Mess => {
+                // run one-shot control client
+                let mut mess = ClientMess::new(
+                    endpoint,
+                    Duration::from_millis(args.timeout_ms),
+                    params_str,
+                )?;
+                mess.run().await?;
             }
         }
 
