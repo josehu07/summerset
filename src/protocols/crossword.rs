@@ -101,7 +101,7 @@ impl Default for ReplicaConfigCrossword {
             gossip_timeout_min: 100,
             gossip_timeout_max: 300,
             fault_tolerance: 0,
-            recon_chunk_size: 2000,
+            recon_chunk_size: 100,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,

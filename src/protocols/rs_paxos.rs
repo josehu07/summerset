@@ -88,7 +88,7 @@ impl Default for ReplicaConfigRSPaxos {
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
-            recon_chunk_size: 1000,
+            recon_chunk_size: 100,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,

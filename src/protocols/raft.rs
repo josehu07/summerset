@@ -523,13 +523,11 @@ impl RaftReplica {
                     peer,
                 )?;
                 pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.try_next_slot[&peer],
-                                   self.start_slot + self.log.len() - 1);
+                                   peer, self.try_next_slot[&peer], slot);
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
-                *self.try_next_slot.get_mut(&peer).unwrap() =
-                    self.start_slot + self.log.len();
+                *self.try_next_slot.get_mut(&peer).unwrap() = slot + 1;
             }
         }
 
@@ -630,10 +628,11 @@ impl RaftReplica {
 
         // reply false if term smaller than mine, or if my log does not
         // contain an entry at prev_slot matching prev_term
-        if term < self.curr_term
-            || prev_slot < self.start_slot
-            || prev_slot >= self.start_slot + self.log.len()
-            || self.log[prev_slot - self.start_slot].term != prev_term
+        if !entries.is_empty()
+            && (term < self.curr_term
+                || prev_slot < self.start_slot
+                || prev_slot >= self.start_slot + self.log.len()
+                || self.log[prev_slot - self.start_slot].term != prev_term)
         {
             // figure out the conflict info to send back
             let conflict_term = if prev_slot >= self.start_slot
@@ -769,7 +768,10 @@ impl RaftReplica {
 
         // if leader_commit is larger than my last_commit, update last_commit
         if leader_commit > self.last_commit {
-            let new_commit = cmp::min(leader_commit, prev_slot + entries.len());
+            let mut new_commit =
+                cmp::min(leader_commit, prev_slot + entries.len());
+            new_commit =
+                cmp::min(new_commit, self.start_slot + self.log.len() - 1);
 
             // submit newly committed entries for state machine execution
             for slot in (self.last_commit + 1)..=new_commit {
@@ -808,8 +810,9 @@ impl RaftReplica {
         conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
         if conflict.is_some() || self.match_slot[&peer] != end_slot {
-            pf_trace!(self.id; "received AcceptEntriesReply <- {} for term {} {}",
-                               peer, term, if conflict.is_none() { "ok" } else { "fail" });
+            pf_trace!(self.id; "received AcceptEntriesReply <- {} term {} end_slot {} {}",
+                               peer, term, end_slot,
+                               if conflict.is_none() { "ok" } else { "fail" });
         }
         if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
@@ -926,13 +929,11 @@ impl RaftReplica {
                 peer,
             )?;
             pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                               peer, self.next_slot[&peer],
-                               self.start_slot + self.log.len() - 1);
+                               peer, self.next_slot[&peer], end_slot);
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
-            *self.try_next_slot.get_mut(&peer).unwrap() =
-                self.start_slot + self.log.len();
+            *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
         }
 
         Ok(())
@@ -980,11 +981,42 @@ impl RaftReplica {
                     candidate,
                 )?;
                 pf_trace!(self.id; "sent RequestVoteReply -> {} term {} granted",
-                               candidate, self.curr_term);
+                                   candidate, self.curr_term);
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
                 self.heard_heartbeat(candidate, term)?;
+
+                // update voted_for and make the field durable, synchronously
+                self.voted_for = Some(candidate);
+                self.storage_hub.submit_action(
+                    0,
+                    LogAction::Write {
+                        entry: DurEntry::Metadata {
+                            curr_term: self.curr_term,
+                            voted_for: self.voted_for,
+                        },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                loop {
+                    let (action_id, log_result) =
+                        self.storage_hub.get_result().await?;
+                    if action_id != 0 {
+                        // normal log action previously in queue; process it
+                        self.handle_log_result(action_id, log_result)?;
+                    } else {
+                        if let LogResult::Write {
+                            offset_ok: true, ..
+                        } = log_result
+                        {
+                        } else {
+                            return logged_err!(self.id; "unexpected log result type or failed write");
+                        }
+                        break;
+                    }
+                }
             }
         }
 
