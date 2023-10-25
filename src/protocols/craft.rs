@@ -1720,6 +1720,16 @@ impl CRaftReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got pause req");
+
+        // promptly redirect all connected clients to another server
+        let target = (self.id + 1) % self.population;
+        self.external_api.bcast_reply(ApiReply::Reply {
+            id: 0,
+            result: None,
+            redirect: Some(target),
+        })?;
+        pf_trace!(self.id; "redirected all clients to replica {}", target);
+
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())

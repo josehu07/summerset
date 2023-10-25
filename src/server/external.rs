@@ -203,6 +203,20 @@ impl ExternalApi {
             }
         }
     }
+
+    /// Broadcasts a reply to all connected clients (mostly used for testing).
+    pub fn bcast_reply(
+        &mut self,
+        reply: ApiReply,
+    ) -> Result<(), SummersetError> {
+        let tx_replies_guard = self.tx_replies.guard();
+        for tx_reply in tx_replies_guard.values() {
+            tx_reply
+                .send(reply.clone())
+                .map_err(|e| SummersetError(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 // ExternalApi client_acceptor thread implementation

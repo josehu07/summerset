@@ -109,7 +109,21 @@ def run_bench_clients(protocol):
 
 
 def run_mess_client(protocol, pauses=None, resumes=None):
-    pass
+    cmd = [
+        "python3",
+        "./scripts/local_clients.py",
+        "-p",
+        protocol,
+        "-r",
+        "mess",
+    ]
+    if pauses is not None and len(pauses) > 0:
+        cmd += ["--pause", pauses]
+    if resumes is not None and len(resumes) > 0:
+        cmd += ["--resume", resumes]
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
 
 
 def bench_round(protocol):
@@ -131,6 +145,9 @@ def bench_round(protocol):
 
     # at the first failure point, pause current leader
     time.sleep(FAIL1_SECS)
+    print("    Pausing leader...")
+    proc_mess = run_mess_client(protocol, pauses="l")
+    proc_mess.wait()
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -145,10 +162,10 @@ def bench_round(protocol):
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
-        print("Experiment FAILED!")
+        print("    Experiment FAILED!")
         sys.exit(1)
     else:
-        print("    Done")
+        print("    Done!")
 
 
 def collect_outputs():
