@@ -1,7 +1,7 @@
 import sys
 import os
 import argparse
-import statistics
+import time
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -13,6 +13,8 @@ CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
 EXPER_NAME = "failover"
+
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -32,7 +34,10 @@ NETEM_JITTER = 1
 NETEM_RATE = 1
 
 
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+FAIL1_SECS = LENGTH_SECS * 0.3
+
+PLOT_SECS_BEGIN = LENGTH_SECS * 0.1
+PLOT_SECS_END = LENGTH_SECS * 0.9
 
 
 def launch_cluster(protocol, config=None):
@@ -103,6 +108,10 @@ def run_bench_clients(protocol):
     )
 
 
+def run_mess_client(protocol, pauses=None, resumes=None):
+    pass
+
+
 def bench_round(protocol):
     print(
         f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}"
@@ -110,17 +119,25 @@ def bench_round(protocol):
     )
     utils.kill_all_local_procs()
 
+    # launch service cluster
     proc_cluster = launch_cluster(
         protocol, config=f"batch_interval_ms={BATCH_INTERVAL}"
     )
     with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         wait_cluster_setup(proc_cluster, fserr=fserr)
 
+    # start benchmarking clients
     proc_clients = run_bench_clients(protocol)
+
+    # at the first failure point, pause current leader
+    time.sleep(FAIL1_SECS)
+
+    # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
     with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
+    # terminate the cluster
     proc_cluster.terminate()
     utils.kill_all_local_procs()
     _, serr = proc_cluster.communicate()
@@ -132,6 +149,19 @@ def bench_round(protocol):
         sys.exit(1)
     else:
         print("    Done")
+
+
+def collect_outputs():
+    results = dict()
+    for protocol in PROTOCOLS:
+        results[protocol] = utils.gather_outputs(
+            protocol,
+            NUM_CLIENTS,
+            f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+            PLOT_SECS_BEGIN,
+            PLOT_SECS_END,
+        )
+    return results
 
 
 def plot_results(results):
@@ -169,14 +199,5 @@ if __name__ == "__main__":
         utils.clear_tc_qdisc_netem()
 
     else:
-        results = dict()
-        for protocol in PROTOCOLS:
-            results[protocol] = utils.gather_outputs(
-                protocol,
-                NUM_CLIENTS,
-                f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-                LENGTH_SECS * 0.3,
-                LENGTH_SECS * 0.9,
-            )
-
+        results = collect_outputs()
         plot_results(results)

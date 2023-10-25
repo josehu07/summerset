@@ -94,7 +94,7 @@ where
 
         let shards = if let Some(mut data_bytes) = data_bytes {
             // if newing from original data
-            assert_eq!(data_bytes.len(), data_len);
+            debug_assert_eq!(data_bytes.len(), data_len);
 
             // pad length to multiple of num_data_shards and compute shard size
             let padded_len = shard_len * num_data_shards as usize;
@@ -104,16 +104,16 @@ where
             let mut shards = Vec::with_capacity(num_data_shards as usize);
             for _ in 0..(num_data_shards - 1) {
                 let shard = data_bytes.split_to(shard_len);
-                assert_eq!(shard.len(), shard_len);
+                debug_assert_eq!(shard.len(), shard_len);
                 shards.push(Some(shard));
             }
-            assert_eq!(data_bytes.len(), shard_len);
+            debug_assert_eq!(data_bytes.len(), shard_len);
             shards.push(Some(data_bytes)); // the last shard
-            assert_eq!(shards.len(), num_data_shards as usize);
+            debug_assert_eq!(shards.len(), num_data_shards as usize);
             for _ in num_data_shards..num_total_shards {
                 shards.push(None);
             }
-            assert_eq!(shards.len(), num_total_shards as usize);
+            debug_assert_eq!(shards.len(), num_total_shards as usize);
             shards
         } else {
             // if newing from empty
@@ -539,7 +539,7 @@ impl<'a> ShardsReader<'a> {
             if shard.is_none() {
                 return Err(SummersetError("some data shard is None".into()));
             }
-            assert_eq!(shard.as_ref().unwrap().len(), shard_len);
+            debug_assert_eq!(shard.as_ref().unwrap().len(), shard_len);
         }
 
         Ok(ShardsReader {

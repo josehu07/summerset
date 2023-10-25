@@ -468,7 +468,7 @@ impl MultiPaxosReplica {
         let slot = self.first_null_slot();
         {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert_eq!(inst.status, Status::Null);
+            debug_assert_eq!(inst.status, Status::Null);
             inst.reqs = req_batch.clone();
             inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
@@ -810,7 +810,7 @@ impl MultiPaxosReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -944,7 +944,7 @@ impl MultiPaxosReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -1590,7 +1590,7 @@ impl MultiPaxosReplica {
 
     /// Recover state from durable storage WAL log.
     async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.wal_offset, 0);
+        debug_assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
@@ -1714,7 +1714,7 @@ impl MultiPaxosReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.wal_offset - cut_offset, now_size);
+                        debug_assert_eq!(self.wal_offset - cut_offset, now_size);
                         self.wal_offset = now_size;
                     } else {
                         return logged_err!(
@@ -1808,7 +1808,7 @@ impl MultiPaxosReplica {
 
     /// Recover initial state from durable storage snapshot file.
     async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.snap_offset, 0);
+        debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
@@ -2283,17 +2283,17 @@ impl GenericEndpoint for MultiPaxosClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // shift to a new server_id if current one not active
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.server_id) {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
-                self.servers = servers
+                self.servers = servers_info
                     .into_iter()
-                    .map(|(id, info)| (id, info.0))
+                    .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
                     pf_info!(self.id; "connecting to server {} '{}'...", id, server);

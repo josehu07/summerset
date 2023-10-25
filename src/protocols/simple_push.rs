@@ -510,7 +510,7 @@ impl SimplePushReplica {
 impl SimplePushReplica {
     /// Recover state from durable storage WAL log.
     async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.wal_offset, 0);
+        debug_assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
@@ -862,20 +862,20 @@ impl GenericEndpoint for SimplePushClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // find a server to connect to, starting from provided server_id
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.config.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.config.server_id) {
                     self.config.server_id =
                         (self.config.server_id + 1) % population;
                 }
                 // connect to that server
                 pf_info!(self.id; "connecting to server {} '{}'...",
-                                  self.config.server_id, servers[&self.config.server_id].0);
+                                  self.config.server_id, servers_info[&self.config.server_id].api_addr);
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
-                    servers[&self.config.server_id].0,
+                    servers_info[&self.config.server_id].api_addr,
                 )
                 .await?;
                 self.api_stub = Some(api_stub);

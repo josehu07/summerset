@@ -11,26 +11,28 @@ use crate::server::ReplicaId;
 use crate::client::ClientId;
 use crate::protocols::SmrProtocol;
 
+use serde::{Serialize, Deserialize};
+
 use tokio::sync::{mpsc, watch};
 use tokio::time::{self, Duration};
 
 /// Information about an active server.
-#[derive(Debug, Clone)]
-struct ServerInfo {
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+pub struct ServerInfo {
     /// The server's client-facing API address.
-    api_addr: SocketAddr,
+    pub api_addr: SocketAddr,
 
     /// The server's internal peer-peer API address.
-    p2p_addr: SocketAddr,
+    pub p2p_addr: SocketAddr,
 
     /// This server is a leader? (leader could be non-unique)
-    is_leader: bool,
+    pub is_leader: bool,
 
     /// This server is currently paused?
-    is_paused: bool,
+    pub is_paused: bool,
 
     /// In-mem log start index after latest snapshot.
-    start_slot: usize,
+    pub start_slot: usize,
 }
 
 /// Standalone cluster manager oracle.
@@ -60,7 +62,7 @@ pub struct ClusterManager {
     client_reactor: ClientReactor,
 
     /// Information of current active servers.
-    server_info: HashMap<ReplicaId, ServerInfo>,
+    servers_info: HashMap<ReplicaId, ServerInfo>,
 
     /// Currently assigned server IDs.
     assigned_ids: HashSet<ReplicaId>,
@@ -96,7 +98,7 @@ impl ClusterManager {
             rx_id_assign,
             tx_id_result,
             client_reactor,
-            server_info: HashMap::new(),
+            servers_info: HashMap::new(),
             assigned_ids: HashSet::new(),
         })
     }
@@ -177,7 +179,7 @@ impl ClusterManager {
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        if self.server_info.contains_key(&server) {
+        if self.servers_info.contains_key(&server) {
             return logged_err!("m"; "server join got duplicate ID: {}",
                                     server);
         }
@@ -188,13 +190,13 @@ impl ClusterManager {
 
         // gather the list of all existing known servers
         let to_peers: HashMap<ReplicaId, SocketAddr> = self
-            .server_info
+            .servers_info
             .iter()
             .map(|(&server, info)| (server, info.p2p_addr))
             .collect();
 
         // save new server's info
-        self.server_info.insert(
+        self.servers_info.insert(
             server,
             ServerInfo {
                 api_addr,
@@ -222,12 +224,12 @@ impl ClusterManager {
         server: ReplicaId,
         step_up: bool,
     ) -> Result<(), SummersetError> {
-        if !self.server_info.contains_key(&server) {
+        if !self.servers_info.contains_key(&server) {
             return logged_err!("m"; "leader status got unknown ID: {}", server);
         }
 
         // update this server's info
-        let info = self.server_info.get_mut(&server).unwrap();
+        let info = self.servers_info.get_mut(&server).unwrap();
         if step_up && info.is_leader {
             logged_err!("m"; "server {} is already marked as leader", server)
         } else if !step_up && !info.is_leader {
@@ -244,16 +246,16 @@ impl ClusterManager {
         server: ReplicaId,
         new_start: usize,
     ) -> Result<(), SummersetError> {
-        if !self.server_info.contains_key(&server) {
+        if !self.servers_info.contains_key(&server) {
             return logged_err!("m"; "snapshot up to got unknown ID: {}", server);
         }
 
         // update this server's info
-        let info = self.server_info.get_mut(&server).unwrap();
+        let info = self.servers_info.get_mut(&server).unwrap();
         if new_start < info.start_slot {
             logged_err!("m"; "server {} snapshot up to {} < {}",
                              server, new_start,
-                             self.server_info[&server].start_slot)
+                             self.servers_info[&server].start_slot)
         } else {
             info.start_slot = new_start;
             Ok(())
@@ -305,23 +307,10 @@ impl ClusterManager {
         &mut self,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        // gather public addresses of all active servers
-        let servers: HashMap<ReplicaId, (SocketAddr, bool)> = self
-            .server_info
-            .iter()
-            .filter_map(|(&server, info)| {
-                if info.is_paused {
-                    None // ignore paused servers
-                } else {
-                    Some((server, (info.api_addr, info.is_leader)))
-                }
-            })
-            .collect();
-
         self.client_reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: self.population,
-                servers,
+                servers_info: self.servers_info.clone(),
             },
             client,
         )
@@ -334,10 +323,10 @@ impl ClusterManager {
         servers: HashSet<ReplicaId>,
         durable: bool,
     ) -> Result<(), SummersetError> {
-        let num_replicas = self.server_info.len();
+        let num_replicas = self.servers_info.len();
         let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
-            self.server_info.keys().copied().collect()
+            self.servers_info.keys().copied().collect()
         } else {
             servers.into_iter().collect()
         };
@@ -351,9 +340,9 @@ impl ClusterManager {
 
             // remove information about this server
             debug_assert!(self.assigned_ids.contains(&s));
-            debug_assert!(self.server_info.contains_key(&s));
+            debug_assert!(self.servers_info.contains_key(&s));
             self.assigned_ids.remove(&s);
-            self.server_info.remove(&s);
+            self.servers_info.remove(&s);
 
             // wait for the new server ID assignment request from it
             self.rx_id_assign.recv().await;
@@ -369,7 +358,7 @@ impl ClusterManager {
 
         // now the reset servers should be sending NewServerJoin messages to
         // me. Process them until all servers joined
-        while self.server_info.len() < num_replicas {
+        while self.servers_info.len() < num_replicas {
             let (s, msg) = self.server_reigner.recv_ctrl().await?;
             if let Err(e) = self.handle_ctrl_msg(s, msg).await {
                 pf_error!("m"; "error handling ctrl msg <- {}: {}", s, e);
@@ -392,7 +381,7 @@ impl ClusterManager {
     ) -> Result<(), SummersetError> {
         let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
-            self.server_info.keys().copied().collect()
+            self.servers_info.keys().copied().collect()
         } else {
             servers.into_iter().collect()
         };
@@ -404,8 +393,8 @@ impl ClusterManager {
             self.server_reigner.send_ctrl(CtrlMsg::Pause, s)?;
 
             // set the is_paused flag
-            debug_assert!(self.server_info.contains_key(&s));
-            self.server_info.get_mut(&s).unwrap().is_paused = true;
+            debug_assert!(self.servers_info.contains_key(&s));
+            self.servers_info.get_mut(&s).unwrap().is_paused = true;
 
             // wait for dummy reply
             loop {
@@ -436,7 +425,7 @@ impl ClusterManager {
     ) -> Result<(), SummersetError> {
         let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
-            self.server_info.keys().copied().collect()
+            self.servers_info.keys().copied().collect()
         } else {
             servers.into_iter().collect()
         };
@@ -458,8 +447,8 @@ impl ClusterManager {
             }
 
             // clear the is_paused flag
-            debug_assert!(self.server_info.contains_key(&s));
-            self.server_info.get_mut(&s).unwrap().is_paused = false;
+            debug_assert!(self.servers_info.contains_key(&s));
+            self.servers_info.get_mut(&s).unwrap().is_paused = false;
 
             resume_done.insert(s);
         }
@@ -480,7 +469,7 @@ impl ClusterManager {
     ) -> Result<(), SummersetError> {
         let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
-            self.server_info.keys().copied().collect()
+            self.servers_info.keys().copied().collect()
         } else {
             servers.into_iter().collect()
         };
@@ -497,13 +486,13 @@ impl ClusterManager {
                 match reply {
                     CtrlMsg::SnapshotUpTo { new_start } if server == s => {
                         // update the log start index info
-                        debug_assert!(self.server_info.contains_key(&s));
-                        if new_start < self.server_info[&s].start_slot {
+                        debug_assert!(self.servers_info.contains_key(&s));
+                        if new_start < self.servers_info[&s].start_slot {
                             return logged_err!("m"; "server {} snapshot up to {} < {}",
                                                     s, new_start,
-                                                    self.server_info[&s].start_slot);
+                                                    self.servers_info[&s].start_slot);
                         } else {
-                            self.server_info.get_mut(&s).unwrap().start_slot =
+                            self.servers_info.get_mut(&s).unwrap().start_slot =
                                 new_start;
                         }
 

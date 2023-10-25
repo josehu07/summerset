@@ -16,7 +16,9 @@ mod protocols;
 pub use crate::utils::{SummersetError, Bitmap, Timer};
 
 #[doc(inline)]
-pub use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply, ClusterManager};
+pub use crate::manager::{
+    CtrlMsg, CtrlRequest, CtrlReply, ServerInfo, ClusterManager,
+};
 
 #[doc(inline)]
 pub use crate::server::{

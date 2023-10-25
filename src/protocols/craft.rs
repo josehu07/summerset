@@ -427,6 +427,8 @@ impl CRaftReplica {
 
             if self.role != Role::Follower {
                 self.role = Role::Follower;
+                self.control_hub
+                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                 pf_trace!(self.id; "converted back to follower");
                 Ok(true)
             } else {
@@ -598,7 +600,7 @@ impl CRaftReplica {
         }
         pf_trace!(self.id; "finished leader append logging for slot {} <= {}",
                            slot, slot_e);
-        assert_eq!(slot, slot_e);
+        debug_assert_eq!(slot, slot_e);
 
         // broadcast AppendEntries messages to followers, each containing just
         // the one shard of each entry for that follower
@@ -837,7 +839,7 @@ impl CRaftReplica {
                             now_size,
                         } = log_result
                         {
-                            assert_eq!(now_size, cut_offset);
+                            debug_assert_eq!(now_size, cut_offset);
                             self.log_offset = cut_offset;
                         } else {
                             return logged_err!(
@@ -1547,6 +1549,8 @@ impl CRaftReplica {
     fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
+        self.control_hub
+            .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         for cnts in self.hb_reply_cnts.values_mut() {
@@ -1787,7 +1791,7 @@ impl CRaftReplica {
 impl CRaftReplica {
     /// Recover state from durable storage log.
     async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+        debug_assert_eq!(self.log_offset, 0);
 
         // first, try to read the first several bytes, which should record
         // necessary durable metadata
@@ -2009,7 +2013,7 @@ impl CRaftReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(
+                        debug_assert_eq!(
                             self.log_offset - cut_offset + self.log_meta_end,
                             now_size
                         );
@@ -2109,7 +2113,7 @@ impl CRaftReplica {
 
     /// Recover initial state from durable storage snapshot file.
     async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.snap_offset, 0);
+        debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
@@ -2617,17 +2621,17 @@ impl GenericEndpoint for CRaftClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // shift to a new server_id if current one not active
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.server_id) {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
-                self.servers = servers
+                self.servers = servers_info
                     .into_iter()
-                    .map(|(id, info)| (id, info.0))
+                    .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
                     pf_info!(self.id; "connecting to server {} '{}'...", id, server);

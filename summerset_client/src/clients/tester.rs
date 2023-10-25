@@ -258,9 +258,10 @@ impl ClientTester {
         // wait for reply from manager
         let reply = ctrl_stub.recv_reply().await?;
         match reply {
-            CtrlReply::QueryInfo { servers, .. } => {
-                Ok(servers.into_iter().map(|(id, info)| (id, info.1)).collect())
-            }
+            CtrlReply::QueryInfo { servers_info, .. } => Ok(servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.is_leader))
+                .collect()),
             _ => logged_err!(self.driver.id; "unexpected control reply type"),
         }
     }

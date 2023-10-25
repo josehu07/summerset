@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use crate::utils::{
     SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
 };
+use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
 use crate::client::ClientId;
 
@@ -63,7 +64,7 @@ pub enum CtrlReply {
         /// Number of replicas in cluster.
         population: u8,
         /// Map from replica ID -> (addr, is_leader).
-        servers: HashMap<ReplicaId, (SocketAddr, bool)>,
+        servers_info: HashMap<ReplicaId, ServerInfo>,
     },
 
     /// Reply to server reset request.
@@ -459,6 +460,7 @@ impl ClientReactor {
 mod reactor_tests {
     use super::*;
     use std::sync::Arc;
+    use crate::manager::ServerInfo;
     use crate::client::ClientCtrlStub;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
@@ -481,9 +483,27 @@ mod reactor_tests {
             reactor.send_reply(
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:53700".parse()?, true)),
-                        (1, ("127.0.0.1:53701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            },
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            },
+                        ),
                     ]),
                 },
                 client,
@@ -501,9 +521,27 @@ mod reactor_tests {
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:53700".parse()?, true)),
-                    (1, ("127.0.0.1:53701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        }
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        }
+                    ),
                 ]),
             }
         );
@@ -527,9 +565,27 @@ mod reactor_tests {
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:54700".parse()?, true)),
-                        (1, ("127.0.0.1:54701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
                     ]),
                 }
             );
@@ -548,9 +604,27 @@ mod reactor_tests {
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:54700".parse()?, true)),
-                        (1, ("127.0.0.1:54701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
                     ]),
                 }
             );
@@ -568,9 +642,27 @@ mod reactor_tests {
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:54700".parse()?, true)),
-                    (1, ("127.0.0.1:54701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
                 ]),
             },
             client,
@@ -584,9 +676,27 @@ mod reactor_tests {
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:54700".parse()?, true)),
-                    (1, ("127.0.0.1:54701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
                 ]),
             },
             client2,

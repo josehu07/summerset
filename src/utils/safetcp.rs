@@ -107,11 +107,11 @@ where
         ));
     } else if obj.is_some() {
         // sending a new object, fill write_buf
-        assert_eq!(*write_buf_cursor, 0);
+        debug_assert_eq!(*write_buf_cursor, 0);
         let write_bytes = encode_to_vec(obj.unwrap())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
-        assert_eq!(write_buf.len(), 8);
+        debug_assert_eq!(write_buf.len(), 8);
         write_buf.extend_from_slice(write_bytes.as_slice());
     } else {
         // retrying last unsuccessful write
