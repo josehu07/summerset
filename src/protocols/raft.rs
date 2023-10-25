@@ -508,6 +508,10 @@ impl RaftReplica {
                 .take(slot + 1 - self.start_slot)
                 .skip(self.try_next_slot[&peer] - self.start_slot)
                 .cloned()
+                .map(|e| LogEntry {
+                    external: false,
+                    ..e
+                })
                 .collect();
 
             if slot >= self.try_next_slot[&peer] {
@@ -821,6 +825,7 @@ impl RaftReplica {
 
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
+            debug_assert!(self.next_slot[&peer] <= end_slot + 1);
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
             if self.try_next_slot[&peer] < end_slot + 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
@@ -882,6 +887,7 @@ impl RaftReplica {
             }
         } else {
             // failed: decrement next_slot for follower and retry
+            debug_assert!(self.next_slot[&peer] >= 1);
             if self.next_slot[&peer] == 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = 1;
                 return Ok(()); // cannot move backward any more
@@ -893,6 +899,7 @@ impl RaftReplica {
                     && self.log[self.next_slot[&peer] - self.start_slot].term
                         == conflict_term
                     && self.next_slot[&peer] >= conflict_slot
+                    && self.next_slot[&peer] > 1
                 {
                     // bypass all conflicting entries in the conflicting term
                     *self.next_slot.get_mut(&peer).unwrap() -= 1;
@@ -915,6 +922,10 @@ impl RaftReplica {
                 .take(end_slot + 1 - self.start_slot)
                 .skip(self.next_slot[&peer] - self.start_slot)
                 .cloned()
+                .map(|e| LogEntry {
+                    external: false,
+                    ..e
+                })
                 .collect();
 
             self.transport_hub.send_msg(

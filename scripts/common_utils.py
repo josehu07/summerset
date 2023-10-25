@@ -70,7 +70,7 @@ def run_process(cmd, capture_stdout=False, capture_stderr=False, print_cmd=True)
 
 
 def set_tcp_buf_sizes():
-    # print("Setting TCP buffer sizes...")
+    print("Setting TCP buffer sizes...")
     cmd = ["sudo", "./scripts/set_tcp_bufs.sh"]
     proc = subprocess.Popen(cmd)
     proc.wait()
@@ -80,7 +80,7 @@ def set_tc_qdisc_netem(mean, jitter, rate, distribution="pareto"):
     os.system(
         f"sudo tc qdisc replace dev lo root netem limit 500000 "
         f"delay {mean}ms {jitter}ms distribution {distribution} "
-        f"rate {rate}gbit 10"
+        f"rate {rate}gibit 10"
     )
 
 

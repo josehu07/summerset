@@ -105,8 +105,8 @@ def run_bench_clients(protocol):
 
 def bench_round(protocol):
     print(
-        f"{EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}  "
-        + f"w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
+        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}"
+        f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
     )
     utils.kill_all_local_procs()
 
@@ -131,7 +131,7 @@ def bench_round(protocol):
         print("Experiment FAILED!")
         sys.exit(1)
     else:
-        print("  Done")
+        print("    Done")
 
 
 def plot_results(results):
@@ -162,6 +162,7 @@ if __name__ == "__main__":
         utils.set_tcp_buf_sizes()
         utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
 
+        print("Running experiments...")
         for protocol in PROTOCOLS:
             bench_round(protocol)
 
