@@ -1954,7 +1954,7 @@ impl CrosswordReplica {
         }
 
         let mut slot_up_to = self.gossip_bar;
-        for slot in self.gossip_bar..(self.commit_bar + self.insts.len()) {
+        for slot in self.gossip_bar..self.commit_bar {
             slot_up_to = slot;
             {
                 let inst = &self.insts[slot - self.start_slot];

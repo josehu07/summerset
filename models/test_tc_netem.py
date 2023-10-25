@@ -13,7 +13,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore
 
 
-LOCALHOST = "localhost"
+LOCALHOST = "192.168.0.1"
 LOCALPORT = 42907
 
 HEADER_LEN = 8
@@ -25,21 +25,21 @@ GAP_MS = 10
 NUM_MSGS = 20000
 
 DELAY_BASE = 10
-DELAY_JITTERS = [1, 2, 3, 4, 5]
+DELAY_JITTERS = [1, 3, 5]
 DISTRIBUTIONS = ["normal", "pareto", "paretonormal", "experimental"]
 RATE_GBIT = 10
 
 
 def set_tc_qdisc_netem(mean, jitter, distribution, rate):
     os.system(
-        f"sudo tc qdisc replace dev lo root netem "
+        f"sudo tc qdisc replace dev dummy1 root netem limit 100000 "
         + f"delay {mean}ms {jitter}ms distribution {distribution} "
         + f"rate {rate}gbit 10"
     )
 
 
 def clear_tc_qdisc_netem():
-    os.system("sudo tc qdisc delete dev lo root")
+    os.system("sudo tc qdisc delete dev dummy1 root")
 
 
 class Host:
