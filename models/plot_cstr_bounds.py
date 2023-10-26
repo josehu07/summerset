@@ -80,17 +80,23 @@ def plot_cstr_bound(idx, cluster_size):
     plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
 
     # unused x-axis ranges
-    xs = [0.42, m - 0.5, m - 0.8, 0.12]
+    xs = [0.4, m - 0.55, m - 0.85, 0.1]
     ys = [0.3, 0.3, 0, 0]
     plt.fill(xs, ys, hatch="///", fill=False, linewidth=0, zorder=10)
     if cluster_size < CLUSTER_SIZES[-1]:
-        xs = [n + 1.1, X_TICKS[-1] + 0.4, X_TICKS[-1] + 0.1, n + 0.8]
+        xs = [n + 1, X_TICKS[-1] + 0.4, X_TICKS[-1] + 0.1, n + 0.7]
         plt.fill(xs, ys, hatch="///", fill=False, linewidth=0, zorder=10)
 
-    # latency & throughput optimized arrows
+    # unused y-axis range for 3
+    if cluster_size == CLUSTER_SIZES[0]:
+        xs = [0, 0.3, 0.3, 0]
+        ys = [n + 0.55, n + 0.85, Y_TICKS[-1] + 0.4, Y_TICKS[-1] + 0.1]
+        plt.fill(xs, ys, hatch="///", fill=False, linewidth=0, zorder=10)
+
+    # environment tradeoff arrows
     plt.arrow(
         m + 0.1,
-        n + 0.68 if n <= 5 else m + 2.4,
+        n + 0.68 if n <= 5 else m + 2.1,
         -1.3,
         0,
         linewidth=1,
@@ -104,7 +110,7 @@ def plot_cstr_bound(idx, cluster_size):
     plt.text(
         m + 0.3 if n <= 5 else m + 0.5,
         n + 1.1 if n <= 5 else m + 2.5,
-        "Var.\noptim.",
+        "if high\njitter",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
@@ -124,7 +130,7 @@ def plot_cstr_bound(idx, cluster_size):
     plt.text(
         n + 1.3 if n < 7 else n + 0.4,
         1 + 1.1 if n < 7 else 1 + 2.1,
-        "Tput.\noptim.",
+        "if bw\nlimited",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
@@ -139,7 +145,7 @@ def plot_cstr_bound(idx, cluster_size):
     plt.xticks(
         X_TICKS[m - 1 : cluster_size], list(map(str, X_TICKS))[m - 1 : cluster_size]
     )
-    plt.yticks(Y_TICKS, list(map(str, Y_TICKS)))
+    plt.yticks(Y_TICKS[:cluster_size], list(map(str, Y_TICKS))[:cluster_size])
 
     plt.xlabel("|Quorum|", loc="right")
     plt.ylabel("#Shards\n/replica", loc="top", rotation=0, backgroundcolor="white")

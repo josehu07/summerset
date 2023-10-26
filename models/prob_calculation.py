@@ -161,15 +161,10 @@ def plot_env_result_subplot(i, j, results):
 
     if i == len(POWERS) - 1:
         jitter = JITTERS[j]
-        j_var_strs = {
-            0: "low",
-            1: "medium",
-            2: "high",
-        }
         plt.text(
             xright * 0.5 if j > 0 else xright * 0.65,
-            -ytop * 0.55,
-            f"+{jitter / 100:.1f}d\n{j_var_strs[j]}",
+            -ytop * 0.48,
+            f"+{jitter / 100:.1f}d",
             horizontalalignment="center",
             verticalalignment="center",
         )
@@ -206,9 +201,9 @@ def plot_env_result_subplot(i, j, results):
             weight="bold",
         )
         plt.text(
-            -xright * 0.3,
-            -ytop * 0.55,
-            "Jitter\nVariance",
+            -xright * 0.48,
+            -ytop * 0.48,
+            "Base Jitter",
             horizontalalignment="center",
             verticalalignment="center",
             weight="bold",
