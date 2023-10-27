@@ -366,6 +366,10 @@ impl RaftReplica {
             self.voted_for = None;
             self.votes_granted.clear();
 
+            // refresh heartbeat hearing timer
+            self.leader = Some(peer);
+            self.heard_heartbeat(peer, term)?;
+
             // also make the two critical fields durable, synchronously
             self.storage_hub.submit_action(
                 0,
@@ -384,6 +388,7 @@ impl RaftReplica {
                 if action_id != 0 {
                     // normal log action previously in queue; process it
                     self.handle_log_result(action_id, log_result)?;
+                    self.heard_heartbeat(peer, term)?;
                 } else {
                     if let LogResult::Write {
                         offset_ok: true, ..
@@ -396,14 +401,11 @@ impl RaftReplica {
                 }
             }
 
-            // refresh heartbeat hearing timer
-            self.heard_heartbeat(peer, term)?;
-
             if self.role != Role::Follower {
                 self.role = Role::Follower;
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                pf_trace!(self.id; "converted back to follower");
+                pf_info!(self.id; "converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -707,6 +709,7 @@ impl RaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(leader, term)?;
                     } else {
                         if let LogResult::Truncate {
                             offset_ok: true,
@@ -1019,6 +1022,7 @@ impl RaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(candidate, term)?;
                     } else {
                         if let LogResult::Write {
                             offset_ok: true, ..
@@ -1211,6 +1215,7 @@ impl RaftReplica {
             if action_id != 0 {
                 // normal log action previously in queue; process it
                 self.handle_log_result(action_id, log_result)?;
+                self.heard_heartbeat(self.id, self.curr_term)?;
             } else {
                 if let LogResult::Write {
                     offset_ok: true, ..
@@ -1248,6 +1253,15 @@ impl RaftReplica {
         }
         for slot in self.match_slot.values_mut() {
             *slot = 0;
+        }
+
+        // mark some possibly unreplied entries as external
+        for slot in self
+            .log
+            .iter_mut()
+            .skip(self.last_commit + 1 - self.start_slot)
+        {
+            slot.external = true;
         }
 
         Ok(())
@@ -1388,16 +1402,6 @@ impl RaftReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got pause req");
-
-        // promptly redirect all connected clients to another server
-        let target = (self.id + 1) % self.population;
-        self.external_api.bcast_reply(ApiReply::Reply {
-            id: 0,
-            result: None,
-            redirect: Some(target),
-        })?;
-        pf_trace!(self.id; "redirected all clients to replica {}", target);
-
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -2232,7 +2236,7 @@ impl GenericEndpoint for RaftClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -2272,7 +2276,9 @@ impl GenericEndpoint for RaftClient {
             } => {
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id) {
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
@@ -2281,7 +2287,7 @@ impl GenericEndpoint for RaftClient {
                     .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
                     let api_stub =
                         ClientApiStub::new_by_connect(self.id, server).await?;
                     self.api_stubs.insert(id, api_stub);
@@ -2303,7 +2309,7 @@ impl GenericEndpoint for RaftClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -2316,7 +2322,7 @@ impl GenericEndpoint for RaftClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

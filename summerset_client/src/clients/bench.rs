@@ -13,7 +13,7 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    GenericEndpoint, RequestId, SummersetError, pf_error, logged_err,
+    GenericEndpoint, RequestId, SummersetError, pf_debug, pf_error, logged_err,
     parsed_config,
 };
 
@@ -166,6 +166,14 @@ impl ClientBench {
         }
     }
 
+    /// Leaves and reconnects to the service in case the previous server fails.
+    async fn leave_reconnect(&mut self) -> Result<(), SummersetError> {
+        pf_debug!(self.driver.id; "leave and reconnecting...");
+        self.driver.leave(false).await?;
+        self.driver.connect().await?;
+        Ok(())
+    }
+
     /// Runs one iteration action of closed-loop style benchmark.
     async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
         // send next request
@@ -183,12 +191,19 @@ impl ClientBench {
         // wait for the next reply
         if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
+            match result {
+                DriverReply::Success { latency, .. } => {
+                    self.reply_cnt += 1;
+                    self.chunk_cnt += 1;
+                    let lat_us = latency.as_secs_f64() * 1000000.0;
+                    self.chunk_lats.push(lat_us);
+                }
 
-            if let DriverReply::Success { latency, .. } = result {
-                self.reply_cnt += 1;
-                self.chunk_cnt += 1;
-                let lat_us = latency.as_secs_f64() * 1000000.0;
-                self.chunk_lats.push(lat_us);
+                DriverReply::Timeout => {
+                    self.leave_reconnect().await?;
+                }
+
+                _ => {}
             }
         }
 
@@ -203,15 +218,23 @@ impl ClientBench {
 
             // receive next reply
             result = self.driver.wait_reply() => {
-                if let DriverReply::Success { latency, .. } = result? {
-                    self.reply_cnt += 1;
-                    self.chunk_cnt += 1;
-                    let lat_us = latency.as_secs_f64() * 1000000.0;
-                    self.chunk_lats.push(lat_us);
+                match result? {
+                    DriverReply::Success { latency, .. } => {
+                        self.reply_cnt += 1;
+                        self.chunk_cnt += 1;
+                        let lat_us = latency.as_secs_f64() * 1000000.0;
+                        self.chunk_lats.push(lat_us);
 
-                    if self.slowdown > 0 {
-                        self.slowdown -= 1;
+                        if self.slowdown > 0 {
+                            self.slowdown -= 1;
+                        }
                     }
+
+                    DriverReply::Timeout => {
+                        self.leave_reconnect().await?;
+                    }
+
+                    _ => {}
                 }
             }
 

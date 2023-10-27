@@ -424,6 +424,32 @@ impl MultiPaxosReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
+
+    /// If a larger ballot number is seen, consider that peer as new leader.
+    fn check_leader(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        if ballot > self.bal_max_seen {
+            self.bal_max_seen = ballot;
+
+            // clear my leader status if I was one
+            if self.is_leader() {
+                self.control_hub
+                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                pf_info!(self.id; "no longer a leader...");
+            }
+
+            // reset heartbeat timeout timer promptly
+            self.kickoff_hb_hear_timer()?;
+
+            // set this peer to be the believed leader
+            self.leader = Some(peer);
+        }
+
+        Ok(())
+    }
 }
 
 // MultiPaxosReplica client requests entrance
@@ -754,6 +780,9 @@ impl MultiPaxosReplica {
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance());
@@ -764,9 +793,6 @@ impl MultiPaxosReplica {
             inst.bal = ballot;
             inst.status = Status::Preparing;
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
             self.storage_hub.submit_action(
@@ -887,6 +913,9 @@ impl MultiPaxosReplica {
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance());
@@ -898,9 +927,6 @@ impl MultiPaxosReplica {
             inst.status = Status::Accepting;
             inst.reqs = reqs.clone();
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
             inst.voted = (ballot, reqs.clone());
@@ -1192,8 +1218,14 @@ impl MultiPaxosReplica {
             .iter_mut()
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
+            .skip(self.exec_bar - self.start_slot)
         {
-            if inst.status < Status::Committed {
+            if inst.status < Status::Executed {
+                inst.external = true; // so replies to clients can be triggered
+                if inst.status == Status::Committed {
+                    continue;
+                }
+
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
                 inst.leader_bk = Some(LeaderBookkeeping {
@@ -1238,7 +1270,7 @@ impl MultiPaxosReplica {
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
-                ballot: self.bal_prep_sent,
+                ballot: self.bal_max_seen,
                 exec_bar: self.exec_bar,
                 snap_bar: self.snap_bar,
             },
@@ -1314,6 +1346,20 @@ impl MultiPaxosReplica {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
             }
+
+            // if the peer has made a higher ballot number, consider it as
+            // a new leader
+            self.check_leader(peer, ballot)?;
+
+            // reply back with a Heartbeat message
+            self.transport_hub.send_msg(
+                PeerMsg::Heartbeat {
+                    ballot: self.bal_max_seen,
+                    exec_bar: self.exec_bar,
+                    snap_bar: self.snap_bar,
+                },
+                peer,
+            )?;
         }
 
         // ignore outdated heartbeats and those from peers with exec_bar < mine
@@ -1325,16 +1371,6 @@ impl MultiPaxosReplica {
         self.kickoff_hb_hear_timer()?;
 
         if peer != self.id {
-            // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
-
             // update peer_exec_bar if larger then known; if all servers'
             // exec_bar (including myself) have passed a slot, that slot
             // is definitely safe to be snapshotted
@@ -1351,25 +1387,10 @@ impl MultiPaxosReplica {
                 }
             }
 
-            // if the peer has made a higher ballot number
-            if ballot > self.bal_max_seen {
-                self.bal_max_seen = ballot;
-
-                // clear my leader status if I was one
-                if self.is_leader() {
-                    self.control_hub
-                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                    pf_info!(self.id; "no longer a leader...");
-                }
-
-                // set this peer to be the believed leader
-                self.leader = Some(peer);
+            // if snap_bar is larger than mine, update snap_bar
+            if snap_bar > self.snap_bar {
+                self.snap_bar = snap_bar;
             }
-        }
-
-        // if snap_bar is larger than mine, update snap_bar
-        if snap_bar > self.snap_bar {
-            self.snap_bar = snap_bar;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
@@ -1425,16 +1446,6 @@ impl MultiPaxosReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got pause req");
-
-        // promptly redirect all connected clients to another server
-        let target = (self.id + 1) % self.population;
-        self.external_api.bcast_reply(ApiReply::Reply {
-            id: 0,
-            result: None,
-            redirect: Some(target),
-        })?;
-        pf_trace!(self.id; "redirected all clients to replica {}", target);
-
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -2260,7 +2271,7 @@ impl GenericEndpoint for MultiPaxosClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -2300,7 +2311,9 @@ impl GenericEndpoint for MultiPaxosClient {
             } => {
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id) {
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
@@ -2309,7 +2322,7 @@ impl GenericEndpoint for MultiPaxosClient {
                     .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
                     let api_stub =
                         ClientApiStub::new_by_connect(self.id, server).await?;
                     self.api_stubs.insert(id, api_stub);
@@ -2331,7 +2344,7 @@ impl GenericEndpoint for MultiPaxosClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -2344,7 +2357,7 @@ impl GenericEndpoint for MultiPaxosClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

@@ -215,7 +215,7 @@ impl ServerReigner {
                 return logged_err!("m"; "duplicate server ID listened: {}", id);
             }
         }
-        pf_info!("m"; "accepted new server {}", id);
+        pf_debug!("m"; "accepted new server {}", id);
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
@@ -404,7 +404,7 @@ impl ServerReigner {
                             ) {
                                 pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!("m"; "server {} has left", id);
+                                pf_debug!("m"; "server {} has left", id);
                             }
                             break;
                         },

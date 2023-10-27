@@ -205,6 +205,7 @@ impl ExternalApi {
     }
 
     /// Broadcasts a reply to all connected clients (mostly used for testing).
+    #[allow(dead_code)]
     pub fn bcast_reply(
         &mut self,
         reply: ApiReply,
@@ -255,7 +256,7 @@ impl ExternalApi {
                 return logged_err!(me; "duplicate client ID listened: {}", id);
             }
         }
-        pf_info!(me; "accepted new client {}", id);
+        pf_debug!(me; "accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
@@ -446,7 +447,7 @@ impl ExternalApi {
                             ) {
                                 pf_error!(me; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!(me; "client {} has left", id);
+                                pf_debug!(me; "client {} has left", id);
                             }
                             break;
                         },

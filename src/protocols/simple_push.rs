@@ -829,7 +829,7 @@ impl GenericEndpoint for SimplePushClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -871,8 +871,9 @@ impl GenericEndpoint for SimplePushClient {
                         (self.config.server_id + 1) % population;
                 }
                 // connect to that server
-                pf_info!(self.id; "connecting to server {} '{}'...",
-                                  self.config.server_id, servers_info[&self.config.server_id].api_addr);
+                pf_debug!(self.id; "connecting to server {} '{}'...",
+                                   self.config.server_id,
+                                   servers_info[&self.config.server_id].api_addr);
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
                     servers_info[&self.config.server_id].api_addr,
@@ -894,7 +895,7 @@ impl GenericEndpoint for SimplePushClient {
             }
 
             while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left current server connection");
+            pf_debug!(self.id; "left current server connection");
             api_stub.forget();
         }
 
@@ -907,7 +908,7 @@ impl GenericEndpoint for SimplePushClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

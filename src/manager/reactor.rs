@@ -214,7 +214,7 @@ impl ClientReactor {
                 return logged_err!("m"; "duplicate client ID listened: {}", id);
             }
         }
-        pf_info!("m"; "accepted new client {}", id);
+        pf_debug!("m"; "accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
@@ -407,7 +407,7 @@ impl ClientReactor {
                             ) {
                                 pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!("m"; "client {} has left", id);
+                                pf_debug!("m"; "client {} has left", id);
                             }
                             break;
                         },

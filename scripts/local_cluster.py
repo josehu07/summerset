@@ -2,8 +2,8 @@ import sys
 import os
 import signal
 import argparse
-import subprocess
 import multiprocessing
+import threading
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -113,16 +113,14 @@ def launch_manager(protocol, num_replicas, release, pin_cores):
     return run_process_pinned(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
 
 
-def wait_manager_setup(proc, print_stderr=True):
+def wait_manager_setup(proc):
     # print("Waiting for manager setup...")
     accepting_servers, accepting_clients = False, False
 
     for line in iter(proc.stderr.readline, b""):
-        if print_stderr:
-            sys.stderr.buffer.write(line)
-            sys.stderr.flush()
-
         l = line.decode()
+        print(l, end="", file=sys.stderr)
+
         if "(m) accepting servers" in l:
             assert not accepting_servers
             accepting_servers = True
@@ -227,7 +225,16 @@ if __name__ == "__main__":
     manager_proc = launch_manager(
         args.protocol, args.num_replicas, args.release, args.pin_cores
     )
-    wait_manager_setup(manager_proc, (args.pin_cores == 0))
+    wait_manager_setup(manager_proc)
+
+    # create a thread that prints out captured manager outputs
+    # def print_manager_stderr():
+    #     for line in iter(manager_proc.stderr.readline, b""):
+    #         l = line.decode()
+    #         print(l, end="", file=sys.stderr)
+
+    # print_manager_t = threading.Thread(target=print_manager_stderr)
+    # print_manager_t.start()
 
     # then launch server replicas
     server_procs = launch_servers(
@@ -251,12 +258,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, kill_spawned_procs)
     signal.signal(signal.SIGTERM, kill_spawned_procs)
     signal.signal(signal.SIGHUP, kill_spawned_procs)
-
-    # since we piped manager proc's output, re-print it out
-    for line in iter(manager_proc.stderr.readline, b""):
-        if args.pin_cores == 0:
-            sys.stderr.buffer.write(line)
-            sys.stderr.flush()
 
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()

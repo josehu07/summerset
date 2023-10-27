@@ -88,7 +88,7 @@ impl Default for ReplicaConfigCRaft {
             snapshot_path: "/tmp/summerset.craft.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
-            recon_chunk_size: 100,
+            recon_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -299,6 +299,10 @@ pub struct CRaftReplica {
     /// Slot index of highest log entry applied to state machine.
     last_exec: usize,
 
+    /// Slot index of highest log entry for which a Reconstruct has been sent.
+    /// This is a soft state and affects nothing about correctness.
+    last_recon: usize,
+
     /// For each server, index of the next log entry to send.
     next_slot: HashMap<ReplicaId, usize>,
 
@@ -387,10 +391,16 @@ impl CRaftReplica {
         peer: ReplicaId,
         term: Term,
     ) -> Result<bool, SummersetError> {
-        if term > self.curr_term {
+        if term > self.curr_term
+        // || (term == self.curr_term && self.role == Role::Candidate)
+        {
             self.curr_term = term;
             self.voted_for = None;
             self.votes_granted.clear();
+
+            // refresh heartbeat hearing timer
+            self.leader = Some(peer);
+            self.heard_heartbeat(peer, term)?;
 
             // also make the two critical fields durable, synchronously
             self.storage_hub.submit_action(
@@ -410,6 +420,7 @@ impl CRaftReplica {
                 if action_id != 0 {
                     // normal log action previously in queue; process it
                     self.handle_log_result(action_id, log_result)?;
+                    self.heard_heartbeat(peer, term)?;
                 } else {
                     if let LogResult::Write {
                         offset_ok: true, ..
@@ -422,14 +433,11 @@ impl CRaftReplica {
                 }
             }
 
-            // refresh heartbeat hearing timer
-            self.heard_heartbeat(peer, term)?;
-
             if self.role != Role::Follower {
                 self.role = Role::Follower;
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                pf_trace!(self.id; "converted back to follower");
+                pf_info!(self.id; "converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -462,37 +470,40 @@ impl CRaftReplica {
 
             // re-send AppendEntries covering all entries, containing all
             // data shards of each entry, to followers
-            let entries = self
-                .log
-                .iter()
-                .skip(1)
-                .map(|e| LogEntry {
-                    term: e.term,
-                    reqs_cw: e
-                        .reqs_cw
-                        .subset_copy(
-                            Bitmap::from(
-                                self.population,
-                                (0..self.majority).collect(),
-                            ),
-                            false,
-                        )
-                        .unwrap(),
-                    external: false,
-                    log_offset: e.log_offset,
-                })
-                .collect();
-            self.transport_hub.bcast_msg(
-                PeerMsg::AppendEntries {
-                    term: self.curr_term,
-                    prev_slot: self.start_slot,
-                    prev_term: self.log[0].term,
-                    entries,
-                    leader_commit: self.last_commit,
-                    last_snap: self.last_snap,
-                },
-                None,
-            )?;
+            // NOTE: not doing this right now as the liveness guarantee under
+            // concurrent failures is already weakened; not necessary to guard
+            // against this corner case of non-concurrent failures
+            // let entries = self
+            //     .log
+            //     .iter()
+            //     .skip(1)
+            //     .map(|e| LogEntry {
+            //         term: e.term,
+            //         reqs_cw: e
+            //             .reqs_cw
+            //             .subset_copy(
+            //                 Bitmap::from(
+            //                     self.population,
+            //                     (0..self.majority).collect(),
+            //                 ),
+            //                 false,
+            //             )
+            //             .unwrap(),
+            //         external: false,
+            //         log_offset: e.log_offset,
+            //     })
+            //     .collect();
+            // self.transport_hub.bcast_msg(
+            //     PeerMsg::AppendEntries {
+            //         term: self.curr_term,
+            //         prev_slot: self.start_slot,
+            //         prev_term: self.log[0].term,
+            //         entries,
+            //         leader_commit: self.last_commit,
+            //         last_snap: self.last_snap,
+            //     },
+            //     None,
+            // )?;
         }
 
         Ok(())
@@ -616,8 +627,7 @@ impl CRaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(slot + 1 - self.start_slot)
@@ -643,19 +653,30 @@ impl CRaftReplica {
                 .collect();
 
             if slot >= self.try_next_slot[&peer] {
-                self.transport_hub.send_msg(
-                    PeerMsg::AppendEntries {
-                        term: self.curr_term,
-                        prev_slot,
-                        prev_term,
-                        entries,
-                        leader_commit: self.last_commit,
-                        last_snap: self.last_snap,
-                    },
-                    peer,
-                )?;
-                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.try_next_slot[&peer], slot);
+                let mut now_prev_slot = prev_slot;
+                while !entries.is_empty() {
+                    let end =
+                        cmp::min(entries.len(), self.config.recon_chunk_size);
+                    let chunk = entries.drain(0..end).collect();
+
+                    let now_prev_term =
+                        self.log[now_prev_slot - self.start_slot].term;
+                    self.transport_hub.send_msg(
+                        PeerMsg::AppendEntries {
+                            term: self.curr_term,
+                            prev_slot: now_prev_slot,
+                            prev_term: now_prev_term,
+                            entries: chunk,
+                            leader_commit: self.last_commit,
+                            last_snap: self.last_snap,
+                        },
+                        peer,
+                    )?;
+                    pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                   peer, now_prev_slot + 1, now_prev_slot + end);
+
+                    now_prev_slot += end;
+                }
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
@@ -755,16 +776,23 @@ impl CRaftReplica {
                                leader, prev_slot + 1, prev_slot + entries.len(), term);
         }
         if self.check_term(leader, term).await? || self.role != Role::Follower {
-            return Ok(());
+            if term == self.curr_term && self.role == Role::Candidate {
+                // a little hack to promptly obey the elected leader if I
+                // started an election with the same term number at roughly
+                // the same time
+                self.curr_term -= 1;
+                self.check_term(leader, term).await?;
+            } else {
+                return Ok(());
+            }
         }
 
         // reply false if term smaller than mine, or if my log does not
         // contain an entry at prev_slot matching prev_term
-        if !entries.is_empty()
-            && (term < self.curr_term
-                || prev_slot < self.start_slot
-                || prev_slot >= self.start_slot + self.log.len()
-                || self.log[prev_slot - self.start_slot].term != prev_term)
+        if term < self.curr_term
+            || prev_slot < self.start_slot
+            || prev_slot >= self.start_slot + self.log.len()
+            || self.log[prev_slot - self.start_slot].term != prev_term
         {
             // figure out the conflict info to send back
             let conflict_term = if prev_slot >= self.start_slot
@@ -799,6 +827,7 @@ impl CRaftReplica {
             if term >= self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
                 // procedure for a lagging follower might take long
+                self.leader = Some(leader);
                 self.heard_heartbeat(leader, term)?;
             }
             return Ok(());
@@ -833,6 +862,7 @@ impl CRaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(leader, term)?;
                     } else {
                         if let LogResult::Truncate {
                             offset_ok: true,
@@ -1004,13 +1034,18 @@ impl CRaftReplica {
 
                 // if quorum size reached AND enough number of shards are
                 // remembered, mark this instance as committed; in CRaft, this
-                // means match_cnt >= self.majority + fault_tolerance
+                // means match_cnt >= self.majority + fault_tolerance when not
+                // in full-copy mode
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
                     .filter(|&&s| s >= slot)
                     .count() as u8;
-                if match_cnt >= self.majority + self.config.fault_tolerance {
+
+                if (!self.full_copy_mode
+                    && match_cnt >= self.majority + self.config.fault_tolerance)
+                    || (self.full_copy_mode && match_cnt >= self.majority)
+                {
                     // quorum size reached, set new_commit to here
                     new_commit = slot;
                 }
@@ -1026,16 +1061,14 @@ impl CRaftReplica {
                     // batch. Because I am the leader, this means I need to
                     // issue reconstruction reads to followers to recover this
                     // log entry
-                    recon_slots.push((slot, entry.term));
+                    if slot > self.last_recon {
+                        recon_slots.push((slot, entry.term));
+                        self.last_recon = slot;
+                    }
+                    continue;
                 } else if entry.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                }
-
-                if !recon_slots.is_empty() {
-                    // have encountered insufficient shards; cannot do any
-                    // further execution right now
-                    continue;
                 }
                 let reqs = entry.reqs_cw.get_data()?;
 
@@ -1109,8 +1142,7 @@ impl CRaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(end_slot + 1 - self.start_slot)
@@ -1135,19 +1167,31 @@ impl CRaftReplica {
                 })
                 .collect();
 
-            self.transport_hub.send_msg(
-                PeerMsg::AppendEntries {
-                    term: self.curr_term,
-                    prev_slot,
-                    prev_term,
-                    entries,
-                    leader_commit: self.last_commit,
-                    last_snap: self.last_snap,
-                },
-                peer,
-            )?;
-            pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                               peer, self.next_slot[&peer], end_slot);
+            // NOTE: also breaking long AppendEntries into chunks to keep
+            // peers heartbeated
+            let mut now_prev_slot = prev_slot;
+            while !entries.is_empty() {
+                let end = cmp::min(entries.len(), self.config.recon_chunk_size);
+                let chunk = entries.drain(0..end).collect();
+
+                let now_prev_term =
+                    self.log[now_prev_slot - self.start_slot].term;
+                self.transport_hub.send_msg(
+                    PeerMsg::AppendEntries {
+                        term: self.curr_term,
+                        prev_slot: now_prev_slot,
+                        prev_term: now_prev_term,
+                        entries: chunk,
+                        leader_commit: self.last_commit,
+                        last_snap: self.last_snap,
+                    },
+                    peer,
+                )?;
+                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                   peer, now_prev_slot + 1, now_prev_slot + end);
+
+                now_prev_slot += end;
+            }
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
@@ -1224,6 +1268,7 @@ impl CRaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(candidate, term)?;
                     } else {
                         if let LogResult::Write {
                             offset_ok: true, ..
@@ -1274,9 +1319,12 @@ impl CRaftReplica {
         pf_trace!(self.id; "received Reconstruct <- {} for slots {:?}", peer, slots);
         let mut slots_data = HashMap::new();
 
+        // reconstruction messages also count as heartbeats
+        self.heard_heartbeat(peer, self.curr_term)?;
+
         for (slot, term) in slots {
             if slot < self.start_slot
-                || slot >= self.start_slot + self.log.len()
+                || slot > self.last_commit
                 || term != self.log[slot - self.start_slot].term
             {
                 // NOTE: this has one caveat: a new leader trying to do
@@ -1308,6 +1356,9 @@ impl CRaftReplica {
         peer: ReplicaId,
         slots_data: HashMap<usize, RSCodeword<ReqBatch>>,
     ) -> Result<(), SummersetError> {
+        // reconstruction messages also count as heartbeats
+        self.heard_heartbeat(peer, self.curr_term)?;
+
         // shadow_last_commit is the position of where last_commit should be
         // at if without sharding issues
         let shadow_last_commit = {
@@ -1530,6 +1581,7 @@ impl CRaftReplica {
             if action_id != 0 {
                 // normal log action previously in queue; process it
                 self.handle_log_result(action_id, log_result)?;
+                self.heard_heartbeat(self.id, self.curr_term)?;
             } else {
                 if let LogResult::Write {
                     offset_ok: true, ..
@@ -1567,6 +1619,15 @@ impl CRaftReplica {
         }
         for slot in self.match_slot.values_mut() {
             *slot = 0;
+        }
+
+        // mark some possibly unreplied entries as external
+        for slot in self
+            .log
+            .iter_mut()
+            .skip(self.last_commit + 1 - self.start_slot)
+        {
+            slot.external = true;
         }
 
         Ok(())
@@ -1619,8 +1680,9 @@ impl CRaftReplica {
         self.heard_heartbeat(self.id, self.curr_term)?;
 
         // check if we need to fall back to full-copy replication
-        if self.population - self.peer_alive.count()
-            >= self.config.fault_tolerance
+        if !self.full_copy_mode
+            && self.population - self.peer_alive.count()
+                >= self.config.fault_tolerance
         {
             self.switch_assignment_mode(true)?;
         }
@@ -1656,11 +1718,11 @@ impl CRaftReplica {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                 // check if we can move back to 1-shard replication
-                if self.population - self.peer_alive.count()
-                    < self.config.fault_tolerance
-                {
-                    self.switch_assignment_mode(false)?;
-                }
+                // if self.population - self.peer_alive.count()
+                //     < self.config.fault_tolerance
+                // {
+                //     self.switch_assignment_mode(false)?;
+                // }
             }
         }
 
@@ -1720,16 +1782,6 @@ impl CRaftReplica {
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
         pf_warn!(self.id; "server got pause req");
-
-        // promptly redirect all connected clients to another server
-        let target = (self.id + 1) % self.population;
-        self.external_api.bcast_reply(ApiReply::Reply {
-            id: 0,
-            result: None,
-            redirect: Some(target),
-        })?;
-        pf_trace!(self.id; "redirected all clients to replica {}", target);
-
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -2143,6 +2195,7 @@ impl CRaftReplica {
                 if start_slot > 0 {
                     self.last_commit = start_slot - 1;
                     self.last_exec = start_slot - 1;
+                    self.last_recon = start_slot - 1;
                     self.last_snap = start_slot - 1;
                 }
 
@@ -2410,6 +2463,7 @@ impl GenericReplica for CRaftReplica {
             snapshot_interval,
             last_commit: 0,
             last_exec: 0,
+            last_recon: 0,
             next_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 1)) })
                 .collect(),
@@ -2595,7 +2649,7 @@ impl GenericEndpoint for CRaftClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
         let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
         let id = ctrl_stub.id;
 
@@ -2635,7 +2689,9 @@ impl GenericEndpoint for CRaftClient {
             } => {
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id) {
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
@@ -2644,7 +2700,7 @@ impl GenericEndpoint for CRaftClient {
                     .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
                     let api_stub =
                         ClientApiStub::new_by_connect(self.id, server).await?;
                     self.api_stubs.insert(id, api_stub);
@@ -2666,7 +2722,7 @@ impl GenericEndpoint for CRaftClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -2679,7 +2735,7 @@ impl GenericEndpoint for CRaftClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

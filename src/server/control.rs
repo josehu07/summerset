@@ -45,7 +45,7 @@ impl ControlHub {
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
-        pf_info!("s"; "connecting to manager '{}'...", manager);
+        pf_debug!("s"; "connecting to manager '{}'...", manager);
         let mut stream = tcp_connect_with_retry(manager, 10).await?;
         let id = stream.read_u8().await?; // first receive assigned server ID
         let population = stream.read_u8().await?; // then receive population

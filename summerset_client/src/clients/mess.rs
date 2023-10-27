@@ -179,6 +179,7 @@ impl ClientMess {
             self.resume_servers(servers).await?;
         }
 
+        self.driver.leave(true).await?;
         Ok(())
     }
 }

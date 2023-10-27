@@ -71,8 +71,11 @@ def wait_cluster_setup(proc, fserr=None):
         l = line.decode()
         # print(l, end="", file=sys.stderr)
 
-        if "manager" not in l and "accepting clients" in l:
-            replica = int(l[l.find("(") + 1 : l.find(")")])
+        if "accepting clients" in l:
+            replica = l[l.find("(") + 1 : l.find(")")]
+            if replica == "m":
+                continue
+            replica = int(replica)
             assert not accepting_clients[replica]
             accepting_clients[replica] = True
 
@@ -132,6 +135,7 @@ def bench_round(protocol):
         f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
     )
     utils.kill_all_local_procs()
+    time.sleep(1)
 
     # launch service cluster
     proc_cluster = launch_cluster(

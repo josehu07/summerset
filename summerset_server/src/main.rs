@@ -171,8 +171,8 @@ fn server_main() -> Result<(), SummersetError> {
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
+        .format_timestamp_millis()
+        .format_module_path(false)
         .format_target(false)
         .init();
 
