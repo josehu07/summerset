@@ -98,8 +98,8 @@ impl Default for ReplicaConfigCrossword {
             hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.crossword.snap".into(),
             snapshot_interval_s: 0,
-            gossip_timeout_min: 10,
-            gossip_timeout_max: 30,
+            gossip_timeout_min: 100,
+            gossip_timeout_max: 300,
             fault_tolerance: 0,
             msg_chunk_size: 10,
             shards_per_replica: 1,
@@ -148,9 +148,6 @@ struct LeaderBookkeeping {
 struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
-
-    /// Have I tried gossiping for this instance at least once?
-    gossip_tried: bool,
 }
 
 /// In-memory instance containing a (possibly partial) commands batch.
@@ -252,8 +249,8 @@ enum PeerMsg {
 
     /// Reconstruction read from new leader to replicas.
     Reconstruct {
-        /// Map from slot -> shards to exclude.
-        slots_excl: HashMap<usize, Vec<u8>>,
+        /// List of slots and correspondingly the shards to exclude.
+        slots_excl: Vec<(usize, Vec<u8>)>,
     },
 
     /// Reconstruction read reply from replica to leader.
@@ -417,7 +414,7 @@ impl CrosswordReplica {
 
     /// Locate the first null slot or append a null instance if no holes exist.
     fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+        for s in self.exec_bar..(self.start_slot + self.insts.len()) {
             if self.insts[s - self.start_slot].status == Status::Null {
                 return Ok(s);
             }
@@ -1071,10 +1068,7 @@ impl CrosswordReplica {
 
             inst.bal = ballot;
             inst.status = Status::Preparing;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                gossip_tried: false,
-            });
+            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // record update to largest prepare ballot
             self.storage_hub.submit_action(
@@ -1259,10 +1253,7 @@ impl CrosswordReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                gossip_tried: false,
-            });
+            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // record update to largest prepare ballot
             inst.voted = (ballot, inst.reqs_cw.clone());
@@ -1415,7 +1406,7 @@ impl CrosswordReplica {
     fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
-        slots_excl: HashMap<usize, Vec<u8>>,
+        slots_excl: Vec<(usize, Vec<u8>)>,
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received Reconstruct <- {} for {} slots",
                            peer, slots_excl.len());
@@ -1666,7 +1657,7 @@ impl CrosswordReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         let mut chunk_cnt = 0;
-        let mut recon_slots: HashMap<usize, Vec<u8>> = HashMap::new();
+        let mut recon_slots: Vec<(usize, Vec<u8>)> = vec![];
         for (slot, inst) in self
             .insts
             .iter_mut()
@@ -1736,7 +1727,7 @@ impl CrosswordReplica {
             if inst.status == Status::Committed
                 && inst.reqs_cw.avail_shards() < self.majority
             {
-                recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
+                recon_slots.push((slot, inst.reqs_cw.avail_shards_vec()));
 
                 // send reconstruction read messages in chunks
                 if recon_slots.len() == self.config.msg_chunk_size {
@@ -1940,6 +1931,8 @@ impl CrosswordReplica {
     /// Chooses a random gossip_timeout from the min-max range and kicks off
     /// the gossip_timer.
     fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+        self.gossip_timer.cancel()?;
+
         let timeout_ms = thread_rng().gen_range(
             self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
         );
@@ -1963,56 +1956,42 @@ impl CrosswordReplica {
         replica_bk: &mut Option<ReplicaBookkeeping>,
     ) -> HashMap<ReplicaId, Vec<u8>> {
         let mut src_peer = me;
-        let mut first_try = false;
-        if let Some(ReplicaBookkeeping {
-            source,
-            gossip_tried,
-        }) = replica_bk
-        {
-            if !*gossip_tried {
-                src_peer = *source;
-                first_try = true;
-                // first try: exclude all parity shards
-                for idx in majority..population {
-                    avail_shards_map.set(idx, true).unwrap();
-                }
-                *gossip_tried = true;
-            }
+        if let Some(ReplicaBookkeeping { source }) = replica_bk {
+            src_peer = *source;
         }
 
         // greedily considers my peers, starting from the one with my ID + 1,
-        // until all data shards covered
+        // until enough number of shards covered
         let mut targets_excl = HashMap::new();
         for p in (me + 1)..(population + me) {
+            // skip leader who initially replicated this instance to me
             let peer = p % population;
-            if !first_try {
-                // first try probably did not succeed, so do it conservatively
+            if peer == src_peer {
+                continue;
+            }
+
+            // only ask for shards which I don't have right now and I have not
+            // asked others for
+            let mut useful_shards = Vec::new();
+            for idx in Self::shards_for_replica(
+                slot,
+                peer,
+                population,
+                shards_per_replica,
+            ) {
+                if !avail_shards_map.get(idx).unwrap() {
+                    useful_shards.push(idx);
+                }
+            }
+            if !useful_shards.is_empty() {
                 targets_excl.insert(peer, avail_shards_map.to_vec());
-            } else {
-                // skip leader who initially replicated this instance to me
-                if peer == src_peer {
-                    continue;
+                for idx in useful_shards {
+                    avail_shards_map.set(idx, true).unwrap();
                 }
-                // first try: only ask for a minimum number of data shards
-                let mut useful_shards = Vec::new();
-                for idx in Self::shards_for_replica(
-                    slot,
-                    peer,
-                    population,
-                    shards_per_replica,
-                ) {
-                    if !avail_shards_map.get(idx).unwrap() {
-                        useful_shards.push(idx);
-                    }
-                }
-                // if this peer has data shards which I don't have right now
-                // and I have not asked others for in this round
-                if !useful_shards.is_empty() {
-                    targets_excl.insert(peer, avail_shards_map.to_vec());
-                    for idx in useful_shards {
-                        avail_shards_map.set(idx, true).unwrap();
-                    }
-                }
+            }
+
+            if avail_shards_map.count() >= majority {
+                break;
             }
         }
 
@@ -2024,16 +2003,16 @@ impl CrosswordReplica {
     /// follower peers that hold data shards.
     fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
         // maintain a map from peer ID to send to -> slots_excl to send
-        let mut recon_slots: HashMap<ReplicaId, HashMap<usize, Vec<u8>>> =
+        let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Vec<u8>)>> =
             HashMap::with_capacity(self.population as usize - 1);
         for peer in 0..self.population {
             if peer != self.id {
-                recon_slots.insert(peer, HashMap::new());
+                recon_slots.insert(peer, vec![]);
             }
         }
 
         let mut slot_up_to = self.gossip_bar;
-        for slot in self.gossip_bar..self.commit_bar {
+        for slot in self.gossip_bar..(self.start_slot + self.insts.len()) {
             slot_up_to = slot;
             {
                 let inst = &self.insts[slot - self.start_slot];
@@ -2060,7 +2039,7 @@ impl CrosswordReplica {
                 );
 
                 for (peer, exclude) in targets_excl {
-                    recon_slots.get_mut(&peer).unwrap().insert(slot, exclude);
+                    recon_slots.get_mut(&peer).unwrap().push((slot, exclude));
 
                     // send reconstruction read messages in chunks
                     if recon_slots[&peer].len() == self.config.msg_chunk_size {
@@ -2873,7 +2852,8 @@ impl GenericReplica for CrosswordReplica {
         self.kickoff_hb_hear_timer()?;
 
         // kick off follower gossiping trigger timer
-        self.kickoff_gossip_timer()?;
+        // FIXME: proper gossiping
+        // self.kickoff_gossip_timer()?;
 
         // main event loop
         let mut paused = false;

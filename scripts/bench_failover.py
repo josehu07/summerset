@@ -6,6 +6,12 @@ import time
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
 
+import matplotlib  # type: ignore
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # type: ignore
+
 
 BASE_PATH = "/mnt/eval"
 SERVER_STATES_FOLDER = "states"
@@ -14,8 +20,7 @@ RUNTIME_LOGS_FOLDER = "runlog"
 
 EXPER_NAME = "failover"
 
-# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["Crossword"]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -28,18 +33,20 @@ NUM_CLIENTS = 8
 
 VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
-LENGTH_SECS = 90
 
 NETEM_MEAN = 1
 NETEM_JITTER = 1
 NETEM_RATE = 1
 
 
-FAIL1_SECS = LENGTH_SECS * 0.3
-FAIL2_SECS = LENGTH_SECS * 0.7
+LENGTH_SECS = 45
+CLIENT_TIMEOUT_SECS = 2
 
-PLOT_SECS_BEGIN = LENGTH_SECS * 0.1
-PLOT_SECS_END = LENGTH_SECS * 0.9
+FAIL1_SECS = 10
+FAIL2_SECS = 25
+
+PLOT_SECS_BEGIN = 5
+PLOT_SECS_END = 44
 
 
 def launch_cluster(protocol, config=None):
@@ -94,6 +101,8 @@ def run_bench_clients(protocol):
         "-r",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
+        "--timeout_ms",
+        str(CLIENT_TIMEOUT_SECS * 1000),
         "bench",
         "-n",
         str(NUM_CLIENTS),
@@ -187,17 +196,34 @@ def collect_outputs():
             f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
             PLOT_SECS_BEGIN,
             PLOT_SECS_END,
+            0.1,
         )
     return results
 
 
-def plot_results(results):
+def print_results(results):
     for protocol, result in results.items():
         print(protocol)
-        ts = result["time"]
-        tputs = utils.list_smoothing(result["tput_sum"], 2)
-        for i, t in enumerate(ts):
-            print(t, tputs[i])
+        for i, t in enumerate(result["time"]):
+            print(f"{t:>4.1f}: {result['tput_sum'][i]:>6.2f}", end="  ")
+            if (i + 1) % 8 == 0:
+                print()
+        if len(result["time"]) % 8 != 0:
+            print()
+
+
+def plot_results(results):
+    for protocol, result in results.items():
+        xs = result["time"]
+        ys = utils.list_smoothing(result["tput_sum"], 5, 25)
+        plt.plot(xs, ys, label=protocol)
+
+    plt.legend()
+
+    plt.savefig(
+        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}/{EXPER_NAME}.png", dpi=300
+    )
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -217,7 +243,7 @@ if __name__ == "__main__":
         utils.do_cargo_build(release=True)
 
         utils.set_tcp_buf_sizes()
-        # utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
+        utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
@@ -228,4 +254,5 @@ if __name__ == "__main__":
 
     else:
         results = collect_outputs()
+        print_results(results)
         plot_results(results)

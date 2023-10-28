@@ -33,7 +33,7 @@ lazy_static! {
     };
 
     /// Statistics printing interval.
-    static ref PRINT_INTERVAL: Duration = Duration::from_millis(500);
+    static ref PRINT_INTERVAL: Duration = Duration::from_millis(100);
 }
 
 /// Mode parameters struct.

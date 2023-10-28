@@ -79,9 +79,9 @@ impl Default for ReplicaConfigRaft {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.raft.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 10,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.raft.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -647,7 +647,15 @@ impl RaftReplica {
                                leader, prev_slot + 1, prev_slot + entries.len(), term);
         }
         if self.check_term(leader, term).await? || self.role != Role::Follower {
-            return Ok(());
+            if term == self.curr_term && self.role == Role::Candidate {
+                // a little hack to promptly obey the elected leader if I
+                // started an election with the same term number at roughly
+                // the same time
+                self.curr_term -= 1;
+                self.check_term(leader, term).await?;
+            } else {
+                return Ok(());
+            }
         }
 
         // reply false if term smaller than mine, or if my log does not

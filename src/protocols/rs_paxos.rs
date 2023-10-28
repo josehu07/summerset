@@ -82,9 +82,9 @@ impl Default for ReplicaConfigRSPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 10,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
@@ -384,7 +384,7 @@ impl RSPaxosReplica {
 
     /// Locate the first null slot or append a null instance if no holes exist.
     fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+        for s in self.exec_bar..(self.start_slot + self.insts.len()) {
             if self.insts[s - self.start_slot].status == Status::Null {
                 return Ok(s);
             }

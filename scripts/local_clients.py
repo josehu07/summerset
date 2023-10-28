@@ -50,13 +50,15 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, manager, config, utility, params, release):
+def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
         protocol,
         "-m",
         manager,
+        "--timeout-ms",
+        str(timeout_ms),
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
@@ -73,7 +75,15 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
 
 
 def run_clients(
-    protocol, utility, num_clients, params, release, config, capture_stdout, pin_cores
+    protocol,
+    utility,
+    num_clients,
+    params,
+    release,
+    config,
+    capture_stdout,
+    pin_cores,
+    timeout_ms,
 ):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
@@ -85,6 +95,7 @@ def run_clients(
             f"127.0.0.1:{MANAGER_CLI_PORT}",
             config,
             utility,
+            timeout_ms,
             params,
             release,
         )
@@ -110,6 +121,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--timeout_ms", type=int, default=5000, help="client-side request timeout"
     )
 
     subparsers = parser.add_subparsers(
@@ -191,6 +205,7 @@ if __name__ == "__main__":
         args.config,
         capture_stdout,
         args.pin_cores,
+        args.timeout_ms,
     )
 
     # if running bench client, add proper timeout on wait

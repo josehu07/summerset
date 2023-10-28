@@ -88,7 +88,7 @@ def clear_tc_qdisc_netem():
     os.system("sudo tc qdisc delete dev lo root")
 
 
-def gather_outputs(protocol, num_clients, path_prefix, tb, te):
+def gather_outputs(protocol, num_clients, path_prefix, tb, te, tgap):
     outputs = dict()
     for c in range(num_clients):
         outputs[c] = {"time": [], "tput": [], "lat": []}
@@ -135,12 +135,22 @@ def gather_outputs(protocol, num_clients, path_prefix, tb, te):
         result["lat_max"].append(max(lats))
         result["lat_avg"].append(sum(lats) / len(lats))
         result["lat_stdev"].append(statistics.stdev(lats))
-        t += 0.5
+        t += tgap
+
     return result
 
 
-def list_smoothing(l, d):
+def list_smoothing(l, d, p):
     assert d > 0
+    l = l.copy()
+
+    if p > 0:
+        for i in range(p, len(l) - p):
+            lp = any(map(lambda t: 2 * t < l[i], l[i - p : i]))
+            rp = any(map(lambda t: 2 * t < l[i], l[i + 1 : i + p + 1]))
+            if lp and rp:
+                l[i] = min(l[i - p : i + p + 1])
+
     result = []
     for i in range(len(l)):
         nums = []
@@ -148,4 +158,5 @@ def list_smoothing(l, d):
             if j >= 0 and j < len(l):
                 nums.append(l[j])
         result.append(sum(nums) / len(nums))
+
     return result
