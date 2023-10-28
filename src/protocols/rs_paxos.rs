@@ -64,8 +64,8 @@ pub struct ReplicaConfigRSPaxos {
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
-    /// Maximum chunk size of a ReconstructRead message.
-    pub recon_chunk_size: usize,
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -84,11 +84,11 @@ impl Default for ReplicaConfigRSPaxos {
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_send_interval_ms: 10,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
-            recon_chunk_size: 10,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -466,7 +466,6 @@ impl RSPaxosReplica {
 
             // reset heartbeat timeout timer to prevent me from trying to
             // compete with a new leader when it is doing reconstruction
-            pf_error!(self.id; "XXX {} {}", peer, ballot);
             self.kickoff_hb_hear_timer()?;
 
             // set this peer to be the believed leader
@@ -824,6 +823,7 @@ impl RSPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -991,6 +991,7 @@ impl RSPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -1103,6 +1104,8 @@ impl RSPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
+
+        self.kickoff_hb_hear_timer()?;
 
         // locate instance in memory, filling in null instances if needed
         while self.start_slot + self.insts.len() <= slot {
@@ -1383,6 +1386,7 @@ impl RSPaxosReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        let mut chunk_cnt = 0;
         let mut recon_slots = Vec::new();
         for (slot, inst) in self
             .insts
@@ -1431,6 +1435,20 @@ impl RSPaxosReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                    chunk_cnt = 0;
+                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -1443,7 +1461,7 @@ impl RSPaxosReplica {
         }
 
         // send reconstruction read messages in chunks
-        for chunk in recon_slots.chunks(self.config.recon_chunk_size) {
+        for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
             let slots = chunk.to_vec();
             let num_slots = slots.len();
             self.transport_hub
@@ -1503,7 +1521,7 @@ impl RSPaxosReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
-            self.bal_prep_sent,
+            self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -1549,23 +1567,26 @@ impl RSPaxosReplica {
             self.check_leader(peer, ballot)?;
 
             // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot: self.bal_max_seen,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
+            if self.leader == Some(peer) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Heartbeat {
+                        ballot: self.bal_max_seen,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
+                    },
+                    peer,
+                )?;
+            }
         }
 
-        // ignore outdated heartbeats and those from peers with exec_bar < mine
-        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
+        // ignore outdated heartbeats, reset hearing timer
+        if ballot < self.bal_max_seen {
             return Ok(());
         }
-
-        // reset hearing timer
         self.kickoff_hb_hear_timer()?;
+        if exec_bar < self.exec_bar {
+            return Ok(());
+        }
 
         if peer != self.id {
             // update peer_exec_bar if larger then known; if all servers'
@@ -2165,7 +2186,7 @@ impl GenericReplica for RSPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
-                                    fault_tolerance, recon_chunk_size,
+                                    fault_tolerance, msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -2196,11 +2217,11 @@ impl GenericReplica for RSPaxosReplica {
                 config.hb_send_interval_ms
             );
         }
-        if config.recon_chunk_size == 0 {
+        if config.msg_chunk_size == 0 {
             return logged_err!(
                 id;
-                "invalid config.recon_chunk_size '{}'",
-                config.recon_chunk_size
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2382,8 +2403,10 @@ impl GenericReplica for RSPaxosReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();

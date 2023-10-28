@@ -61,6 +61,9 @@ pub struct ReplicaConfigRaft {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -78,9 +81,10 @@ impl Default for ReplicaConfigRaft {
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_send_interval_ms: 10,
             snapshot_path: "/tmp/summerset.raft.snap".into(),
             snapshot_interval_s: 0,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -505,8 +509,7 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(slot + 1 - self.start_slot)
@@ -519,19 +522,32 @@ impl RaftReplica {
                 .collect();
 
             if slot >= self.try_next_slot[&peer] {
-                self.transport_hub.send_msg(
-                    PeerMsg::AppendEntries {
-                        term: self.curr_term,
-                        prev_slot,
-                        prev_term,
-                        entries,
-                        leader_commit: self.last_commit,
-                        last_snap: self.last_snap,
-                    },
-                    peer,
-                )?;
-                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.try_next_slot[&peer], slot);
+                // NOTE: here breaking long AppendEntries into chunks to keep
+                // peers heartbeated
+                let mut now_prev_slot = prev_slot;
+                while !entries.is_empty() {
+                    let end =
+                        cmp::min(entries.len(), self.config.msg_chunk_size);
+                    let chunk = entries.drain(0..end).collect();
+
+                    let now_prev_term =
+                        self.log[now_prev_slot - self.start_slot].term;
+                    self.transport_hub.send_msg(
+                        PeerMsg::AppendEntries {
+                            term: self.curr_term,
+                            prev_slot: now_prev_slot,
+                            prev_term: now_prev_term,
+                            entries: chunk,
+                            leader_commit: self.last_commit,
+                            last_snap: self.last_snap,
+                        },
+                        peer,
+                    )?;
+                    pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                       peer, now_prev_slot + 1, now_prev_slot + end);
+
+                    now_prev_slot += end;
+                }
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
@@ -920,8 +936,7 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(end_slot + 1 - self.start_slot)
@@ -933,19 +948,31 @@ impl RaftReplica {
                 })
                 .collect();
 
-            self.transport_hub.send_msg(
-                PeerMsg::AppendEntries {
-                    term: self.curr_term,
-                    prev_slot,
-                    prev_term,
-                    entries,
-                    leader_commit: self.last_commit,
-                    last_snap: self.last_snap,
-                },
-                peer,
-            )?;
-            pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                               peer, self.next_slot[&peer], end_slot);
+            // NOTE: here breaking long AppendEntries into chunks to keep
+            // peers heartbeated
+            let mut now_prev_slot = prev_slot;
+            while !entries.is_empty() {
+                let end = cmp::min(entries.len(), self.config.msg_chunk_size);
+                let chunk = entries.drain(0..end).collect();
+
+                let now_prev_term =
+                    self.log[now_prev_slot - self.start_slot].term;
+                self.transport_hub.send_msg(
+                    PeerMsg::AppendEntries {
+                        term: self.curr_term,
+                        prev_slot: now_prev_slot,
+                        prev_term: now_prev_term,
+                        entries: chunk,
+                        leader_commit: self.last_commit,
+                        last_snap: self.last_snap,
+                    },
+                    peer,
+                )?;
+                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                   peer, now_prev_slot + 1, now_prev_slot + end);
+
+                now_prev_slot += end;
+            }
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
@@ -1908,6 +1935,7 @@ impl GenericReplica for RaftReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -1936,6 +1964,13 @@ impl GenericReplica for RaftReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.msg_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2112,8 +2147,10 @@ impl GenericReplica for RaftReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();

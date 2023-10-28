@@ -64,8 +64,8 @@ pub struct ReplicaConfigCRaft {
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
-    /// Maximum chunk size of a ReconstructRead message.
-    pub recon_chunk_size: usize,
+    /// Maximum chunk size of any bulk of messages.
+    pub msg_chunk_size: usize,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -84,11 +84,11 @@ impl Default for ReplicaConfigCRaft {
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_send_interval_ms: 10,
             snapshot_path: "/tmp/summerset.craft.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
-            recon_chunk_size: 10,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -634,7 +634,10 @@ impl CRaftReplica {
                 .skip(self.try_next_slot[&peer] - self.start_slot)
                 .map(|e| {
                     if self.full_copy_mode {
-                        e.clone()
+                        LogEntry {
+                            external: false,
+                            ..e.clone()
+                        }
                     } else {
                         LogEntry {
                             term: e.term,
@@ -656,7 +659,7 @@ impl CRaftReplica {
                 let mut now_prev_slot = prev_slot;
                 while !entries.is_empty() {
                     let end =
-                        cmp::min(entries.len(), self.config.recon_chunk_size);
+                        cmp::min(entries.len(), self.config.msg_chunk_size);
                     let chunk = entries.drain(0..end).collect();
 
                     let now_prev_term =
@@ -1091,7 +1094,7 @@ impl CRaftReplica {
             }
 
             // send reconstruction read messages in chunks
-            for chunk in recon_slots.chunks(self.config.recon_chunk_size) {
+            for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
                 let slots = chunk.to_vec();
                 let num_slots = slots.len();
                 self.transport_hub
@@ -1149,7 +1152,10 @@ impl CRaftReplica {
                 .skip(self.next_slot[&peer] - self.start_slot)
                 .map(|e| {
                     if self.full_copy_mode {
-                        e.clone()
+                        LogEntry {
+                            external: false,
+                            ..e.clone()
+                        }
                     } else {
                         LogEntry {
                             term: e.term,
@@ -1171,7 +1177,7 @@ impl CRaftReplica {
             // peers heartbeated
             let mut now_prev_slot = prev_slot;
             while !entries.is_empty() {
-                let end = cmp::min(entries.len(), self.config.recon_chunk_size);
+                let end = cmp::min(entries.len(), self.config.msg_chunk_size);
                 let chunk = entries.drain(0..end).collect();
 
                 let now_prev_term =
@@ -2298,7 +2304,7 @@ impl GenericReplica for CRaftReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
-                                    fault_tolerance, recon_chunk_size,
+                                    fault_tolerance, msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -2329,11 +2335,11 @@ impl GenericReplica for CRaftReplica {
                 config.hb_send_interval_ms
             );
         }
-        if config.recon_chunk_size == 0 {
+        if config.msg_chunk_size == 0 {
             return logged_err!(
                 id;
-                "invalid config.recon_chunk_size '{}'",
-                config.recon_chunk_size
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2525,8 +2531,10 @@ impl GenericReplica for CRaftReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();

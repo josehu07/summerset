@@ -14,7 +14,8 @@ RUNTIME_LOGS_FOLDER = "runlog"
 
 EXPER_NAME = "failover"
 
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+PROTOCOLS = ["Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -27,7 +28,7 @@ NUM_CLIENTS = 8
 
 VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
-LENGTH_SECS = 30
+LENGTH_SECS = 90
 
 NETEM_MEAN = 1
 NETEM_JITTER = 1
@@ -35,6 +36,7 @@ NETEM_RATE = 1
 
 
 FAIL1_SECS = LENGTH_SECS * 0.3
+FAIL2_SECS = LENGTH_SECS * 0.7
 
 PLOT_SECS_BEGIN = LENGTH_SECS * 0.1
 PLOT_SECS_END = LENGTH_SECS * 0.9
@@ -150,8 +152,12 @@ def bench_round(protocol):
     # at the first failure point, pause current leader
     time.sleep(FAIL1_SECS)
     print("    Pausing leader...")
-    proc_mess = run_mess_client(protocol, pauses="l")
-    proc_mess.wait()
+    run_mess_client(protocol, pauses="l")
+
+    # at the second failure point, pause current leader
+    time.sleep(FAIL2_SECS - FAIL1_SECS)
+    print("    Pausing leader...")
+    run_mess_client(protocol, pauses="l")
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -211,12 +217,13 @@ if __name__ == "__main__":
         utils.do_cargo_build(release=True)
 
         utils.set_tcp_buf_sizes()
-        utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
+        # utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
             bench_round(protocol)
 
+        utils.kill_all_local_procs()
         utils.clear_tc_qdisc_netem()
 
     else:

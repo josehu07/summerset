@@ -381,8 +381,10 @@ impl ServerReigner {
                                     pf_debug!("m"; "should start retrying ctrl send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!("m"; "error sending -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -396,13 +398,15 @@ impl ServerReigner {
                         Ok(CtrlMsg::Leave) => {
                             // server leaving, send dummy reply and break
                             let msg = CtrlMsg::LeaveReply;
-                            if let Err(e) = Self::write_ctrl(
+                            if let Err(_e) = Self::write_ctrl(
                                 &mut write_buf,
                                 &mut write_buf_cursor,
                                 &conn_write,
                                 Some(&msg)
                             ) {
-                                pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
                                 pf_debug!("m"; "server {} has left", id);
                             }
@@ -439,8 +443,10 @@ impl ServerReigner {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exitted ungracefully
                         }
                     }
@@ -461,8 +467,10 @@ impl ServerReigner {
                         Ok(false) => {
                             pf_debug!("m"; "still should retry last ctrl send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
                 }

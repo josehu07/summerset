@@ -63,6 +63,9 @@ pub struct ReplicaConfigMultiPaxos {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -80,9 +83,10 @@ impl Default for ReplicaConfigMultiPaxos {
             logger_sync: false,
             hb_hear_timeout_min: 600,
             hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_send_interval_ms: 10,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -445,6 +449,7 @@ impl MultiPaxosReplica {
             self.kickoff_hb_hear_timer()?;
 
             // set this peer to be the believed leader
+            debug_assert_ne!(peer, self.id);
             self.leader = Some(peer);
         }
 
@@ -782,6 +787,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -915,6 +921,7 @@ impl MultiPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -1020,6 +1027,8 @@ impl MultiPaxosReplica {
         }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
 
+        self.kickoff_hb_hear_timer()?;
+
         // locate instance in memory, filling in null instances if needed
         while self.start_slot + self.insts.len() <= slot {
             self.insts.push(self.null_instance());
@@ -1061,6 +1070,7 @@ impl MultiPaxosReplica {
         }
         pf_trace!(self.id; "received FillHoles <- {} for slots {:?}", peer, slots);
 
+        let mut chunk_cnt = 0;
         for slot in slots {
             if slot < self.start_slot {
                 continue;
@@ -1081,6 +1091,20 @@ impl MultiPaxosReplica {
                 )?;
                 pf_trace!(self.id; "sent Accept -> {} for slot {} bal {}",
                                    peer, slot, self.bal_prepared);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                    chunk_cnt = 0;
+                }
             }
         }
 
@@ -1213,6 +1237,7 @@ impl MultiPaxosReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         // redo Prepare phase for all in-progress instances
+        let mut chunk_cnt = 0;
         for (slot, inst) in self
             .insts
             .iter_mut()
@@ -1260,6 +1285,20 @@ impl MultiPaxosReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                    chunk_cnt = 0;
+                }
             }
         }
 
@@ -1306,7 +1345,7 @@ impl MultiPaxosReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
-            self.bal_prep_sent,
+            self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -1352,23 +1391,26 @@ impl MultiPaxosReplica {
             self.check_leader(peer, ballot)?;
 
             // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot: self.bal_max_seen,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
+            if self.leader == Some(peer) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Heartbeat {
+                        ballot: self.bal_max_seen,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
+                    },
+                    peer,
+                )?;
+            }
         }
 
-        // ignore outdated heartbeats and those from peers with exec_bar < mine
-        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
+        // ignore outdated heartbeats, reset hearing timer
+        if ballot < self.bal_max_seen {
             return Ok(());
         }
-
-        // reset hearing timer
         self.kickoff_hb_hear_timer()?;
+        if exec_bar < self.exec_bar {
+            return Ok(());
+        }
 
         if peer != self.id {
             // update peer_exec_bar if larger then known; if all servers'
@@ -1952,6 +1994,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -1980,6 +2023,13 @@ impl GenericReplica for MultiPaxosReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.msg_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2148,8 +2198,10 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();

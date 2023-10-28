@@ -424,8 +424,10 @@ impl ExternalApi {
                                     pf_debug!(me; "should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error replying -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error replying -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -439,13 +441,13 @@ impl ExternalApi {
                         Ok(ApiRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = ApiReply::Leave;
-                            if let Err(e) = Self::write_reply(
+                            if let Err(_e) = Self::write_reply(
                                 &mut reply_buf,
                                 &mut reply_buf_cursor,
                                 &conn_write,
                                 Some(&reply),
                             ) {
-                                pf_error!(me; "error replying -> {}: {}", id, e);
+                                // pf_error!(me; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
                                 pf_debug!(me; "client {} has left", id);
                             }
@@ -459,8 +461,10 @@ impl ExternalApi {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!(me; "error reading request <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading request <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -481,8 +485,10 @@ impl ExternalApi {
                         Ok(false) => {
                             pf_debug!(me; "still should retry last reply send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 }

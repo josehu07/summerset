@@ -71,8 +71,8 @@ pub struct ReplicaConfigCrossword {
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
-    /// Maximum chunk size of a ReconstructRead message.
-    pub recon_chunk_size: usize,
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
 
     /// Number of shards to assign to each replica.
     // TODO: think about how to allow unbalanced assignments.
@@ -93,15 +93,15 @@ impl Default for ReplicaConfigCrossword {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.crossword.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.crossword.snap".into(),
             snapshot_interval_s: 0,
-            gossip_timeout_min: 100,
-            gossip_timeout_max: 300,
+            gossip_timeout_min: 10,
+            gossip_timeout_max: 30,
             fault_tolerance: 0,
-            recon_chunk_size: 10,
+            msg_chunk_size: 10,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,
@@ -325,7 +325,7 @@ pub struct CrosswordReplica {
 
     /// Heartbeat reply counters for approximate detection of follower health.
     /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
-    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
+    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u64)>,
 
     /// Approximate health status tracking of peer replicas.
     peer_alive: Bitmap,
@@ -674,10 +674,10 @@ impl CrosswordReplica {
                     }
                     pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                        slot, inst.bal);
+                    chunk_cnt += 1;
 
                     // inject heartbeats in the middle to keep peers happy
-                    chunk_cnt += 1;
-                    if chunk_cnt >= self.config.recon_chunk_size {
+                    if chunk_cnt >= self.config.msg_chunk_size {
                         self.transport_hub.bcast_msg(
                             PeerMsg::Heartbeat {
                                 ballot: self.bal_max_seen,
@@ -1060,6 +1060,7 @@ impl CrosswordReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -1246,6 +1247,7 @@ impl CrosswordReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -1376,6 +1378,8 @@ impl CrosswordReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
+
+        self.kickoff_hb_hear_timer()?;
 
         // locate instance in memory, filling in null instances if needed
         while self.start_slot + self.insts.len() <= slot {
@@ -1661,6 +1665,7 @@ impl CrosswordReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        let mut chunk_cnt = 0;
         let mut recon_slots: HashMap<usize, Vec<u8>> = HashMap::new();
         for (slot, inst) in self
             .insts
@@ -1709,6 +1714,19 @@ impl CrosswordReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -1721,7 +1739,7 @@ impl CrosswordReplica {
                 recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
 
                 // send reconstruction read messages in chunks
-                if recon_slots.len() == self.config.recon_chunk_size {
+                if recon_slots.len() == self.config.msg_chunk_size {
                     self.transport_hub.bcast_msg(
                         PeerMsg::Reconstruct {
                             slots_excl: mem::take(&mut recon_slots),
@@ -1729,7 +1747,7 @@ impl CrosswordReplica {
                         None,
                     )?;
                     pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
-                                       self.config.recon_chunk_size);
+                                       self.config.msg_chunk_size);
 
                     // inject a heartbeat after every chunk to keep peers happy
                     self.transport_hub.bcast_msg(
@@ -1782,7 +1800,7 @@ impl CrosswordReplica {
                 cnts.2 += 1;
                 let repeat_threshold = (self.config.hb_hear_timeout_min
                     / self.config.hb_send_interval_ms)
-                    as u8;
+                    * 3;
                 if cnts.2 > repeat_threshold {
                     // did not receive hb reply from this peer for too many
                     // past hbs sent from me; this peer is probably dead
@@ -1798,7 +1816,7 @@ impl CrosswordReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
-            self.bal_prep_sent,
+            self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -1868,23 +1886,26 @@ impl CrosswordReplica {
             self.check_leader(peer, ballot)?;
 
             // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot: self.bal_max_seen,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
+            if self.leader == Some(peer) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Heartbeat {
+                        ballot: self.bal_max_seen,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
+                    },
+                    peer,
+                )?;
+            }
         }
 
-        // ignore outdated heartbeats and those from peers with exec_bar < mine
-        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
+        // ignore outdated heartbeats, reset hearing timer
+        if ballot < self.bal_max_seen {
             return Ok(());
         }
-
-        // reset hearing timer
         self.kickoff_hb_hear_timer()?;
+        if exec_bar < self.exec_bar {
+            return Ok(());
+        }
 
         if peer != self.id {
             // update peer_exec_bar if larger then known; if all servers'
@@ -2042,8 +2063,7 @@ impl CrosswordReplica {
                     recon_slots.get_mut(&peer).unwrap().insert(slot, exclude);
 
                     // send reconstruction read messages in chunks
-                    if recon_slots[&peer].len() == self.config.recon_chunk_size
-                    {
+                    if recon_slots[&peer].len() == self.config.msg_chunk_size {
                         self.transport_hub.send_msg(
                             PeerMsg::Reconstruct {
                                 slots_excl: mem::take(
@@ -2053,7 +2073,7 @@ impl CrosswordReplica {
                             peer,
                         )?;
                         pf_trace!(self.id; "sent Reconstruct -> {} for {} slots",
-                                           peer, self.config.recon_chunk_size);
+                                           peer, self.config.msg_chunk_size);
                     }
                 }
             }
@@ -2656,7 +2676,7 @@ impl GenericReplica for CrosswordReplica {
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
                                     gossip_timeout_min, gossip_timeout_max,
-                                    fault_tolerance, recon_chunk_size,
+                                    fault_tolerance, msg_chunk_size,
                                     shards_per_replica,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -2688,11 +2708,11 @@ impl GenericReplica for CrosswordReplica {
                 config.hb_send_interval_ms
             );
         }
-        if config.recon_chunk_size == 0 {
+        if config.msg_chunk_size == 0 {
             return logged_err!(
                 id;
-                "invalid config.recon_chunk_size '{}'",
-                config.recon_chunk_size
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2886,8 +2906,10 @@ impl GenericReplica for CrosswordReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();

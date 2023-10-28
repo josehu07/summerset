@@ -140,8 +140,10 @@ impl ControlHub {
                                     pf_debug!(me; "should start retrying ctrl send");
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error sending ctrl: {}", e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error sending ctrl: {}", e);
                                 }
                             }
                         },
@@ -159,8 +161,10 @@ impl ControlHub {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!(me; "error reading ctrl: {}", e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading ctrl: {}", e);
                             break; // probably the manager exitted ungracefully
                         }
                     }
@@ -181,8 +185,10 @@ impl ControlHub {
                         Ok(false) => {
                             pf_debug!(me; "still should retry last ctrl send");
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last ctrl send: {}", e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last ctrl send: {}", e);
                         }
                     }
                 }

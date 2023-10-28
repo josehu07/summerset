@@ -592,13 +592,15 @@ where
                         Some(PeerMessage::Leave) => {
                             // I decide to leave, notify peers
                             let peer_msg = PeerMessage::Leave;
-                            if let Err(e) = Self::write_msg(
+                            if let Err(_e) = Self::write_msg(
                                 &mut write_buf,
                                 &mut write_buf_cursor,
                                 &conn_write,
                                 Some(&peer_msg),
                             ) {
-                                pf_error!(me; "error sending -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!(me; "error sending -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
                                 pf_debug!(me; "sent leave notification -> {}", id);
                             }
@@ -623,8 +625,10 @@ where
                                     pf_debug!(me; "should start retrying msg send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error sending -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -639,13 +643,15 @@ where
                         Ok(PeerMessage::Leave) => {
                             // peer leaving, send dummy reply and break
                             let peer_msg = PeerMessage::LeaveReply;
-                            if let Err(e) = Self::write_msg(
+                            if let Err(_e) = Self::write_msg(
                                 &mut write_buf,
                                 &mut write_buf_cursor,
                                 &conn_write,
                                 Some(&peer_msg),
                             ) {
-                                pf_error!(me; "error sending -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!(me; "error sending -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
                                 pf_debug!(me; "peer {} has left", id);
                             }
@@ -669,8 +675,10 @@ where
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!(me; "error receiving msg <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error receiving msg <- {}: {}", id, e);
                             break; // probably the peer exitted ungracefully
                         }
                     }
@@ -691,8 +699,10 @@ where
                         Ok(false) => {
                             pf_debug!(me; "still should retry last msg send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last msg send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last msg send -> {}: {}", id, e);
                         }
                     }
                 }

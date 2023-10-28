@@ -78,7 +78,7 @@ def set_tcp_buf_sizes():
 
 def set_tc_qdisc_netem(mean, jitter, rate, distribution="pareto"):
     os.system(
-        f"sudo tc qdisc replace dev lo root netem limit 500000 "
+        f"sudo tc qdisc replace dev lo root netem limit 100000000 "
         f"delay {mean}ms {jitter}ms distribution {distribution} "
         f"rate {rate}gibit 10"
     )

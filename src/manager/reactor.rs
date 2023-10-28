@@ -384,8 +384,10 @@ impl ClientReactor {
                                     pf_debug!("m"; "should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!("m"; "error sending -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -399,13 +401,15 @@ impl ClientReactor {
                         Ok(CtrlRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = CtrlReply::Leave;
-                            if let Err(e) = Self::write_reply(
+                            if let Err(_e) = Self::write_reply(
                                 &mut reply_buf,
                                 &mut reply_buf_cursor,
                                 &conn_write,
                                 Some(&reply)
                             ) {
-                                pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
                                 pf_debug!("m"; "client {} has left", id);
                             }
@@ -419,8 +423,10 @@ impl ClientReactor {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!("m"; "error reading req <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error reading req <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -441,8 +447,10 @@ impl ClientReactor {
                         Ok(false) => {
                             pf_debug!("m"; "still should retry last reply send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 }

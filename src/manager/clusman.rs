@@ -133,8 +133,10 @@ impl ClusterManager {
 
                 // receiving server control message
                 ctrl_msg = self.server_reigner.recv_ctrl() => {
-                    if let Err(e) = ctrl_msg {
-                        pf_error!("m"; "error receiving ctrl msg: {}", e);
+                    if let Err(_e) = ctrl_msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!("m"; "error receiving ctrl msg: {}", e);
                         continue;
                     }
                     let (server, msg) = ctrl_msg.unwrap();
@@ -146,8 +148,10 @@ impl ClusterManager {
 
                 // receiving client control request
                 ctrl_req = self.client_reactor.recv_req() => {
-                    if let Err(e) = ctrl_req {
-                        pf_error!("m"; "error receiving ctrl req: {}", e);
+                    if let Err(_e) = ctrl_req {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!("m"; "error receiving ctrl req: {}", e);
                         continue;
                     }
                     let (client, req) = ctrl_req.unwrap();
