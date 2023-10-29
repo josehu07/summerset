@@ -1979,11 +1979,14 @@ impl GenericReplica for MultiPaxosReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
         let population = control_hub.population;
 
@@ -2080,8 +2083,14 @@ impl GenericReplica for MultiPaxosReplica {
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
-        for (peer, addr) in to_peers {
-            transport_hub.connect_to_peer(peer, addr).await?;
+        for (peer, conn_addr) in to_peers {
+            let bind_addr = SocketAddr::new(
+                p2p_bind_base.ip(),
+                p2p_bind_base.port() + peer as u16,
+            );
+            transport_hub
+                .connect_to_peer(peer, bind_addr, conn_addr)
+                .await?;
         }
         transport_hub.wait_for_group(population).await?;
 
@@ -2314,17 +2323,23 @@ pub struct MultiPaxosClient {
 
     /// API stubs for communicating with servers.
     api_stubs: HashMap<ReplicaId, ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for MultiPaxosClient {
     async fn new_and_setup(
+        ctrl_bind: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
         pf_debug!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_bind, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -2339,6 +2354,7 @@ impl GenericEndpoint for MultiPaxosClient {
             server_id: init_server_id,
             ctrl_stub,
             api_stubs: HashMap::new(),
+            api_bind_base,
         })
     }
 
@@ -2375,8 +2391,14 @@ impl GenericEndpoint for MultiPaxosClient {
                     .collect();
                 for (&id, &server) in &self.servers {
                     pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    let bind_addr = SocketAddr::new(
+                        self.api_bind_base.ip(),
+                        self.api_bind_base.port() + id as u16,
+                    );
+                    let api_stub = ClientApiStub::new_by_connect(
+                        self.id, bind_addr, server,
+                    )
+                    .await?;
                     self.api_stubs.insert(id, api_stub);
                 }
                 Ok(())

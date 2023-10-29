@@ -65,7 +65,7 @@ pub struct TransportHub<Msg> {
 
     /// Sender side of the connect channel, used when proactively connecting
     /// to some peer.
-    tx_connect: mpsc::UnboundedSender<(ReplicaId, SocketAddr)>,
+    tx_connect: mpsc::UnboundedSender<(ReplicaId, SocketAddr, SocketAddr)>,
 
     /// Receiver side of the connack channel, used when proactively connecting
     /// to some peer.
@@ -169,9 +169,10 @@ where
     pub async fn connect_to_peer(
         &mut self,
         id: ReplicaId,
+        bind_addr: SocketAddr,
         peer_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        self.tx_connect.send((id, peer_addr))?;
+        self.tx_connect.send((id, bind_addr, peer_addr))?;
         match self.rx_connack.recv().await {
             Some(ack_id) => {
                 if ack_id != id {
@@ -345,10 +346,12 @@ where
         + 'static,
 {
     /// Connects to a peer proactively.
+    #[allow(clippy::too_many_arguments)]
     async fn connect_new_peer(
         me: ReplicaId,
         id: ReplicaId,
-        addr: SocketAddr,
+        bind_addr: SocketAddr,
+        conn_addr: SocketAddr,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         tx_sends: &mut flashmap::WriteHandle<
             ReplicaId,
@@ -360,8 +363,9 @@ where
         >,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        pf_debug!(me; "connecting to peer {} '{}'...", id, addr);
-        let mut stream = tcp_connect_with_retry(addr, 10).await?;
+        pf_debug!(me; "connecting to peer {} '{}'...", id, conn_addr);
+        let mut stream =
+            tcp_connect_with_retry(bind_addr, conn_addr, 10).await?;
         stream.write_u8(me).await?; // send my ID
 
         let mut peer_messenger_handles_guard = peer_messenger_handles.guard();
@@ -374,7 +378,7 @@ where
         tx_sends_guard.insert(id, tx_send);
 
         let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
-            me, id, addr, stream, rx_send, tx_recv, tx_exit,
+            me, id, conn_addr, stream, rx_send, tx_recv, tx_exit,
         ));
         peer_messenger_handles_guard.insert(id, peer_messenger_handle);
 
@@ -460,7 +464,11 @@ where
             ReplicaId,
             JoinHandle<()>,
         >,
-        mut rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
+        mut rx_connect: mpsc::UnboundedReceiver<(
+            ReplicaId,
+            SocketAddr,
+            SocketAddr,
+        )>,
         tx_connack: mpsc::UnboundedSender<ReplicaId>,
     ) {
         pf_debug!(me; "peer_acceptor thread spawned");
@@ -480,11 +488,12 @@ where
                         pf_error!(me; "connect channel closed");
                         break; // channel gets closed and no messages remain
                     }
-                    let (peer, addr) = to_connect.unwrap();
+                    let (peer, bind_addr, conn_addr) = to_connect.unwrap();
                     if let Err(e) = Self::connect_new_peer(
                         me,
                         peer,
-                        addr,
+                        bind_addr,
+                        conn_addr,
                         tx_recv.clone(),
                         &mut tx_sends,
                         &mut peer_messenger_handles,
@@ -741,7 +750,12 @@ mod transport_tests {
             )
             .await?;
             barrier1.wait().await;
-            hub.connect_to_peer(2, "127.0.0.1:53802".parse()?).await?;
+            hub.connect_to_peer(
+                2,
+                "127.0.0.1:30100".parse()?,
+                "127.0.0.1:53802".parse()?,
+            )
+            .await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert_eq!(id, 0);
@@ -787,8 +801,18 @@ mod transport_tests {
             TransportHub::new_and_setup(0, 3, "127.0.0.1:53800".parse()?, None)
                 .await?;
         barrier.wait().await;
-        hub.connect_to_peer(1, "127.0.0.1:53801".parse()?).await?;
-        hub.connect_to_peer(2, "127.0.0.1:53802".parse()?).await?;
+        hub.connect_to_peer(
+            1,
+            "127.0.0.1:30001".parse()?,
+            "127.0.0.1:53801".parse()?,
+        )
+        .await?;
+        hub.connect_to_peer(
+            2,
+            "127.0.0.1:30002".parse()?,
+            "127.0.0.1:53802".parse()?,
+        )
+        .await?;
         // send a message to 1 and 2
         hub.bcast_msg(TestMsg("hello".into()), None)?;
         // recv a message from both 1 and 2
@@ -840,7 +864,12 @@ mod transport_tests {
                 None,
             )
             .await?;
-            hub.connect_to_peer(0, "127.0.0.1:54800".parse()?).await?;
+            hub.connect_to_peer(
+                0,
+                "127.0.0.1:40100".parse()?,
+                "127.0.0.1:54800".parse()?,
+            )
+            .await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
             Ok::<(), SummersetError>(())
@@ -850,7 +879,12 @@ mod transport_tests {
             TransportHub::new_and_setup(0, 3, "127.0.0.1:54800".parse()?, None)
                 .await?;
         barrier.wait().await;
-        hub.connect_to_peer(1, "127.0.0.1:54801".parse()?).await?;
+        hub.connect_to_peer(
+            1,
+            "127.0.0.1:40001".parse()?,
+            "127.0.0.1:54801".parse()?,
+        )
+        .await?;
         assert!(hub.current_peers()?.get(1)?);
         assert!(!hub.current_peers()?.get(2)?);
         // send a message to 1

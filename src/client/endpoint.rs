@@ -18,7 +18,9 @@ pub trait GenericEndpoint {
     /// Creates a new client stub and sets up required functionality modules
     /// according to protocol-specific logic.
     async fn new_and_setup(
-        manager: SocketAddr, // remote address of manager oracle
+        ctrl_bind: SocketAddr, // bind address for the socket connecting to manager
+        api_bind_base: SocketAddr, // base bind address for sockets connecting to servers
+        manager: SocketAddr,       // remote address of manager oracle
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where

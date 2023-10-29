@@ -26,6 +26,9 @@ PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
+SERVER_NETNS = lambda r: f"ns{r}"
+SERVER_DEV = lambda r: f"veths{r}"
+
 BATCH_INTERVAL = 1
 
 NUM_REPLICAS = 5
@@ -35,18 +38,18 @@ VALUE_SIZE = 1024 * 1024
 PUT_RATIO = 100
 
 NETEM_MEAN = 1
-NETEM_JITTER = 1
+NETEM_JITTER = 0
 NETEM_RATE = 1
 
 
-LENGTH_SECS = 45
+LENGTH_SECS = 120
 CLIENT_TIMEOUT_SECS = 2
 
-FAIL1_SECS = 10
-FAIL2_SECS = 25
+FAIL1_SECS = 40
+FAIL2_SECS = 80
 
-PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 44
+PLOT_SECS_BEGIN = 15
+PLOT_SECS_END = 115
 
 
 def launch_cluster(protocol, config=None):
@@ -62,6 +65,7 @@ def launch_cluster(protocol, config=None):
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
+        "--use_veth",
     ]
     if config is not None and len(config) > 0:
         cmd += ["-c", config]
@@ -101,6 +105,9 @@ def run_bench_clients(protocol):
         "-r",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
+        "--use_veth",
+        "--base_idx",
+        str(0),
         "--timeout_ms",
         str(CLIENT_TIMEOUT_SECS * 1000),
         "bench",
@@ -129,6 +136,9 @@ def run_mess_client(protocol, pauses=None, resumes=None):
         "-p",
         protocol,
         "-r",
+        "--use_veth",
+        "--base_idx",
+        str(NUM_CLIENTS),
         "mess",
     ]
     if pauses is not None and len(pauses) > 0:
@@ -161,12 +171,14 @@ def bench_round(protocol):
     # at the first failure point, pause current leader
     time.sleep(FAIL1_SECS)
     print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
+    proc_mess = run_mess_client(protocol, pauses="l")
+    proc_mess.wait()
 
     # at the second failure point, pause current leader
     time.sleep(FAIL2_SECS - FAIL1_SECS)
     print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
+    proc_mess = run_mess_client(protocol, pauses="l")
+    proc_mess.wait()
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -205,17 +217,27 @@ def print_results(results):
     for protocol, result in results.items():
         print(protocol)
         for i, t in enumerate(result["time"]):
-            print(f"{t:>4.1f}: {result['tput_sum'][i]:>6.2f}", end="  ")
-            if (i + 1) % 8 == 0:
+            print(f" [{t:>5.1f}] {result['tput_sum'][i]:>6.2f} ", end="")
+            if (i + 1) % 6 == 0:
                 print()
-        if len(result["time"]) % 8 != 0:
+        if len(result["time"]) % 6 != 0:
             print()
 
 
 def plot_results(results):
     for protocol, result in results.items():
         xs = result["time"]
-        ys = utils.list_smoothing(result["tput_sum"], 5, 25)
+        sd, sp, sj = 8, 0, 0
+        if protocol == "Raft" or protocol == "CRaft":
+            # due to an implementation choice, Raft clients see a spike of
+            # "ghost" replies after leader has failed; removing it here
+            sp = 50
+        elif protocol == "Crossword":
+            # due to limited sampling granularity, Crossword gossiping makes
+            # throughput results look a bit more "jittering" than it actually
+            # is; smoothing a bit more here
+            sd, sj = 12, 50
+        ys = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
         plt.plot(xs, ys, label=protocol)
 
     plt.legend()
@@ -242,14 +264,27 @@ if __name__ == "__main__":
     if not args.plot:
         utils.do_cargo_build(release=True)
 
-        utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
+        print("Setting tc netem qdiscs...")
+        for replica in range(NUM_REPLICAS):
+            utils.set_tc_qdisc_netem(
+                SERVER_NETNS(replica),
+                SERVER_DEV(replica),
+                NETEM_MEAN,
+                NETEM_JITTER,
+                NETEM_RATE,
+            )
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
             bench_round(protocol)
 
+        print("Clearing tc netem qdiscs...")
         utils.kill_all_local_procs()
-        utils.clear_tc_qdisc_netem()
+        for replica in range(NUM_REPLICAS):
+            utils.clear_tc_qdisc_netem(
+                SERVER_NETNS(replica),
+                SERVER_DEV(replica),
+            )
 
     else:
         results = collect_outputs()

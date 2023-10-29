@@ -9,11 +9,16 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
 
 
-MANAGER_SRV_PORT = 52600
-MANAGER_CLI_PORT = 52601
-
+SERVER_LOOP_IP = "127.0.0.1"
+SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
 SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
+SERVER_BIND_BASE_PORT = lambda r: 50000 + r * 100
+
+MANAGER_LOOP_IP = "127.0.0.1"
+MANAGER_VETH_IP = "10.0.0.0"
+MANAGER_SRV_PORT = 52600
+MANAGER_CLI_PORT = 52601
 
 
 PROTOCOL_BACKER_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.wal"
@@ -36,15 +41,18 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0):
+def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
+    cpu_list = None
     if cores_per_proc > 0:
         # pin servers from CPU 0 up
         num_cpus = multiprocessing.cpu_count()
         core_start = i * cores_per_proc
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
-        cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
-    return utils.run_process(cmd, capture_stderr=capture_stderr)
+        cpu_list = f"{core_start}-{core_end}"
+    return utils.run_process(
+        cmd, capture_stderr=capture_stderr, cpu_list=cpu_list, in_netns=in_netns
+    )
 
 
 def config_with_defaults(
@@ -87,11 +95,13 @@ def config_with_defaults(
     return config_dict_to_str(config_dict)
 
 
-def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
+def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_manager"]
     cmd += [
         "-p",
         protocol,
+        "-b",
+        bind_ip,
         "-s",
         str(srv_port),
         "-c",
@@ -102,9 +112,14 @@ def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release, pin_cores):
+def launch_manager(protocol, num_replicas, release, pin_cores, use_veth):
+    bind_ip = MANAGER_LOOP_IP
+    if use_veth:
+        bind_ip = MANAGER_VETH_IP
+
     cmd = compose_manager_cmd(
         protocol,
+        bind_ip,
         MANAGER_SRV_PORT,
         MANAGER_CLI_PORT,
         num_replicas,
@@ -132,11 +147,15 @@ def wait_manager_setup(proc):
             break
 
 
-def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
+def compose_server_cmd(
+    protocol, bind_base, api_port, p2p_port, manager, config, release
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
         protocol,
+        "-b",
+        bind_base,
         "-a",
         str(api_port),
         "-i",
@@ -150,25 +169,43 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
 
 
 def launch_servers(
-    protocol, num_replicas, release, config, file_prefix, fresh_files, pin_cores
+    protocol,
+    num_replicas,
+    release,
+    config,
+    file_prefix,
+    fresh_files,
+    pin_cores,
+    use_veth,
 ):
     if num_replicas not in (3, 5, 7, 9):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
     server_procs = []
     for replica in range(num_replicas):
+        bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(replica)}"
+        manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_SRV_PORT}"
+        if use_veth:
+            bind_base = f"{SERVER_VETH_IP(replica)}:{SERVER_BIND_BASE_PORT(replica)}"
+            manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_SRV_PORT}"
+
         cmd = compose_server_cmd(
             protocol,
+            bind_base,
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
-            f"127.0.0.1:{MANAGER_SRV_PORT}",
+            manager_addr,
             config_with_defaults(
                 protocol, config, num_replicas, replica, file_prefix, fresh_files
             ),
             release,
         )
         proc = run_process_pinned(
-            replica + 1, cmd, capture_stderr=False, cores_per_proc=pin_cores
+            replica + 1,
+            cmd,
+            capture_stderr=False,
+            cores_per_proc=pin_cores,
+            in_netns=f"ns{replica}" if use_veth else None,
         )
 
         server_procs.append(proc)
@@ -204,12 +241,20 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
+    parser.add_argument(
+        "--use_veth", action="store_true", help="if set, use netns and veth setting"
+    )
     args = parser.parse_args()
 
     # kill all existing server and manager processes
     if args.pin_cores == 0:
         utils.kill_all_matching("summerset_server")
         utils.kill_all_matching("summerset_manager")
+
+    # check that number of replicas does not exceed 9
+    if args.num_replicas > 9:
+        print("ERROR: #replicas > 9 not supported yet (as some ports are hardcoded)")
+        sys.exit(1)
 
     # check that the prefix folder path exists, or create it if not
     if not os.path.isdir(args.file_prefix):
@@ -223,7 +268,7 @@ if __name__ == "__main__":
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(
-        args.protocol, args.num_replicas, args.release, args.pin_cores
+        args.protocol, args.num_replicas, args.release, args.pin_cores, args.use_veth
     )
     wait_manager_setup(manager_proc)
 
@@ -245,6 +290,7 @@ if __name__ == "__main__":
         args.file_prefix,
         not args.keep_files,
         args.pin_cores,
+        args.use_veth,
     )
 
     # register termination signals handler

@@ -520,8 +520,11 @@ mod reactor_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut ctrl_stub =
-            ClientCtrlStub::new_by_connect("127.0.0.1:53601".parse()?).await?;
+        let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+            "127.0.0.1:31710".parse()?,
+            "127.0.0.1:53601".parse()?,
+        )
+        .await?;
         // send request to manager
         ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         // recv reply from manager
@@ -563,9 +566,11 @@ mod reactor_tests {
         tokio::spawn(async move {
             // client-side
             barrier2.wait().await;
-            let mut ctrl_stub =
-                ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
-                    .await?;
+            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                "127.0.0.1:41710".parse()?,
+                "127.0.0.1:54601".parse()?,
+            )
+            .await?;
             // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
             // recv reply from manager
@@ -602,9 +607,11 @@ mod reactor_tests {
             assert_eq!(ctrl_stub.recv_reply().await?, CtrlReply::Leave);
             ctrl_stub.forget();
             time::sleep(Duration::from_millis(100)).await;
-            let mut ctrl_stub =
-                ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
-                    .await?;
+            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                "127.0.0.1:41710".parse()?,
+                "127.0.0.1:54601".parse()?,
+            )
+            .await?;
             // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
             // recv reply from manager

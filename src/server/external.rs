@@ -607,9 +607,12 @@ mod external_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2857, "127.0.0.1:53700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2857,
+            "127.0.0.1:31700".parse()?,
+            "127.0.0.1:53700".parse()?,
+        )
+        .await?;
         // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -733,9 +736,12 @@ mod external_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2857, "127.0.0.1:54700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2857,
+            "127.0.0.1:41700".parse()?,
+            "127.0.0.1:54700".parse()?,
+        )
+        .await?;
         // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -758,9 +764,12 @@ mod external_tests {
         assert_eq!(api_stub.recv_reply().await?, ApiReply::Leave);
         api_stub.forget();
         time::sleep(Duration::from_millis(100)).await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2858, "127.0.0.1:54700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2858,
+            "127.0.0.1:41700".parse()?,
+            "127.0.0.1:54700".parse()?,
+        )
+        .await?;
         // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,

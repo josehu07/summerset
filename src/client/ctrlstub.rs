@@ -2,13 +2,14 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write};
+use crate::utils::{
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
+};
 use crate::manager::{CtrlRequest, CtrlReply};
 use crate::client::ClientId;
 
 use bytes::BytesMut;
 
-use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncReadExt;
 
@@ -36,9 +37,10 @@ pub struct ClientCtrlStub {
 impl ClientCtrlStub {
     /// Creates a new control API stub and connects to the manager.
     pub async fn new_by_connect(
+        bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        let mut stream = TcpStream::connect(manager).await?;
+        let mut stream = tcp_connect_with_retry(bind_addr, manager, 10).await?;
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 
@@ -76,7 +78,7 @@ impl ClientCtrlStub {
 
         // pf_trace!(self.id; "send req {:?}", req);
         if !no_retry {
-            pf_debug!(self.id; "send_req would block; TCP buffer full?");
+            pf_debug!(self.id; "send_req would block; TCP buffer / eth queue full?");
         }
         Ok(no_retry)
     }

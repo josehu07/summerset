@@ -57,28 +57,47 @@ def kill_all_local_procs():
     proc.wait()
 
 
-def run_process(cmd, capture_stdout=False, capture_stderr=False, print_cmd=True):
-    if print_cmd:
-        print("Run:", " ".join(cmd))
+def run_process(
+    cmd,
+    capture_stdout=False,
+    capture_stderr=False,
+    print_cmd=True,
+    cpu_list=None,
+    in_netns=None,
+):
     stdout, stderr = None, None
     if capture_stdout:
         stdout = subprocess.PIPE
     if capture_stderr:
         stderr = subprocess.PIPE
+
+    if cpu_list is not None and "-" in cpu_list:
+        cmd = ["sudo", "taskset", "-c", cpu_list] + cmd
+
+    if in_netns is not None and len(in_netns) > 0:
+        cmd = [s for s in cmd if s != "sudo"]
+        cmd = ["sudo", "ip", "netns", "exec", in_netns] + cmd
+
+    if print_cmd:
+        print("Run:", " ".join(cmd))
+
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc
 
 
-def set_tc_qdisc_netem(mean, jitter, rate, distribution="pareto"):
+def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto"):
+    QLEN_LIMIT = 500000000
+    jitter_args = f"{jitter}ms distribution {distribution}"
+    if jitter == 0:
+        jitter_args = ""
     os.system(
-        f"sudo tc qdisc replace dev lo root netem limit 100000000 "
-        f"delay {mean}ms {jitter}ms distribution {distribution} "
-        f"rate {rate}gibit 10"
+        f"sudo ip netns exec {netns} tc qdisc replace dev {dev} root netem"
+        f" limit {QLEN_LIMIT} delay {mean}ms {jitter_args} rate {rate}gibit"
     )
 
 
-def clear_tc_qdisc_netem():
-    os.system("sudo tc qdisc delete dev lo root")
+def clear_tc_qdisc_netem(netns, dev):
+    os.system(f"sudo ip netns exec {netns} tc qdisc delete dev {dev} root")
 
 
 def gather_outputs(protocol, num_clients, path_prefix, tb, te, tgap):
@@ -133,23 +152,41 @@ def gather_outputs(protocol, num_clients, path_prefix, tb, te, tgap):
     return result
 
 
-def list_smoothing(l, d, p):
+def list_smoothing(l, d, p, j):
     assert d > 0
-    l = l.copy()
 
-    if p > 0:
-        for i in range(p, len(l) - p):
-            lp = any(map(lambda t: 2 * t < l[i], l[i - p : i]))
-            rp = any(map(lambda t: 2 * t < l[i], l[i + 1 : i + p + 1]))
-            if lp and rp:
-                l[i] = min(l[i - p : i + p + 1])
-
-    result = []
+    # sliding window average
+    sl = []
     for i in range(len(l)):
         nums = []
-        for j in range(i - d, i + d + 1):
-            if j >= 0 and j < len(l):
-                nums.append(l[j])
-        result.append(sum(nums) / len(nums))
+        for k in range(i - d, i + d + 1):
+            if k >= 0 and k < len(l):
+                nums.append(l[k])
+        sl.append(sum(nums) / len(nums))
 
-    return result
+    # removing ghost spikes
+    if p > 0:
+        slc = sl.copy()
+        for i in range(p, len(slc) - p):
+            lp = next(filter(lambda t: 1.5 * t < slc[i], slc[i - p : i]), None)
+            rp = next(filter(lambda t: 1.5 * t < slc[i], slc[i + 1 : i + p + 1]), None)
+            if lp is not None and rp is not None:
+                sl[i] = min(slc[i - p : i + p + 1])
+
+    # removing jittering dips
+    if j > 0:
+        slc = sl.copy()
+        for i in range(j, len(slc) - j):
+            lj = next(
+                filter(lambda t: t > slc[i] and t < 1.2 * slc[i], slc[i - j : i]), None
+            )
+            rj = next(
+                filter(
+                    lambda t: t > slc[i] and t < 1.2 * slc[i], slc[i + 1 : i + j + 1]
+                ),
+                None,
+            )
+            if lj is not None and rj is not None:
+                sl[i] = max(lj, rj)
+
+    return sl

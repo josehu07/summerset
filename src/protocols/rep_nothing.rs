@@ -410,11 +410,14 @@ impl GenericReplica for RepNothingReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        _p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
 
         // parse protocol-specific configs
@@ -590,17 +593,23 @@ pub struct RepNothingClient {
 
     /// API stub for communicating with the current server.
     api_stub: Option<ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for RepNothingClient {
     async fn new_and_setup(
+        ctrl_base: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
         pf_debug!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_base, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -612,6 +621,7 @@ impl GenericEndpoint for RepNothingClient {
             config,
             ctrl_stub,
             api_stub: None,
+            api_bind_base,
         })
     }
 
@@ -644,8 +654,13 @@ impl GenericEndpoint for RepNothingClient {
                 pf_debug!(self.id; "connecting to server {} '{}'...",
                                    self.config.server_id,
                                    servers_info[&self.config.server_id].api_addr);
+                let bind_addr = SocketAddr::new(
+                    self.api_bind_base.ip(),
+                    self.api_bind_base.port() + self.config.server_id as u16,
+                );
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
+                    bind_addr,
                     servers_info[&self.config.server_id].api_addr,
                 )
                 .await?;

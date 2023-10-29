@@ -38,9 +38,10 @@ impl ClientApiStub {
     /// Creates a new API connection stub by connecting to the given server.
     pub async fn new_by_connect(
         id: ClientId,
-        addr: SocketAddr,
+        bind_addr: SocketAddr,
+        server: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        let mut stream = tcp_connect_with_retry(addr, 10).await?;
+        let mut stream = tcp_connect_with_retry(bind_addr, server, 10).await?;
         stream.write_u64(id).await?; // send my client ID
         let (read_half, write_half) = stream.into_split();
 
@@ -78,7 +79,7 @@ impl ClientApiStub {
 
         // pf_trace!(self.id; "send req {:?}", req);
         if !no_retry {
-            pf_debug!(self.id; "send_req would block; TCP buffer full?");
+            pf_debug!(self.id; "send_req would block; TCP buffer / eth queue full?");
         }
         Ok(no_retry)
     }
