@@ -48,7 +48,7 @@ CLIENT_TIMEOUT_SECS = 2
 FAIL1_SECS = 40
 FAIL2_SECS = 80
 
-PLOT_SECS_BEGIN = 15
+PLOT_SECS_BEGIN = 20
 PLOT_SECS_END = 115
 
 
@@ -225,9 +225,30 @@ def print_results(results):
 
 
 def plot_results(results):
-    for protocol, result in results.items():
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (6, 3),
+            "font.size": 10,
+        }
+    )
+    fig = plt.figure()
+
+    PROTOCOLS_ORDER = ["Crossword", "MultiPaxos", "Raft", "RSPaxos", "CRaft"]
+    PROTOCOL_LABEL_COLOR_LS_LW = {
+        "Crossword": ("Crossword", "steelblue", "-", 1.8),
+        "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
+        "Raft": ("Raft", "forestgreen", "--", 1.2),
+        "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
+        "CRaft": ("CRaft (async fb)", "darkorange", ":", 1.5),
+    }
+
+    ymax = 0.0
+    for protocol in PROTOCOLS_ORDER:
+        result = results[protocol]
+        label, color, ls, lw = PROTOCOL_LABEL_COLOR_LS_LW[protocol]
+
         xs = result["time"]
-        sd, sp, sj = 8, 0, 0
+        sd, sp, sj = 10, 0, 0
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
             # "ghost" replies after leader has failed; removing it here
@@ -236,11 +257,76 @@ def plot_results(results):
             # due to limited sampling granularity, Crossword gossiping makes
             # throughput results look a bit more "jittering" than it actually
             # is; smoothing a bit more here
-            sd, sj = 12, 50
+            sd, sj = 20, 50
         ys = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
-        plt.plot(xs, ys, label=protocol)
+        if max(ys) > ymax:
+            ymax = max(ys)
 
-    plt.legend()
+        plt.plot(xs, ys, label=label, color=color, linestyle=ls, linewidth=lw)
+
+    plt.arrow(
+        FAIL1_SECS - PLOT_SECS_BEGIN,
+        ymax + 8,
+        0,
+        -5,
+        color="darkred",
+        width=0.2,
+        length_includes_head=True,
+        head_width=1.0,
+        overhang=0.5,
+        clip_on=False,
+    )
+    plt.annotate(
+        "Leader fails",
+        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 10),
+        xytext=(-18, 0),
+        ha="center",
+        textcoords="offset points",
+        color="darkred",
+        annotation_clip=False,
+    )
+
+    plt.arrow(
+        FAIL2_SECS - PLOT_SECS_BEGIN,
+        ymax + 8,
+        0,
+        -5,
+        color="darkred",
+        width=0.2,
+        length_includes_head=True,
+        head_width=1.0,
+        overhang=0.5,
+        clip_on=False,
+    )
+    plt.annotate(
+        "New leader fails",
+        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 10),
+        xytext=(-28, 0),
+        ha="center",
+        textcoords="offset points",
+        color="darkred",
+        annotation_clip=False,
+    )
+
+    ax = fig.axes[0]
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ax.plot(1, -1, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
+
+    plt.ylim(bottom=-1, top=ymax * 1.15)
+
+    plt.xlabel("Time (s)")
+    plt.ylabel("Throughput (reqs/s)")
+
+    lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.15))
+    for rec in lgd.get_texts():
+        if "Crossword" in rec.get_text():
+            rec.set_fontweight("bold")
+        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+            rec.set_fontstyle("italic")
+
+    plt.tight_layout()
 
     plt.savefig(
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}/{EXPER_NAME}.png", dpi=300

@@ -103,7 +103,7 @@ impl Default for ReplicaConfigCrossword {
             snapshot_interval_s: 0,
             gossip_timeout_min: 10,
             gossip_timeout_max: 30,
-            gossip_tail_ignores: 80,
+            gossip_tail_ignores: 100,
             fault_tolerance: 0,
             msg_chunk_size: 10,
             shards_per_replica: 1,

@@ -47,7 +47,7 @@ def plot_cstr_bound(idx, cluster_size):
         marker="X",
         s=110,
         color="lightcoral",
-        label="RS-Paxos/CRaft",
+        label="RSPaxos/CRaft",
         zorder=10,
     )
 

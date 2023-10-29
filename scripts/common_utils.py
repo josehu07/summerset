@@ -168,8 +168,8 @@ def list_smoothing(l, d, p, j):
     if p > 0:
         slc = sl.copy()
         for i in range(p, len(slc) - p):
-            lp = next(filter(lambda t: 1.5 * t < slc[i], slc[i - p : i]), None)
-            rp = next(filter(lambda t: 1.5 * t < slc[i], slc[i + 1 : i + p + 1]), None)
+            lp = next(filter(lambda t: 2 * t < slc[i], slc[i - p : i]), None)
+            rp = next(filter(lambda t: 2 * t < slc[i], slc[i + 1 : i + p + 1]), None)
             if lp is not None and rp is not None:
                 sl[i] = min(slc[i - p : i + p + 1])
 
@@ -178,15 +178,21 @@ def list_smoothing(l, d, p, j):
         slc = sl.copy()
         for i in range(j, len(slc) - j):
             lj = next(
-                filter(lambda t: t > slc[i] and t < 1.2 * slc[i], slc[i - j : i]), None
+                filter(lambda t: t > slc[i] and t < 2 * slc[i], slc[i - j : i]), None
             )
             rj = next(
-                filter(
-                    lambda t: t > slc[i] and t < 1.2 * slc[i], slc[i + 1 : i + j + 1]
-                ),
+                filter(lambda t: t > slc[i] and t < 2 * slc[i], slc[i + 1 : i + j + 1]),
                 None,
             )
             if lj is not None and rj is not None:
                 sl[i] = max(lj, rj)
+
+    slc = sl.copy()
+    for i in range(len(slc)):
+        nums = []
+        for k in range(i - d // 2, i + d // 2 + 1):
+            if k >= 0 and k < len(slc):
+                nums.append(slc[k])
+        sl[i] = sum(nums) / len(nums)
 
     return sl

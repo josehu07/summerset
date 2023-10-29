@@ -428,9 +428,9 @@ class RSPaxos(Protocol):
     @classmethod
     def name_str(cls, cluster_size, same_liveness, comp_delay=0):
         if same_liveness:
-            return f"RS-Paxos/CRaft (f-forced)"
+            return f"RSPaxos/CRaft (f-forced)"
         else:
-            return f"RS-Paxos/CRaft (original)"
+            return f"RSPaxos/CRaft (original)"
 
     class Instance:
         def __init__(self):
@@ -903,13 +903,13 @@ def protocol_style(protocol, cluster_size):
     f = cluster_size - m
     if "MultiPaxos" in protocol:
         return ("-", "dimgray", "s", f"MultiPaxos/Raft\nf={f}  |Q|={m}  l={m}")
-    elif "RS-Paxos" in protocol:
+    elif "RSPaxos" in protocol:
         if "forced" in protocol:
             return (
                 "-",
                 "red",
                 "x",
-                f"RS-Paxos/CRaft (f-forced)\nf={f}  |Q|={cluster_size}  l=1",
+                f"RSPaxos/CRaft (f-forced)\nf={f}  |Q|={cluster_size}  l=1",
             )
         else:
             q = math.ceil((cluster_size + m) // 2)
@@ -918,7 +918,7 @@ def protocol_style(protocol, cluster_size):
                 ":",
                 "orange",
                 "x",
-                f"RS-Paxos/CRaft (original)\nf={lower_f}  |Q|={q}  l=1",
+                f"RSPaxos/CRaft (original)\nf={lower_f}  |Q|={q}  l=1",
             )
     elif "Crossword" in protocol:
         return ("-", "steelblue", "o", f"Crossword\nf={f}  |Q|,l=adaptive")
