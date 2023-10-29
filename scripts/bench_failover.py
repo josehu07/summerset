@@ -242,7 +242,6 @@ if __name__ == "__main__":
     if not args.plot:
         utils.do_cargo_build(release=True)
 
-        utils.set_tcp_buf_sizes()
         utils.set_tc_qdisc_netem(NETEM_MEAN, NETEM_JITTER, NETEM_RATE)
 
         print("Running experiments...")
