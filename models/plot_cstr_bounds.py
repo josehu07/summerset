@@ -202,7 +202,7 @@ def make_legend(fig, handles, labels):
         )
 
     order = []
-    for s in ("Classic", "RS-", "Crossword", "Region", "Tradeoff"):
+    for s in ("Classic", "RSPaxos", "Crossword", "Region", "Tradeoff"):
         for i, l in enumerate(labels):
             if s in l:
                 order.append(i)

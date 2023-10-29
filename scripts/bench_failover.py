@@ -321,10 +321,10 @@ def plot_results(results):
 
     lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.15))
     for rec in lgd.get_texts():
-        if "Crossword" in rec.get_text():
-            rec.set_fontweight("bold")
         if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
             rec.set_fontstyle("italic")
+        # if "Crossword" in rec.get_text():
+        #     rec.set_fontweight("bold")
 
     plt.tight_layout()
 
