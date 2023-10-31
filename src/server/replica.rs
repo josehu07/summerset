@@ -18,9 +18,11 @@ pub trait GenericReplica {
     /// Creates a new replica module and sets up required functionality modules
     /// according to protocol-specific logic.
     async fn new_and_setup(
-        api_addr: SocketAddr,
-        p2p_addr: SocketAddr,
-        manager: SocketAddr, // remote address of manager oracle
+        api_addr: SocketAddr, // address exposed for clients to connect to me
+        p2p_addr: SocketAddr, // address exposed for peers to connect to me proactively
+        ctrl_bind: SocketAddr, // bind address for the socket connecting to manager
+        p2p_bind_base: SocketAddr, // base bind address for sockets connecting to peers proactively
+        manager: SocketAddr,       // remote address of manager oracle
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError>
     where

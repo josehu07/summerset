@@ -42,11 +42,12 @@ impl ControlHub {
     /// and a recv channel for buffering incoming control messages. Returns the
     /// assigned server ID on success.
     pub async fn new_and_setup(
+        bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
-        pf_info!("s"; "connecting to manager '{}'...", manager);
-        let mut stream = tcp_connect_with_retry(manager, 10).await?;
+        pf_debug!("s"; "connecting to manager '{}'...", manager);
+        let mut stream = tcp_connect_with_retry(bind_addr, manager, 10).await?;
         let id = stream.read_u8().await?; // first receive assigned server ID
         let population = stream.read_u8().await?; // then receive population
         pf_debug!(id; "assigned server ID: {} of {}", id, population);
@@ -140,8 +141,10 @@ impl ControlHub {
                                     pf_debug!(me; "should start retrying ctrl send");
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error sending ctrl: {}", e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error sending ctrl: {}", e);
                                 }
                             }
                         },
@@ -159,8 +162,10 @@ impl ControlHub {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!(me; "error reading ctrl: {}", e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading ctrl: {}", e);
                             break; // probably the manager exitted ungracefully
                         }
                     }
@@ -181,8 +186,10 @@ impl ControlHub {
                         Ok(false) => {
                             pf_debug!(me; "still should retry last ctrl send");
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last ctrl send: {}", e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last ctrl send: {}", e);
                         }
                     }
                 }

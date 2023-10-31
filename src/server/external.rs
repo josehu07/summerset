@@ -203,6 +203,21 @@ impl ExternalApi {
             }
         }
     }
+
+    /// Broadcasts a reply to all connected clients (mostly used for testing).
+    #[allow(dead_code)]
+    pub fn bcast_reply(
+        &mut self,
+        reply: ApiReply,
+    ) -> Result<(), SummersetError> {
+        let tx_replies_guard = self.tx_replies.guard();
+        for tx_reply in tx_replies_guard.values() {
+            tx_reply
+                .send(reply.clone())
+                .map_err(|e| SummersetError(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 // ExternalApi client_acceptor thread implementation
@@ -241,7 +256,7 @@ impl ExternalApi {
                 return logged_err!(me; "duplicate client ID listened: {}", id);
             }
         }
-        pf_info!(me; "accepted new client {}", id);
+        pf_debug!(me; "accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
@@ -409,8 +424,10 @@ impl ExternalApi {
                                     pf_debug!(me; "should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error replying -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error replying -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -424,15 +441,15 @@ impl ExternalApi {
                         Ok(ApiRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = ApiReply::Leave;
-                            if let Err(e) = Self::write_reply(
+                            if let Err(_e) = Self::write_reply(
                                 &mut reply_buf,
                                 &mut reply_buf_cursor,
                                 &conn_write,
                                 Some(&reply),
                             ) {
-                                pf_error!(me; "error replying -> {}: {}", id, e);
+                                // pf_error!(me; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!(me; "client {} has left", id);
+                                pf_debug!(me; "client {} has left", id);
                             }
                             break;
                         },
@@ -444,8 +461,10 @@ impl ExternalApi {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!(me; "error reading request <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading request <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -466,8 +485,10 @@ impl ExternalApi {
                         Ok(false) => {
                             pf_debug!(me; "still should retry last reply send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 }
@@ -586,9 +607,12 @@ mod external_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2857, "127.0.0.1:53700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2857,
+            "127.0.0.1:31700".parse()?,
+            "127.0.0.1:53700".parse()?,
+        )
+        .await?;
         // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -712,9 +736,12 @@ mod external_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2857, "127.0.0.1:54700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2857,
+            "127.0.0.1:41700".parse()?,
+            "127.0.0.1:54700".parse()?,
+        )
+        .await?;
         // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -737,9 +764,12 @@ mod external_tests {
         assert_eq!(api_stub.recv_reply().await?, ApiReply::Leave);
         api_stub.forget();
         time::sleep(Duration::from_millis(100)).await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2858, "127.0.0.1:54700".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(
+            2858,
+            "127.0.0.1:41700".parse()?,
+            "127.0.0.1:54700".parse()?,
+        )
+        .await?;
         // send request to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,

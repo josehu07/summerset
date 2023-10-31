@@ -54,8 +54,11 @@ def wait_cluster_setup(proc, num_replicas):
     for line in iter(proc.stderr.readline, b""):
         l = line.decode()
         print(l, end="", file=sys.stderr)
-        if "manager" not in l and "accepting clients" in l:
-            replica = int(l[l.find("(") + 1 : l.find(")")])
+        if "accepting clients" in l:
+            replica = l[l.find("(") + 1 : l.find(")")]
+            if replica == "m":
+                continue
+            replica = int(replica)
             assert not accepting_clients[replica]
             accepting_clients[replica] = True
 

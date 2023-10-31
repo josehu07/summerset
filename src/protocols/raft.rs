@@ -61,6 +61,9 @@ pub struct ReplicaConfigRaft {
     /// snapshotting autonomously.
     pub snapshot_interval_s: u64,
 
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -76,11 +79,12 @@ impl Default for ReplicaConfigRaft {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.raft.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.raft.snap".into(),
             snapshot_interval_s: 0,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -366,6 +370,10 @@ impl RaftReplica {
             self.voted_for = None;
             self.votes_granted.clear();
 
+            // refresh heartbeat hearing timer
+            self.leader = Some(peer);
+            self.heard_heartbeat(peer, term)?;
+
             // also make the two critical fields durable, synchronously
             self.storage_hub.submit_action(
                 0,
@@ -384,6 +392,7 @@ impl RaftReplica {
                 if action_id != 0 {
                     // normal log action previously in queue; process it
                     self.handle_log_result(action_id, log_result)?;
+                    self.heard_heartbeat(peer, term)?;
                 } else {
                     if let LogResult::Write {
                         offset_ok: true, ..
@@ -396,12 +405,11 @@ impl RaftReplica {
                 }
             }
 
-            // refresh heartbeat hearing timer
-            self.heard_heartbeat(peer, term)?;
-
             if self.role != Role::Follower {
                 self.role = Role::Follower;
-                pf_trace!(self.id; "converted back to follower");
+                self.control_hub
+                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                pf_info!(self.id; "converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -486,7 +494,7 @@ impl RaftReplica {
         }
         pf_trace!(self.id; "finished leader append logging for slot {} <= {}",
                            slot, slot_e);
-        assert_eq!(slot, slot_e);
+        debug_assert_eq!(slot, slot_e);
 
         // broadcast AppendEntries messages to followers
         for peer in 0..self.population {
@@ -501,8 +509,7 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(slot + 1 - self.start_slot)
@@ -515,19 +522,32 @@ impl RaftReplica {
                 .collect();
 
             if slot >= self.try_next_slot[&peer] {
-                self.transport_hub.send_msg(
-                    PeerMsg::AppendEntries {
-                        term: self.curr_term,
-                        prev_slot,
-                        prev_term,
-                        entries,
-                        leader_commit: self.last_commit,
-                        last_snap: self.last_snap,
-                    },
-                    peer,
-                )?;
-                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, self.try_next_slot[&peer], slot);
+                // NOTE: here breaking long AppendEntries into chunks to keep
+                // peers heartbeated
+                let mut now_prev_slot = prev_slot;
+                while !entries.is_empty() {
+                    let end =
+                        cmp::min(entries.len(), self.config.msg_chunk_size);
+                    let chunk = entries.drain(0..end).collect();
+
+                    let now_prev_term =
+                        self.log[now_prev_slot - self.start_slot].term;
+                    self.transport_hub.send_msg(
+                        PeerMsg::AppendEntries {
+                            term: self.curr_term,
+                            prev_slot: now_prev_slot,
+                            prev_term: now_prev_term,
+                            entries: chunk,
+                            leader_commit: self.last_commit,
+                            last_snap: self.last_snap,
+                        },
+                        peer,
+                    )?;
+                    pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                       peer, now_prev_slot + 1, now_prev_slot + end);
+
+                    now_prev_slot += end;
+                }
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
@@ -627,7 +647,15 @@ impl RaftReplica {
                                leader, prev_slot + 1, prev_slot + entries.len(), term);
         }
         if self.check_term(leader, term).await? || self.role != Role::Follower {
-            return Ok(());
+            if term == self.curr_term && self.role == Role::Candidate {
+                // a little hack to promptly obey the elected leader if I
+                // started an election with the same term number at roughly
+                // the same time
+                self.curr_term -= 1;
+                self.check_term(leader, term).await?;
+            } else {
+                return Ok(());
+            }
         }
 
         // reply false if term smaller than mine, or if my log does not
@@ -705,13 +733,14 @@ impl RaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(leader, term)?;
                     } else {
                         if let LogResult::Truncate {
                             offset_ok: true,
                             now_size,
                         } = log_result
                         {
-                            assert_eq!(now_size, cut_offset);
+                            debug_assert_eq!(now_size, cut_offset);
                             self.log_offset = cut_offset;
                         } else {
                             return logged_err!(
@@ -915,8 +944,7 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
             }
-            let prev_term = self.log[prev_slot - self.start_slot].term;
-            let entries = self
+            let mut entries: Vec<LogEntry> = self
                 .log
                 .iter()
                 .take(end_slot + 1 - self.start_slot)
@@ -928,19 +956,31 @@ impl RaftReplica {
                 })
                 .collect();
 
-            self.transport_hub.send_msg(
-                PeerMsg::AppendEntries {
-                    term: self.curr_term,
-                    prev_slot,
-                    prev_term,
-                    entries,
-                    leader_commit: self.last_commit,
-                    last_snap: self.last_snap,
-                },
-                peer,
-            )?;
-            pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                               peer, self.next_slot[&peer], end_slot);
+            // NOTE: here breaking long AppendEntries into chunks to keep
+            // peers heartbeated
+            let mut now_prev_slot = prev_slot;
+            while !entries.is_empty() {
+                let end = cmp::min(entries.len(), self.config.msg_chunk_size);
+                let chunk = entries.drain(0..end).collect();
+
+                let now_prev_term =
+                    self.log[now_prev_slot - self.start_slot].term;
+                self.transport_hub.send_msg(
+                    PeerMsg::AppendEntries {
+                        term: self.curr_term,
+                        prev_slot: now_prev_slot,
+                        prev_term: now_prev_term,
+                        entries: chunk,
+                        leader_commit: self.last_commit,
+                        last_snap: self.last_snap,
+                    },
+                    peer,
+                )?;
+                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
+                                   peer, now_prev_slot + 1, now_prev_slot + end);
+
+                now_prev_slot += end;
+            }
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
@@ -1017,6 +1057,7 @@ impl RaftReplica {
                     if action_id != 0 {
                         // normal log action previously in queue; process it
                         self.handle_log_result(action_id, log_result)?;
+                        self.heard_heartbeat(candidate, term)?;
                     } else {
                         if let LogResult::Write {
                             offset_ok: true, ..
@@ -1209,6 +1250,7 @@ impl RaftReplica {
             if action_id != 0 {
                 // normal log action previously in queue; process it
                 self.handle_log_result(action_id, log_result)?;
+                self.heard_heartbeat(self.id, self.curr_term)?;
             } else {
                 if let LogResult::Write {
                     offset_ok: true, ..
@@ -1228,6 +1270,8 @@ impl RaftReplica {
     fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
+        self.control_hub
+            .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         for cnts in self.hb_reply_cnts.values_mut() {
@@ -1244,6 +1288,15 @@ impl RaftReplica {
         }
         for slot in self.match_slot.values_mut() {
             *slot = 0;
+        }
+
+        // mark some possibly unreplied entries as external
+        for slot in self
+            .log
+            .iter_mut()
+            .skip(self.last_commit + 1 - self.start_slot)
+        {
+            slot.external = true;
         }
 
         Ok(())
@@ -1455,7 +1508,7 @@ impl RaftReplica {
 impl RaftReplica {
     /// Recover state from durable storage log.
     async fn recover_from_log(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.log_offset, 0);
+        debug_assert_eq!(self.log_offset, 0);
 
         // first, try to read the first several bytes, which should record
         // necessary durable metadata
@@ -1668,7 +1721,7 @@ impl RaftReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(
+                        debug_assert_eq!(
                             self.log_offset - cut_offset + self.log_meta_end,
                             now_size
                         );
@@ -1768,7 +1821,7 @@ impl RaftReplica {
 
     /// Recover initial state from durable storage snapshot file.
     async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.snap_offset, 0);
+        debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
@@ -1875,11 +1928,14 @@ impl GenericReplica for RaftReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
         let population = control_hub.population;
 
@@ -1890,6 +1946,7 @@ impl GenericReplica for RaftReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -1918,6 +1975,13 @@ impl GenericReplica for RaftReplica {
                 id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.msg_chunk_size == 0 {
+            return logged_err!(
+                id;
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -1968,8 +2032,14 @@ impl GenericReplica for RaftReplica {
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
-        for (peer, addr) in to_peers {
-            transport_hub.connect_to_peer(peer, addr).await?;
+        for (peer, conn_addr) in to_peers {
+            let bind_addr = SocketAddr::new(
+                p2p_bind_base.ip(),
+                p2p_bind_base.port() + peer as u16,
+            );
+            transport_hub
+                .connect_to_peer(peer, bind_addr, conn_addr)
+                .await?;
         }
         transport_hub.wait_for_group(population).await?;
 
@@ -2094,8 +2164,10 @@ impl GenericReplica for RaftReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
@@ -2209,17 +2281,23 @@ pub struct RaftClient {
 
     /// API stubs for communicating with servers.
     api_stubs: HashMap<ReplicaId, ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for RaftClient {
     async fn new_and_setup(
+        ctrl_bind: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_bind, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -2234,6 +2312,7 @@ impl GenericEndpoint for RaftClient {
             server_id: init_server_id,
             ctrl_stub,
             api_stubs: HashMap::new(),
+            api_bind_base,
         })
     }
 
@@ -2254,22 +2333,30 @@ impl GenericEndpoint for RaftClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // shift to a new server_id if current one not active
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
-                self.servers = servers
+                self.servers = servers_info
                     .into_iter()
-                    .map(|(id, info)| (id, info.0))
+                    .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
+                    let bind_addr = SocketAddr::new(
+                        self.api_bind_base.ip(),
+                        self.api_bind_base.port() + id as u16,
+                    );
+                    let api_stub = ClientApiStub::new_by_connect(
+                        self.id, bind_addr, server,
+                    )
+                    .await?;
                     self.api_stubs.insert(id, api_stub);
                 }
                 Ok(())
@@ -2289,7 +2376,7 @@ impl GenericEndpoint for RaftClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -2302,7 +2389,7 @@ impl GenericEndpoint for RaftClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

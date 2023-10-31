@@ -68,11 +68,14 @@ pub struct ReplicaConfigCrossword {
     /// Max timeout of follower gossiping trigger in millisecs.
     pub gossip_timeout_max: u64,
 
+    /// How many slots at the end should we ignore when gossiping is triggered.
+    pub gossip_tail_ignores: usize,
+
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
-    /// Maximum chunk size of a ReconstructRead message.
-    pub recon_chunk_size: usize,
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
 
     /// Number of shards to assign to each replica.
     // TODO: think about how to allow unbalanced assignments.
@@ -93,15 +96,16 @@ impl Default for ReplicaConfigCrossword {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.crossword.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.crossword.snap".into(),
             snapshot_interval_s: 0,
-            gossip_timeout_min: 100,
-            gossip_timeout_max: 300,
+            gossip_timeout_min: 10,
+            gossip_timeout_max: 30,
+            gossip_tail_ignores: 100,
             fault_tolerance: 0,
-            recon_chunk_size: 100,
+            msg_chunk_size: 10,
             shards_per_replica: 1,
             perf_storage_a: 0,
             perf_storage_b: 0,
@@ -148,9 +152,6 @@ struct LeaderBookkeeping {
 struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
-
-    /// Have I tried gossiping for this instance at least once?
-    gossip_tried: bool,
 }
 
 /// In-memory instance containing a (possibly partial) commands batch.
@@ -252,8 +253,8 @@ enum PeerMsg {
 
     /// Reconstruction read from new leader to replicas.
     Reconstruct {
-        /// Map from slot -> shards to exclude.
-        slots_excl: HashMap<usize, Vec<u8>>,
+        /// List of slots and correspondingly the shards to exclude.
+        slots_excl: Vec<(usize, Vec<u8>)>,
     },
 
     /// Reconstruction read reply from replica to leader.
@@ -325,7 +326,7 @@ pub struct CrosswordReplica {
 
     /// Heartbeat reply counters for approximate detection of follower health.
     /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
-    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
+    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u64)>,
 
     /// Approximate health status tracking of peer replicas.
     peer_alive: Bitmap,
@@ -417,7 +418,7 @@ impl CrosswordReplica {
 
     /// Locate the first null slot or append a null instance if no holes exist.
     fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+        for s in self.exec_bar..(self.start_slot + self.insts.len()) {
             if self.insts[s - self.start_slot].status == Status::Null {
                 return Ok(s);
             }
@@ -479,6 +480,33 @@ impl CrosswordReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// If a larger ballot number is seen, consider that peer as new leader.
+    fn check_leader(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        if ballot > self.bal_max_seen {
+            self.bal_max_seen = ballot;
+
+            // clear my leader status if I was one
+            if self.is_leader() {
+                self.control_hub
+                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                pf_info!(self.id; "no longer a leader...");
+            }
+
+            // reset heartbeat timeout timer to prevent me from trying to
+            // compete with a new leader when it is doing reconstruction
+            self.kickoff_hb_hear_timer()?;
+
+            // set this peer to be the believed leader
+            self.leader = Some(peer);
+        }
+
+        Ok(())
     }
 
     // TODO: think about how to allow unbalanced assignments.
@@ -576,6 +604,7 @@ impl CrosswordReplica {
             // constraint, so falling back to a smaller quorum size is not
             // to guard against "losing data" on a future failure, but just
             // to make the quorum size small enough to be reachable
+            let mut chunk_cnt = 0;
             for (slot, inst) in self
                 .insts
                 .iter_mut()
@@ -646,6 +675,20 @@ impl CrosswordReplica {
                     }
                     pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                        slot, inst.bal);
+                    chunk_cnt += 1;
+
+                    // inject heartbeats in the middle to keep peers happy
+                    if chunk_cnt >= self.config.msg_chunk_size {
+                        self.transport_hub.bcast_msg(
+                            PeerMsg::Heartbeat {
+                                ballot: self.bal_max_seen,
+                                exec_bar: self.exec_bar,
+                                snap_bar: self.snap_bar,
+                            },
+                            None,
+                        )?;
+                        chunk_cnt = 0;
+                    }
                 }
             }
         }
@@ -704,7 +747,7 @@ impl CrosswordReplica {
         let slot = self.first_null_slot()?;
         {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert_eq!(inst.status, Status::Null);
+            debug_assert_eq!(inst.status, Status::Null);
             inst.reqs_cw = reqs_cw;
             inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
@@ -1016,6 +1059,10 @@ impl CrosswordReplica {
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance()?);
@@ -1025,13 +1072,7 @@ impl CrosswordReplica {
 
             inst.bal = ballot;
             inst.status = Status::Preparing;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                gossip_tried: false,
-            });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
+            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // record update to largest prepare ballot
             self.storage_hub.submit_action(
@@ -1076,7 +1117,7 @@ impl CrosswordReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -1202,6 +1243,10 @@ impl CrosswordReplica {
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance()?);
@@ -1212,13 +1257,7 @@ impl CrosswordReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                gossip_tried: false,
-            });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
+            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // record update to largest prepare ballot
             inst.voted = (ballot, inst.reqs_cw.clone());
@@ -1266,7 +1305,7 @@ impl CrosswordReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -1335,6 +1374,8 @@ impl CrosswordReplica {
         }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
 
+        self.kickoff_hb_hear_timer()?;
+
         // locate instance in memory, filling in null instances if needed
         while self.start_slot + self.insts.len() <= slot {
             self.insts.push(self.null_instance()?);
@@ -1369,7 +1410,7 @@ impl CrosswordReplica {
     fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
-        slots_excl: HashMap<usize, Vec<u8>>,
+        slots_excl: Vec<(usize, Vec<u8>)>,
     ) -> Result<(), SummersetError> {
         pf_trace!(self.id; "received Reconstruct <- {} for {} slots",
                            peer, slots_excl.len());
@@ -1619,13 +1660,19 @@ impl CrosswordReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
-        let mut recon_slots: HashMap<usize, Vec<u8>> = HashMap::new();
+        let mut chunk_cnt = 0;
+        let mut recon_slots: Vec<(usize, Vec<u8>)> = vec![];
         for (slot, inst) in self
             .insts
             .iter_mut()
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
+            .skip(self.exec_bar - self.start_slot)
         {
+            if inst.status < Status::Executed {
+                inst.external = true; // so replies to clients can be triggered
+            }
+
             // redo Prepare phase for all in-progress instances
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
@@ -1662,6 +1709,19 @@ impl CrosswordReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -1671,10 +1731,11 @@ impl CrosswordReplica {
             if inst.status == Status::Committed
                 && inst.reqs_cw.avail_shards() < self.majority
             {
-                recon_slots.insert(slot, inst.reqs_cw.avail_shards_vec());
+                recon_slots.push((slot, inst.reqs_cw.avail_shards_vec()));
 
                 // send reconstruction read messages in chunks
-                if recon_slots.len() == self.config.recon_chunk_size {
+                if recon_slots.len() == self.config.msg_chunk_size {
+                    // pf_warn!(self.id; "recons {:?}", recon_slots);
                     self.transport_hub.bcast_msg(
                         PeerMsg::Reconstruct {
                             slots_excl: mem::take(&mut recon_slots),
@@ -1682,13 +1743,24 @@ impl CrosswordReplica {
                         None,
                     )?;
                     pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
-                                       self.config.recon_chunk_size);
+                                       self.config.msg_chunk_size);
+
+                    // inject a heartbeat after every chunk to keep peers happy
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
                 }
             }
         }
 
         // send reconstruction read message for remaining slots
         if !recon_slots.is_empty() {
+            // pf_warn!(self.id; "recons {:?}", recon_slots);
             let num_slots = recon_slots.len();
             self.transport_hub.bcast_msg(
                 PeerMsg::Reconstruct {
@@ -1705,7 +1777,7 @@ impl CrosswordReplica {
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
-                ballot: self.bal_prep_sent,
+                ballot: self.bal_max_seen,
                 exec_bar: self.exec_bar,
                 snap_bar: self.snap_bar,
             },
@@ -1725,7 +1797,7 @@ impl CrosswordReplica {
                 cnts.2 += 1;
                 let repeat_threshold = (self.config.hb_hear_timeout_min
                     / self.config.hb_send_interval_ms)
-                    as u8;
+                    * 3;
                 if cnts.2 > repeat_threshold {
                     // did not receive hb reply from this peer for too many
                     // past hbs sent from me; this peer is probably dead
@@ -1741,7 +1813,7 @@ impl CrosswordReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
-            self.bal_prep_sent,
+            self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -1793,27 +1865,46 @@ impl CrosswordReplica {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
             }
+
+            // FIXME: true adaptiveness
+            let curr_quorum_size =
+                self.majority + self.config.fault_tolerance + 1
+                    - self.shards_per_replica;
+            if self.peer_alive.count() > curr_quorum_size {
+                self.change_assignment_config(
+                    self.shards_per_replica + curr_quorum_size
+                        - self.peer_alive.count(),
+                    false,
+                )?;
+            }
+
+            // if the peer has made a higher ballot number, consider it as
+            // a new leader
+            self.check_leader(peer, ballot)?;
+
+            // reply back with a Heartbeat message
+            if self.leader == Some(peer) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Heartbeat {
+                        ballot: self.bal_max_seen,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
+                    },
+                    peer,
+                )?;
+            }
         }
 
-        // ignore outdated heartbeats and those from peers with exec_bar < mine
-        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
+        // ignore outdated heartbeats, reset hearing timer
+        if ballot < self.bal_max_seen {
+            return Ok(());
+        }
+        self.kickoff_hb_hear_timer()?;
+        if exec_bar < self.exec_bar {
             return Ok(());
         }
 
-        // reset hearing timer
-        self.kickoff_hb_hear_timer()?;
-
         if peer != self.id {
-            // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
-
             // update peer_exec_bar if larger then known; if all servers'
             // exec_bar (including myself) have passed a slot, that slot
             // is definitely safe to be snapshotted
@@ -1830,25 +1921,10 @@ impl CrosswordReplica {
                 }
             }
 
-            // if the peer has made a higher ballot number
-            if ballot > self.bal_max_seen {
-                self.bal_max_seen = ballot;
-
-                // clear my leader status if I was one
-                if self.is_leader() {
-                    self.control_hub
-                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                    pf_info!(self.id; "no longer a leader...");
-                }
-
-                // set this peer to be the believed leader
-                self.leader = Some(peer);
+            // if snap_bar is larger than mine, update snap_bar
+            if snap_bar > self.snap_bar {
+                self.snap_bar = snap_bar;
             }
-        }
-
-        // if snap_bar is larger than mine, update snap_bar
-        if snap_bar > self.snap_bar {
-            self.snap_bar = snap_bar;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
@@ -1861,6 +1937,8 @@ impl CrosswordReplica {
     /// Chooses a random gossip_timeout from the min-max range and kicks off
     /// the gossip_timer.
     fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+        self.gossip_timer.cancel()?;
+
         let timeout_ms = thread_rng().gen_range(
             self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
         );
@@ -1874,6 +1952,7 @@ impl CrosswordReplica {
     // TODO: should let leader incorporate assignment metadata in Accept
     // messages. With more complex assignment policies, a follower probably
     // does not know the assignment.
+    #[allow(clippy::too_many_arguments)]
     fn gossip_targets_excl(
         slot: usize,
         me: ReplicaId,
@@ -1881,59 +1960,50 @@ impl CrosswordReplica {
         majority: u8,
         shards_per_replica: u8,
         mut avail_shards_map: Bitmap,
-        replica_bk: &mut Option<ReplicaBookkeeping>,
+        replica_bk: &Option<ReplicaBookkeeping>,
+        peer_alive: &Bitmap,
     ) -> HashMap<ReplicaId, Vec<u8>> {
         let mut src_peer = me;
-        let mut first_try = false;
-        if let Some(ReplicaBookkeeping {
-            source,
-            gossip_tried,
-        }) = replica_bk
-        {
-            if !*gossip_tried {
-                src_peer = *source;
-                first_try = true;
-                // first try: exclude all parity shards
-                for idx in majority..population {
-                    avail_shards_map.set(idx, true).unwrap();
-                }
-                *gossip_tried = true;
-            }
+        if let Some(ReplicaBookkeeping { source }) = replica_bk {
+            src_peer = *source;
         }
 
         // greedily considers my peers, starting from the one with my ID + 1,
-        // until all data shards covered
+        // until enough number of shards covered
         let mut targets_excl = HashMap::new();
         for p in (me + 1)..(population + me) {
             let peer = p % population;
-            if !first_try {
-                // first try probably did not succeed, so do it conservatively
-                targets_excl.insert(peer, avail_shards_map.to_vec());
-            } else {
+            if peer == src_peer {
                 // skip leader who initially replicated this instance to me
-                if peer == src_peer {
-                    continue;
+                continue;
+            }
+            if !peer_alive.get(peer).unwrap() {
+                // skip peers that I don't think are alive right now
+                continue;
+            }
+
+            // only ask for shards which I don't have right now and I have not
+            // asked others for
+            let mut useful_shards = Vec::new();
+            for idx in Self::shards_for_replica(
+                slot,
+                peer,
+                population,
+                shards_per_replica,
+            ) {
+                if !avail_shards_map.get(idx).unwrap() {
+                    useful_shards.push(idx);
                 }
-                // first try: only ask for a minimum number of data shards
-                let mut useful_shards = Vec::new();
-                for idx in Self::shards_for_replica(
-                    slot,
-                    peer,
-                    population,
-                    shards_per_replica,
-                ) {
-                    if !avail_shards_map.get(idx).unwrap() {
-                        useful_shards.push(idx);
-                    }
+            }
+            if !useful_shards.is_empty() {
+                targets_excl.insert(peer, avail_shards_map.to_vec());
+                for idx in useful_shards {
+                    avail_shards_map.set(idx, true).unwrap();
                 }
-                // if this peer has data shards which I don't have right now
-                // and I have not asked others for in this round
-                if !useful_shards.is_empty() {
-                    targets_excl.insert(peer, avail_shards_map.to_vec());
-                    for idx in useful_shards {
-                        avail_shards_map.set(idx, true).unwrap();
-                    }
-                }
+            }
+
+            if avail_shards_map.count() >= majority {
+                break;
             }
         }
 
@@ -1945,16 +2015,23 @@ impl CrosswordReplica {
     /// follower peers that hold data shards.
     fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
         // maintain a map from peer ID to send to -> slots_excl to send
-        let mut recon_slots: HashMap<ReplicaId, HashMap<usize, Vec<u8>>> =
+        let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Vec<u8>)>> =
             HashMap::with_capacity(self.population as usize - 1);
         for peer in 0..self.population {
             if peer != self.id {
-                recon_slots.insert(peer, HashMap::new());
+                recon_slots.insert(peer, vec![]);
             }
         }
 
         let mut slot_up_to = self.gossip_bar;
-        for slot in self.gossip_bar..self.commit_bar {
+        let until_slot = if self.start_slot + self.insts.len()
+            > self.config.gossip_tail_ignores
+        {
+            self.start_slot + self.insts.len() - self.config.gossip_tail_ignores
+        } else {
+            0
+        };
+        for slot in self.gossip_bar..until_slot {
             slot_up_to = slot;
             {
                 let inst = &self.insts[slot - self.start_slot];
@@ -1977,15 +2054,15 @@ impl CrosswordReplica {
                     self.majority,
                     self.shards_per_replica,
                     avail_shards_map,
-                    &mut self.insts[slot - self.start_slot].replica_bk,
+                    &self.insts[slot - self.start_slot].replica_bk,
+                    &self.peer_alive,
                 );
 
                 for (peer, exclude) in targets_excl {
-                    recon_slots.get_mut(&peer).unwrap().insert(slot, exclude);
+                    recon_slots.get_mut(&peer).unwrap().push((slot, exclude));
 
                     // send reconstruction read messages in chunks
-                    if recon_slots[&peer].len() == self.config.recon_chunk_size
-                    {
+                    if recon_slots[&peer].len() == self.config.msg_chunk_size {
                         self.transport_hub.send_msg(
                             PeerMsg::Reconstruct {
                                 slots_excl: mem::take(
@@ -1995,7 +2072,7 @@ impl CrosswordReplica {
                             peer,
                         )?;
                         pf_trace!(self.id; "sent Reconstruct -> {} for {} slots",
-                                           peer, self.config.recon_chunk_size);
+                                           peer, self.config.msg_chunk_size);
                     }
                 }
             }
@@ -2254,7 +2331,7 @@ impl CrosswordReplica {
 
     /// Recover state from durable storage WAL log.
     async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.wal_offset, 0);
+        debug_assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
@@ -2379,7 +2456,10 @@ impl CrosswordReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.wal_offset - cut_offset, now_size);
+                        debug_assert_eq!(
+                            self.wal_offset - cut_offset,
+                            now_size
+                        );
                         self.wal_offset = now_size;
                     } else {
                         return logged_err!(
@@ -2473,7 +2553,7 @@ impl CrosswordReplica {
 
     /// Recover initial state from durable storage snapshot file.
     async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.snap_offset, 0);
+        debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
@@ -2579,11 +2659,14 @@ impl GenericReplica for CrosswordReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
         let population = control_hub.population;
 
@@ -2595,7 +2678,8 @@ impl GenericReplica for CrosswordReplica {
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
                                     gossip_timeout_min, gossip_timeout_max,
-                                    fault_tolerance, recon_chunk_size,
+                                    gossip_tail_ignores,
+                                    fault_tolerance, msg_chunk_size,
                                     shards_per_replica,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -2627,11 +2711,11 @@ impl GenericReplica for CrosswordReplica {
                 config.hb_send_interval_ms
             );
         }
-        if config.recon_chunk_size == 0 {
+        if config.msg_chunk_size == 0 {
             return logged_err!(
                 id;
-                "invalid config.recon_chunk_size '{}'",
-                config.recon_chunk_size
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2700,8 +2784,14 @@ impl GenericReplica for CrosswordReplica {
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
-        for (peer, addr) in to_peers {
-            transport_hub.connect_to_peer(peer, addr).await?;
+        for (peer, conn_addr) in to_peers {
+            let bind_addr = SocketAddr::new(
+                p2p_bind_base.ip(),
+                p2p_bind_base.port() + peer as u16,
+            );
+            transport_hub
+                .connect_to_peer(peer, bind_addr, conn_addr)
+                .await?;
         }
         transport_hub.wait_for_group(population).await?;
 
@@ -2792,6 +2882,7 @@ impl GenericReplica for CrosswordReplica {
         self.kickoff_hb_hear_timer()?;
 
         // kick off follower gossiping trigger timer
+        // FIXME: proper gossiping
         self.kickoff_gossip_timer()?;
 
         // main event loop
@@ -2825,8 +2916,10 @@ impl GenericReplica for CrosswordReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
@@ -2946,17 +3039,23 @@ pub struct CrosswordClient {
 
     /// API stubs for communicating with servers.
     api_stubs: HashMap<ReplicaId, ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for CrosswordClient {
     async fn new_and_setup(
+        ctrl_bind: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_bind, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -2971,6 +3070,7 @@ impl GenericEndpoint for CrosswordClient {
             server_id: init_server_id,
             ctrl_stub,
             api_stubs: HashMap::new(),
+            api_bind_base,
         })
     }
 
@@ -2991,22 +3091,30 @@ impl GenericEndpoint for CrosswordClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // shift to a new server_id if current one not active
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
-                self.servers = servers
+                self.servers = servers_info
                     .into_iter()
-                    .map(|(id, info)| (id, info.0))
+                    .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
+                    let bind_addr = SocketAddr::new(
+                        self.api_bind_base.ip(),
+                        self.api_bind_base.port() + id as u16,
+                    );
+                    let api_stub = ClientApiStub::new_by_connect(
+                        self.id, bind_addr, server,
+                    )
+                    .await?;
                     self.api_stubs.insert(id, api_stub);
                 }
                 Ok(())
@@ -3026,7 +3134,7 @@ impl GenericEndpoint for CrosswordClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -3039,7 +3147,7 @@ impl GenericEndpoint for CrosswordClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

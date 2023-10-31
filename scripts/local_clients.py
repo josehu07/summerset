@@ -8,6 +8,12 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
 
 
+CLIENT_LOOP_IP = "127.0.0.1"
+CLIENT_VETH_IP = lambda c: f"10.0.2.{c}"
+CLIENT_BIND_BASE_PORT = lambda c: 40000 + c * 100
+
+MANAGER_LOOP_IP = "127.0.0.1"
+MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_CLI_PORT = 52601
 
 
@@ -22,14 +28,15 @@ UTILITY_PARAM_NAMES = {
 
 
 def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
+    cpu_list = None
     if cores_per_proc > 0:
         # pin client cores from last CPU down
         num_cpus = multiprocessing.cpu_count()
         core_end = num_cpus - 1 - i * cores_per_proc
         core_start = core_end - cores_per_proc + 1
         assert core_start >= 0
-        cmd = ["sudo", "taskset", "-c", f"{core_start}-{core_end}"] + cmd
-    return utils.run_process(cmd, capture_stdout=capture_stdout)
+        cpu_list = f"{core_start}-{core_end}"
+    return utils.run_process(cmd, capture_stdout=capture_stdout, cpu_list=cpu_list)
 
 
 def glue_params_str(cli_args, params_list):
@@ -50,13 +57,19 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, manager, config, utility, params, release):
+def compose_client_cmd(
+    protocol, bind_base, manager, config, utility, timeout_ms, params, release
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
         protocol,
+        "-b",
+        bind_base,
         "-m",
         manager,
+        "--timeout-ms",
+        str(timeout_ms),
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
@@ -73,18 +86,37 @@ def compose_client_cmd(protocol, manager, config, utility, params, release):
 
 
 def run_clients(
-    protocol, utility, num_clients, params, release, config, capture_stdout, pin_cores
+    protocol,
+    utility,
+    num_clients,
+    params,
+    release,
+    config,
+    capture_stdout,
+    pin_cores,
+    use_veth,
+    base_idx,
+    timeout_ms,
 ):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
     client_procs = []
     for i in range(num_clients):
+        client = base_idx + i
+        bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(client)}"
+        manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_CLI_PORT}"
+        if use_veth:
+            bind_base = f"{CLIENT_VETH_IP(client)}:{CLIENT_BIND_BASE_PORT(client)}"
+            manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_CLI_PORT}"
+
         cmd = compose_client_cmd(
             protocol,
-            f"127.0.0.1:{MANAGER_CLI_PORT}",
+            bind_base,
+            manager_addr,
             config,
             utility,
+            timeout_ms,
             params,
             release,
         )
@@ -110,6 +142,18 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--use_veth", action="store_true", help="if set, use netns and veth setting"
+    )
+    parser.add_argument(
+        "--base_idx",
+        type=int,
+        default=0,
+        help="idx of the first client for calculating ports",
+    )
+    parser.add_argument(
+        "--timeout_ms", type=int, default=5000, help="client-side request timeout"
     )
 
     subparsers = parser.add_subparsers(
@@ -164,6 +208,11 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # check that number of replicas does not exceed 99
+    if args.utility == "bench" and args.num_clients > 99:
+        print("ERROR: #clients > 99 not supported yet (as some ports are hardcoded)")
+        sys.exit(1)
+
     # check that the prefix folder path exists, or create it if not
     if (
         args.utility == "bench"
@@ -191,6 +240,9 @@ if __name__ == "__main__":
         args.config,
         capture_stdout,
         args.pin_cores,
+        args.use_veth,
+        args.base_idx,
+        args.timeout_ms,
     )
 
     # if running bench client, add proper timeout on wait
@@ -214,7 +266,7 @@ if __name__ == "__main__":
                     fout.write(out.decode())
                 rcs.append(client_proc.returncode)
     except subprocess.TimeoutExpired:
-        print(f"ERROR: some client(s) timed-out {timeout} secs")
+        print(f"ERROR: some client(s) timed-out {timeout} secs", file=sys.stderr)
         sys.exit(1)
 
     if any(map(lambda rc: rc != 0, rcs)):

@@ -37,6 +37,10 @@ struct CliArgs {
     #[arg(short = 'i', long, default_value_t = 52800)]
     p2p_port: u16,
 
+    /// Base address to use in bind addresses.
+    #[arg(short, long)]
+    bind_base: SocketAddr,
+
     /// Cluster manager oracle's server-facing address.
     #[arg(short, long)]
     manager: SocketAddr,
@@ -85,24 +89,30 @@ fn server_main() -> Result<(), SummersetError> {
     let protocol = args.sanitize()?;
 
     // parse key-value API port
-    let api_addr: SocketAddr = format!("127.0.0.1:{}", args.api_port)
-        .parse()
-        .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse api_addr: port {}: {}",
-            args.api_port, e
-        ))
-    })?;
+    let api_addr: SocketAddr =
+        format!("{}:{}", args.bind_base.ip(), args.api_port)
+            .parse()
+            .map_err(|e| {
+                SummersetError(format!(
+                    "failed to parse api_addr: bind_ip {} port {}: {}",
+                    args.bind_base.ip(),
+                    args.api_port,
+                    e
+                ))
+            })?;
 
     // parse internal peer-peer API port
-    let p2p_addr: SocketAddr = format!("127.0.0.1:{}", args.p2p_port)
-        .parse()
-        .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse p2p_addr: port {}: {}",
-            args.p2p_port, e
-        ))
-    })?;
+    let p2p_addr: SocketAddr =
+        format!("{}:{}", args.bind_base.ip(), args.p2p_port)
+            .parse()
+            .map_err(|e| {
+                SummersetError(format!(
+                    "failed to parse p2p_addr: bind_ip {} port {}: {}",
+                    args.bind_base.ip(),
+                    args.p2p_port,
+                    e
+                ))
+            })?;
 
     // parse optional config string if given
     let config_str = if args.config.is_empty() {
@@ -138,10 +148,19 @@ fn server_main() -> Result<(), SummersetError> {
         // enter tokio runtime, setup the server replica, and start the main
         // event loop logic
         runtime.block_on(async move {
+            // NOTE: currently only supports <= 9 servers due to the hardcoded
+            // binding ports
+            let ctrl_bind = SocketAddr::new(
+                args.bind_base.ip(),
+                args.bind_base.port() + 10,
+            );
+            let p2p_bind_base = args.bind_base;
             let mut replica = protocol
                 .new_server_replica_setup(
                     api_addr,
                     p2p_addr,
+                    ctrl_bind,
+                    p2p_bind_base,
                     args.manager,
                     config_str,
                 )
@@ -171,8 +190,8 @@ fn server_main() -> Result<(), SummersetError> {
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
+        .format_timestamp_millis()
+        .format_module_path(false)
         .format_target(false)
         .init();
 
@@ -195,6 +214,7 @@ mod server_args_tests {
             protocol: "RepNothing".into(),
             api_port: 52701,
             p2p_port: 52801,
+            bind_base: "127.0.0.1:50100".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 2,
             config: "".into(),
@@ -209,6 +229,7 @@ mod server_args_tests {
             protocol: "RepNothing".into(),
             api_port: 1023,
             p2p_port: 52800,
+            bind_base: "127.0.0.1:50000".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 2,
             config: "".into(),
@@ -223,6 +244,7 @@ mod server_args_tests {
             protocol: "RepNothing".into(),
             api_port: 52700,
             p2p_port: 1023,
+            bind_base: "127.0.0.1:50000".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 2,
             config: "".into(),
@@ -237,6 +259,7 @@ mod server_args_tests {
             protocol: "RepNothing".into(),
             api_port: 52700,
             p2p_port: 52700,
+            bind_base: "127.0.0.1:50000".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 2,
             config: "".into(),
@@ -251,6 +274,7 @@ mod server_args_tests {
             protocol: "InvalidProtocol".into(),
             api_port: 52700,
             p2p_port: 52800,
+            bind_base: "127.0.0.1:50000".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 2,
             config: "".into(),
@@ -265,6 +289,7 @@ mod server_args_tests {
             protocol: "RepNothing".into(),
             api_port: 52700,
             p2p_port: 52800,
+            bind_base: "127.0.0.1:50000".parse()?,
             manager: "127.0.0.1:52600".parse()?,
             threads: 1,
             config: "".into(),

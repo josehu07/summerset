@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use crate::utils::{
     SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
 };
+use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
 use crate::client::ClientId;
 
@@ -63,7 +64,7 @@ pub enum CtrlReply {
         /// Number of replicas in cluster.
         population: u8,
         /// Map from replica ID -> (addr, is_leader).
-        servers: HashMap<ReplicaId, (SocketAddr, bool)>,
+        servers_info: HashMap<ReplicaId, ServerInfo>,
     },
 
     /// Reply to server reset request.
@@ -213,7 +214,7 @@ impl ClientReactor {
                 return logged_err!("m"; "duplicate client ID listened: {}", id);
             }
         }
-        pf_info!("m"; "accepted new client {}", id);
+        pf_debug!("m"; "accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
@@ -383,8 +384,10 @@ impl ClientReactor {
                                     pf_debug!("m"; "should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!("m"; "error sending -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -398,15 +401,17 @@ impl ClientReactor {
                         Ok(CtrlRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = CtrlReply::Leave;
-                            if let Err(e) = Self::write_reply(
+                            if let Err(_e) = Self::write_reply(
                                 &mut reply_buf,
                                 &mut reply_buf_cursor,
                                 &conn_write,
                                 Some(&reply)
                             ) {
-                                pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!("m"; "client {} has left", id);
+                                pf_debug!("m"; "client {} has left", id);
                             }
                             break;
                         },
@@ -418,8 +423,10 @@ impl ClientReactor {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!("m"; "error reading req <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error reading req <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -440,8 +447,10 @@ impl ClientReactor {
                         Ok(false) => {
                             pf_debug!("m"; "still should retry last reply send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 }
@@ -459,6 +468,7 @@ impl ClientReactor {
 mod reactor_tests {
     use super::*;
     use std::sync::Arc;
+    use crate::manager::ServerInfo;
     use crate::client::ClientCtrlStub;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
@@ -481,9 +491,27 @@ mod reactor_tests {
             reactor.send_reply(
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:53700".parse()?, true)),
-                        (1, ("127.0.0.1:53701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            },
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            },
+                        ),
                     ]),
                 },
                 client,
@@ -492,8 +520,11 @@ mod reactor_tests {
         });
         // client-side
         barrier.wait().await;
-        let mut ctrl_stub =
-            ClientCtrlStub::new_by_connect("127.0.0.1:53601".parse()?).await?;
+        let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+            "127.0.0.1:31710".parse()?,
+            "127.0.0.1:53601".parse()?,
+        )
+        .await?;
         // send request to manager
         ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         // recv reply from manager
@@ -501,9 +532,27 @@ mod reactor_tests {
             ctrl_stub.recv_reply().await?,
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:53700".parse()?, true)),
-                    (1, ("127.0.0.1:53701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        }
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        }
+                    ),
                 ]),
             }
         );
@@ -517,9 +566,11 @@ mod reactor_tests {
         tokio::spawn(async move {
             // client-side
             barrier2.wait().await;
-            let mut ctrl_stub =
-                ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
-                    .await?;
+            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                "127.0.0.1:41710".parse()?,
+                "127.0.0.1:54601".parse()?,
+            )
+            .await?;
             // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
             // recv reply from manager
@@ -527,9 +578,27 @@ mod reactor_tests {
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:54700".parse()?, true)),
-                        (1, ("127.0.0.1:54701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
                     ]),
                 }
             );
@@ -538,9 +607,11 @@ mod reactor_tests {
             assert_eq!(ctrl_stub.recv_reply().await?, CtrlReply::Leave);
             ctrl_stub.forget();
             time::sleep(Duration::from_millis(100)).await;
-            let mut ctrl_stub =
-                ClientCtrlStub::new_by_connect("127.0.0.1:54601".parse()?)
-                    .await?;
+            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                "127.0.0.1:41710".parse()?,
+                "127.0.0.1:54601".parse()?,
+            )
+            .await?;
             // send request to manager
             ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
             // recv reply from manager
@@ -548,9 +619,27 @@ mod reactor_tests {
                 ctrl_stub.recv_reply().await?,
                 CtrlReply::QueryInfo {
                     population: 2,
-                    servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                        (0, ("127.0.0.1:54700".parse()?, true)),
-                        (1, ("127.0.0.1:54701".parse()?, false)),
+                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                        (
+                            0,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53700".parse()?,
+                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                is_leader: true,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
+                        (
+                            1,
+                            ServerInfo {
+                                api_addr: "127.0.0.1:53701".parse()?,
+                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                is_leader: false,
+                                is_paused: false,
+                                start_slot: 0,
+                            }
+                        ),
                     ]),
                 }
             );
@@ -568,9 +657,27 @@ mod reactor_tests {
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:54700".parse()?, true)),
-                    (1, ("127.0.0.1:54701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
                 ]),
             },
             client,
@@ -584,9 +691,27 @@ mod reactor_tests {
         reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: 2,
-                servers: HashMap::<ReplicaId, (SocketAddr, bool)>::from([
-                    (0, ("127.0.0.1:54700".parse()?, true)),
-                    (1, ("127.0.0.1:54701".parse()?, false)),
+                servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                    (
+                        0,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53700".parse()?,
+                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            is_leader: true,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
+                    (
+                        1,
+                        ServerInfo {
+                            api_addr: "127.0.0.1:53701".parse()?,
+                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            is_leader: false,
+                            is_paused: false,
+                            start_slot: 0,
+                        },
+                    ),
                 ]),
             },
             client2,

@@ -1,6 +1,6 @@
 //! Summerset cluster manager oracle.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Ipv4Addr};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -21,6 +21,10 @@ struct CliArgs {
     /// Name of SMR protocol to use.
     #[arg(short, long, default_value_t = String::from("RepNothing"))]
     protocol: String,
+
+    /// IP to use for binding the listening sockets.
+    #[arg(short, long)]
+    bind_ip: Ipv4Addr,
 
     /// Server-facing API port.
     #[arg(short, long, default_value_t = 52600)]
@@ -83,24 +87,24 @@ fn manager_main() -> Result<(), SummersetError> {
     let protocol = args.sanitize()?;
 
     // parse server-facing API port
-    let srv_addr: SocketAddr = format!("127.0.0.1:{}", args.srv_port)
+    let srv_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.srv_port)
         .parse()
         .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse srv_addr: port {}: {}",
-            args.srv_port, e
-        ))
-    })?;
+            SummersetError(format!(
+                "failed to parse srv_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.srv_port, e
+            ))
+        })?;
 
     // parse client-facing API port
-    let cli_addr: SocketAddr = format!("127.0.0.1:{}", args.cli_port)
+    let cli_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.cli_port)
         .parse()
         .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse cli_addr: port {}: {}",
-            args.cli_port, e
-        ))
-    })?;
+            SummersetError(format!(
+                "failed to parse cli_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.cli_port, e
+            ))
+        })?;
 
     // set up termination signals handler
     let (tx_term, rx_term) = watch::channel(false);
@@ -143,8 +147,8 @@ fn manager_main() -> Result<(), SummersetError> {
 
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
+        .format_timestamp_millis()
+        .format_module_path(false)
         .format_target(false)
         .init();
 
@@ -165,6 +169,7 @@ mod manager_args_tests {
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 52601,
             population: 3,
@@ -178,6 +183,7 @@ mod manager_args_tests {
     fn sanitize_invalid_srv_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 1023,
             cli_port: 52601,
             population: 3,
@@ -191,6 +197,7 @@ mod manager_args_tests {
     fn sanitize_invalid_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 1023,
             population: 3,
@@ -204,6 +211,7 @@ mod manager_args_tests {
     fn sanitize_same_srv_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 52600,
             population: 3,
@@ -217,6 +225,7 @@ mod manager_args_tests {
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 52601,
             population: 3,
@@ -230,6 +239,7 @@ mod manager_args_tests {
     fn sanitize_invalid_population() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 52601,
             population: 0,
@@ -243,6 +253,7 @@ mod manager_args_tests {
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 52600,
             cli_port: 52601,
             population: 3,

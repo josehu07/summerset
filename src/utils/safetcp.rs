@@ -13,7 +13,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_read as decode_from_read;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpStream, TcpListener};
+use tokio::net::{TcpSocket, TcpStream, TcpListener};
 use tokio::time::{self, Duration};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
@@ -107,11 +107,11 @@ where
         ));
     } else if obj.is_some() {
         // sending a new object, fill write_buf
-        assert_eq!(*write_buf_cursor, 0);
+        debug_assert_eq!(*write_buf_cursor, 0);
         let write_bytes = encode_to_vec(obj.unwrap())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
-        assert_eq!(write_buf.len(), 8);
+        debug_assert_eq!(write_buf.len(), 8);
         write_buf.extend_from_slice(write_bytes.as_slice());
     } else {
         // retrying last unsuccessful write
@@ -143,11 +143,11 @@ where
 
 /// Wrapper over tokio `TcpListener::bind()` that provides a retrying logic.
 pub async fn tcp_bind_with_retry(
-    addr: SocketAddr,
+    bind_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
     loop {
-        match TcpListener::bind(addr).await {
+        match TcpListener::bind(bind_addr).await {
             Ok(listener) => return Ok(listener),
             Err(e) => {
                 if retries == 0 {
@@ -160,16 +160,22 @@ pub async fn tcp_bind_with_retry(
     }
 }
 
-/// Wrapper over tokio `TcpStream::connect()` that provides a retrying logic.
+/// Wrapper over tokio `TcpStream::connect()` that binds the socket to a
+/// specific address and provides a retrying logic.
 pub async fn tcp_connect_with_retry(
-    addr: SocketAddr,
+    bind_addr: SocketAddr,
+    conn_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpStream, SummersetError> {
     loop {
-        // let socket = TcpSocket::new_v4()?;
+        let socket = TcpSocket::new_v4()?;
+        socket.set_linger(None)?;
+        socket.set_reuseaddr(true)?;
+        socket.set_reuseport(true)?;
+        socket.bind(bind_addr)?;
         // pf_info!("X"; "{} {}", socket.send_buffer_size()?, socket.recv_buffer_size()?);
-        // match socket.connect(addr).await {
-        match TcpStream::connect(addr).await {
+
+        match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 if retries == 0 {

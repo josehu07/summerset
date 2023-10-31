@@ -45,7 +45,11 @@ impl_from_error!(
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(tokio::sync::mpsc::error::SendError<()>);
 impl_from_error!(
-    tokio::sync::mpsc::error::SendError<(ReplicaId, net::SocketAddr)>
+    tokio::sync::mpsc::error::SendError<(
+        ReplicaId,
+        net::SocketAddr,
+        net::SocketAddr
+    )>
 );
 impl_from_error!(tokio::sync::mpsc::error::SendError<(ReplicaId, u8)>);
 impl_from_error!(reed_solomon_erasure::Error);

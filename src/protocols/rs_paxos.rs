@@ -64,8 +64,8 @@ pub struct ReplicaConfigRSPaxos {
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
-    /// Maximum chunk size of a ReconstructRead message.
-    pub recon_chunk_size: usize,
+    /// Maximum chunk size (in slots) of any bulk messages.
+    pub msg_chunk_size: usize,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -82,13 +82,13 @@ impl Default for ReplicaConfigRSPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 600,
-            hb_hear_timeout_max: 900,
-            hb_send_interval_ms: 50,
+            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_max: 2000,
+            hb_send_interval_ms: 20,
             snapshot_path: "/tmp/summerset.rs_paxos.snap".into(),
             snapshot_interval_s: 0,
             fault_tolerance: 0,
-            recon_chunk_size: 100,
+            msg_chunk_size: 10,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -384,7 +384,7 @@ impl RSPaxosReplica {
 
     /// Locate the first null slot or append a null instance if no holes exist.
     fn first_null_slot(&mut self) -> Result<usize, SummersetError> {
-        for s in self.commit_bar..(self.start_slot + self.insts.len()) {
+        for s in self.exec_bar..(self.start_slot + self.insts.len()) {
             if self.insts[s - self.start_slot].status == Status::Null {
                 return Ok(s);
             }
@@ -447,6 +447,33 @@ impl RSPaxosReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
+
+    /// If a larger ballot number is seen, consider that peer as new leader.
+    fn check_leader(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        if ballot > self.bal_max_seen {
+            self.bal_max_seen = ballot;
+
+            // clear my leader status if I was one
+            if self.is_leader() {
+                self.control_hub
+                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                pf_info!(self.id; "no longer a leader...");
+            }
+
+            // reset heartbeat timeout timer to prevent me from trying to
+            // compete with a new leader when it is doing reconstruction
+            self.kickoff_hb_hear_timer()?;
+
+            // set this peer to be the believed leader
+            self.leader = Some(peer);
+        }
+
+        Ok(())
+    }
 }
 
 // RSPaxosReplica client requests entrance
@@ -499,7 +526,7 @@ impl RSPaxosReplica {
         let slot = self.first_null_slot()?;
         {
             let inst = &mut self.insts[slot - self.start_slot];
-            assert_eq!(inst.status, Status::Null);
+            debug_assert_eq!(inst.status, Status::Null);
             inst.reqs_cw = reqs_cw;
             inst.leader_bk = Some(LeaderBookkeeping {
                 prepare_acks: Bitmap::new(self.population, false),
@@ -794,6 +821,10 @@ impl RSPaxosReplica {
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance()?);
@@ -804,9 +835,6 @@ impl RSPaxosReplica {
             inst.bal = ballot;
             inst.status = Status::Preparing;
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
             self.storage_hub.submit_action(
@@ -851,7 +879,7 @@ impl RSPaxosReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -961,6 +989,10 @@ impl RSPaxosReplica {
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
+            // update largest ballot seen and assumed leader
+            self.check_leader(peer, ballot)?;
+            self.kickoff_hb_hear_timer()?;
+
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
                 self.insts.push(self.null_instance()?);
@@ -972,9 +1004,6 @@ impl RSPaxosReplica {
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
-
-            // update largest ballot seen
-            self.bal_max_seen = ballot;
 
             // record update to largest prepare ballot
             inst.voted = (ballot, inst.reqs_cw.clone());
@@ -1022,7 +1051,7 @@ impl RSPaxosReplica {
             {
                 return Ok(());
             }
-            assert_eq!(inst.bal, ballot);
+            debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -1075,6 +1104,8 @@ impl RSPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
+
+        self.kickoff_hb_hear_timer()?;
 
         // locate instance in memory, filling in null instances if needed
         while self.start_slot + self.insts.len() <= slot {
@@ -1355,13 +1386,19 @@ impl RSPaxosReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        let mut chunk_cnt = 0;
         let mut recon_slots = Vec::new();
         for (slot, inst) in self
             .insts
             .iter_mut()
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
+            .skip(self.exec_bar - self.start_slot)
         {
+            if inst.status < Status::Executed {
+                inst.external = true; // so replies to clients can be triggered
+            }
+
             // redo Prepare phase for all in-progress instances
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
@@ -1398,6 +1435,20 @@ impl RSPaxosReplica {
                 )?;
                 pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
                                    slot, inst.bal);
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                    chunk_cnt = 0;
+                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -1410,12 +1461,22 @@ impl RSPaxosReplica {
         }
 
         // send reconstruction read messages in chunks
-        for chunk in recon_slots.chunks(self.config.recon_chunk_size) {
+        for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
             let slots = chunk.to_vec();
             let num_slots = slots.len();
             self.transport_hub
                 .bcast_msg(PeerMsg::Reconstruct { slots }, None)?;
             pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+
+            // inject a heartbeat after every chunk to keep peers happy
+            self.transport_hub.bcast_msg(
+                PeerMsg::Heartbeat {
+                    ballot: self.bal_max_seen,
+                    exec_bar: self.exec_bar,
+                    snap_bar: self.snap_bar,
+                },
+                None,
+            )?;
         }
         Ok(())
     }
@@ -1424,7 +1485,7 @@ impl RSPaxosReplica {
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
-                ballot: self.bal_prep_sent,
+                ballot: self.bal_max_seen,
                 exec_bar: self.exec_bar,
                 snap_bar: self.snap_bar,
             },
@@ -1460,7 +1521,7 @@ impl RSPaxosReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
-            self.bal_prep_sent,
+            self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -1500,27 +1561,34 @@ impl RSPaxosReplica {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
             }
+
+            // if the peer has made a higher ballot number, consider it as
+            // a new leader
+            self.check_leader(peer, ballot)?;
+
+            // reply back with a Heartbeat message
+            if self.leader == Some(peer) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Heartbeat {
+                        ballot: self.bal_max_seen,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
+                    },
+                    peer,
+                )?;
+            }
         }
 
-        // ignore outdated heartbeats and those from peers with exec_bar < mine
-        if ballot < self.bal_max_seen || exec_bar < self.exec_bar {
+        // ignore outdated heartbeats, reset hearing timer
+        if ballot < self.bal_max_seen {
+            return Ok(());
+        }
+        self.kickoff_hb_hear_timer()?;
+        if exec_bar < self.exec_bar {
             return Ok(());
         }
 
-        // reset hearing timer
-        self.kickoff_hb_hear_timer()?;
-
         if peer != self.id {
-            // reply back with a Heartbeat message
-            self.transport_hub.send_msg(
-                PeerMsg::Heartbeat {
-                    ballot,
-                    exec_bar: self.exec_bar,
-                    snap_bar: self.snap_bar,
-                },
-                peer,
-            )?;
-
             // update peer_exec_bar if larger then known; if all servers'
             // exec_bar (including myself) have passed a slot, that slot
             // is definitely safe to be snapshotted
@@ -1537,25 +1605,10 @@ impl RSPaxosReplica {
                 }
             }
 
-            // if the peer has made a higher ballot number
-            if ballot > self.bal_max_seen {
-                self.bal_max_seen = ballot;
-
-                // clear my leader status if I was one
-                if self.is_leader() {
-                    self.control_hub
-                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                    pf_info!(self.id; "no longer a leader...");
-                }
-
-                // set this peer to be the believed leader
-                self.leader = Some(peer);
+            // if snap_bar is larger than mine, update snap_bar
+            if snap_bar > self.snap_bar {
+                self.snap_bar = snap_bar;
             }
-        }
-
-        // if snap_bar is larger than mine, update snap_bar
-        if snap_bar > self.snap_bar {
-            self.snap_bar = snap_bar;
         }
 
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
@@ -1791,7 +1844,7 @@ impl RSPaxosReplica {
 
     /// Recover state from durable storage WAL log.
     async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.wal_offset, 0);
+        debug_assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
@@ -1916,7 +1969,10 @@ impl RSPaxosReplica {
                         now_size,
                     } = log_result
                     {
-                        assert_eq!(self.wal_offset - cut_offset, now_size);
+                        debug_assert_eq!(
+                            self.wal_offset - cut_offset,
+                            now_size
+                        );
                         self.wal_offset = now_size;
                     } else {
                         return logged_err!(
@@ -2010,7 +2066,7 @@ impl RSPaxosReplica {
 
     /// Recover initial state from durable storage snapshot file.
     async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.snap_offset, 0);
+        debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
@@ -2115,11 +2171,14 @@ impl GenericReplica for RSPaxosReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
         let population = control_hub.population;
 
@@ -2130,7 +2189,7 @@ impl GenericReplica for RSPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms,
                                     snapshot_path, snapshot_interval_s,
-                                    fault_tolerance, recon_chunk_size,
+                                    fault_tolerance, msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -2161,11 +2220,11 @@ impl GenericReplica for RSPaxosReplica {
                 config.hb_send_interval_ms
             );
         }
-        if config.recon_chunk_size == 0 {
+        if config.msg_chunk_size == 0 {
             return logged_err!(
                 id;
-                "invalid config.recon_chunk_size '{}'",
-                config.recon_chunk_size
+                "invalid config.msg_chunk_size '{}'",
+                config.msg_chunk_size
             );
         }
 
@@ -2228,8 +2287,14 @@ impl GenericReplica for RSPaxosReplica {
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
-        for (peer, addr) in to_peers {
-            transport_hub.connect_to_peer(peer, addr).await?;
+        for (peer, conn_addr) in to_peers {
+            let bind_addr = SocketAddr::new(
+                p2p_bind_base.ip(),
+                p2p_bind_base.port() + peer as u16,
+            );
+            transport_hub
+                .connect_to_peer(peer, bind_addr, conn_addr)
+                .await?;
         }
         transport_hub.wait_for_group(population).await?;
 
@@ -2347,8 +2412,10 @@ impl GenericReplica for RSPaxosReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(e) = msg {
-                        pf_error!(self.id; "error receiving peer msg: {}", e);
+                    if let Err(_e) = msg {
+                        // NOTE: commented out to prevent console lags
+                        // during benchmarking
+                        // pf_error!(self.id; "error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
@@ -2461,17 +2528,23 @@ pub struct RSPaxosClient {
 
     /// API stubs for communicating with servers.
     api_stubs: HashMap<ReplicaId, ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for RSPaxosClient {
     async fn new_and_setup(
+        ctrl_base: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_base, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -2486,6 +2559,7 @@ impl GenericEndpoint for RSPaxosClient {
             server_id: init_server_id,
             ctrl_stub,
             api_stubs: HashMap::new(),
+            api_bind_base,
         })
     }
 
@@ -2506,22 +2580,30 @@ impl GenericEndpoint for RSPaxosClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // shift to a new server_id if current one not active
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.server_id)
+                    || servers_info[&self.server_id].is_paused
+                {
                     self.server_id = (self.server_id + 1) % population;
                 }
                 // establish connection to all servers
-                self.servers = servers
+                self.servers = servers_info
                     .into_iter()
-                    .map(|(id, info)| (id, info.0))
+                    .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_info!(self.id; "connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
+                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
+                    let bind_addr = SocketAddr::new(
+                        self.api_bind_base.ip(),
+                        self.api_bind_base.port() + id as u16,
+                    );
+                    let api_stub = ClientApiStub::new_by_connect(
+                        self.id, bind_addr, server,
+                    )
+                    .await?;
                     self.api_stubs.insert(id, api_stub);
                 }
                 Ok(())
@@ -2541,7 +2623,7 @@ impl GenericEndpoint for RSPaxosClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left server connection {}", id);
+            pf_debug!(self.id; "left server connection {}", id);
             api_stub.forget();
         }
 
@@ -2554,7 +2636,7 @@ impl GenericEndpoint for RSPaxosClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())

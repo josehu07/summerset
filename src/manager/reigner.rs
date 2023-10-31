@@ -215,7 +215,7 @@ impl ServerReigner {
                 return logged_err!("m"; "duplicate server ID listened: {}", id);
             }
         }
-        pf_info!("m"; "accepted new server {}", id);
+        pf_debug!("m"; "accepted new server {}", id);
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
@@ -381,8 +381,10 @@ impl ServerReigner {
                                     pf_debug!("m"; "should start retrying ctrl send -> {}", id);
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!("m"; "error sending -> {}: {}", id, e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -396,15 +398,17 @@ impl ServerReigner {
                         Ok(CtrlMsg::Leave) => {
                             // server leaving, send dummy reply and break
                             let msg = CtrlMsg::LeaveReply;
-                            if let Err(e) = Self::write_ctrl(
+                            if let Err(_e) = Self::write_ctrl(
                                 &mut write_buf,
                                 &mut write_buf_cursor,
                                 &conn_write,
                                 Some(&msg)
                             ) {
-                                pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!("m"; "error replying -> {}: {}", id, e);
                             } else { // skips `WouldBlock` failure check here
-                                pf_info!("m"; "server {} has left", id);
+                                pf_debug!("m"; "server {} has left", id);
                             }
                             break;
                         },
@@ -439,8 +443,10 @@ impl ServerReigner {
                             }
                         },
 
-                        Err(e) => {
-                            pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exitted ungracefully
                         }
                     }
@@ -461,8 +467,10 @@ impl ServerReigner {
                         Ok(false) => {
                             pf_debug!("m"; "still should retry last ctrl send -> {}", id);
                         }
-                        Err(e) => {
-                            pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
                 }
@@ -494,8 +502,11 @@ mod reigner_tests {
         tokio::spawn(async move {
             // replica 0
             setup_bar0.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:53600".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:30010".parse()?,
+                "127.0.0.1:53600".parse()?,
+            )
+            .await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -519,8 +530,11 @@ mod reigner_tests {
             // replica 1
             setup_bar1.wait().await;
             server1_bar1.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:53600".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:30110".parse()?,
+                "127.0.0.1:53600".parse()?,
+            )
+            .await?;
             assert_eq!(hub.me, 1);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -603,8 +617,11 @@ mod reigner_tests {
         tokio::spawn(async move {
             // replica 0
             barrier2.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:54600".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:40010".parse()?,
+                "127.0.0.1:54600".parse()?,
+            )
+            .await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -625,8 +642,11 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::Leave)?;
             assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:54600".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:40110".parse()?,
+                "127.0.0.1:54600".parse()?,
+            )
+            .await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {

@@ -342,7 +342,7 @@ impl RepNothingReplica {
 impl RepNothingReplica {
     /// Recover state from durable storage WAL log.
     async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        assert_eq!(self.wal_offset, 0);
+        debug_assert_eq!(self.wal_offset, 0);
         loop {
             // using 0 as a special log action ID
             self.storage_hub.submit_action(
@@ -410,11 +410,14 @@ impl GenericReplica for RepNothingReplica {
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
+        ctrl_bind: SocketAddr,
+        _p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub =
+            ControlHub::new_and_setup(ctrl_bind, manager).await?;
         let id = control_hub.me;
 
         // parse protocol-specific configs
@@ -590,17 +593,23 @@ pub struct RepNothingClient {
 
     /// API stub for communicating with the current server.
     api_stub: Option<ClientApiStub>,
+
+    /// Base bind address for sockets connecting to servers.
+    api_bind_base: SocketAddr,
 }
 
 #[async_trait]
 impl GenericEndpoint for RepNothingClient {
     async fn new_and_setup(
+        ctrl_base: SocketAddr,
+        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_info!("c"; "connecting to manager '{}'...", manager);
-        let ctrl_stub = ClientCtrlStub::new_by_connect(manager).await?;
+        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        let ctrl_stub =
+            ClientCtrlStub::new_by_connect(ctrl_base, manager).await?;
         let id = ctrl_stub.id;
 
         // parse protocol-specific configs
@@ -612,6 +621,7 @@ impl GenericEndpoint for RepNothingClient {
             config,
             ctrl_stub,
             api_stub: None,
+            api_bind_base,
         })
     }
 
@@ -632,20 +642,26 @@ impl GenericEndpoint for RepNothingClient {
         match reply {
             CtrlReply::QueryInfo {
                 population,
-                servers,
+                servers_info,
             } => {
                 // find a server to connect to, starting from provided server_id
-                debug_assert!(!servers.is_empty());
-                while !servers.contains_key(&self.config.server_id) {
+                debug_assert!(!servers_info.is_empty());
+                while !servers_info.contains_key(&self.config.server_id) {
                     self.config.server_id =
                         (self.config.server_id + 1) % population;
                 }
                 // connect to that server
-                pf_info!(self.id; "connecting to server {} '{}'...",
-                                  self.config.server_id, servers[&self.config.server_id].0);
+                pf_debug!(self.id; "connecting to server {} '{}'...",
+                                   self.config.server_id,
+                                   servers_info[&self.config.server_id].api_addr);
+                let bind_addr = SocketAddr::new(
+                    self.api_bind_base.ip(),
+                    self.api_bind_base.port() + self.config.server_id as u16,
+                );
                 let api_stub = ClientApiStub::new_by_connect(
                     self.id,
-                    servers[&self.config.server_id].0,
+                    bind_addr,
+                    servers_info[&self.config.server_id].api_addr,
                 )
                 .await?;
                 self.api_stub = Some(api_stub);
@@ -664,7 +680,7 @@ impl GenericEndpoint for RepNothingClient {
             }
 
             while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_info!(self.id; "left current server connection");
+            pf_debug!(self.id; "left current server connection");
             api_stub.forget();
         }
 
@@ -677,7 +693,7 @@ impl GenericEndpoint for RepNothingClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_info!(self.id; "left manager connection");
+            pf_debug!(self.id; "left manager connection");
         }
 
         Ok(())
