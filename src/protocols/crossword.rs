@@ -1735,6 +1735,7 @@ impl CrosswordReplica {
 
                 // send reconstruction read messages in chunks
                 if recon_slots.len() == self.config.msg_chunk_size {
+                    // pf_warn!(self.id; "recons {:?}", recon_slots);
                     self.transport_hub.bcast_msg(
                         PeerMsg::Reconstruct {
                             slots_excl: mem::take(&mut recon_slots),
@@ -1759,6 +1760,7 @@ impl CrosswordReplica {
 
         // send reconstruction read message for remaining slots
         if !recon_slots.is_empty() {
+            // pf_warn!(self.id; "recons {:?}", recon_slots);
             let num_slots = recon_slots.len();
             self.transport_hub.bcast_msg(
                 PeerMsg::Reconstruct {
@@ -1950,6 +1952,7 @@ impl CrosswordReplica {
     // TODO: should let leader incorporate assignment metadata in Accept
     // messages. With more complex assignment policies, a follower probably
     // does not know the assignment.
+    #[allow(clippy::too_many_arguments)]
     fn gossip_targets_excl(
         slot: usize,
         me: ReplicaId,
@@ -1957,7 +1960,8 @@ impl CrosswordReplica {
         majority: u8,
         shards_per_replica: u8,
         mut avail_shards_map: Bitmap,
-        replica_bk: &mut Option<ReplicaBookkeeping>,
+        replica_bk: &Option<ReplicaBookkeeping>,
+        peer_alive: &Bitmap,
     ) -> HashMap<ReplicaId, Vec<u8>> {
         let mut src_peer = me;
         if let Some(ReplicaBookkeeping { source }) = replica_bk {
@@ -1968,9 +1972,13 @@ impl CrosswordReplica {
         // until enough number of shards covered
         let mut targets_excl = HashMap::new();
         for p in (me + 1)..(population + me) {
-            // skip leader who initially replicated this instance to me
             let peer = p % population;
             if peer == src_peer {
+                // skip leader who initially replicated this instance to me
+                continue;
+            }
+            if !peer_alive.get(peer).unwrap() {
+                // skip peers that I don't think are alive right now
                 continue;
             }
 
@@ -2046,7 +2054,8 @@ impl CrosswordReplica {
                     self.majority,
                     self.shards_per_replica,
                     avail_shards_map,
-                    &mut self.insts[slot - self.start_slot].replica_bk,
+                    &self.insts[slot - self.start_slot].replica_bk,
+                    &self.peer_alive,
                 );
 
                 for (peer, exclude) in targets_excl {

@@ -48,7 +48,7 @@ CLIENT_TIMEOUT_SECS = 2
 FAIL1_SECS = 40
 FAIL2_SECS = 80
 
-PLOT_SECS_BEGIN = 20
+PLOT_SECS_BEGIN = 25
 PLOT_SECS_END = 115
 
 
@@ -235,7 +235,7 @@ def plot_results(results):
 
     PROTOCOLS_ORDER = ["Crossword", "MultiPaxos", "Raft", "RSPaxos", "CRaft"]
     PROTOCOL_LABEL_COLOR_LS_LW = {
-        "Crossword": ("Crossword", "steelblue", "-", 1.8),
+        "Crossword": ("Crossword", "steelblue", "-", 2.0),
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
         "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
@@ -262,7 +262,15 @@ def plot_results(results):
         if max(ys) > ymax:
             ymax = max(ys)
 
-        plt.plot(xs, ys, label=label, color=color, linestyle=ls, linewidth=lw)
+        plt.plot(
+            xs,
+            ys,
+            label=label,
+            color=color,
+            linestyle=ls,
+            linewidth=lw,
+            zorder=10 if "Crossword" in protocol else 0,
+        )
 
     plt.arrow(
         FAIL1_SECS - PLOT_SECS_BEGIN,
