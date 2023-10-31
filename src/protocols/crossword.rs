@@ -5,12 +5,12 @@
 //! plus follower gossiping for actual usability.
 
 use std::cmp;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::net::SocketAddr;
 use std::mem;
 
-use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword};
+use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword, LinearRegressor};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
@@ -28,7 +28,7 @@ use get_size::GetSize;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
@@ -81,6 +81,14 @@ pub struct ReplicaConfigCrossword {
     // TODO: think about how to allow unbalanced assignments.
     pub shards_per_replica: u8,
 
+    /// Update interval of linear regression perf monitoring model.
+    pub linreg_interval_ms: u64,
+
+    /// Initial linear regression model slope.
+    pub linreg_init_a: f64,
+    /// Initial linear regression model intercept.
+    pub linreg_init_b: f64,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -107,6 +115,9 @@ impl Default for ReplicaConfigCrossword {
             fault_tolerance: 0,
             msg_chunk_size: 10,
             shards_per_replica: 1,
+            linreg_interval_ms: 1000,
+            linreg_init_a: 100.0,
+            linreg_init_b: 10.0,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -223,6 +234,9 @@ enum SnapEntry {
     KVPairSet { pairs: HashMap<String, String> },
 }
 
+/// Heartbeat messages monotonically incrementing ID.
+type HeartbeatId = u64;
+
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMsg {
@@ -265,6 +279,7 @@ enum PeerMsg {
 
     /// Leader activity heartbeat.
     Heartbeat {
+        id: HeartbeatId,
         ballot: Ballot,
         /// For leader step-up as well as conservative snapshotting purpose.
         exec_bar: usize,
@@ -340,7 +355,10 @@ pub struct CrosswordReplica {
     /// Timer for taking a new autonomous snapshot.
     snapshot_interval: Interval,
 
-    /// Titer for trigger follower gossiping.
+    /// Timer for triggering linear regression model update.
+    linreg_interval: Interval,
+
+    /// Timer for triggering follower gossiping.
     gossip_timer: Timer,
 
     /// Largest ballot number that a leader has sent Prepare messages in.
@@ -382,6 +400,24 @@ pub struct CrosswordReplica {
 
     /// Fixed Reed-Solomon coder.
     rs_coder: ReedSolomon,
+
+    /// List of pending Accepts (timestamp, slot) for perf monitoring.
+    pending_accepts: VecDeque<(u128, usize)>,
+
+    /// List of pending heartbeats (timestamp, id) for perf monitoring.
+    pending_heartbeats: VecDeque<(u128, HeartbeatId)>,
+
+    /// Monotonically incrementing ID for heartbeat messages.
+    next_hb_id: HeartbeatId,
+
+    /// Base time instant at startup, used as a reference zero timestamp.
+    startup_time: Instant,
+
+    /// Map from peer ID -> linear regressor for perf monitoring model.
+    regressor: HashMap<ReplicaId, LinearRegressor>,
+
+    /// Map from peer ID -> current saved linear regression perf model.
+    linreg_model: HashMap<ReplicaId, (f64, f64)>,
 }
 
 // CrosswordReplica common helpers
@@ -597,6 +633,9 @@ impl CrosswordReplica {
                           self.shards_per_replica, quorum_size,
                           if redo_accepts { "redo" } else { "" });
 
+        let now_us =
+            Instant::now().duration_since(self.startup_time).as_micros();
+
         if redo_accepts {
             // redo the Accept phase of all instances currently in Accepting
             // state. It is totally fine to care nothing about committed
@@ -605,6 +644,7 @@ impl CrosswordReplica {
             // to guard against "losing data" on a future failure, but just
             // to make the quorum size small enough to be reachable
             let mut chunk_cnt = 0;
+            self.pending_accepts.clear();
             for (slot, inst) in self
                 .insts
                 .iter_mut()
@@ -675,18 +715,23 @@ impl CrosswordReplica {
                     }
                     pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                        slot, inst.bal);
+                    self.pending_accepts.push_back((now_us, slot));
                     chunk_cnt += 1;
 
                     // inject heartbeats in the middle to keep peers happy
                     if chunk_cnt >= self.config.msg_chunk_size {
                         self.transport_hub.bcast_msg(
                             PeerMsg::Heartbeat {
+                                id: self.next_hb_id,
                                 ballot: self.bal_max_seen,
                                 exec_bar: self.exec_bar,
                                 snap_bar: self.snap_bar,
                             },
                             None,
                         )?;
+                        self.pending_heartbeats
+                            .push_back((now_us, self.next_hb_id));
+                        self.next_hb_id += 1;
                         chunk_cnt = 0;
                     }
                 }
@@ -863,6 +908,10 @@ impl CrosswordReplica {
             }
             pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                slot, inst.bal);
+            self.pending_accepts.push_back((
+                Instant::now().duration_since(self.startup_time).as_micros(),
+                slot,
+            ));
         }
 
         Ok(())
@@ -1221,6 +1270,12 @@ impl CrosswordReplica {
                 }
                 pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                    slot, ballot);
+                self.pending_accepts.push_back((
+                    Instant::now()
+                        .duration_since(self.startup_time)
+                        .as_micros(),
+                    slot,
+                ));
             }
         }
 
@@ -1560,10 +1615,11 @@ impl CrosswordReplica {
                 self.handle_msg_reconstruct_reply(peer, slots_data)
             }
             PeerMsg::Heartbeat {
+                id: hb_id,
                 ballot,
                 exec_bar,
                 snap_bar,
-            } => self.heard_heartbeat(peer, ballot, exec_bar, snap_bar),
+            } => self.heard_heartbeat(peer, hb_id, ballot, exec_bar, snap_bar),
         }
     }
 }
@@ -1660,6 +1716,12 @@ impl CrosswordReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
+        // clear pending perf monitoring timestamps
+        self.pending_accepts.clear();
+        self.pending_heartbeats.clear();
+        let now_us =
+            Instant::now().duration_since(self.startup_time).as_micros();
+
         let mut chunk_cnt = 0;
         let mut recon_slots: Vec<(usize, Vec<u8>)> = vec![];
         for (slot, inst) in self
@@ -1715,12 +1777,16 @@ impl CrosswordReplica {
                 if chunk_cnt >= self.config.msg_chunk_size {
                     self.transport_hub.bcast_msg(
                         PeerMsg::Heartbeat {
+                            id: self.next_hb_id,
                             ballot: self.bal_max_seen,
                             exec_bar: self.exec_bar,
                             snap_bar: self.snap_bar,
                         },
                         None,
                     )?;
+                    self.pending_heartbeats
+                        .push_back((now_us, self.next_hb_id));
+                    self.next_hb_id += 1;
                 }
             }
 
@@ -1748,12 +1814,16 @@ impl CrosswordReplica {
                     // inject a heartbeat after every chunk to keep peers happy
                     self.transport_hub.bcast_msg(
                         PeerMsg::Heartbeat {
+                            id: self.next_hb_id,
                             ballot: self.bal_max_seen,
                             exec_bar: self.exec_bar,
                             snap_bar: self.snap_bar,
                         },
                         None,
                     )?;
+                    self.pending_heartbeats
+                        .push_back((now_us, self.next_hb_id));
+                    self.next_hb_id += 1;
                 }
             }
         }
@@ -1777,12 +1847,17 @@ impl CrosswordReplica {
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
+                id: self.next_hb_id,
                 ballot: self.bal_max_seen,
                 exec_bar: self.exec_bar,
                 snap_bar: self.snap_bar,
             },
             None,
         )?;
+        self.pending_heartbeats.push_back((
+            Instant::now().duration_since(self.startup_time).as_micros(),
+            self.next_hb_id,
+        ));
 
         // update max heartbeat reply counters and their repetitions seen
         for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
@@ -1813,10 +1888,12 @@ impl CrosswordReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
             self.id,
+            self.next_hb_id,
             self.bal_max_seen,
             self.exec_bar,
             self.snap_bar,
         )?;
+        self.next_hb_id += 1;
 
         // check if we need to fall back to a config with smaller fast-path
         // quorum size
@@ -1855,6 +1932,7 @@ impl CrosswordReplica {
     fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
+        hb_id: HeartbeatId,
         ballot: Ballot,
         exec_bar: usize,
         snap_bar: usize,
@@ -1886,6 +1964,7 @@ impl CrosswordReplica {
             if self.leader == Some(peer) {
                 self.transport_hub.send_msg(
                     PeerMsg::Heartbeat {
+                        id: hb_id,
                         ballot: self.bal_max_seen,
                         exec_bar: self.exec_bar,
                         snap_bar: self.snap_bar,
@@ -2098,6 +2177,26 @@ impl CrosswordReplica {
             self.gossip_bar = slot_up_to;
         }
 
+        Ok(())
+    }
+}
+
+// CrosswordReplica linear regression perf monitoring
+impl CrosswordReplica {
+    /// Discards all datapoints older than one interval ago, then updates the
+    /// linear regression perf monitoring model for each replica using the
+    /// current window of datapoints.
+    fn update_linreg_model(&mut self) -> Result<(), SummersetError> {
+        let now_us =
+            Instant::now().duration_since(self.startup_time).as_micros();
+        let keep_us = now_us - 1000 * self.config.linreg_interval_ms as u128;
+
+        for (peer, regressor) in self.regressor.iter_mut() {
+            regressor.discard_before(keep_us);
+            if let Ok(model) = regressor.calc_model() {
+                self.linreg_model[peer] = model;
+            }
+        }
         Ok(())
     }
 }
@@ -2680,7 +2779,8 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores,
                                     fault_tolerance, msg_chunk_size,
-                                    shards_per_replica,
+                                    shards_per_replica, linreg_interval_ms,
+                                    linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -2716,6 +2816,13 @@ impl GenericReplica for CrosswordReplica {
                 id;
                 "invalid config.msg_chunk_size '{}'",
                 config.msg_chunk_size
+            );
+        }
+        if config.linreg_interval_ms == 0 {
+            return logged_err!(
+                id;
+                "invalid config.linreg_interval_ms '{}'",
+                config.linreg_interval_ms
             );
         }
 
@@ -2825,6 +2932,10 @@ impl GenericReplica for CrosswordReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut linreg_interval =
+            time::interval(Duration::from_millis(config.linreg_interval_ms));
+        linreg_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
         let hb_reply_cnts = (0..population)
             .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
             .collect();
@@ -2851,6 +2962,7 @@ impl GenericReplica for CrosswordReplica {
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
+            linreg_interval,
             gossip_timer: Timer::new(),
             bal_prep_sent: 0,
             bal_prepared: 0,
@@ -2865,6 +2977,34 @@ impl GenericReplica for CrosswordReplica {
             wal_offset: 0,
             snap_offset: 0,
             rs_coder,
+            pending_accepts: VecDeque::new(),
+            pending_heartbeats: VecDeque::new(),
+            next_hb_id: 0,
+            startup_time: Instant::now(),
+            regressor: (0..population)
+                .filter_map(|s| {
+                    if s == id {
+                        None
+                    } else {
+                        Some((s, LinearRegressor::new()))
+                    }
+                })
+                .collect(),
+            linreg_model: (0..population)
+                .filter_map(|s| {
+                    if s == id {
+                        None
+                    } else {
+                        Some((
+                            s,
+                            (
+                                self.config.linreg_init_a,
+                                self.config.linreg_init_b,
+                            ),
+                        ))
+                    }
+                })
+                .collect(),
         })
     }
 
@@ -2882,7 +3022,6 @@ impl GenericReplica for CrosswordReplica {
         self.kickoff_hb_hear_timer()?;
 
         // kick off follower gossiping trigger timer
-        // FIXME: proper gossiping
         self.kickoff_gossip_timer()?;
 
         // main event loop
@@ -2963,6 +3102,13 @@ impl GenericReplica for CrosswordReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
+                    }
+                },
+
+                // linear regression model update trigger
+                _ = self.linreg_interval.tick(), if !paused && self.is_leader() => {
+                    if let Err(e) = self.update_linreg_model() {
+                        pf_error!(self.id; "error updating linear regression model: {}", e);
                     }
                 },
 

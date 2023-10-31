@@ -54,6 +54,7 @@ impl_from_error!(
 impl_from_error!(tokio::sync::mpsc::error::SendError<(ReplicaId, u8)>);
 impl_from_error!(reed_solomon_erasure::Error);
 impl_from_error!(ctrlc::Error);
+impl_from_error!(linreg::Error);
 
 #[cfg(test)]
 mod error_tests {
