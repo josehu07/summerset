@@ -32,7 +32,7 @@ use tokio::sync::watch;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// Configuration parameters struct.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReplicaConfigCRaft {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,

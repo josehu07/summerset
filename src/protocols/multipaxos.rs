@@ -34,7 +34,7 @@ use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReplicaConfigMultiPaxos {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,

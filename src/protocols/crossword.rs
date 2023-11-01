@@ -34,7 +34,7 @@ use tokio::sync::watch;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// Configuration parameters struct.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReplicaConfigCrossword {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -633,9 +633,7 @@ impl CrosswordReplica {
                           self.shards_per_replica, quorum_size,
                           if redo_accepts { "redo" } else { "" });
 
-        let now_us =
-            Instant::now().duration_since(self.startup_time).as_micros();
-
+        let now_us = self.now_timestamp_us();
         if redo_accepts {
             // redo the Accept phase of all instances currently in Accepting
             // state. It is totally fine to care nothing about committed
@@ -908,10 +906,8 @@ impl CrosswordReplica {
             }
             pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                slot, inst.bal);
-            self.pending_accepts.push_back((
-                Instant::now().duration_since(self.startup_time).as_micros(),
-                slot,
-            ));
+            self.pending_accepts
+                .push_back((self.now_timestamp_us(), slot));
         }
 
         Ok(())
@@ -1351,6 +1347,9 @@ impl CrosswordReplica {
         if ballot == self.bal_prepared {
             debug_assert!(slot < self.start_slot + self.insts.len());
             let is_leader = self.is_leader();
+            if is_leader && peer != self.id {
+                self.record_accept_rtt(peer, self.now_timestamp_us(), slot);
+            }
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
@@ -1719,8 +1718,7 @@ impl CrosswordReplica {
         // clear pending perf monitoring timestamps
         self.pending_accepts.clear();
         self.pending_heartbeats.clear();
-        let now_us =
-            Instant::now().duration_since(self.startup_time).as_micros();
+        let now_us = self.now_timestamp_us();
 
         let mut chunk_cnt = 0;
         let mut recon_slots: Vec<(usize, Vec<u8>)> = vec![];
@@ -1854,10 +1852,8 @@ impl CrosswordReplica {
             },
             None,
         )?;
-        self.pending_heartbeats.push_back((
-            Instant::now().duration_since(self.startup_time).as_micros(),
-            self.next_hb_id,
-        ));
+        self.pending_heartbeats
+            .push_back((self.now_timestamp_us(), self.next_hb_id));
 
         // update max heartbeat reply counters and their repetitions seen
         for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
@@ -1938,6 +1934,10 @@ impl CrosswordReplica {
         snap_bar: usize,
     ) -> Result<(), SummersetError> {
         if peer != self.id {
+            if self.is_leader() {
+                self.record_heartbeat_rtt(peer, self.now_timestamp_us(), hb_id);
+            }
+
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
@@ -2183,18 +2183,82 @@ impl CrosswordReplica {
 
 // CrosswordReplica linear regression perf monitoring
 impl CrosswordReplica {
+    /// Returns microsecs elapsed from startup_time timestamp.
+    fn now_timestamp_us(&self) -> u128 {
+        Instant::now().duration_since(self.startup_time).as_micros()
+    }
+
+    /// Records a new datapoint for Accept RTT time.
+    fn record_accept_rtt(&mut self, peer: ReplicaId, tr: u128, slot: usize) {
+        // pop oldest heartbeats sent timestamps out until the corresponding
+        // heartbeat ID is found. Records preceding the matching record will
+        // be discarded forever
+        while let Some((ts, s)) = self.pending_accepts.pop_front() {
+            #[allow(clippy::comparison_chain)]
+            if s == slot {
+                debug_assert!(tr >= ts);
+                let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
+                self.regressor
+                    .get_mut(&peer)
+                    .unwrap()
+                    .append_sample(tr, elapsed_ms, elapsed_ms);
+                // FIXME: x should be data size
+                break;
+            } else if slot < s {
+                // larger slot seen, meaning the send record for slot is
+                // probably lost. Do nothing
+                self.pending_accepts.push_front((ts, s));
+                break;
+            }
+        }
+    }
+
+    /// Records a new datapoint for heartbeat RTT time.
+    fn record_heartbeat_rtt(
+        &mut self,
+        peer: ReplicaId,
+        tr: u128,
+        hb_id: HeartbeatId,
+    ) {
+        // pop oldest heartbeats sent timestamps out until the corresponding
+        // heartbeat ID is found. Records preceding the matching record will
+        // be discarded forever
+        while let Some((ts, id)) = self.pending_heartbeats.pop_front() {
+            #[allow(clippy::comparison_chain)]
+            if id == hb_id {
+                debug_assert!(tr >= ts);
+                let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
+                self.regressor
+                    .get_mut(&peer)
+                    .unwrap()
+                    .append_sample(tr, elapsed_ms, elapsed_ms);
+                // FIXME: x should be data size
+                break;
+            } else if hb_id < id {
+                // larger ID seen, meaning the send record for hb_id is
+                // probably lost. Do nothing
+                self.pending_heartbeats.push_front((ts, id));
+                break;
+            }
+        }
+    }
+
     /// Discards all datapoints older than one interval ago, then updates the
     /// linear regression perf monitoring model for each replica using the
     /// current window of datapoints.
     fn update_linreg_model(&mut self) -> Result<(), SummersetError> {
-        let now_us =
-            Instant::now().duration_since(self.startup_time).as_micros();
+        let now_us = self.now_timestamp_us();
         let keep_us = now_us - 1000 * self.config.linreg_interval_ms as u128;
 
         for (peer, regressor) in self.regressor.iter_mut() {
             regressor.discard_before(keep_us);
-            if let Ok(model) = regressor.calc_model() {
-                self.linreg_model[peer] = model;
+            match regressor.calc_model() {
+                Ok(model) => {
+                    *self.linreg_model.get_mut(peer).unwrap() = model;
+                }
+                Err(_e) => {
+                    // pf_trace!(self.id; "calc_model error: {}", e);
+                }
             }
         }
         Ok(())
@@ -2934,7 +2998,7 @@ impl GenericReplica for CrosswordReplica {
 
         let mut linreg_interval =
             time::interval(Duration::from_millis(config.linreg_interval_ms));
-        linreg_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        linreg_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let hb_reply_cnts = (0..population)
             .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
@@ -2945,7 +3009,7 @@ impl GenericReplica for CrosswordReplica {
             population,
             majority,
             shards_per_replica: config.shards_per_replica,
-            config,
+            config: config.clone(),
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
             control_hub,
@@ -2995,13 +3059,7 @@ impl GenericReplica for CrosswordReplica {
                     if s == id {
                         None
                     } else {
-                        Some((
-                            s,
-                            (
-                                self.config.linreg_init_a,
-                                self.config.linreg_init_b,
-                            ),
-                        ))
+                        Some((s, (config.linreg_init_a, config.linreg_init_b)))
                     }
                 })
                 .collect(),

@@ -26,7 +26,7 @@ use tokio::time::Duration;
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReplicaConfigRepNothing {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,

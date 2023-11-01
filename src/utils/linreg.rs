@@ -69,9 +69,13 @@ impl LinearRegressor {
     /// compute it.
     pub fn calc_model(&mut self) -> Result<(f64, f64), SummersetError> {
         if let Some(model) = self.model {
+            // pf_trace!("linreg"; "ts {:?} dp {:?} {:?}",
+            //                     self.timestamps, self.datapoints, self.model);
             Ok(model)
         } else {
             self.model = Some(linear_regression_of(&self.datapoints)?);
+            // pf_trace!("linreg"; "ts {:?} dp {:?} {:?}",
+            //                     self.timestamps, self.datapoints, self.model);
             Ok(self.model.unwrap())
         }
     }
