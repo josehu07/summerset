@@ -2212,13 +2212,16 @@ impl CrosswordReplica {
             #[allow(clippy::comparison_chain)]
             if s == slot {
                 debug_assert!(tr >= ts);
-                let size_mb: f64 = size as f64 / (1024 * 1024) as f64;
+                // approximate size as the PeerMsg type's stack size + shards
+                // payload size
+                let mut size_mb: f64 = mem::size_of::<PeerMsg>() as f64;
+                size_mb += size as f64;
+                size_mb /= (1024 * 1024) as f64;
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap()
                     .append_sample(tr, size_mb, elapsed_ms);
-                // FIXME: x should be data size
                 break;
             } else if slot < s {
                 // larger slot seen, meaning the send record for slot is
@@ -2243,13 +2246,13 @@ impl CrosswordReplica {
             #[allow(clippy::comparison_chain)]
             if id == hb_id {
                 debug_assert!(tr >= ts);
-                let size_mb: f64 = 16_f64 / (1024 * 1024) as f64;
+                let size_mb: f64 =
+                    mem::size_of::<PeerMsg>() as f64 / (1024 * 1024) as f64;
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap()
                     .append_sample(tr, size_mb, elapsed_ms);
-                // FIXME: x should be data size
                 break;
             } else if hb_id < id {
                 // larger ID seen, meaning the send record for hb_id is
@@ -2270,7 +2273,13 @@ impl CrosswordReplica {
         for (peer, regressor) in self.regressor.iter_mut() {
             regressor.discard_before(keep_us);
             match regressor.calc_model() {
-                Ok(model) => {
+                Ok(mut model) => {
+                    if model.0 < 0.0 {
+                        model.0 = 0.0;
+                    }
+                    if model.1 < 0.0 {
+                        model.1 = 0.0;
+                    }
                     *self.linreg_model.get_mut(peer).unwrap() = model;
                 }
                 Err(_e) => {
