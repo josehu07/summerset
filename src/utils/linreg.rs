@@ -74,8 +74,8 @@ impl LinearRegressor {
             Ok(model)
         } else {
             self.model = Some(linear_regression_of(&self.datapoints)?);
-            // pf_trace!("linreg"; "ts {:?} dp {:?} {:?}",
-            //                     self.timestamps, self.datapoints, self.model);
+            // pf_warn!("linreg"; "ts {:?} dp {:?} {:?}",
+            //                    self.timestamps, self.datapoints, self.model);
             Ok(self.model.unwrap())
         }
     }

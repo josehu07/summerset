@@ -115,7 +115,7 @@ impl Default for ReplicaConfigCrossword {
             fault_tolerance: 0,
             msg_chunk_size: 10,
             shards_per_replica: 1,
-            linreg_interval_ms: 1000,
+            linreg_interval_ms: 3000,
             linreg_init_a: 100.0,
             linreg_init_b: 10.0,
             perf_storage_a: 0,
