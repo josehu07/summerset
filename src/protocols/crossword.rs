@@ -5,7 +5,7 @@
 //! plus follower gossiping for actual usability.
 
 use std::cmp;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::net::SocketAddr;
 use std::mem;
@@ -77,9 +77,8 @@ pub struct ReplicaConfigCrossword {
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
-    /// Number of shards to assign to each replica.
-    // TODO: think about how to allow unbalanced assignments.
-    pub shards_per_replica: u8,
+    /// If non-empty, force this shards assignment policy.
+    pub shards_assignment: String,
 
     /// Update interval of linear regression perf monitoring model.
     pub linreg_interval_ms: u64,
@@ -114,7 +113,7 @@ impl Default for ReplicaConfigCrossword {
             gossip_tail_ignores: 100,
             fault_tolerance: 0,
             msg_chunk_size: 10,
-            shards_per_replica: 1,
+            shards_assignment: "".into(),
             linreg_interval_ms: 3000,
             linreg_init_a: 100.0,
             linreg_init_b: 10.0,
@@ -177,6 +176,9 @@ struct Instance {
     /// Shards of a batch of client requests.
     reqs_cw: RSCodeword<ReqBatch>,
 
+    /// Shards assignment map.
+    assignment: Vec<Bitmap>,
+
     /// Highest ballot and associated value I have accepted.
     voted: (Ballot, RSCodeword<ReqBatch>),
 
@@ -210,6 +212,7 @@ enum WalEntry {
         slot: usize,
         ballot: Ballot,
         reqs_cw: RSCodeword<ReqBatch>,
+        assignment: Vec<Vec<u8>>,
     },
 
     /// Records an event of committing the instance at index.
@@ -257,10 +260,16 @@ enum PeerMsg {
         slot: usize,
         ballot: Ballot,
         reqs_cw: RSCodeword<ReqBatch>,
+        assignment: Vec<Vec<u8>>,
     },
 
     /// Accept reply from replica to leader.
-    AcceptReply { slot: usize, ballot: Ballot },
+    AcceptReply {
+        slot: usize,
+        ballot: Ballot,
+        /// Data size in bytes that the corresponding Accept carried.
+        size: usize,
+    },
 
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
@@ -299,9 +308,14 @@ pub struct CrosswordReplica {
     /// Majority quorum size.
     majority: u8,
 
-    /// Current #shards per replica configuration.
-    // TODO: probably needs something better for unbalanced assignments.
-    shards_per_replica: u8,
+    /// Using balanced assignment policy?
+    // NOTE: currently, adaptability is only enabled when using balanced
+    //       assignment policies.
+    assignment_balanced: bool,
+
+    /// Current shards assignment policy.
+    // FIXME: use a range map for different instance size ranges.
+    shards_assignment: Vec<Bitmap>,
 
     /// Configuration parameters struct.
     config: ReplicaConfigCrossword,
@@ -401,8 +415,8 @@ pub struct CrosswordReplica {
     /// Fixed Reed-Solomon coder.
     rs_coder: ReedSolomon,
 
-    /// List of pending Accepts (timestamp, slot, size) for perf monitoring.
-    pending_accepts: VecDeque<(u128, usize, usize)>,
+    /// List of pending Accepts (timestamp, slot) for perf monitoring.
+    pending_accepts: VecDeque<(u128, usize)>,
 
     /// List of pending heartbeats (timestamp, id) for perf monitoring.
     pending_heartbeats: VecDeque<(u128, HeartbeatId)>,
@@ -438,6 +452,7 @@ impl CrosswordReplica {
                 self.majority,
                 self.population - self.majority,
             )?,
+            assignment: vec![],
             voted: (
                 0,
                 RSCodeword::<ReqBatch>::from_null(
@@ -518,6 +533,118 @@ impl CrosswordReplica {
         (slot, cmd_idx)
     }
 
+    /// Parse config string into initial shards assignment policy.
+    fn parse_shards_assignment(
+        population: u8,
+        s: String,
+    ) -> Result<Vec<Bitmap>, SummersetError> {
+        let mut assignment = Vec::with_capacity(population as usize);
+        let majority = (population / 2) + 1;
+        if s.is_empty() {
+            // default to start with bandwidth-optimal diagonal assignment
+            for r in 0..population {
+                assignment.push(Bitmap::from(population, vec![r]));
+            }
+        } else if let Ok(shards_per_replica) = s.parse::<u8>() {
+            // a single number: the same #shards per replica round-robinly
+            if shards_per_replica == 0 || shards_per_replica > majority {
+                return Err(SummersetError(format!(
+                    "invalid shards assignment string {}",
+                    s
+                )));
+            }
+            for r in 0..population {
+                assignment.push(Bitmap::from(
+                    population,
+                    (r..r + shards_per_replica)
+                        .map(|i| i % population)
+                        .collect(),
+                ));
+            }
+        } else {
+            // string in format of something like 0:0,1;1:2;3:3,4 ...
+            for r in 0..population {
+                assignment.push(Bitmap::new(population, false));
+            }
+            for seg in s.split(';') {
+                if let Some(idx) = s.find(':') {
+                    let r = s[..idx].parse::<ReplicaId>()?;
+                    if r >= population {
+                        return Err(SummersetError(format!(
+                            "invalid shards assignment string {}",
+                            s
+                        )));
+                    }
+                    for shard in s[idx + 1..].split(',') {
+                        assignment[r as usize].set(shard.parse()?, true)?;
+                    }
+                } else {
+                    return Err(SummersetError(format!(
+                        "invalid shards assignment string {}",
+                        s
+                    )));
+                }
+            }
+        }
+        Ok(assignment)
+    }
+
+    // Compute the subset coverage of acknowledge pattern `acks` when
+    // considering at most `fault_tolerance` failures.
+    fn coverage_under_faults(
+        population: u8,
+        acks: &HashMap<ReplicaId, Bitmap>,
+        fault_tolerance: u8,
+        assignment_balanced: bool,
+    ) -> u8 {
+        if acks.len() <= fault_tolerance as usize {
+            return 0;
+        }
+
+        // if forcing balanced assignment, can compute this using a rather
+        // simple addition calculation
+        if assignment_balanced {
+            let shards_per_replica = acks.values().next().unwrap().count();
+            return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
+        }
+
+        // enumerate all subsets of acks excluding fault number of replicas
+        let cnt = (acks.len() - fault_tolerance as usize) as u32;
+        let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
+        let mut min_coverage = population;
+        for n in (0..2usize.pow(servers.len() as u32))
+            .filter(|n| n.count_ones() == cnt)
+        {
+            let mut coverage = Bitmap::new(population, false);
+            for (_, server) in servers
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| (n >> i) % 2 == 1)
+            {
+                for shard in acks[server].iter().filter_map(|(s, flag)| {
+                    if flag {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }) {
+                    coverage.set(shard, true).expect("impossible shard index");
+                }
+            }
+            if coverage.count() < min_coverage {
+                min_coverage = coverage.count();
+            }
+        }
+        min_coverage
+    }
+
+    /// Convert a `Vec<Bitmap>` assignment into `Vec<Vec<u8>>` so that it
+    /// is serializable.
+    #[inline]
+    fn serializable_assignment(assignment: &Vec<Bitmap>) -> Vec<Vec<u8>> {
+        assignment.iter().map(|bm| bm.to_vec()).collect()
+    }
+
     /// If a larger ballot number is seen, consider that peer as new leader.
     fn check_leader(
         &mut self,
@@ -540,206 +667,6 @@ impl CrosswordReplica {
 
             // set this peer to be the believed leader
             self.leader = Some(peer);
-        }
-
-        Ok(())
-    }
-
-    // TODO: think about how to allow unbalanced assignments.
-    #[inline]
-    fn shards_for_replica(
-        slot: usize,
-        id: ReplicaId,
-        population: u8,
-        shards_per_replica: u8,
-    ) -> Vec<u8> {
-        let first: u8 = ((id as usize + slot) % population as usize) as u8;
-        (first..(first + shards_per_replica))
-            .map(|i| (i % population))
-            .collect()
-    }
-
-    // TODO: think about how to allow unbalanced assignments.
-    fn coverage_under_faults(
-        population: u8,
-        acks: &HashMap<ReplicaId, Bitmap>,
-        fault_tolerance: u8,
-        // if given, assume balanced assignment
-        shards_per_replica: Option<u8>,
-    ) -> u8 {
-        if acks.len() <= fault_tolerance as usize {
-            return 0;
-        }
-
-        // if assuming balanced assignment
-        if let Some(shards_per_replica) = shards_per_replica {
-            debug_assert!(shards_per_replica > 0);
-            return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
-        }
-
-        // enumerate all subsets of acks excluding fault number of replicas
-        let cnt = (acks.len() - fault_tolerance as usize) as u32;
-        let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
-        let mut min_coverage = population;
-
-        for n in (0..2usize.pow(servers.len() as u32))
-            .filter(|n| n.count_ones() == cnt)
-        {
-            let mut coverage = Bitmap::new(population, false);
-            for (_, server) in servers
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| (n >> i) % 2 == 1)
-            {
-                for shard in acks[server].iter().filter_map(|(s, flag)| {
-                    if flag {
-                        Some(s)
-                    } else {
-                        None
-                    }
-                }) {
-                    coverage.set(shard, true).expect("impossible shard index");
-                }
-            }
-
-            if coverage.count() < min_coverage {
-                min_coverage = coverage.count();
-            }
-        }
-
-        min_coverage
-    }
-
-    /// Change to a new #shards_per_replica vs. quorum_size configuration. If
-    /// `redo_accepts` is true, redo all the instances that are currently in
-    /// the Accepting phase. This typically should happen when we are falling
-    /// back to a smaller quorum_size because of detected follower failures;
-    /// for performance-oriented config changes, this is not necessary.
-    // TODO: think about how to allow unbalanced assignments.
-    fn change_assignment_config(
-        &mut self,
-        shards_per_replica: u8,
-        redo_accepts: bool,
-    ) -> Result<(), SummersetError> {
-        debug_assert!(shards_per_replica > 0);
-        if shards_per_replica > self.majority {
-            return Ok(()); // invalid, ignore
-        }
-
-        let quorum_size = self.majority + self.config.fault_tolerance + 1
-            - shards_per_replica;
-        self.shards_per_replica = shards_per_replica;
-        pf_info!(self.id; "switching assignment config: ({} - {}) {}",
-                          self.shards_per_replica, quorum_size,
-                          if redo_accepts { "redo" } else { "" });
-
-        let now_us = self.startup_time.elapsed().as_micros();
-        if redo_accepts {
-            // redo the Accept phase of all instances currently in Accepting
-            // state. It is totally fine to care nothing about committed
-            // intances: Crossword always maintains the correct liveness
-            // constraint, so falling back to a smaller quorum size is not
-            // to guard against "losing data" on a future failure, but just
-            // to make the quorum size small enough to be reachable
-            let mut chunk_cnt = 0;
-            self.pending_accepts.clear();
-            for (slot, inst) in self
-                .insts
-                .iter_mut()
-                .enumerate()
-                .map(|(s, i)| (self.start_slot + s, i))
-            {
-                if inst.status == Status::Accepting && inst.leader_bk.is_some()
-                {
-                    inst.bal = self.bal_prepared;
-                    inst.leader_bk.as_mut().unwrap().accept_acks.clear();
-                    pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                       slot, inst.bal);
-
-                    // record update to largest accepted ballot and corresponding data
-                    let subset_copy = inst.reqs_cw.subset_copy(
-                        Bitmap::from(
-                            self.population,
-                            Self::shards_for_replica(
-                                slot,
-                                self.id,
-                                self.population,
-                                self.shards_per_replica,
-                            ),
-                        ),
-                        false,
-                    )?;
-                    inst.voted = (inst.bal, subset_copy.clone());
-                    self.storage_hub.submit_action(
-                        Self::make_log_action_id(slot, Status::Accepting),
-                        LogAction::Append {
-                            entry: WalEntry::AcceptData {
-                                slot,
-                                ballot: inst.bal,
-                                // persist only some shards on myself
-                                reqs_cw: subset_copy,
-                            },
-                            sync: self.config.logger_sync,
-                        },
-                    )?;
-                    pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                                       slot, inst.bal);
-
-                    // send Accept messages to all peers, each getting its subset of
-                    // shards of data
-                    for peer in 0..self.population {
-                        if peer == self.id {
-                            continue;
-                        }
-                        self.transport_hub.send_msg(
-                            PeerMsg::Accept {
-                                slot,
-                                ballot: inst.bal,
-                                reqs_cw: inst.reqs_cw.subset_copy(
-                                    Bitmap::from(
-                                        self.population,
-                                        Self::shards_for_replica(
-                                            slot,
-                                            peer,
-                                            self.population,
-                                            self.shards_per_replica,
-                                        ),
-                                    ),
-                                    false,
-                                )?,
-                            },
-                            peer,
-                        )?;
-                    }
-                    pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                       slot, inst.bal);
-                    self.pending_accepts.push_back((
-                        now_us,
-                        slot,
-                        self.shards_per_replica as usize
-                            * (inst.reqs_cw.data_len()
-                                / self.population as usize),
-                    ));
-                    chunk_cnt += 1;
-
-                    // inject heartbeats in the middle to keep peers happy
-                    if chunk_cnt >= self.config.msg_chunk_size {
-                        self.transport_hub.bcast_msg(
-                            PeerMsg::Heartbeat {
-                                id: self.next_hb_id,
-                                ballot: self.bal_max_seen,
-                                exec_bar: self.exec_bar,
-                                snap_bar: self.snap_bar,
-                            },
-                            None,
-                        )?;
-                        self.pending_heartbeats
-                            .push_back((now_us, self.next_hb_id));
-                        self.next_hb_id += 1;
-                        chunk_cnt = 0;
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -2029,6 +1956,113 @@ impl CrosswordReplica {
         // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
+
+    /// Check all instances in the Accepting phase and redo their Accepts
+    /// using the current assignment policy. This is a performance optimization
+    /// for soft fallback triggered when peer_alive count decreases.
+    fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
+        let now_us = self.startup_time.elapsed().as_micros();
+        let alive_cnt = self.peer_alive.count();
+        let mut new_pending_accepts = VecDeque::new();
+
+        let mut chunk_cnt = 0;
+        for (slot, inst) in self
+            .insts
+            .iter_mut()
+            .enumerate()
+            .map(|(s, i)| (self.start_slot + s, i))
+        {
+            if inst.status == Status::Accepting && inst.leader_bk.is_some() {
+                if self.assignment_balanced
+                    && inst.assignment[0].count()
+                        >= self.majority + self.config.fault_tolerance + 1
+                            - alive_cnt
+                {
+                    // the assignment policy used for this instance was already
+                    // safe for current # of healthy nodes
+                    while let Some(record) = self.pending_accepts.pop_front() {
+                        if slot == record.1 {
+                            new_pending_accepts.push_back(record);
+                        }
+                    }
+                    continue;
+                }
+
+                inst.bal = self.bal_prepared;
+                inst.leader_bk.as_mut().unwrap().accept_acks.clear();
+                pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
+                                       slot, inst.bal);
+
+                // record update to largest accepted ballot and corresponding data
+                let veced_assignment =
+                    Self::serializable_assignment(&self.shards_assignment);
+                let subset_copy = inst.reqs_cw.subset_copy(
+                    self.shards_assignment[self.id as usize].clone(),
+                    false,
+                )?;
+                inst.voted = (inst.bal, subset_copy.clone());
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogAction::Append {
+                        entry: WalEntry::AcceptData {
+                            slot,
+                            ballot: inst.bal,
+                            // persist only some shards on myself
+                            reqs_cw: subset_copy,
+                            assignment: veced_assignment.clone(),
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
+                                       slot, inst.bal);
+
+                // send Accept messages to all peers, each getting its subset of
+                // shards of data
+                for peer in 0..self.population {
+                    if peer == self.id {
+                        continue;
+                    }
+                    self.transport_hub.send_msg(
+                        PeerMsg::Accept {
+                            slot,
+                            ballot: inst.bal,
+                            reqs_cw: inst.reqs_cw.subset_copy(
+                                self.shards_assignment[peer as usize].clone(),
+                                false,
+                            )?,
+                            assignment: veced_assignment.clone(),
+                        },
+                        peer,
+                    )?;
+                }
+                pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
+                                       slot, inst.bal);
+                self.pending_accepts.push_back((now_us, slot));
+                chunk_cnt += 1;
+
+                // inject heartbeats in the middle to keep peers happy
+                if chunk_cnt >= self.config.msg_chunk_size {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::Heartbeat {
+                            id: self.next_hb_id,
+                            ballot: self.bal_max_seen,
+                            exec_bar: self.exec_bar,
+                            snap_bar: self.snap_bar,
+                        },
+                        None,
+                    )?;
+                    self.pending_heartbeats
+                        .push_back((now_us, self.next_hb_id));
+                    self.next_hb_id += 1;
+                    chunk_cnt = 0;
+                }
+            }
+        }
+
+        self.pending_accepts = new_pending_accepts;
+        Ok(())
+    }
 }
 
 // CrosswordReplica follower gossiping
@@ -2869,7 +2903,8 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores,
                                     fault_tolerance, msg_chunk_size,
-                                    shards_per_replica, linreg_interval_ms,
+                                    shards_assignment,
+                                    linreg_interval_ms,
                                     linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -2968,16 +3003,34 @@ impl GenericReplica for CrosswordReplica {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
         }
-        if config.shards_per_replica == 0
-            || config.shards_per_replica > majority
-        {
-            return logged_err!(id; "invalid config.shards_per_replica '{}'",
-                                   config.shards_per_replica);
-        }
         let rs_coder = ReedSolomon::new(
             majority as usize,
             (population - majority) as usize,
         )?;
+
+        // parse shards assignment policy config string if given
+        let assignment_adaptive = config.shards_assignment.is_empty();
+        let shards_assignment = Self::parse_shards_assignment(
+            population,
+            config.shards_assignment,
+        )?;
+        let mut max_coverage = Bitmap::new(population, false);
+        let mut nums_assigned: HashSet<u8> = HashSet::new();
+        for shards in &shards_assignment {
+            nums_assigned.insert(shards.count());
+            for (shard, flag) in shards.iter() {
+                if flag {
+                    max_coverage.set(shard, true)?;
+                }
+            }
+        }
+        if shards_assignment.len() != population as usize
+            || max_coverage.count() < majority
+        {
+            return logged_err!(id; "invalid shards assignment parsed: {:?}", shards_assignment);
+        }
+        let assignment_balanced = nums_assigned.len() == 1;
+        pf_info!(id; "init shards assignment {:?}", shards_assignment);
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -3034,7 +3087,9 @@ impl GenericReplica for CrosswordReplica {
             id,
             population,
             majority,
-            shards_per_replica: config.shards_per_replica,
+            assignment_adaptive,
+            assignment_balanced,
+            shards_assignment,
             config: config.clone(),
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
