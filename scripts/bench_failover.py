@@ -272,9 +272,9 @@ def plot_results(results):
 
     plt.arrow(
         FAIL1_SECS - PLOT_SECS_BEGIN,
-        ymax + 8,
+        ymax + 25,
         0,
-        -5,
+        -24,
         color="darkred",
         width=0.2,
         length_includes_head=True,
@@ -284,7 +284,7 @@ def plot_results(results):
     )
     plt.annotate(
         "Leader fails",
-        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 10),
+        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 30),
         xytext=(-18, 0),
         ha="center",
         textcoords="offset points",
@@ -294,9 +294,9 @@ def plot_results(results):
 
     plt.arrow(
         FAIL2_SECS - PLOT_SECS_BEGIN,
-        ymax + 8,
+        ymax + 25,
         0,
-        -5,
+        -24,
         color="darkred",
         width=0.2,
         length_includes_head=True,
@@ -306,7 +306,7 @@ def plot_results(results):
     )
     plt.annotate(
         "New leader fails",
-        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 10),
+        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 30),
         xytext=(-28, 0),
         ha="center",
         textcoords="offset points",
