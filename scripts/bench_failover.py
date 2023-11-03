@@ -236,8 +236,8 @@ def plot_results(results):
         "Crossword": ("Crossword", "steelblue", "-", 2.0),
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
-        "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (async fb)", "darkorange", ":", 1.5),
+        "RSPaxos": ("RSPaxos", "red", "-.", 1.3),
+        "CRaft": ("CRaft", "peru", ":", 1.5),
     }
 
     ymax = 0.0
@@ -255,7 +255,9 @@ def plot_results(results):
             # due to limited sampling granularity, Crossword gossiping makes
             # throughput results look a bit more "jittering" than it actually
             # is; smoothing a bit more here
-            sd, sj = 20, 50
+            # setting sd here also avoids the lines to completely overlap with
+            # each other
+            sd, sj = 15, 50
         ys = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
         if max(ys) > ymax:
             ymax = max(ys)
@@ -272,13 +274,14 @@ def plot_results(results):
 
     plt.arrow(
         FAIL1_SECS - PLOT_SECS_BEGIN,
-        ymax + 25,
+        ymax + 20,
         0,
-        -24,
+        -18,
         color="darkred",
         width=0.2,
         length_includes_head=True,
-        head_width=1.0,
+        head_width=1.5,
+        head_length=5,
         overhang=0.5,
         clip_on=False,
     )
@@ -294,13 +297,14 @@ def plot_results(results):
 
     plt.arrow(
         FAIL2_SECS - PLOT_SECS_BEGIN,
-        ymax + 25,
+        ymax + 20,
         0,
-        -24,
+        -18,
         color="darkred",
         width=0.2,
         length_includes_head=True,
-        head_width=1.0,
+        head_width=1.5,
+        head_length=5,
         overhang=0.5,
         clip_on=False,
     )
@@ -325,7 +329,7 @@ def plot_results(results):
     plt.xlabel("Time (s)")
     plt.ylabel("Throughput (reqs/s)")
 
-    lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.15))
+    lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.12))
     for rec in lgd.get_texts():
         if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
             rec.set_fontstyle("italic")
