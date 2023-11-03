@@ -162,7 +162,7 @@ where
     /// shards, and a complete copy of the original data if required.
     pub fn subset_copy(
         &self,
-        subset: Bitmap,
+        subset: &Bitmap,
         copy_data: bool,
     ) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
@@ -656,11 +656,13 @@ mod rscoding_tests {
         let data = TestData("interesting_value".into());
         let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
         // invalid subset
-        assert!(cwa.subset_copy(Bitmap::from(6, vec![0, 5]), false).is_err());
+        assert!(cwa
+            .subset_copy(&Bitmap::from(6, vec![0, 5]), false)
+            .is_err());
         // valid subsets
-        let cw01 = cwa.subset_copy(Bitmap::from(5, vec![0, 1]), false)?;
+        let cw01 = cwa.subset_copy(&Bitmap::from(5, vec![0, 1]), false)?;
         assert_eq!(cw01.avail_data_shards(), 2);
-        let cw02 = cwa.subset_copy(Bitmap::from(5, vec![0, 2]), true)?;
+        let cw02 = cwa.subset_copy(&Bitmap::from(5, vec![0, 2]), true)?;
         assert_eq!(cw02.avail_data_shards(), 2);
         assert!(cw02.data_copy.is_some());
         // valid absorbing

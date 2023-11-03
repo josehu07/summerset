@@ -26,6 +26,8 @@ use async_trait::async_trait;
 
 use get_size::GetSize;
 
+use rangemap::RangeMap;
+
 use serde::{Serialize, Deserialize};
 
 use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
@@ -77,8 +79,8 @@ pub struct ReplicaConfigCrossword {
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
-    /// If non-empty, force this shards assignment policy.
-    pub shards_assignment: String,
+    /// If non-empty, use this initial shards assignment policy.
+    pub init_assignment: String,
 
     /// Update interval of linear regression perf monitoring model.
     pub linreg_interval_ms: u64,
@@ -113,7 +115,7 @@ impl Default for ReplicaConfigCrossword {
             gossip_tail_ignores: 100,
             fault_tolerance: 0,
             msg_chunk_size: 10,
-            shards_assignment: "".into(),
+            init_assignment: "".into(),
             linreg_interval_ms: 3000,
             linreg_init_a: 100.0,
             linreg_init_b: 10.0,
@@ -176,7 +178,7 @@ struct Instance {
     /// Shards of a batch of client requests.
     reqs_cw: RSCodeword<ReqBatch>,
 
-    /// Shards assignment map.
+    /// Shards assignment map which the leader used.
     assignment: Vec<Bitmap>,
 
     /// Highest ballot and associated value I have accepted.
@@ -314,8 +316,7 @@ pub struct CrosswordReplica {
     assignment_balanced: bool,
 
     /// Current shards assignment policy.
-    // FIXME: use a range map for different instance size ranges.
-    shards_assignment: Vec<Bitmap>,
+    assignment_policies: RangeMap<usize, Vec<Bitmap>>,
 
     /// Configuration parameters struct.
     config: ReplicaConfigCrossword,
@@ -534,9 +535,9 @@ impl CrosswordReplica {
     }
 
     /// Parse config string into initial shards assignment policy.
-    fn parse_shards_assignment(
+    fn parse_init_assignment(
         population: u8,
-        s: String,
+        s: &str,
     ) -> Result<Vec<Bitmap>, SummersetError> {
         let mut assignment = Vec::with_capacity(population as usize);
         let majority = (population / 2) + 1;
@@ -563,19 +564,19 @@ impl CrosswordReplica {
             }
         } else {
             // string in format of something like 0:0,1;1:2;3:3,4 ...
-            for r in 0..population {
+            for _ in 0..population {
                 assignment.push(Bitmap::new(population, false));
             }
             for seg in s.split(';') {
-                if let Some(idx) = s.find(':') {
-                    let r = s[..idx].parse::<ReplicaId>()?;
+                if let Some(idx) = seg.find(':') {
+                    let r = seg[..idx].parse::<ReplicaId>()?;
                     if r >= population {
                         return Err(SummersetError(format!(
                             "invalid shards assignment string {}",
                             s
                         )));
                     }
-                    for shard in s[idx + 1..].split(',') {
+                    for shard in seg[idx + 1..].split(',') {
                         assignment[r as usize].set(shard.parse()?, true)?;
                     }
                 } else {
@@ -591,6 +592,7 @@ impl CrosswordReplica {
 
     // Compute the subset coverage of acknowledge pattern `acks` when
     // considering at most `fault_tolerance` failures.
+    #[inline]
     fn coverage_under_faults(
         population: u8,
         acks: &HashMap<ReplicaId, Bitmap>,
@@ -638,11 +640,63 @@ impl CrosswordReplica {
         min_coverage
     }
 
+    /// Get the proper assignment policy given data size and peer_alive count.
+    // NOTE: if data_size == exactly `usize::MAX` this will fail; won't bother
+    //       to account for this rare case right now
+    #[inline]
+    fn pick_assignment_policy(
+        assignment_balanced: bool,
+        assignment_policies: &RangeMap<usize, Vec<Bitmap>>,
+        population: u8,
+        majority: u8,
+        fault_tolerance: u8,
+        data_size: usize,
+        peer_alive: &Bitmap,
+    ) -> Vec<Bitmap> {
+        if assignment_balanced {
+            let assignment = assignment_policies.get(&data_size).unwrap();
+            let min_shards_per_replica =
+                majority + fault_tolerance + 1 - peer_alive.count();
+            if assignment[0].count() >= min_shards_per_replica {
+                assignment.clone()
+            } else {
+                (0..population)
+                    .map(|r| {
+                        Bitmap::from(
+                            population,
+                            (r..r + min_shards_per_replica)
+                                .map(|i| i % population)
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            }
+        } else {
+            // NOTE: skips the check of `alive_cnt` for unbalanced assignments;
+            //       leaving this as future work
+            assignment_policies.get(&data_size).unwrap().clone()
+        }
+    }
+
     /// Convert a `Vec<Bitmap>` assignment into `Vec<Vec<u8>>` so that it
     /// is serializable.
     #[inline]
+    #[allow(clippy::ptr_arg)]
     fn serializable_assignment(assignment: &Vec<Bitmap>) -> Vec<Vec<u8>> {
         assignment.iter().map(|bm| bm.to_vec()).collect()
+    }
+
+    /// Consume a serializable `Vec<Vec<u8>>` assignment into more efficient
+    /// `Vec<Bitmap>`.
+    #[inline]
+    fn bitmap_form_assignment(
+        assignment: Vec<Vec<u8>>,
+        population: u8,
+    ) -> Vec<Bitmap> {
+        assignment
+            .into_iter()
+            .map(|v| Bitmap::from(population, v))
+            .collect()
     }
 
     /// If a larger ballot number is seen, consider that peer as new leader.
@@ -782,19 +836,22 @@ impl CrosswordReplica {
             pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
                                slot, inst.bal);
 
+            let assignment = Self::pick_assignment_policy(
+                self.assignment_balanced,
+                &self.assignment_policies,
+                self.population,
+                self.majority,
+                self.config.fault_tolerance,
+                inst.reqs_cw.data_len(),
+                &self.peer_alive,
+            );
+            let veced_assignment = Self::serializable_assignment(&assignment);
+
             // record update to largest accepted ballot and corresponding data
-            let subset_copy = inst.reqs_cw.subset_copy(
-                Bitmap::from(
-                    self.population,
-                    Self::shards_for_replica(
-                        slot,
-                        self.id,
-                        self.population,
-                        self.shards_per_replica,
-                    ),
-                ),
-                false,
-            )?;
+            let subset_copy = inst
+                .reqs_cw
+                .subset_copy(&assignment[self.id as usize], false)?;
+            inst.assignment = assignment;
             inst.voted = (inst.bal, subset_copy.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
@@ -804,6 +861,7 @@ impl CrosswordReplica {
                         ballot: inst.bal,
                         // persist only some shards on myself
                         reqs_cw: subset_copy,
+                        assignment: veced_assignment.clone(),
                     },
                     sync: self.config.logger_sync,
                 },
@@ -822,29 +880,18 @@ impl CrosswordReplica {
                         slot,
                         ballot: inst.bal,
                         reqs_cw: inst.reqs_cw.subset_copy(
-                            Bitmap::from(
-                                self.population,
-                                Self::shards_for_replica(
-                                    slot,
-                                    peer,
-                                    self.population,
-                                    self.shards_per_replica,
-                                ),
-                            ),
+                            &inst.assignment[peer as usize],
                             false,
                         )?,
+                        assignment: veced_assignment.clone(),
                     },
                     peer,
                 )?;
             }
             pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                slot, inst.bal);
-            self.pending_accepts.push_back((
-                self.startup_time.elapsed().as_micros(),
-                slot,
-                self.shards_per_replica as usize
-                    * (inst.reqs_cw.data_len() / self.population as usize),
-            ));
+            self.pending_accepts
+                .push_back((self.startup_time.elapsed().as_micros(), slot));
         }
 
         Ok(())
@@ -911,15 +958,23 @@ impl CrosswordReplica {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal)?;
+            self.handle_msg_accept_reply(self.id, slot, inst.bal, 0)?;
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,
                         ballot: inst.bal,
+                        // compute payload size of the corresponding Accept
+                        // message from leader: #shards assigned to me times
+                        // size of one shard
+                        size: inst.assignment[self.id as usize].count()
+                            as usize
+                            * ((inst.reqs_cw.data_len()
+                                / self.majority as usize)
+                                + 1),
                     },
                     source,
                 )?;
@@ -1092,6 +1147,17 @@ impl CrosswordReplica {
             let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
+            let assignment = Self::pick_assignment_policy(
+                self.assignment_balanced,
+                &self.assignment_policies,
+                self.population,
+                self.majority,
+                self.config.fault_tolerance,
+                inst.reqs_cw.data_len(),
+                &self.peer_alive,
+            );
+            let veced_assignment = Self::serializable_assignment(&assignment);
+
             // ignore spurious duplications and outdated replies
             if !is_leader
                 || (inst.status != Status::Preparing)
@@ -1149,18 +1215,10 @@ impl CrosswordReplica {
                 }
 
                 // record update to largest accepted ballot and corresponding data
-                let subset_copy = inst.reqs_cw.subset_copy(
-                    Bitmap::from(
-                        self.population,
-                        Self::shards_for_replica(
-                            slot,
-                            self.id,
-                            self.population,
-                            self.shards_per_replica,
-                        ),
-                    ),
-                    false,
-                )?;
+                let subset_copy = inst
+                    .reqs_cw
+                    .subset_copy(&assignment[self.id as usize], false)?;
+                inst.assignment = assignment;
                 inst.voted = (ballot, subset_copy.clone());
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
@@ -1169,6 +1227,7 @@ impl CrosswordReplica {
                             slot,
                             ballot,
                             reqs_cw: subset_copy,
+                            assignment: veced_assignment.clone(),
                         },
                         sync: self.config.logger_sync,
                     },
@@ -1186,29 +1245,18 @@ impl CrosswordReplica {
                             slot,
                             ballot,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                Bitmap::from(
-                                    self.population,
-                                    Self::shards_for_replica(
-                                        slot,
-                                        peer,
-                                        self.population,
-                                        self.shards_per_replica,
-                                    ),
-                                ),
+                                &inst.assignment[peer as usize],
                                 false,
                             )?,
+                            assignment: veced_assignment.clone(),
                         },
                         peer,
                     )?;
                 }
                 pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                    slot, ballot);
-                self.pending_accepts.push_back((
-                    self.startup_time.elapsed().as_micros(),
-                    slot,
-                    self.shards_per_replica as usize
-                        * (inst.reqs_cw.data_len() / self.population as usize),
-                ));
+                self.pending_accepts
+                    .push_back((self.startup_time.elapsed().as_micros(), slot));
             }
         }
 
@@ -1222,6 +1270,7 @@ impl CrosswordReplica {
         slot: usize,
         ballot: Ballot,
         reqs_cw: RSCodeword<ReqBatch>,
+        assignment: Vec<Vec<u8>>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -1245,6 +1294,8 @@ impl CrosswordReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
+            inst.assignment =
+                Self::bitmap_form_assignment(assignment, self.population);
             inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
 
             // record update to largest prepare ballot
@@ -1256,6 +1307,9 @@ impl CrosswordReplica {
                         slot,
                         ballot,
                         reqs_cw: inst.reqs_cw.clone(),
+                        assignment: Self::serializable_assignment(
+                            &inst.assignment,
+                        ),
                     },
                     sync: self.config.logger_sync,
                 },
@@ -1273,6 +1327,7 @@ impl CrosswordReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
+        size: usize,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -1289,6 +1344,7 @@ impl CrosswordReplica {
                     peer,
                     self.startup_time.elapsed().as_micros(),
                     slot,
+                    size,
                 );
             }
             let inst = &mut self.insts[slot - self.start_slot];
@@ -1309,18 +1365,9 @@ impl CrosswordReplica {
             }
 
             // bookkeep this Accept reply
-            leader_bk.accept_acks.insert(
-                peer,
-                Bitmap::from(
-                    self.population,
-                    Self::shards_for_replica(
-                        slot,
-                        peer,
-                        self.population,
-                        self.shards_per_replica,
-                    ),
-                ),
-            );
+            leader_bk
+                .accept_acks
+                .insert(peer, inst.assignment[peer as usize].clone());
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed
@@ -1329,7 +1376,7 @@ impl CrosswordReplica {
                     self.population,
                     &leader_bk.accept_acks,
                     self.config.fault_tolerance,
-                    Some(self.shards_per_replica),
+                    self.assignment_balanced,
                 ) >= self.majority
             {
                 inst.status = Status::Committed;
@@ -1433,7 +1480,7 @@ impl CrosswordReplica {
             }
             let mut subset = Bitmap::from(inst.reqs_cw.num_shards(), exclude);
             subset.flip(); // exclude unwanted shards the sender already has
-            let reply_cw = inst.reqs_cw.subset_copy(subset, false)?;
+            let reply_cw = inst.reqs_cw.subset_copy(&subset, false)?;
             if reply_cw.avail_shards() == 0 {
                 continue;
             }
@@ -1543,9 +1590,12 @@ impl CrosswordReplica {
                 slot,
                 ballot,
                 reqs_cw,
-            } => self.handle_msg_accept(peer, slot, ballot, reqs_cw),
-            PeerMsg::AcceptReply { slot, ballot } => {
-                self.handle_msg_accept_reply(peer, slot, ballot)
+                assignment,
+            } => {
+                self.handle_msg_accept(peer, slot, ballot, reqs_cw, assignment)
+            }
+            PeerMsg::AcceptReply { slot, ballot, size } => {
+                self.handle_msg_accept_reply(peer, slot, ballot, size)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
             PeerMsg::Reconstruct { slots_excl } => {
@@ -1799,6 +1849,7 @@ impl CrosswordReplica {
         ));
 
         // update max heartbeat reply counters and their repetitions seen
+        let mut peer_death = false;
         for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
             if cnts.0 > cnts.1 {
                 // more hb replies have been received from this peer; it is
@@ -1818,6 +1869,7 @@ impl CrosswordReplica {
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
                         pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        peer_death = true;
                     }
                     cnts.2 = 0;
                 }
@@ -1834,16 +1886,10 @@ impl CrosswordReplica {
         )?;
         self.next_hb_id += 1;
 
-        // check if we need to fall back to a config with smaller fast-path
-        // quorum size
-        let curr_quorum_size = self.majority + self.config.fault_tolerance + 1
-            - self.shards_per_replica;
-        if self.peer_alive.count() < curr_quorum_size {
-            self.change_assignment_config(
-                self.shards_per_replica + curr_quorum_size
-                    - self.peer_alive.count(),
-                true,
-            )?;
+        // if we need to do soft fallback to a config with smaller fast-path
+        // quorum size, redo Accept phase for certain slots for performance
+        if peer_death {
+            self.fallback_redo_accepts()?;
         }
 
         // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
@@ -1889,18 +1935,6 @@ impl CrosswordReplica {
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
                 pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
-            }
-
-            // FIXME: true adaptiveness
-            let curr_quorum_size =
-                self.majority + self.config.fault_tolerance + 1
-                    - self.shards_per_replica;
-            if self.peer_alive.count() > curr_quorum_size {
-                self.change_assignment_config(
-                    self.shards_per_replica + curr_quorum_size
-                        - self.peer_alive.count(),
-                    false,
-                )?;
             }
 
             // if the peer has made a higher ballot number, consider it as
@@ -1993,14 +2027,25 @@ impl CrosswordReplica {
                 pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
                                        slot, inst.bal);
 
-                // record update to largest accepted ballot and corresponding data
+                let assignment = Self::pick_assignment_policy(
+                    self.assignment_balanced,
+                    &self.assignment_policies,
+                    self.population,
+                    self.majority,
+                    self.config.fault_tolerance,
+                    inst.reqs_cw.data_len(),
+                    &self.peer_alive,
+                );
                 let veced_assignment =
-                    Self::serializable_assignment(&self.shards_assignment);
-                let subset_copy = inst.reqs_cw.subset_copy(
-                    self.shards_assignment[self.id as usize].clone(),
-                    false,
-                )?;
+                    Self::serializable_assignment(&assignment);
+
+                let subset_copy = inst
+                    .reqs_cw
+                    .subset_copy(&assignment[self.id as usize], false)?;
+                inst.assignment = assignment;
                 inst.voted = (inst.bal, subset_copy.clone());
+
+                // record update to largest accepted ballot and corresponding data
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Accepting),
                     LogAction::Append {
@@ -2028,7 +2073,7 @@ impl CrosswordReplica {
                             slot,
                             ballot: inst.bal,
                             reqs_cw: inst.reqs_cw.subset_copy(
-                                self.shards_assignment[peer as usize].clone(),
+                                &inst.assignment[peer as usize],
                                 false,
                             )?,
                             assignment: veced_assignment.clone(),
@@ -2082,18 +2127,16 @@ impl CrosswordReplica {
         Ok(())
     }
 
-    // TODO: should let leader incorporate assignment metadata in Accept
-    // messages. With more complex assignment policies, a follower probably
-    // does not know the assignment.
-    #[allow(clippy::too_many_arguments)]
+    /// Decide to which peers should I request gossiping and what shards
+    /// should I exclude.
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
     fn gossip_targets_excl(
-        slot: usize,
         me: ReplicaId,
         population: u8,
         majority: u8,
-        shards_per_replica: u8,
-        mut avail_shards_map: Bitmap,
         replica_bk: &Option<ReplicaBookkeeping>,
+        mut avail_shards_map: Bitmap,
+        assignment: &Vec<Bitmap>,
         peer_alive: &Bitmap,
     ) -> HashMap<ReplicaId, Vec<u8>> {
         let mut src_peer = me;
@@ -2118,13 +2161,8 @@ impl CrosswordReplica {
             // only ask for shards which I don't have right now and I have not
             // asked others for
             let mut useful_shards = Vec::new();
-            for idx in Self::shards_for_replica(
-                slot,
-                peer,
-                population,
-                shards_per_replica,
-            ) {
-                if !avail_shards_map.get(idx).unwrap() {
+            for (idx, flag) in assignment[peer as usize].iter() {
+                if flag && !avail_shards_map.get(idx).unwrap() {
                     useful_shards.push(idx);
                 }
             }
@@ -2178,16 +2216,16 @@ impl CrosswordReplica {
             let avail_shards_map = self.insts[slot - self.start_slot]
                 .reqs_cw
                 .avail_shards_map();
+            let assignment = &self.insts[slot - self.start_slot].assignment;
             if avail_shards_map.count() < self.majority {
                 // decide which peers to ask for which shards from
                 let targets_excl = Self::gossip_targets_excl(
-                    slot,
                     self.id,
                     self.population,
                     self.majority,
-                    self.shards_per_replica,
-                    avail_shards_map,
                     &self.insts[slot - self.start_slot].replica_bk,
+                    avail_shards_map,
+                    assignment,
                     &self.peer_alive,
                 );
 
@@ -2238,17 +2276,23 @@ impl CrosswordReplica {
 // CrosswordReplica linear regression perf monitoring
 impl CrosswordReplica {
     /// Records a new datapoint for Accept RTT time.
-    fn record_accept_rtt(&mut self, peer: ReplicaId, tr: u128, slot: usize) {
+    fn record_accept_rtt(
+        &mut self,
+        peer: ReplicaId,
+        tr: u128,
+        slot: usize,
+        size: usize,
+    ) {
         // pop oldest heartbeats sent timestamps out until the corresponding
         // heartbeat ID is found. Records preceding the matching record will
         // be discarded forever
-        while let Some((ts, s, size)) = self.pending_accepts.pop_front() {
+        while let Some((ts, s)) = self.pending_accepts.pop_front() {
             #[allow(clippy::comparison_chain)]
             if s == slot {
                 debug_assert!(tr >= ts);
                 // approximate size as the PeerMsg type's stack size + shards
                 // payload size
-                let mut size_mb: f64 = mem::size_of::<PeerMsg>() as f64;
+                let mut size_mb: f64 = 2.0 * mem::size_of::<PeerMsg>() as f64;
                 size_mb += size as f64;
                 size_mb /= (1024 * 1024) as f64;
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
@@ -2260,7 +2304,7 @@ impl CrosswordReplica {
             } else if slot < s {
                 // larger slot seen, meaning the send record for slot is
                 // probably lost. Do nothing
-                self.pending_accepts.push_front((ts, s, size));
+                self.pending_accepts.push_front((ts, s));
                 break;
             }
         }
@@ -2280,8 +2324,8 @@ impl CrosswordReplica {
             #[allow(clippy::comparison_chain)]
             if id == hb_id {
                 debug_assert!(tr >= ts);
-                let size_mb: f64 =
-                    mem::size_of::<PeerMsg>() as f64 / (1024 * 1024) as f64;
+                let size_mb: f64 = 2.0 * mem::size_of::<PeerMsg>() as f64
+                    / (1024 * 1024) as f64;
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
@@ -2474,6 +2518,7 @@ impl CrosswordReplica {
                 slot,
                 ballot,
                 reqs_cw,
+                assignment,
             } => {
                 if slot < self.start_slot {
                     return Ok(()); // ignore if slot index outdated
@@ -2487,6 +2532,8 @@ impl CrosswordReplica {
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
                 inst.reqs_cw = reqs_cw.clone();
+                inst.assignment =
+                    Self::bitmap_form_assignment(assignment, self.population);
                 inst.voted = (ballot, reqs_cw);
                 // it could be the case that the PrepareBal action for this
                 // ballot has been snapshotted
@@ -2903,8 +2950,7 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores,
                                     fault_tolerance, msg_chunk_size,
-                                    shards_assignment,
-                                    linreg_interval_ms,
+                                    init_assignment, linreg_interval_ms,
                                     linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -3009,14 +3055,11 @@ impl GenericReplica for CrosswordReplica {
         )?;
 
         // parse shards assignment policy config string if given
-        let assignment_adaptive = config.shards_assignment.is_empty();
-        let shards_assignment = Self::parse_shards_assignment(
-            population,
-            config.shards_assignment,
-        )?;
+        let init_assignment =
+            Self::parse_init_assignment(population, &config.init_assignment)?;
         let mut max_coverage = Bitmap::new(population, false);
         let mut nums_assigned: HashSet<u8> = HashSet::new();
-        for shards in &shards_assignment {
+        for shards in &init_assignment {
             nums_assigned.insert(shards.count());
             for (shard, flag) in shards.iter() {
                 if flag {
@@ -3024,13 +3067,16 @@ impl GenericReplica for CrosswordReplica {
                 }
             }
         }
-        if shards_assignment.len() != population as usize
+        if init_assignment.len() != population as usize
             || max_coverage.count() < majority
         {
-            return logged_err!(id; "invalid shards assignment parsed: {:?}", shards_assignment);
+            return logged_err!(id; "invalid init assignment parsed: {:?}", init_assignment);
         }
+        pf_info!(id; "init assignment {:?}", init_assignment);
+
         let assignment_balanced = nums_assigned.len() == 1;
-        pf_info!(id; "init shards assignment {:?}", shards_assignment);
+        let mut assignment_policies = RangeMap::new();
+        assignment_policies.insert(0..usize::MAX, init_assignment);
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -3087,9 +3133,8 @@ impl GenericReplica for CrosswordReplica {
             id,
             population,
             majority,
-            assignment_adaptive,
             assignment_balanced,
-            shards_assignment,
+            assignment_policies,
             config: config.clone(),
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,

@@ -996,6 +996,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rangemap"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "977b1e897f9d764566891689e642653e5ed90c6895106acd005eb4c1d0203991"
+
+[[package]]
 name = "redox_syscall"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1264,6 +1270,7 @@ dependencies = [
  "linreg",
  "log",
  "rand",
+ "rangemap",
  "reed-solomon-erasure",
  "rmp-serde",
  "serde",
