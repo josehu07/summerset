@@ -361,6 +361,9 @@ name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "flashmap"

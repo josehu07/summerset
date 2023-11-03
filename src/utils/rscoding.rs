@@ -57,10 +57,6 @@ where
             .map(|s| if let Some(b) = s { b.len() } else { 0 })
             .sum()
     }
-
-    fn get_size(&self) -> usize {
-        Self::get_stack_size() + self.get_heap_size()
-    }
 }
 
 impl<T> RSCodeword<T>
@@ -305,21 +301,16 @@ where
         self.shards.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    /// Gets a vec of available shard indexes.
-    #[inline]
-    pub fn avail_shards_vec(&self) -> Vec<u8> {
-        self.shards
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| if s.is_some() { Some(i as u8) } else { None })
-            .collect()
-    }
-
     /// Gets a bitmap of available shard indexes set true.
     #[inline]
     pub fn avail_shards_map(&self) -> Bitmap {
-        let ones = self.avail_shards_vec();
-        Bitmap::from(self.num_shards(), ones)
+        let mut map = Bitmap::new(self.num_shards(), false);
+        for (i, s) in self.shards.iter().enumerate() {
+            if s.is_some() {
+                map.set(i as u8, true).unwrap();
+            }
+        }
+        map
     }
 
     /// Gets length of original data in bytes.

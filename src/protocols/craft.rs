@@ -913,8 +913,8 @@ impl CRaftReplica {
                         == new_entry.reqs_cw.data_len()
                     && self.log[slot - self.start_slot]
                         .reqs_cw
-                        .avail_shards_vec()
-                        != new_entry.reqs_cw.avail_shards_vec()
+                        .avail_shards_map()
+                        != new_entry.reqs_cw.avail_shards_map()
                 {
                     self.log[slot - self.start_slot]
                         .reqs_cw
@@ -1711,7 +1711,7 @@ impl CRaftReplica {
                     // past hbs sent from me; this peer is probably dead
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
-                        pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
                     cnts.2 = 0;
                 }
@@ -1758,7 +1758,7 @@ impl CRaftReplica {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                 // check if we can move back to 1-shard replication
                 // if self.population - self.peer_alive.count()
                 //     < self.config.fault_tolerance

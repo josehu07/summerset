@@ -1335,7 +1335,7 @@ impl MultiPaxosReplica {
                     // past hbs sent from me; this peer is probably dead
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
-                        pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
                     }
                     cnts.2 = 0;
                 }
@@ -1383,7 +1383,7 @@ impl MultiPaxosReplica {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
-                pf_debug!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
             }
 
             // if the peer has made a higher ballot number, consider it as
