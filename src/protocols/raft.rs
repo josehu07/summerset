@@ -1304,20 +1304,28 @@ impl RaftReplica {
 
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
-        let prev_slot = self.start_slot + self.log.len() - 1;
-        debug_assert!(prev_slot >= self.start_slot);
-        let prev_term = self.log[prev_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::AppendEntries {
-                term: self.curr_term,
-                prev_slot,
-                prev_term,
-                entries: vec![],
-                leader_commit: self.last_commit,
-                last_snap: self.last_snap,
-            },
-            None,
-        )?;
+        for peer in 0..self.population {
+            if peer == self.id {
+                continue;
+            }
+            let prev_slot = cmp::min(
+                self.try_next_slot[&peer] - 1,
+                self.start_slot + self.log.len() - 1,
+            );
+            debug_assert!(prev_slot >= self.start_slot);
+            let prev_term = self.log[prev_slot - self.start_slot].term;
+            self.transport_hub.bcast_msg(
+                PeerMsg::AppendEntries {
+                    term: self.curr_term,
+                    prev_slot,
+                    prev_term,
+                    entries: vec![],
+                    leader_commit: self.last_commit,
+                    last_snap: self.last_snap,
+                },
+                None,
+            )?;
+        }
 
         // update max heartbeat reply counters and their repetitions seen
         for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {

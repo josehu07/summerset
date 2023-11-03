@@ -637,24 +637,20 @@ impl CRaftReplica {
                         debug_assert!(
                             e.reqs_cw.avail_data_shards() >= self.majority
                         );
-                        // LogEntry {
-                        //     term: e.term,
-                        //     reqs_cw: e
-                        //         .reqs_cw
-                        //         .subset_copy(
-                        //             Bitmap::from(
-                        //                 self.population,
-                        //                 (0..self.majority).collect(),
-                        //             ),
-                        //             false,
-                        //         )
-                        //         .unwrap(),
-                        //     external: false,
-                        //     log_offset: e.log_offset,
-                        // }
                         LogEntry {
+                            term: e.term,
+                            reqs_cw: e
+                                .reqs_cw
+                                .subset_copy(
+                                    &Bitmap::from(
+                                        self.population,
+                                        (0..self.majority).collect(),
+                                    ),
+                                    false,
+                                )
+                                .unwrap(),
                             external: false,
-                            ..e.clone()
+                            log_offset: e.log_offset,
                         }
                     } else {
                         LogEntry {
@@ -1062,7 +1058,6 @@ impl CRaftReplica {
                     .values()
                     .filter(|&&s| s >= slot)
                     .count() as u8;
-
                 if (!self.full_copy_mode
                     && match_cnt >= self.majority + self.config.fault_tolerance)
                     || (self.full_copy_mode && match_cnt >= self.majority)
@@ -1074,6 +1069,7 @@ impl CRaftReplica {
 
             // submit newly committed commands, if any, for execution
             let mut recon_slots = Vec::new();
+            let mut can_execute = true;
             for slot in (self.last_commit + 1)..=new_commit {
                 let entry = &mut self.log[slot - self.start_slot];
 
@@ -1086,29 +1082,33 @@ impl CRaftReplica {
                         recon_slots.push((slot, entry.term));
                         self.last_recon = slot;
                     }
+                    can_execute = false;
                     continue;
                 } else if entry.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
                     entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
-                let reqs = entry.reqs_cw.get_data()?;
 
-                for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                    if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(slot, cmd_idx),
-                            cmd.clone(),
-                        )?;
-                    } else {
-                        continue; // ignore other types of requests
+                // if all entries up to now were all executable
+                if can_execute {
+                    let reqs = entry.reqs_cw.get_data()?;
+                    for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
+                        if let ApiRequest::Req { cmd, .. } = req {
+                            self.state_machine.submit_cmd(
+                                Self::make_command_id(slot, cmd_idx),
+                                cmd.clone(),
+                            )?;
+                        } else {
+                            continue; // ignore other types of requests
+                        }
                     }
-                }
-                pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                   reqs.len(), slot);
+                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
+                                       reqs.len(), slot);
 
-                // last_commit update stops at the last slot successfully
-                // submitted for execution
-                self.last_commit = slot;
+                    // last_commit update stops at the last slot successfully
+                    // submitted for execution
+                    self.last_commit = slot;
+                }
             }
 
             // send reconstruction read messages in chunks
@@ -1173,24 +1173,20 @@ impl CRaftReplica {
                         debug_assert!(
                             e.reqs_cw.avail_data_shards() >= self.majority
                         );
-                        // LogEntry {
-                        //     term: e.term,
-                        //     reqs_cw: e
-                        //         .reqs_cw
-                        //         .subset_copy(
-                        //             Bitmap::from(
-                        //                 self.population,
-                        //                 (0..self.majority).collect(),
-                        //             ),
-                        //             false,
-                        //         )
-                        //         .unwrap(),
-                        //     external: false,
-                        //     log_offset: e.log_offset,
-                        // }
                         LogEntry {
+                            term: e.term,
+                            reqs_cw: e
+                                .reqs_cw
+                                .subset_copy(
+                                    &Bitmap::from(
+                                        self.population,
+                                        (0..self.majority).collect(),
+                                    ),
+                                    false,
+                                )
+                                .unwrap(),
                             external: false,
-                            ..e.clone()
+                            log_offset: e.log_offset,
                         }
                     } else {
                         LogEntry {
@@ -1366,7 +1362,7 @@ impl CRaftReplica {
 
         for (slot, term) in slots {
             if slot < self.start_slot
-                || slot > self.last_commit
+                || slot >= self.start_slot + self.log.len()
                 || term != self.log[slot - self.start_slot].term
             {
                 // NOTE: this has one caveat: a new leader trying to do
@@ -1408,8 +1404,12 @@ impl CRaftReplica {
                 self.match_slot.values().copied().collect();
             match_slots.sort();
             match_slots.reverse();
-            match_slots
-                [(self.majority + self.config.fault_tolerance - 2) as usize]
+            if self.full_copy_mode {
+                match_slots[(self.majority - 2) as usize]
+            } else {
+                match_slots
+                    [(self.majority + self.config.fault_tolerance - 2) as usize]
+            }
         };
 
         for (slot, reqs_cw) in slots_data {
@@ -1677,20 +1677,28 @@ impl CRaftReplica {
 
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
     fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
-        let prev_slot = self.start_slot + self.log.len() - 1;
-        debug_assert!(prev_slot >= self.start_slot);
-        let prev_term = self.log[prev_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::AppendEntries {
-                term: self.curr_term,
-                prev_slot,
-                prev_term,
-                entries: vec![],
-                leader_commit: self.last_commit,
-                last_snap: self.last_snap,
-            },
-            None,
-        )?;
+        for peer in 0..self.population {
+            if peer == self.id {
+                continue;
+            }
+            let prev_slot = cmp::min(
+                self.try_next_slot[&peer] - 1,
+                self.start_slot + self.log.len() - 1,
+            );
+            debug_assert!(prev_slot >= self.start_slot);
+            let prev_term = self.log[prev_slot - self.start_slot].term;
+            self.transport_hub.send_msg(
+                PeerMsg::AppendEntries {
+                    term: self.curr_term,
+                    prev_slot,
+                    prev_term,
+                    entries: vec![],
+                    leader_commit: self.last_commit,
+                    last_snap: self.last_snap,
+                },
+                peer,
+            )?;
+        }
 
         // update max heartbeat reply counters and their repetitions seen
         for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {

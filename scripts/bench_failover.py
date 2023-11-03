@@ -32,9 +32,9 @@ SERVER_DEV = lambda r: f"veths{r}"
 BATCH_INTERVAL = 1
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 8
+NUM_CLIENTS = 16
 
-VALUE_SIZE = 1024 * 1024
+VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
 NETEM_MEAN = 1
@@ -171,14 +171,12 @@ def bench_round(protocol):
     # at the first failure point, pause current leader
     time.sleep(FAIL1_SECS)
     print("    Pausing leader...")
-    proc_mess = run_mess_client(protocol, pauses="l")
-    proc_mess.wait()
+    run_mess_client(protocol, pauses="l")
 
     # at the second failure point, pause current leader
     time.sleep(FAIL2_SECS - FAIL1_SECS)
     print("    Pausing leader...")
-    proc_mess = run_mess_client(protocol, pauses="l")
-    proc_mess.wait()
+    run_mess_client(protocol, pauses="l")
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
