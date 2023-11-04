@@ -4,15 +4,21 @@
 //! replicas. Upon receiving acknowledgement from all peers, executes the
 //! command on the state machine and replies.
 
+mod request;
+mod durability;
+mod messages;
+mod execution;
+mod recovery;
+mod control;
+
 use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::utils::{SummersetError, Bitmap};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
-    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
-    TransportHub, GenericReplica,
+    ReplicaId, ControlHub, StateMachine, CommandId, ExternalApi, ApiRequest,
+    ApiReply, StorageHub, TransportHub, GenericReplica,
 };
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
@@ -66,7 +72,7 @@ impl Default for ReplicaConfigSimplePush {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-enum WalEntry {
+pub enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
     },
@@ -79,7 +85,7 @@ enum WalEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-enum PushMsg {
+pub enum PushMsg {
     Push {
         src_inst_idx: usize,
         reqs: Vec<(ClientId, ApiRequest)>,
@@ -91,7 +97,7 @@ enum PushMsg {
 }
 
 /// In-memory instance containing a commands batch.
-struct Instance {
+pub struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     pending_peers: Bitmap,
@@ -154,432 +160,6 @@ impl SimplePushReplica {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
-    }
-}
-
-// SimplePushReplica client requests entrance
-impl SimplePushReplica {
-    /// Handler of client request batch chan recv.
-    fn handle_req_batch(
-        &mut self,
-        req_batch: Vec<(ClientId, ApiRequest)>,
-    ) -> Result<(), SummersetError> {
-        let batch_size = req_batch.len();
-        debug_assert!(batch_size > 0);
-
-        // target peers to push to
-        let mut target = Bitmap::new(self.population, false);
-        let mut peer_cnt = 0;
-        for peer in 0..self.population {
-            if peer_cnt == self.config.rep_degree {
-                break;
-            }
-            if peer == self.id {
-                continue;
-            }
-            target.set(peer, true)?;
-            peer_cnt += 1;
-        }
-
-        let inst = Instance {
-            reqs: req_batch.clone(),
-            durable: false,
-            pending_peers: target.clone(),
-            execed: vec![false; batch_size],
-            from_peer: None,
-        };
-        let inst_idx = self.insts.len();
-        self.insts.push(inst);
-
-        // submit log action to make this instance durable
-        let wal_entry = WalEntry::FromClient {
-            reqs: req_batch.clone(),
-        };
-        self.storage_hub.submit_action(
-            inst_idx as LogActionId,
-            LogAction::Append {
-                entry: wal_entry,
-                sync: true,
-            },
-        )?;
-
-        // send push message to chosen peers
-        self.transport_hub.bcast_msg(
-            PushMsg::Push {
-                src_inst_idx: inst_idx,
-                reqs: req_batch,
-            },
-            Some(target),
-        )?;
-
-        Ok(())
-    }
-}
-
-// SimplePushReplica durable WAL logging
-impl SimplePushReplica {
-    /// Handler of durable logging result chan recv.
-    fn handle_log_result(
-        &mut self,
-        action_id: LogActionId,
-        log_result: LogResult<WalEntry>,
-    ) -> Result<(), SummersetError> {
-        let inst_idx = action_id as usize;
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid log action ID {} seen", inst_idx);
-        }
-
-        match log_result {
-            LogResult::Append { now_size } => {
-                debug_assert!(now_size >= self.wal_offset);
-                self.wal_offset = now_size;
-            }
-            _ => {
-                return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
-            }
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if inst.durable {
-            return logged_err!(self.id; "duplicate log action ID {} seen", inst_idx);
-        }
-        inst.durable = true;
-
-        // if pushed peers have all replied, submit execution commands
-        if inst.pending_peers.count() == 0 {
-            for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                match req {
-                    ApiRequest::Req { cmd, .. } => {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(inst_idx, cmd_idx),
-                            cmd.clone(),
-                        )?
-                    }
-                    _ => continue, // ignore other types of requests
-                }
-            }
-        }
-
-        // if this instance was pushed from a peer, reply to that peer
-        if let Some((peer, src_inst_idx)) = inst.from_peer {
-            debug_assert!(inst.pending_peers.count() == 0);
-            self.transport_hub.send_msg(
-                PushMsg::PushReply {
-                    src_inst_idx,
-                    num_reqs: inst.reqs.len(),
-                },
-                peer,
-            )?;
-        }
-
-        Ok(())
-    }
-}
-
-// SimplePushReplica peer-peer messages handling
-impl SimplePushReplica {
-    /// Handler of push message from peer.
-    fn handle_push_msg(
-        &mut self,
-        peer: ReplicaId,
-        src_inst_idx: usize,
-        req_batch: Vec<(ClientId, ApiRequest)>,
-    ) -> Result<(), SummersetError> {
-        let inst = Instance {
-            reqs: req_batch.clone(),
-            durable: false,
-            pending_peers: Bitmap::new(self.population, false),
-            execed: vec![false; req_batch.len()],
-            from_peer: Some((peer, src_inst_idx)),
-        };
-        let inst_idx = self.insts.len();
-        self.insts.push(inst);
-
-        // submit log action to make this instance durable
-        let wal_entry = WalEntry::PeerPushed {
-            peer,
-            src_inst_idx,
-            reqs: req_batch.clone(),
-        };
-        self.storage_hub.submit_action(
-            inst_idx as LogActionId,
-            LogAction::Append {
-                entry: wal_entry,
-                sync: true,
-            },
-        )?;
-
-        Ok(())
-    }
-
-    /// Handler of push reply from peer.
-    fn handle_push_reply(
-        &mut self,
-        peer: ReplicaId,
-        inst_idx: usize,
-        num_reqs: usize,
-    ) -> Result<(), SummersetError> {
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid src_inst_idx {} seen", inst_idx);
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if inst.from_peer.is_some() {
-            return logged_err!(self.id; "from_peer should not be set for {}", inst_idx);
-        }
-        if inst.pending_peers.count() == 0 {
-            return logged_err!(self.id; "pending_peers already 0 for {}", inst_idx);
-        }
-        if !inst.pending_peers.get(peer)? {
-            return logged_err!(self.id; "unexpected push reply from peer {} for {}",
-                                        peer, inst_idx);
-        }
-        if num_reqs != inst.reqs.len() {
-            return logged_err!(self.id; "num_reqs mismatch: expected {}, got {}",
-                                        inst.reqs.len(), num_reqs);
-        }
-        inst.pending_peers.set(peer, false)?;
-
-        // if pushed peers have all replied and the logging on myself has
-        // completed as well, submit execution commands
-        if inst.pending_peers.count() == 0 && inst.durable {
-            for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                match req {
-                    ApiRequest::Req { cmd, .. } => {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(inst_idx, cmd_idx),
-                            cmd.clone(),
-                        )?
-                    }
-                    _ => continue, // ignore other types of requests
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// SimplePushReplica state machine execution
-impl SimplePushReplica {
-    /// Handler of state machine exec result chan recv.
-    fn handle_cmd_result(
-        &mut self,
-        cmd_id: CommandId,
-        cmd_result: CommandResult,
-    ) -> Result<(), SummersetError> {
-        let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if cmd_idx >= inst.reqs.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-        if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
-        }
-        if !inst.durable {
-            return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
-        }
-        if inst.pending_peers.count() > 0 {
-            return logged_err!(self.id; "instance {} has pending peers", inst_idx);
-        }
-        inst.execed[cmd_idx] = true;
-
-        // if this instance was directly from client, reply to the
-        // corresponding client of this request
-        if inst.from_peer.is_none() {
-            let (client, req) = &inst.reqs[cmd_idx];
-            match req {
-                ApiRequest::Req { id: req_id, .. } => {
-                    if self.external_api.has_client(*client) {
-                        self.external_api.send_reply(
-                            ApiReply::Reply {
-                                id: *req_id,
-                                result: Some(cmd_result),
-                                redirect: None,
-                            },
-                            *client,
-                        )?;
-                    }
-                }
-                _ => {
-                    return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
-                }
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// SimplePushReplica control messages handling
-impl SimplePushReplica {
-    /// Handler of ResetState control message.
-    async fn handle_ctrl_reset_state(
-        &mut self,
-        durable: bool,
-    ) -> Result<(), SummersetError> {
-        // send leave notification to peers and wait for their replies
-        self.transport_hub.leave().await?;
-
-        // send leave notification to manager and wait for its reply
-        self.control_hub.send_ctrl(CtrlMsg::Leave)?;
-        while self.control_hub.recv_ctrl().await? != CtrlMsg::LeaveReply {}
-
-        // if `durable` is false, truncate backer file
-        if !durable {
-            // use 0 as a special log action ID here
-            self.storage_hub
-                .submit_action(0, LogAction::Truncate { offset: 0 })?;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id == 0 {
-                    if log_result
-                        != (LogResult::Truncate {
-                            offset_ok: true,
-                            now_size: 0,
-                        })
-                    {
-                        return logged_err!(self.id; "failed to truncate log to 0");
-                    } else {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handler of Pause control message.
-    fn handle_ctrl_pause(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got pause req");
-        *paused = true;
-        self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
-        Ok(())
-    }
-
-    /// Handler of Resume control message.
-    fn handle_ctrl_resume(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got resume req");
-        *paused = false;
-        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
-        Ok(())
-    }
-
-    /// Synthesized handler of manager control messages. If ok, returns
-    /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
-    /// decides to shutdown completely, and `None` if not terminating.
-    async fn handle_ctrl_msg(
-        &mut self,
-        msg: CtrlMsg,
-        paused: &mut bool,
-    ) -> Result<Option<bool>, SummersetError> {
-        match msg {
-            CtrlMsg::ResetState { durable } => {
-                self.handle_ctrl_reset_state(durable).await?;
-                Ok(Some(true))
-            }
-
-            CtrlMsg::Pause => {
-                self.handle_ctrl_pause(paused)?;
-                Ok(None)
-            }
-
-            CtrlMsg::Resume => {
-                self.handle_ctrl_resume(paused)?;
-                Ok(None)
-            }
-
-            _ => Ok(None), // ignore all other types
-        }
-    }
-}
-
-// SimplePushReplica recovery from WAL log
-impl SimplePushReplica {
-    /// Recover state from durable storage WAL log.
-    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        debug_assert_eq!(self.wal_offset, 0);
-        loop {
-            // using 0 as a special log action ID
-            self.storage_hub.submit_action(
-                0,
-                LogAction::Read {
-                    offset: self.wal_offset,
-                },
-            )?;
-            let (_, log_result) = self.storage_hub.get_result().await?;
-
-            match log_result {
-                LogResult::Read {
-                    entry: Some(entry),
-                    end_offset,
-                } => {
-                    let (from_peer, reqs) = match entry {
-                        WalEntry::FromClient { reqs } => (None, reqs),
-                        WalEntry::PeerPushed {
-                            peer,
-                            src_inst_idx,
-                            reqs,
-                        } => (Some((peer, src_inst_idx)), reqs),
-                    };
-                    // execute all commands on state machine synchronously
-                    for (_, req) in reqs.clone() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            // using 0 as a special command ID
-                            self.state_machine.submit_cmd(0, cmd)?;
-                            let _ = self.state_machine.get_result().await?;
-                        }
-                    }
-                    // rebuild in-memory log entry
-                    let num_reqs = reqs.len();
-                    self.insts.push(Instance {
-                        reqs,
-                        durable: true,
-                        pending_peers: Bitmap::new(self.population, false),
-                        execed: vec![true; num_reqs],
-                        from_peer,
-                    });
-                    // update log offset
-                    self.wal_offset = end_offset;
-                }
-                LogResult::Read { entry: None, .. } => {
-                    // end of log reached
-                    break;
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected log result type");
-                }
-            }
-        }
-
-        // do an extra Truncate to remove paritial entry at the end if any
-        self.storage_hub.submit_action(
-            0,
-            LogAction::Truncate {
-                offset: self.wal_offset,
-            },
-        )?;
-        let (_, log_result) = self.storage_hub.get_result().await?;
-        if let LogResult::Truncate {
-            offset_ok: true, ..
-        } = log_result
-        {
-            Ok(())
-        } else {
-            logged_err!(self.id; "unexpected log result type")
-        }
     }
 }
 
