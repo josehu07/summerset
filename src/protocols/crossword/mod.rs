@@ -748,6 +748,7 @@ impl GenericReplica for CrosswordReplica {
         let dj_spr = rs_total_shards / population;
         let good_rr_assignments = if assignment_balanced {
             (dj_spr..=rs_data_shards)
+                .step_by(dj_spr as usize)
                 .map(|spr| {
                     (
                         spr,
