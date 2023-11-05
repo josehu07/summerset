@@ -71,8 +71,12 @@ impl CrosswordReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         // clear pending perf monitoring timestamps
-        self.pending_accepts.clear();
-        self.pending_heartbeats.clear();
+        for pending in self.pending_accepts.values_mut() {
+            pending.clear();
+        }
+        for pending in self.pending_heartbeats.values_mut() {
+            pending.clear();
+        }
         let now_us = self.startup_time.elapsed().as_micros();
 
         let mut chunk_cnt = 0;
@@ -137,8 +141,11 @@ impl CrosswordReplica {
                         },
                         None,
                     )?;
-                    self.pending_heartbeats
-                        .push_back((now_us, self.next_hb_id));
+                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+                        if self.peer_alive.get(peer)? {
+                            pending.push_back((now_us, self.next_hb_id));
+                        }
+                    }
                     self.next_hb_id += 1;
                 }
             }
@@ -174,8 +181,11 @@ impl CrosswordReplica {
                         },
                         None,
                     )?;
-                    self.pending_heartbeats
-                        .push_back((now_us, self.next_hb_id));
+                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+                        if self.peer_alive.get(peer)? {
+                            pending.push_back((now_us, self.next_hb_id));
+                        }
+                    }
                     self.next_hb_id += 1;
                 }
             }
@@ -198,6 +208,7 @@ impl CrosswordReplica {
 
     /// Broadcasts heartbeats to all replicas.
     pub fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        let now_us = self.startup_time.elapsed().as_micros();
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 id: self.next_hb_id,
@@ -207,10 +218,11 @@ impl CrosswordReplica {
             },
             None,
         )?;
-        self.pending_heartbeats.push_back((
-            self.startup_time.elapsed().as_micros(),
-            self.next_hb_id,
-        ));
+        for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+            if self.peer_alive.get(peer)? {
+                pending.push_back((now_us, self.next_hb_id));
+            }
+        }
 
         // update max heartbeat reply counters and their repetitions seen
         let mut peer_death = false;
@@ -361,7 +373,18 @@ impl CrosswordReplica {
     fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         let alive_cnt = self.peer_alive.count();
-        let mut new_pending_accepts = VecDeque::new();
+        let mut new_pending_accepts: HashMap<
+            ReplicaId,
+            VecDeque<(u128, usize)>,
+        > = (0..self.population)
+            .filter_map(|s| {
+                if s == self.id {
+                    None
+                } else {
+                    Some((s, VecDeque::new()))
+                }
+            })
+            .collect();
 
         let mut chunk_cnt = 0;
         for (slot, inst) in self
@@ -382,9 +405,14 @@ impl CrosswordReplica {
                 {
                     // the assignment policy used for this instance was already
                     // responsive for current # of healthy nodes
-                    while let Some(record) = self.pending_accepts.pop_front() {
-                        if slot == record.1 {
-                            new_pending_accepts.push_back(record);
+                    for (peer, pending) in self.pending_accepts.iter_mut() {
+                        while let Some(record) = pending.pop_front() {
+                            if slot == record.1 {
+                                new_pending_accepts
+                                    .get_mut(peer)
+                                    .unwrap()
+                                    .push_back(record);
+                            }
                         }
                     }
                     continue;
@@ -392,10 +420,8 @@ impl CrosswordReplica {
 
                 inst.bal = self.bal_prepared;
                 inst.leader_bk.as_mut().unwrap().accept_acks.clear();
-                pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                       slot, inst.bal);
-
                 let assignment = Self::pick_assignment_policy(
+                    self.assignment_adaptive,
                     self.assignment_balanced,
                     &self.init_assignment,
                     &self.brr_assignments,
@@ -406,6 +432,8 @@ impl CrosswordReplica {
                     &self.linreg_model,
                     &self.peer_alive,
                 );
+                pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
+                                   slot, inst.bal, Self::assignment_to_string(assignment));
 
                 let subset_copy = inst
                     .reqs_cw
@@ -448,10 +476,15 @@ impl CrosswordReplica {
                         },
                         peer,
                     )?;
+                    if self.peer_alive.get(peer)? {
+                        self.pending_accepts
+                            .get_mut(&peer)
+                            .unwrap()
+                            .push_back((now_us, slot));
+                    }
                 }
                 pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                        slot, inst.bal);
-                self.pending_accepts.push_back((now_us, slot));
                 chunk_cnt += 1;
 
                 // inject heartbeats in the middle to keep peers happy
@@ -465,8 +498,11 @@ impl CrosswordReplica {
                         },
                         None,
                     )?;
-                    self.pending_heartbeats
-                        .push_back((now_us, self.next_hb_id));
+                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+                        if self.peer_alive.get(peer)? {
+                            pending.push_back((now_us, self.next_hb_id));
+                        }
+                    }
                     self.next_hb_id += 1;
                     chunk_cnt = 0;
                 }

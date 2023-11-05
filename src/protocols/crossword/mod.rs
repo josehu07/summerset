@@ -95,6 +95,8 @@ pub struct ReplicaConfigCrossword {
 
     /// Update interval of linear regression perf monitoring model.
     pub linreg_interval_ms: u64,
+    /// Window timespan of linear regression datapoints to keep.
+    pub linreg_keep_ms: u64,
 
     /// Initial linear regression model slope.
     pub linreg_init_a: f64,
@@ -129,7 +131,8 @@ impl Default for ReplicaConfigCrossword {
             rs_total_shards: 0,
             rs_data_shards: 0,
             init_assignment: "".into(),
-            linreg_interval_ms: 3000,
+            linreg_interval_ms: 200,
+            linreg_keep_ms: 3000,
             linreg_init_a: 100.0,
             linreg_init_b: 10.0,
             perf_storage_a: 0,
@@ -329,6 +332,11 @@ pub struct CrosswordReplica {
     /// Reed-Solomon number of data shards.
     rs_data_shards: u8,
 
+    /// Doing dynamically adaptive config choosing?
+    // NOTE: currently, adaptability is only enabled when an initial assignment
+    //       is not give.
+    assignment_adaptive: bool,
+
     /// Using only balanced assignment policies?
     // NOTE: currently, adaptability is only enabled when using balanced
     //       assignment policies.
@@ -439,17 +447,22 @@ pub struct CrosswordReplica {
     /// Fixed Reed-Solomon coder.
     rs_coder: ReedSolomon,
 
-    /// List of pending Accepts (timestamp, slot) for perf monitoring.
-    pending_accepts: VecDeque<(u128, usize)>,
+    /// Map from peer ID -> list of pending Accepts (timestamp, slot) for
+    /// perf monitoring.
+    pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize)>>,
 
-    /// List of pending heartbeats (timestamp, id) for perf monitoring.
-    pending_heartbeats: VecDeque<(u128, HeartbeatId)>,
+    /// Map from peer ID -> ;ist of pending heartbeats (timestamp, id) for
+    /// perf monitoring.
+    pending_heartbeats: HashMap<ReplicaId, VecDeque<(u128, HeartbeatId)>>,
 
     /// Monotonically incrementing ID for heartbeat messages.
     next_hb_id: HeartbeatId,
 
     /// Base time instant at startup, used as a reference zero timestamp.
     startup_time: Instant,
+
+    /// Elapsed us of the last console printing of linreg models result.
+    last_linreg_print: u128,
 
     /// Map from peer ID -> linear regressor for perf monitoring model.
     regressor: HashMap<ReplicaId, LinearRegressor>,
@@ -585,7 +598,8 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_tail_ignores,
                                     fault_tolerance, msg_chunk_size,
                                     rs_total_shards, rs_data_shards,
-                                    init_assignment, linreg_interval_ms,
+                                    init_assignment,
+                                    linreg_interval_ms, linreg_keep_ms,
                                     linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -629,6 +643,13 @@ impl GenericReplica for CrosswordReplica {
                 id;
                 "invalid config.linreg_interval_ms '{}'",
                 config.linreg_interval_ms
+            );
+        }
+        if config.linreg_keep_ms == 0 {
+            return logged_err!(
+                id;
+                "invalid config.linreg_keep_ms '{}'",
+                config.linreg_keep_ms
             );
         }
 
@@ -731,6 +752,7 @@ impl GenericReplica for CrosswordReplica {
                 }
             }
         }
+        let assignment_adaptive = config.init_assignment.is_empty();
         let assignment_balanced = nums_assigned.len() == 1;
         if init_assignment.len() != population as usize
             || max_coverage.count() < rs_data_shards
@@ -822,6 +844,7 @@ impl GenericReplica for CrosswordReplica {
             majority,
             rs_total_shards,
             rs_data_shards,
+            assignment_adaptive,
             assignment_balanced,
             init_assignment,
             brr_assignments,
@@ -857,10 +880,27 @@ impl GenericReplica for CrosswordReplica {
             wal_offset: 0,
             snap_offset: 0,
             rs_coder,
-            pending_accepts: VecDeque::new(),
-            pending_heartbeats: VecDeque::new(),
+            pending_accepts: (0..population)
+                .filter_map(|s| {
+                    if s == id {
+                        None
+                    } else {
+                        Some((s, VecDeque::new()))
+                    }
+                })
+                .collect(),
+            pending_heartbeats: (0..population)
+                .filter_map(|s| {
+                    if s == id {
+                        None
+                    } else {
+                        Some((s, VecDeque::new()))
+                    }
+                })
+                .collect(),
             next_hb_id: 0,
             startup_time: Instant::now(),
+            last_linreg_print: 0,
             regressor: (0..population)
                 .filter_map(|s| {
                     if s == id {
@@ -981,7 +1021,7 @@ impl GenericReplica for CrosswordReplica {
 
                 // linear regression model update trigger
                 _ = self.linreg_interval.tick(), if !paused && self.is_leader() => {
-                    if let Err(e) = self.update_linreg_model() {
+                    if let Err(e) = self.update_linreg_model(self.config.linreg_keep_ms) {
                         pf_error!(self.id; "error updating linear regression model: {}", e);
                     }
                 },

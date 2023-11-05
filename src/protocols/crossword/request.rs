@@ -114,6 +114,7 @@ impl CrosswordReplica {
             inst.bal = self.bal_prepared;
             inst.status = Status::Accepting;
             let assignment = Self::pick_assignment_policy(
+                self.assignment_adaptive,
                 self.assignment_balanced,
                 &self.init_assignment,
                 &self.brr_assignments,
@@ -151,6 +152,7 @@ impl CrosswordReplica {
 
             // send Accept messages to all peers, each getting its subset of
             // shards of data
+            let now_us = self.startup_time.elapsed().as_micros();
             for peer in 0..self.population {
                 if peer == self.id {
                     continue;
@@ -166,11 +168,15 @@ impl CrosswordReplica {
                     },
                     peer,
                 )?;
+                if self.peer_alive.get(peer)? {
+                    self.pending_accepts
+                        .get_mut(&peer)
+                        .unwrap()
+                        .push_back((now_us, slot));
+                }
             }
             pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                slot, inst.bal);
-            self.pending_accepts
-                .push_back((self.startup_time.elapsed().as_micros(), slot));
         }
 
         Ok(())

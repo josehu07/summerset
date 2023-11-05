@@ -127,18 +127,6 @@ impl CrosswordReplica {
             let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];
 
-            let assignment = Self::pick_assignment_policy(
-                self.assignment_balanced,
-                &self.init_assignment,
-                &self.brr_assignments,
-                self.rs_data_shards,
-                self.majority,
-                self.config.fault_tolerance,
-                inst.reqs_cw.data_len(),
-                &self.linreg_model,
-                &self.peer_alive,
-            );
-
             // ignore spurious duplications and outdated replies
             if !is_leader
                 || (inst.status != Status::Preparing)
@@ -189,8 +177,20 @@ impl CrosswordReplica {
                 }
 
                 inst.status = Status::Accepting;
-                pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                   slot, inst.bal);
+                let assignment = Self::pick_assignment_policy(
+                    self.assignment_adaptive,
+                    self.assignment_balanced,
+                    &self.init_assignment,
+                    &self.brr_assignments,
+                    self.rs_data_shards,
+                    self.majority,
+                    self.config.fault_tolerance,
+                    inst.reqs_cw.data_len(),
+                    &self.linreg_model,
+                    &self.peer_alive,
+                );
+                pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
+                                   slot, inst.bal, Self::assignment_to_string(assignment));
 
                 // update bal_prepared
                 debug_assert!(self.bal_prepared <= ballot);
@@ -223,6 +223,7 @@ impl CrosswordReplica {
                                    slot, ballot);
 
                 // send Accept messages to all peers
+                let now_us = self.startup_time.elapsed().as_micros();
                 for peer in 0..self.population {
                     if peer == self.id {
                         continue;
@@ -239,11 +240,15 @@ impl CrosswordReplica {
                         },
                         peer,
                     )?;
+                    if self.peer_alive.get(peer)? {
+                        self.pending_accepts
+                            .get_mut(&peer)
+                            .unwrap()
+                            .push_back((now_us, slot));
+                    }
                 }
                 pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
                                    slot, ballot);
-                self.pending_accepts
-                    .push_back((self.startup_time.elapsed().as_micros(), slot));
             }
         }
 

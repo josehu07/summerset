@@ -158,10 +158,12 @@ def bench_round(protocol):
     utils.kill_all_local_procs()
     time.sleep(1)
 
+    config = f"batch_interval_ms={BATCH_INTERVAL}"
+    if protocol == "Crossword":
+        config += "+init_assignment='1'"
+
     # launch service cluster
-    proc_cluster = launch_cluster(
-        protocol, config=f"batch_interval_ms={BATCH_INTERVAL}"
-    )
+    proc_cluster = launch_cluster(protocol, config=config)
     with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         wait_cluster_setup(proc_cluster, fserr=fserr)
 
