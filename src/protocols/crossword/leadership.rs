@@ -397,12 +397,13 @@ impl CrosswordReplica {
 
                 let assignment = Self::pick_assignment_policy(
                     self.assignment_balanced,
-                    &self.assignment_policies,
-                    &self.good_rr_assignments,
+                    &self.init_assignment,
+                    &self.brr_assignments,
                     self.rs_data_shards,
                     self.majority,
                     self.config.fault_tolerance,
                     inst.reqs_cw.data_len(),
+                    &self.linreg_model,
                     &self.peer_alive,
                 );
 

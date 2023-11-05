@@ -8,6 +8,31 @@ use crate::utils::SummersetError;
 
 // CrosswordReplica linear regression perf monitoring
 impl CrosswordReplica {
+    /// Pretty-print a `Vec<Bitmap>` assignment policy
+    #[inline]
+    #[allow(clippy::ptr_arg)]
+    pub fn assignment_to_string(assignment: &Vec<Bitmap>) -> String {
+        assignment
+            .iter()
+            .enumerate()
+            .map(|(r, a)| format!("{}:{{{}}}", r, a.compact_str()))
+            .collect::<Vec<String>>()
+            .join(" ")
+    }
+
+    /// Pretty-print linear regression models.
+    #[inline]
+    #[allow(clippy::ptr_arg)]
+    fn linreg_models_to_string(
+        models: &HashMap<ReplicaId, (f64, f64)>,
+    ) -> String {
+        models
+            .iter()
+            .map(|(r, model)| format!("{}:({:.2},{:.2})", r, model.0, model.1))
+            .collect::<Vec<String>>()
+            .join(" ")
+    }
+
     /// Parse config string into initial shards assignment policy.
     pub fn parse_init_assignment(
         population: u8,
@@ -90,59 +115,56 @@ impl CrosswordReplica {
     #[allow(clippy::too_many_arguments)]
     pub fn pick_assignment_policy<'a>(
         assignment_balanced: bool,
-        assignment_policies: &'a RangeMap<usize, Vec<Bitmap>>,
-        good_rr_assignments: &'a HashMap<u8, Vec<Bitmap>>,
+        init_assignment: &'a Vec<Bitmap>,
+        brr_assignments: &'a HashMap<u8, Vec<Bitmap>>,
         rs_data_shards: u8,
         majority: u8,
         fault_tolerance: u8,
         data_size: usize,
+        linreg_model: &HashMap<ReplicaId, (f64, f64)>,
         peer_alive: &Bitmap,
     ) -> &'a Vec<Bitmap> {
-        if assignment_balanced {
-            let assignment = assignment_policies.get(&data_size).unwrap();
-            let min_spr = Self::min_shards_per_replica(
-                rs_data_shards,
-                majority,
-                fault_tolerance,
-                peer_alive.count(),
-            );
-            if assignment[0].count() >= min_spr {
-                assignment
-            } else {
-                good_rr_assignments.get(&min_spr).unwrap()
-            }
-        } else {
-            // NOTE: skips the check of `alive_cnt` for unbalanced assignments;
-            //       leaving this as future work
-            assignment_policies.get(&data_size).unwrap()
+        // NOTE: skips the check of `alive_cnt` for unbalanced assignments;
+        //       leaving this as future work
+        if !assignment_balanced {
+            return init_assignment;
         }
-    }
 
-    // Pretty-print assignment policies.
-    #[inline]
-    pub fn assignment_policies_str(
-        assignment_policies: &RangeMap<usize, Vec<Bitmap>>,
-    ) -> String {
-        let mut s = String::new();
-        for (range, policy) in assignment_policies.iter() {
-            let ps = policy
+        // query the linear regression models and pick the best config of
+        // (#shards_per_replica, quorum_size) pair along the constraint
+        // boundary line
+        let dj_spr = rs_data_shards / majority;
+        let mut config_times =
+            Vec::<(u8, f64)>::with_capacity(majority as usize);
+        for (spr, q) in (dj_spr..=rs_data_shards)
+            .step_by(dj_spr as usize)
+            .enumerate()
+            .map(|(i, spr)| (spr, majority + fault_tolerance - i as u8))
+        {
+            let load_size =
+                (data_size / rs_data_shards as usize) * spr as usize;
+            let mut peer_times: Vec<f64> = linreg_model
                 .iter()
-                .enumerate()
-                .map(|(i, a)| format!("{}:{}", i, a.compact_str()))
-                .collect::<Vec<String>>()
-                .join("/");
-            s.push_str(&format!(
-                "{}~{}-{{{}}} ",
-                range.start,
-                if range.end == usize::MAX {
-                    "max".into()
-                } else {
-                    range.end.to_string()
-                },
-                ps
-            ));
+                .map(|(_, model)| model.0 + model.1 * load_size as f64)
+                .collect();
+            peer_times.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            config_times.push((spr, peer_times[q as usize - 2]));
         }
-        s
+        let best_spr = config_times
+            .iter()
+            .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+            .unwrap()
+            .0;
+
+        // if the best assignment according to models is not responsive enough
+        // given the current peer_alive count, use the best possible one
+        let min_spr = Self::min_shards_per_replica(
+            rs_data_shards,
+            majority,
+            fault_tolerance,
+            peer_alive.count(),
+        );
+        brr_assignments.get(&cmp::max(best_spr, min_spr)).unwrap()
     }
 
     /// Records a new datapoint for Accept RTT time.
@@ -218,24 +240,32 @@ impl CrosswordReplica {
         let now_us = self.startup_time.elapsed().as_micros();
         let keep_us = now_us - 1000 * self.config.linreg_interval_ms as u128;
 
-        for (peer, regressor) in self.regressor.iter_mut() {
+        for (&peer, regressor) in self.regressor.iter_mut() {
             regressor.discard_before(keep_us);
-            match regressor.calc_model() {
-                Ok(mut model) => {
-                    if model.0 < 0.0 {
-                        model.0 = 0.0;
+            if !self.peer_alive.get(peer)? {
+                // if peer not considered alive, use a very high delay
+                *self.linreg_model.get_mut(&peer).unwrap() = (10000000.0, 1.0);
+            } else {
+                // otherwise, compute simple linear regression
+                match regressor.calc_model() {
+                    Ok(mut model) => {
+                        if model.0 < 0.0 {
+                            model.0 = 0.0;
+                        }
+                        if model.1 < 0.0 {
+                            model.1 = 0.0;
+                        }
+                        *self.linreg_model.get_mut(&peer).unwrap() = model;
                     }
-                    if model.1 < 0.0 {
-                        model.1 = 0.0;
+                    Err(_e) => {
+                        // pf_trace!(self.id; "calc_model error: {}", e);
                     }
-                    *self.linreg_model.get_mut(peer).unwrap() = model;
-                }
-                Err(_e) => {
-                    // pf_trace!(self.id; "calc_model error: {}", e);
                 }
             }
         }
 
+        pf_info!(self.id; "linreg update {}",
+                          Self::linreg_models_to_string(&self.linreg_model));
         Ok(())
     }
 }

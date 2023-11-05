@@ -33,8 +33,6 @@ use async_trait::async_trait;
 
 use get_size::GetSize;
 
-use rangemap::RangeMap;
-
 use serde::{Serialize, Deserialize};
 
 use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
@@ -336,13 +334,12 @@ pub struct CrosswordReplica {
     //       assignment policies.
     assignment_balanced: bool,
 
-    /// Map from data size range -> shards assignment policy. This map is
-    /// updated by the linreg model periodically.
-    assignment_policies: RangeMap<usize, Vec<Bitmap>>,
+    /// Initial assignment policy from config.
+    init_assignment: Vec<Bitmap>,
 
-    /// Pre-filled round-robin balanced assignment policies for quicker access
-    /// when peer_alive count is low.
-    good_rr_assignments: HashMap<u8, Vec<Bitmap>>,
+    /// Pre-filled good balanced round-robin assignment policies for quicker
+    /// access when peer_alive count is low.
+    brr_assignments: HashMap<u8, Vec<Bitmap>>,
 
     /// Configuration parameters struct.
     config: ReplicaConfigCrossword,
@@ -696,9 +693,12 @@ impl GenericReplica for CrosswordReplica {
             );
         }
         let rs_total_shards = cmp::max(config.rs_total_shards, population);
-        if (config.rs_data_shards % majority != 0)
-            || (config.rs_data_shards / majority
-                != rs_total_shards / population)
+        if (config.rs_total_shards != 0 && config.rs_data_shards == 0)
+            || (config.rs_total_shards == 0 && config.rs_data_shards != 0)
+            || (config.rs_data_shards % majority != 0)
+            || (config.rs_data_shards != 0
+                && config.rs_data_shards / majority
+                    != rs_total_shards / population)
         {
             return logged_err!(
                 id;
@@ -731,22 +731,18 @@ impl GenericReplica for CrosswordReplica {
                 }
             }
         }
+        let assignment_balanced = nums_assigned.len() == 1;
         if init_assignment.len() != population as usize
             || max_coverage.count() < rs_data_shards
         {
             return logged_err!(id; "invalid init assignment parsed: {:?}", init_assignment);
         }
-
-        // let all data sizes map to the initial assignment policy at first
-        let assignment_balanced = nums_assigned.len() == 1;
-        let mut assignment_policies = RangeMap::new();
-        assignment_policies.insert(0..usize::MAX, init_assignment);
-        pf_info!(id; "policies {}", Self::assignment_policies_str(&assignment_policies));
+        pf_debug!(id; "init asgmt {}", Self::assignment_to_string(&init_assignment));
 
         // if restricted to balanced assignments only, pre-fill
-        // `good_rr_assignments` with balanced round-robin policies
+        // `brr_assignments` with balanced round-robin policies
         let dj_spr = rs_total_shards / population;
-        let good_rr_assignments = if assignment_balanced {
+        let brr_assignments = if assignment_balanced {
             (dj_spr..=rs_data_shards)
                 .step_by(dj_spr as usize)
                 .map(|spr| {
@@ -827,8 +823,8 @@ impl GenericReplica for CrosswordReplica {
             rs_total_shards,
             rs_data_shards,
             assignment_balanced,
-            assignment_policies,
-            good_rr_assignments,
+            init_assignment,
+            brr_assignments,
             config: config.clone(),
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,

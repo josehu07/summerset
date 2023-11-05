@@ -11,7 +11,6 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 [dependencies]
 async-trait = "0.1"
 fixedbitset = { version = "0.4", features = ["serde"] }
-rangemap = "1.4"
 flashmap = "0.1"
 bytes = { version = "1.4", features = ["serde"] }
 futures = "0.3"

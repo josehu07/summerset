@@ -113,19 +113,19 @@ impl CrosswordReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             inst.bal = self.bal_prepared;
             inst.status = Status::Accepting;
-            pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                               slot, inst.bal);
-
             let assignment = Self::pick_assignment_policy(
                 self.assignment_balanced,
-                &self.assignment_policies,
-                &self.good_rr_assignments,
+                &self.init_assignment,
+                &self.brr_assignments,
                 self.rs_data_shards,
                 self.majority,
                 self.config.fault_tolerance,
                 inst.reqs_cw.data_len(),
+                &self.linreg_model,
                 &self.peer_alive,
             );
+            pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
+                               slot, inst.bal, Self::assignment_to_string(assignment));
 
             // record update to largest accepted ballot and corresponding data
             let subset_copy = inst
