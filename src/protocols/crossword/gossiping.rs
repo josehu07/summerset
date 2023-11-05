@@ -35,7 +35,7 @@ impl CrosswordReplica {
     fn gossip_targets_excl(
         me: ReplicaId,
         population: u8,
-        majority: u8,
+        rs_data_shards: u8,
         replica_bk: &Option<ReplicaBookkeeping>,
         mut avail_shards_map: Bitmap,
         assignment: &Vec<Bitmap>,
@@ -49,7 +49,7 @@ impl CrosswordReplica {
         // greedily considers my peers, starting from the one with my ID + 1,
         // until enough number of shards covered
         let mut targets_excl = HashMap::new();
-        for p in (me + 1)..(population + me) {
+        for p in (me + 1)..(me + population) {
             let peer = p % population;
             if peer == src_peer {
                 // skip leader who initially replicated this instance to me
@@ -75,7 +75,7 @@ impl CrosswordReplica {
                 }
             }
 
-            if avail_shards_map.count() >= majority {
+            if avail_shards_map.count() >= rs_data_shards {
                 break;
             }
         }
@@ -119,12 +119,12 @@ impl CrosswordReplica {
                 .reqs_cw
                 .avail_shards_map();
             let assignment = &self.insts[slot - self.start_slot].assignment;
-            if avail_shards_map.count() < self.majority {
+            if avail_shards_map.count() < self.rs_data_shards {
                 // decide which peers to ask for which shards from
                 let targets_excl = Self::gossip_targets_excl(
                     self.id,
                     self.population,
-                    self.majority,
+                    self.rs_data_shards,
                     &self.insts[slot - self.start_slot].replica_bk,
                     avail_shards_map,
                     assignment,

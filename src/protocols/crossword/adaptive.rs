@@ -11,18 +11,24 @@ impl CrosswordReplica {
     /// Parse config string into initial shards assignment policy.
     pub fn parse_init_assignment(
         population: u8,
+        rs_total_shards: u8,
+        rs_data_shards: u8,
         s: &str,
     ) -> Result<Vec<Bitmap>, SummersetError> {
+        debug_assert_eq!(rs_total_shards % population, 0);
+        let dj_spr = rs_total_shards / population;
         let mut assignment = Vec::with_capacity(population as usize);
-        let majority = (population / 2) + 1;
         if s.is_empty() {
             // default to start with bandwidth-optimal diagonal assignment
             for r in 0..population {
-                assignment.push(Bitmap::from(population, vec![r]));
+                assignment.push(Bitmap::from(
+                    rs_total_shards,
+                    ((r * dj_spr)..((r + 1) * dj_spr)).collect(),
+                ));
             }
-        } else if let Ok(shards_per_replica) = s.parse::<u8>() {
+        } else if let Ok(spr) = s.parse::<u8>() {
             // a single number: the same #shards per replica round-robinly
-            if shards_per_replica == 0 || shards_per_replica > majority {
+            if spr < dj_spr || spr > rs_data_shards {
                 return Err(SummersetError(format!(
                     "invalid shards assignment string {}",
                     s
@@ -30,16 +36,16 @@ impl CrosswordReplica {
             }
             for r in 0..population {
                 assignment.push(Bitmap::from(
-                    population,
-                    (r..r + shards_per_replica)
-                        .map(|i| i % population)
+                    rs_total_shards,
+                    ((r * dj_spr)..(r * dj_spr + spr))
+                        .map(|i| i % rs_total_shards)
                         .collect(),
                 ));
             }
         } else {
             // string in format of something like 0:0,1/1:2/3:3,4 ...
             for _ in 0..population {
-                assignment.push(Bitmap::new(population, false));
+                assignment.push(Bitmap::new(rs_total_shards, false));
             }
             for seg in s.split('/') {
                 if let Some(idx) = seg.find(':') {
@@ -64,14 +70,29 @@ impl CrosswordReplica {
         Ok(assignment)
     }
 
+    /// Compute minimum number of shards_per_replica (assuming balanced
+    /// assignment) that is be responsive for a given peer_alive cnt.
+    #[inline]
+    pub fn min_shards_per_replica(
+        rs_data_shards: u8,
+        majority: u8,
+        fault_tolerance: u8,
+        alive_cnt: u8,
+    ) -> u8 {
+        (majority + fault_tolerance + 1 - alive_cnt)
+            * (rs_data_shards / majority)
+    }
+
     /// Get the proper assignment policy given data size and peer_alive count.
     // NOTE: if data_size == exactly `usize::MAX` this will fail; won't bother
     //       to account for this rare case right now
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn pick_assignment_policy<'a>(
         assignment_balanced: bool,
         assignment_policies: &'a RangeMap<usize, Vec<Bitmap>>,
         good_rr_assignments: &'a HashMap<u8, Vec<Bitmap>>,
+        rs_data_shards: u8,
         majority: u8,
         fault_tolerance: u8,
         data_size: usize,
@@ -79,12 +100,16 @@ impl CrosswordReplica {
     ) -> &'a Vec<Bitmap> {
         if assignment_balanced {
             let assignment = assignment_policies.get(&data_size).unwrap();
-            let min_shards_per_replica =
-                majority + fault_tolerance + 1 - peer_alive.count();
-            if assignment[0].count() >= min_shards_per_replica {
+            let min_spr = Self::min_shards_per_replica(
+                rs_data_shards,
+                majority,
+                fault_tolerance,
+                peer_alive.count(),
+            );
+            if assignment[0].count() >= min_spr {
                 assignment
             } else {
-                good_rr_assignments.get(&min_shards_per_replica).unwrap()
+                good_rr_assignments.get(&min_spr).unwrap()
             }
         } else {
             // NOTE: skips the check of `alive_cnt` for unbalanced assignments;

@@ -13,6 +13,7 @@ impl CrosswordReplica {
     // considering at most `fault_tolerance` failures.
     #[inline]
     fn coverage_under_faults(
+        rs_total_shards: u8,
         population: u8,
         acks: &HashMap<ReplicaId, Bitmap>,
         fault_tolerance: u8,
@@ -23,20 +24,21 @@ impl CrosswordReplica {
         }
 
         // if forcing balanced assignment, can compute this using a rather
-        // simple addition calculation
+        // simple calculation
         if assignment_balanced {
-            let shards_per_replica = acks.values().next().unwrap().count();
-            return acks.len() as u8 - fault_tolerance + shards_per_replica - 1;
+            let spr = acks.values().next().unwrap().count();
+            let dj_spr = rs_total_shards / population;
+            return (acks.len() as u8 - fault_tolerance - 1) * dj_spr + spr;
         }
 
         // enumerate all subsets of acks excluding fault number of replicas
         let cnt = (acks.len() - fault_tolerance as usize) as u32;
         let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
-        let mut min_coverage = population;
+        let mut min_coverage = rs_total_shards;
         for n in (0..2usize.pow(servers.len() as u32))
             .filter(|n| n.count_ones() == cnt)
         {
-            let mut coverage = Bitmap::new(population, false);
+            let mut coverage = Bitmap::new(rs_total_shards, false);
             for (_, server) in servers
                 .iter()
                 .enumerate()
@@ -129,6 +131,7 @@ impl CrosswordReplica {
                 self.assignment_balanced,
                 &self.assignment_policies,
                 &self.good_rr_assignments,
+                self.rs_data_shards,
                 self.majority,
                 self.config.fault_tolerance,
                 inst.reqs_cw.data_len(),
@@ -175,9 +178,11 @@ impl CrosswordReplica {
             //       when |Q| >= majority but #shards of the highest ballot is
             //       not enough, we are free to choose any value
             if leader_bk.prepare_acks.count() >= self.majority
-                && inst.reqs_cw.avail_shards() >= self.majority
+                && inst.reqs_cw.avail_shards() >= inst.reqs_cw.num_data_shards()
             {
-                if inst.reqs_cw.avail_data_shards() < self.majority {
+                if inst.reqs_cw.avail_data_shards()
+                    < inst.reqs_cw.num_data_shards()
+                {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }
@@ -191,7 +196,7 @@ impl CrosswordReplica {
                 self.bal_prepared = ballot;
 
                 // if parity shards not computed yet, compute them now
-                if inst.reqs_cw.avail_shards() < self.population {
+                if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_shards() {
                     inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
                 }
 
@@ -351,11 +356,12 @@ impl CrosswordReplica {
             // remembered, mark this instance as committed
             if leader_bk.accept_acks.len() as u8 >= self.majority
                 && Self::coverage_under_faults(
+                    self.rs_total_shards,
                     self.population,
                     &leader_bk.accept_acks,
                     self.config.fault_tolerance,
                     self.assignment_balanced,
-                ) >= self.majority
+                ) >= inst.reqs_cw.num_data_shards()
             {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
@@ -505,12 +511,15 @@ impl CrosswordReplica {
                         let inst =
                             &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed
-                            || inst.reqs_cw.avail_shards() < self.majority
+                            || inst.reqs_cw.avail_shards()
+                                < inst.reqs_cw.num_data_shards()
                         {
                             break;
                         }
 
-                        if inst.reqs_cw.avail_data_shards() < self.majority {
+                        if inst.reqs_cw.avail_data_shards()
+                            < inst.reqs_cw.num_data_shards()
+                        {
                             // have enough shards but need reconstruction
                             inst.reqs_cw
                                 .reconstruct_data(Some(&self.rs_coder))?;

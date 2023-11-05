@@ -87,11 +87,13 @@ impl CrosswordReplica {
                             break;
                         }
                         // check number of available shards
-                        if inst.reqs_cw.avail_shards() < self.majority {
+                        if inst.reqs_cw.avail_shards()
+                            < inst.reqs_cw.num_data_shards()
+                        {
                             // can't execute if I don't have the complete request batch
                             break;
                         } else if inst.reqs_cw.avail_data_shards()
-                            < self.majority
+                            < inst.reqs_cw.num_data_shards()
                         {
                             // have enough shards but need reconstruction
                             inst.reqs_cw

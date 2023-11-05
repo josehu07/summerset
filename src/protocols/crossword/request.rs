@@ -47,8 +47,8 @@ impl CrosswordReplica {
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
-            self.majority,
-            self.population - self.majority,
+            self.rs_data_shards,
+            self.rs_total_shards - self.rs_data_shards,
         )?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
@@ -120,6 +120,7 @@ impl CrosswordReplica {
                 self.assignment_balanced,
                 &self.assignment_policies,
                 &self.good_rr_assignments,
+                self.rs_data_shards,
                 self.majority,
                 self.config.fault_tolerance,
                 inst.reqs_cw.data_len(),

@@ -20,7 +20,10 @@ impl CrosswordReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..new_start_slot {
             let inst = &mut self.insts[slot - self.start_slot];
-            debug_assert!(inst.reqs_cw.avail_data_shards() >= self.majority);
+            debug_assert!(
+                inst.reqs_cw.avail_data_shards()
+                    >= inst.reqs_cw.num_data_shards()
+            );
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },

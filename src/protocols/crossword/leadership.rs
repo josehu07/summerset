@@ -148,7 +148,7 @@ impl CrosswordReplica {
             // complicated and slow to do the "data shards only" optimization
             // during fail-over, so just do this conservatively here
             if inst.status == Status::Committed
-                && inst.reqs_cw.avail_shards() < self.majority
+                && inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards()
             {
                 recon_slots.push((slot, inst.reqs_cw.avail_shards_map()));
 
@@ -373,11 +373,15 @@ impl CrosswordReplica {
             if inst.status == Status::Accepting && inst.leader_bk.is_some() {
                 if self.assignment_balanced
                     && inst.assignment[0].count()
-                        >= self.majority + self.config.fault_tolerance + 1
-                            - alive_cnt
+                        >= Self::min_shards_per_replica(
+                            self.rs_data_shards,
+                            self.majority,
+                            self.config.fault_tolerance,
+                            alive_cnt,
+                        )
                 {
                     // the assignment policy used for this instance was already
-                    // safe for current # of healthy nodes
+                    // responsive for current # of healthy nodes
                     while let Some(record) = self.pending_accepts.pop_front() {
                         if slot == record.1 {
                             new_pending_accepts.push_back(record);
@@ -395,6 +399,7 @@ impl CrosswordReplica {
                     self.assignment_balanced,
                     &self.assignment_policies,
                     &self.good_rr_assignments,
+                    self.rs_data_shards,
                     self.majority,
                     self.config.fault_tolerance,
                     inst.reqs_cw.data_len(),

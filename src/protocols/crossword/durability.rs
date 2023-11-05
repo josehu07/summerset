@@ -80,7 +80,7 @@ impl CrosswordReplica {
                         size: inst.assignment[self.id as usize].count()
                             as usize
                             * ((inst.reqs_cw.data_len()
-                                / self.majority as usize)
+                                / inst.reqs_cw.num_data_shards() as usize)
                                 + 1),
                     },
                     source,
@@ -112,12 +112,16 @@ impl CrosswordReplica {
                     break;
                 }
 
-                if inst.reqs_cw.avail_shards() < self.majority {
+                if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards()
+                {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, inst.reqs_cw.avail_shards(), self.majority);
+                                       slot, inst.reqs_cw.avail_shards(),
+                                       inst.reqs_cw.num_data_shards());
                     break;
-                } else if inst.reqs_cw.avail_data_shards() < self.majority {
+                } else if inst.reqs_cw.avail_data_shards()
+                    < inst.reqs_cw.num_data_shards()
+                {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }

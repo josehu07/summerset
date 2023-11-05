@@ -174,6 +174,7 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] fall-back mechanism
   - [x] workload adaptiveness
   - [x] unbalanced assignment
+  - [ ] allow dynamic RS scheme over time
   - [ ] TLA+ spec
 - [x] client-side utilities
   - [x] REPL-style client

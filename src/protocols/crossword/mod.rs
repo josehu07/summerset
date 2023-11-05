@@ -15,6 +15,7 @@ mod gossiping;
 mod adaptive;
 mod control;
 
+use std::cmp;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::net::SocketAddr;
@@ -85,6 +86,12 @@ pub struct ReplicaConfigCrossword {
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
+    /// Total number of possible shards in a codeword (i.e., codeword width).
+    /// If zero, sets this to == population.
+    pub rs_total_shards: u8,
+    /// Number of data shards. If zero, sets this to == majority.
+    pub rs_data_shards: u8,
+
     /// If non-empty, use this initial shards assignment policy.
     pub init_assignment: String,
 
@@ -121,6 +128,8 @@ impl Default for ReplicaConfigCrossword {
             gossip_tail_ignores: 100,
             fault_tolerance: 0,
             msg_chunk_size: 10,
+            rs_total_shards: 0,
+            rs_data_shards: 0,
             init_assignment: "".into(),
             linreg_interval_ms: 3000,
             linreg_init_a: 100.0,
@@ -316,6 +325,12 @@ pub struct CrosswordReplica {
     /// Majority quorum size.
     majority: u8,
 
+    /// Reed-Solomon total number of shards.
+    rs_total_shards: u8,
+
+    /// Reed-Solomon number of data shards.
+    rs_data_shards: u8,
+
     /// Using only balanced assignment policies?
     // NOTE: currently, adaptability is only enabled when using balanced
     //       assignment policies.
@@ -461,15 +476,15 @@ impl CrosswordReplica {
             bal: 0,
             status: Status::Null,
             reqs_cw: RSCodeword::<ReqBatch>::from_null(
-                self.majority,
-                self.population - self.majority,
+                self.rs_data_shards,
+                self.rs_total_shards - self.rs_data_shards,
             )?,
             assignment: vec![],
             voted: (
                 0,
                 RSCodeword::<ReqBatch>::from_null(
-                    self.majority,
-                    self.population - self.majority,
+                    self.rs_data_shards,
+                    self.rs_total_shards - self.rs_data_shards,
                 )?,
             ),
             leader_bk: None,
@@ -572,6 +587,7 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores,
                                     fault_tolerance, msg_chunk_size,
+                                    rs_total_shards, rs_data_shards,
                                     init_assignment, linreg_interval_ms,
                                     linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
@@ -664,22 +680,48 @@ impl GenericReplica for CrosswordReplica {
             return logged_err!(id; "unexpected ctrl msg type received");
         };
 
-        // create a Reed-Solomon coder with num_data_shards == quorum size and
-        // num_parity shards == population - quorum
+        // compute majority and set fault_tolerance level
         let majority = (population / 2) + 1;
         if config.fault_tolerance > (population - majority) {
             return logged_err!(id; "invalid config.fault_tolerance '{}'",
                                    config.fault_tolerance);
         }
+
+        // parse Reed_Solomon coding scheme
+        if config.rs_total_shards % population != 0 {
+            return logged_err!(
+                id;
+                "invalid config.rs_total_shards '{}'",
+                config.rs_total_shards
+            );
+        }
+        let rs_total_shards = cmp::max(config.rs_total_shards, population);
+        if (config.rs_data_shards % majority != 0)
+            || (config.rs_data_shards / majority
+                != rs_total_shards / population)
+        {
+            return logged_err!(
+                id;
+                "invalid config.rs_data_shards '{}'",
+                config.rs_data_shards
+            );
+        }
+        let rs_data_shards = cmp::max(config.rs_data_shards, majority);
+
+        // create a Reed-Solomon coder
         let rs_coder = ReedSolomon::new(
-            majority as usize,
-            (population - majority) as usize,
+            rs_data_shards as usize,
+            (rs_total_shards - rs_data_shards) as usize,
         )?;
 
         // parse shards assignment policy config string if given
-        let init_assignment =
-            Self::parse_init_assignment(population, &config.init_assignment)?;
-        let mut max_coverage = Bitmap::new(population, false);
+        let init_assignment = Self::parse_init_assignment(
+            population,
+            rs_total_shards,
+            rs_data_shards,
+            &config.init_assignment,
+        )?;
+        let mut max_coverage = Bitmap::new(rs_total_shards, false);
         let mut nums_assigned: HashSet<u8> = HashSet::new();
         for shards in &init_assignment {
             nums_assigned.insert(shards.count());
@@ -690,7 +732,7 @@ impl GenericReplica for CrosswordReplica {
             }
         }
         if init_assignment.len() != population as usize
-            || max_coverage.count() < majority
+            || max_coverage.count() < rs_data_shards
         {
             return logged_err!(id; "invalid init assignment parsed: {:?}", init_assignment);
         }
@@ -703,17 +745,18 @@ impl GenericReplica for CrosswordReplica {
 
         // if restricted to balanced assignments only, pre-fill
         // `good_rr_assignments` with balanced round-robin policies
+        let dj_spr = rs_total_shards / population;
         let good_rr_assignments = if assignment_balanced {
-            (1..=majority)
+            (dj_spr..=rs_data_shards)
                 .map(|spr| {
                     (
                         spr,
                         (0..population)
                             .map(|r| {
                                 Bitmap::from(
-                                    population,
-                                    (r..r + spr)
-                                        .map(|i| i % population)
+                                    rs_total_shards,
+                                    ((r * dj_spr)..(r * dj_spr + spr))
+                                        .map(|i| i % rs_total_shards)
                                         .collect(),
                                 )
                             })
@@ -780,6 +823,8 @@ impl GenericReplica for CrosswordReplica {
             id,
             population,
             majority,
+            rs_total_shards,
+            rs_data_shards,
             assignment_balanced,
             assignment_policies,
             good_rr_assignments,
