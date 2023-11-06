@@ -8,6 +8,8 @@ use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rand::rngs::ThreadRng;
 
+use rangemap::RangeMap;
+
 use serde::Deserialize;
 
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
@@ -39,7 +41,8 @@ lazy_static! {
 /// Mode parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ModeParamsBench {
-    /// Target frequency of issuing requests per second.
+    /// Target frequency of issuing requests per second. Zero means closed-loop
+    /// style client.
     pub freq_target: u64,
 
     /// Time length to benchmark in seconds.
@@ -48,18 +51,21 @@ pub struct ModeParamsBench {
     /// Percentage of put requests.
     pub put_ratio: u8,
 
-    /// Value size in bytes.
-    pub value_size: usize,
+    /// String in one of the following formats:
+    ///   - a single number: fixed value size in bytes
+    ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
+    ///                             to v1 at t1, then change to v2 at t2, etc.
+    pub value_size: String,
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for ModeParamsBench {
     fn default() -> Self {
         ModeParamsBench {
-            freq_target: 200000,
+            freq_target: 0,
             length_s: 30,
             put_ratio: 50,
-            value_size: 1024,
+            value_size: "1024".into(),
         }
     }
 }
@@ -75,8 +81,9 @@ pub struct ClientBench {
     /// Random number generator.
     rng: ThreadRng,
 
-    /// Fixed value generated according to specified size.
-    value: String,
+    /// Map from time range (secs) -> fixed value generated according to
+    /// specified size.
+    values: RangeMap<u64, String>,
 
     /// Total number of requests issued.
     total_cnt: u64,
@@ -128,22 +135,16 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
                                    params.put_ratio);
         }
-        if params.value_size == 0 {
-            return logged_err!("c"; "invalid params.value_size '{}'",
-                                   params.value_size);
-        }
 
-        let value = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(params.value_size)
-            .map(char::from)
-            .collect();
+        let values =
+            Self::parse_value_sizes(params.length_s, &params.value_size)?;
+        // pf_debug!("c"; "values {:?}", values);
 
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
-            value,
+            values,
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
@@ -156,11 +157,81 @@ impl ClientBench {
         })
     }
 
+    /// Generates a random string of specified size.
+    #[inline]
+    fn gen_rand_string(len: usize) -> String {
+        rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(len)
+            .map(char::from)
+            .collect()
+    }
+
+    /// Parses values sizes over time parameter into a rangemap of
+    /// pre-generated values.
+    fn parse_value_sizes(
+        length_s: u64,
+        s: &str,
+    ) -> Result<RangeMap<u64, String>, SummersetError> {
+        let mut values = RangeMap::new();
+        if s.is_empty() {
+            return logged_err!("c"; "invalid params.value_size '{}'", s);
+        } else if let Ok(size) = s.parse::<usize>() {
+            // a single number
+            if size == 0 {
+                return logged_err!("c"; "size 0 found in params.value_size");
+            }
+            values.insert(0..u64::MAX, Self::gen_rand_string(size));
+        } else {
+            // changes over time
+            if !s.starts_with("0:") {
+                return logged_err!("c"; "params.value_size must start with '0:'");
+            }
+            let (mut seg_start, mut seg_size) = (0, 0);
+            for (i, seg) in s.split('/').enumerate() {
+                if let Some(idx) = seg.find(':') {
+                    let time = seg[..idx].parse::<u64>()?;
+                    let size = seg[idx + 1..].parse::<usize>()?;
+                    if size == 0 {
+                        return logged_err!("c"; "size 0 found in params.value_size");
+                    } else if time >= length_s {
+                        return logged_err!("c"; "sec {} >= length_s {} in params.value_size",
+                                                time, length_s);
+                    }
+                    if i == 0 {
+                        debug_assert_eq!(time, 0);
+                        seg_size = size;
+                    } else {
+                        debug_assert!(time > seg_start);
+                        debug_assert!(seg_size > 0);
+                        values.insert(
+                            seg_start..time,
+                            Self::gen_rand_string(seg_size),
+                        );
+                        seg_start = time;
+                        seg_size = size;
+                    }
+                } else {
+                    return logged_err!("c"; "invalid params.value_size '{}'", s);
+                }
+            }
+            debug_assert!(seg_size > 0);
+            values.insert(seg_start..u64::MAX, Self::gen_rand_string(seg_size));
+        }
+        Ok(values)
+    }
+
     /// Issues a random request.
-    fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
+    fn issue_rand_cmd(
+        &mut self,
+        curr_sec: u64,
+    ) -> Result<Option<RequestId>, SummersetError> {
+        // randomly choose a key from key pool; key does not matter too much
         let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
-            self.driver.issue_put(&key, &self.value)
+            // query the value to use for current timestamp
+            self.driver
+                .issue_put(&key, self.values.get(&curr_sec).unwrap())
         } else {
             self.driver.issue_get(&key)
         }
@@ -175,12 +246,15 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of closed-loop style benchmark.
-    async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
+    async fn closed_loop_iter(
+        &mut self,
+        curr_sec: u64,
+    ) -> Result<(), SummersetError> {
         // send next request
         let req_id = if self.retrying {
             self.driver.issue_retry()?
         } else {
-            self.issue_rand_cmd()?
+            self.issue_rand_cmd(curr_sec)?
         };
 
         self.retrying = req_id.is_none();
@@ -211,7 +285,10 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of open-loop style benchmark.
-    async fn open_loop_iter(&mut self) -> Result<(), SummersetError> {
+    async fn open_loop_iter(
+        &mut self,
+        curr_sec: u64,
+    ) -> Result<(), SummersetError> {
         tokio::select! {
             // prioritize receiving reply
             biased;
@@ -243,7 +320,7 @@ impl ClientBench {
                 let req_id = if self.retrying {
                     self.driver.issue_retry()?
                 } else {
-                    self.issue_rand_cmd()?
+                    self.issue_rand_cmd(curr_sec)?
                 };
 
                 self.retrying = req_id.is_none();
@@ -304,17 +381,18 @@ impl ClientBench {
         self.slowdown = 0;
 
         // run for specified length
-        while self.now.duration_since(start) < length {
+        let mut elapsed = self.now.duration_since(start);
+        while elapsed < length {
             if self.params.freq_target == 0 {
-                self.closed_loop_iter().await?;
+                self.closed_loop_iter(elapsed.as_secs()).await?;
             } else {
-                self.open_loop_iter().await?;
+                self.open_loop_iter(elapsed.as_secs()).await?;
             }
 
             self.now = Instant::now();
+            elapsed = self.now.duration_since(start);
 
             // print statistics if print interval passed
-            let elapsed = self.now.duration_since(start);
             let print_elapsed = self.now.duration_since(last_print);
             if print_elapsed >= *PRINT_INTERVAL
                 || (!printed_1_100 && elapsed >= *PRINT_INTERVAL / 100)

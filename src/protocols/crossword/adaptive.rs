@@ -282,7 +282,7 @@ impl CrosswordReplica {
             }
         }
 
-        if now_us - self.last_linreg_print >= 3000000 {
+        if now_us - self.last_linreg_print >= 3_000_000 {
             pf_info!(self.id; "linreg {}",
                               Self::linreg_models_to_string(&self.linreg_model));
             self.last_linreg_print = now_us;

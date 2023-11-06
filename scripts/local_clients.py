@@ -176,7 +176,7 @@ if __name__ == "__main__":
         "-f", "--freq_target", type=int, help="frequency target reqs per sec"
     )
     parser_bench.add_argument(
-        "-v", "--value_size", type=int, help="value size in bytes"
+        "-v", "--value_size", type=str, help="value sizes over time"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
