@@ -21,7 +21,7 @@ RUNTIME_LOGS_FOLDER = "runlog"
 EXPER_NAME = "adaptive"
 
 # PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["Crossword"]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -40,10 +40,11 @@ PUT_RATIO = 100
 
 LENGTH_SECS = 50
 
-VALUE_SIZES = [(0, 8), (25, 65536)]
+SIZE_CHANGE_SECS = 25
+VALUE_SIZES = [(0, 65536), (SIZE_CHANGE_SECS, 8192)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
-ENV_CHANGE_SEC = 20
+ENV_CHANGE_SECS = 20
 NETEM_MEAN = 1
 NETEM_JITTER = 1
 NETEM_RATE = 1
@@ -120,6 +121,10 @@ def run_bench_clients(protocol):
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
+        "--normal_stdev_ratio",
+        str(0.1),
+        "--unif_interval_ms",
+        str(500),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
@@ -168,7 +173,7 @@ def bench_round(protocol):
 def collect_outputs():
     results = dict()
     for protocol in PROTOCOLS:
-        results[protocol] = utils.gather_outputs(
+        result = utils.gather_outputs(
             protocol,
             NUM_CLIENTS,
             f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
@@ -176,6 +181,26 @@ def collect_outputs():
             PLOT_SECS_END,
             0.1,
         )
+
+        sd, sp, sj = 10, 0, 0
+        if protocol == "Raft" or protocol == "CRaft":
+            # due to an implementation choice, Raft clients see a spike of
+            # "ghost" replies after leader has failed; removing it here
+            sp = 50
+        elif protocol == "Crossword":
+            # due to limited sampling granularity, Crossword gossiping makes
+            # throughput results look a bit more "jittering" than it actually
+            # is; smoothing a bit more here
+            # setting sd here also avoids the lines to completely overlap with
+            # each other
+            sd, sj = 15, 50
+        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+
+        results[protocol] = {
+            "time": result["time"],
+            "tput": tput_list,
+        }
+
     return results
 
 
@@ -183,7 +208,7 @@ def print_results(results):
     for protocol, result in results.items():
         print(protocol)
         for i, t in enumerate(result["time"]):
-            print(f" [{t:>5.1f}] {result['tput_sum'][i]:>7.2f} ", end="")
+            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
             if (i + 1) % 6 == 0:
                 print()
         if len(result["time"]) % 6 != 0:
@@ -214,19 +239,7 @@ def plot_results(results):
         label, color, ls, lw = PROTOCOL_LABEL_COLOR_LS_LW[protocol]
 
         xs = result["time"]
-        sd, sp, sj = 10, 0, 0
-        if protocol == "Raft" or protocol == "CRaft":
-            # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
-            sp = 50
-        elif protocol == "Crossword":
-            # due to limited sampling granularity, Crossword gossiping makes
-            # throughput results look a bit more "jittering" than it actually
-            # is; smoothing a bit more here
-            # setting sd here also avoids the lines to completely overlap with
-            # each other
-            sd, sj = 15, 50
-        ys = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+        ys = result["tput"]
         if max(ys) > ymax:
             ymax = max(ys)
 
@@ -241,7 +254,7 @@ def plot_results(results):
         )
 
     plt.arrow(
-        FAIL1_SECS - PLOT_SECS_BEGIN,
+        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN,
         ymax + 20,
         0,
         -18,
@@ -254,8 +267,8 @@ def plot_results(results):
         clip_on=False,
     )
     plt.annotate(
-        "Leader fails",
-        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 30),
+        "Value size changes",
+        (SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 30),
         xytext=(-18, 0),
         ha="center",
         textcoords="offset points",
@@ -264,7 +277,7 @@ def plot_results(results):
     )
 
     plt.arrow(
-        FAIL2_SECS - PLOT_SECS_BEGIN,
+        ENV_CHANGE_SECS - PLOT_SECS_BEGIN,
         ymax + 20,
         0,
         -18,
@@ -277,8 +290,8 @@ def plot_results(results):
         clip_on=False,
     )
     plt.annotate(
-        "New leader fails",
-        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 30),
+        "Env perf changes",
+        (ENV_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 30),
         xytext=(-28, 0),
         ha="center",
         textcoords="offset points",
@@ -353,4 +366,4 @@ if __name__ == "__main__":
     else:
         results = collect_outputs()
         print_results(results)
-        # plot_results(results)
+        plot_results(results)

@@ -121,8 +121,6 @@ def run_bench_clients(protocol):
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        "--unif_interval_ms",
-        str(0),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
@@ -204,7 +202,7 @@ def bench_round(protocol):
 def collect_outputs():
     results = dict()
     for protocol in PROTOCOLS:
-        results[protocol] = utils.gather_outputs(
+        result = utils.gather_outputs(
             protocol,
             NUM_CLIENTS,
             f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
@@ -212,6 +210,26 @@ def collect_outputs():
             PLOT_SECS_END,
             0.1,
         )
+
+        sd, sp, sj = 10, 0, 0
+        if protocol == "Raft" or protocol == "CRaft":
+            # due to an implementation choice, Raft clients see a spike of
+            # "ghost" replies after leader has failed; removing it here
+            sp = 50
+        elif protocol == "Crossword":
+            # due to limited sampling granularity, Crossword gossiping makes
+            # throughput results look a bit more "jittering" than it actually
+            # is; smoothing a bit more here
+            # setting sd here also avoids the lines to completely overlap with
+            # each other
+            sd, sj = 15, 50
+        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+
+        results[protocol] = {
+            "time": result["time"],
+            "tput": tput_list,
+        }
+
     return results
 
 
@@ -219,7 +237,7 @@ def print_results(results):
     for protocol, result in results.items():
         print(protocol)
         for i, t in enumerate(result["time"]):
-            print(f" [{t:>5.1f}] {result['tput_sum'][i]:>7.2f} ", end="")
+            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
             if (i + 1) % 6 == 0:
                 print()
         if len(result["time"]) % 6 != 0:
@@ -250,19 +268,7 @@ def plot_results(results):
         label, color, ls, lw = PROTOCOL_LABEL_COLOR_LS_LW[protocol]
 
         xs = result["time"]
-        sd, sp, sj = 10, 0, 0
-        if protocol == "Raft" or protocol == "CRaft":
-            # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
-            sp = 50
-        elif protocol == "Crossword":
-            # due to limited sampling granularity, Crossword gossiping makes
-            # throughput results look a bit more "jittering" than it actually
-            # is; smoothing a bit more here
-            # setting sd here also avoids the lines to completely overlap with
-            # each other
-            sd, sj = 15, 50
-        ys = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+        ys = result["tput"]
         if max(ys) > ymax:
             ymax = max(ys)
 

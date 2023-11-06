@@ -1,5 +1,7 @@
 //! Linear regression helpers for performance monitoring.
 
+use std::collections::HashSet;
+
 use crate::utils::SummersetError;
 
 use linreg::linear_regression_of;
@@ -67,15 +69,59 @@ impl LinearRegressor {
     /// Returns the result of linear regression model calculated on the
     /// current window of datapoints. If the model is not valid right now,
     /// compute it.
-    pub fn calc_model(&mut self) -> Result<(f64, f64), SummersetError> {
+    pub fn calc_model(
+        &mut self,
+        outliers_ratio: f32,
+    ) -> Result<(f64, f64), SummersetError> {
+        debug_assert!((0.0..0.5).contains(&outliers_ratio));
+
         if let Some(model) = self.model {
             // pf_trace!("linreg"; "calc ts {:?} dps {:?} {:?}",
-            //                     self.timestamps, self.datapoints, self.model);
+            //                     self.timestamps, self.datapoints, model);
             Ok(model)
         } else {
-            self.model = Some(linear_regression_of(&self.datapoints)?);
+            // compute model on current window of datapoints
+            let mut model: (f64, f64) = linear_regression_of(&self.datapoints)?;
+
+            // remove potential outliers, where outliers are defined as the
+            // points that are furthest away from computed model
+            if outliers_ratio > 0.0
+                && self.datapoints.len() as f32 * outliers_ratio >= 1.0
+            {
+                let mut distances: Vec<(usize, f64)> = self
+                    .datapoints
+                    .iter()
+                    .map(|(x, y)| (y - (x * model.0 + model.1)).abs())
+                    .enumerate()
+                    .collect();
+                distances.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                let to_remove: HashSet<usize> = distances
+                    .into_iter()
+                    .take(
+                        (self.datapoints.len() as f32 * outliers_ratio).round()
+                            as usize,
+                    )
+                    .map(|(i, _)| i)
+                    .collect();
+                let datapoints: Vec<(f64, f64)> = self
+                    .datapoints
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, dp)| {
+                        if to_remove.contains(&i) {
+                            None
+                        } else {
+                            Some(dp)
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                model = linear_regression_of(&datapoints)?;
+            }
+
             // pf_warn!("linreg"; "calc ts {:?} dps {:?} {:?}",
-            //                    self.timestamps, self.datapoints, self.model);
+            //                    self.timestamps, self.datapoints, model);
+            self.model = Some(model);
             Ok(self.model.unwrap())
         }
     }
@@ -106,8 +152,8 @@ mod linreg_tests {
         assert!(lg.model.is_none());
         lg.append_sample(1, 1.0, 1.0);
         lg.append_sample(5, 2.0, 2.0);
-        assert_eq!(lg.calc_model()?, (1.0, 0.0));
-        assert_eq!(lg.calc_model()?, (1.0, 0.0));
+        assert_eq!(lg.calc_model(0.0)?, (1.0, 0.0));
+        assert_eq!(lg.calc_model(0.0)?, (1.0, 0.0));
         lg.discard_before(2);
         assert!(lg.model.is_none());
         Ok(())

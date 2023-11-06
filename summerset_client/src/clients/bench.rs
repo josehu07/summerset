@@ -45,9 +45,6 @@ lazy_static! {
         .map(char::from)
         .collect();
 
-    /// Value size standard deviation to mean ratio.
-    static ref STDEV_RATIO: f32 = 0.1;
-
     /// Statistics printing interval.
     static ref PRINT_INTERVAL: Duration = Duration::from_millis(100);
 }
@@ -69,8 +66,11 @@ pub struct ModeParamsBench {
     ///   - a single number: fixed value size in bytes
     ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
     ///                             to v1 at t1, then change to v2 at t2, etc.
-    ///     This format also turns on using normal distributions.
     pub value_size: String,
+
+    /// If non-zero, use a normal distribution of this standard deviation
+    /// ratio for every write command.
+    pub normal_stdev_ratio: f32,
 
     /// Do a uniformly distributed value size write for every some interval.
     /// Zero to turn off.
@@ -88,8 +88,9 @@ impl Default for ModeParamsBench {
             length_s: 30,
             put_ratio: 50,
             value_size: "1024".into(),
-            unif_interval_ms: 500,
-            unif_upper_bound: 256 * 1024,
+            normal_stdev_ratio: 0.0,
+            unif_interval_ms: 0,
+            unif_upper_bound: 128 * 1024,
         }
     }
 }
@@ -108,14 +109,11 @@ pub struct ClientBench {
     /// Map from time range (secs) -> specified value size mean value.
     value_size: RangeMap<u64, usize>,
 
-    /// Using a normal distribution to choose a more dynamic value size?
-    using_dist: bool,
-
     /// Map from value size mean -> normal distribution generator.
-    normal_dist: HashMap<usize, Normal<f32>>,
+    normal_dist: Option<HashMap<usize, Normal<f32>>>,
 
     /// Fixed uniform distribution.
-    unif_dist: Uniform<usize>,
+    unif_dist: Option<Uniform<usize>>,
 
     /// Total number of requests issued.
     total_cnt: u64,
@@ -160,7 +158,8 @@ impl ClientBench {
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     freq_target, length_s, put_ratio,
-                                    value_size, unif_interval_ms, unif_upper_bound)?;
+                                    value_size, normal_stdev_ratio,
+                                    unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
                                     params.freq_target);
@@ -173,6 +172,10 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
                                     params.put_ratio);
         }
+        if params.normal_stdev_ratio < 0.0 {
+            return logged_err!("c"; "invalid params.normal_stdev_ratio '{}'",
+                                    params.normal_stdev_ratio);
+        }
         if params.unif_interval_ms > 0 && params.unif_interval_ms < 100 {
             return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
                                     params.unif_interval_ms);
@@ -184,25 +187,38 @@ impl ClientBench {
                                     params.unif_upper_bound);
         }
 
-        let (using_dist, value_size) =
+        let value_size =
             Self::parse_value_sizes(params.length_s, &params.value_size)?;
-        let normal_dist = value_size
-            .iter()
-            .map(|(_, &vs)| {
-                (
-                    vs,
-                    Normal::new(vs as f32, vs as f32 * *STDEV_RATIO).unwrap(),
-                )
-            })
-            .collect();
-        let unif_dist = Uniform::from(1..=params.unif_upper_bound);
+        let normal_dist = if params.normal_stdev_ratio > 0.0 {
+            Some(
+                value_size
+                    .iter()
+                    .map(|(_, &vs)| {
+                        (
+                            vs,
+                            Normal::new(
+                                vs as f32,
+                                vs as f32 * params.normal_stdev_ratio,
+                            )
+                            .unwrap(),
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let unif_dist = if params.unif_interval_ms > 0 {
+            Some(Uniform::from(1..=params.unif_upper_bound))
+        } else {
+            None
+        };
 
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
             value_size,
-            using_dist,
             normal_dist,
             unif_dist,
             total_cnt: 0,
@@ -224,10 +240,8 @@ impl ClientBench {
     fn parse_value_sizes(
         length_s: u64,
         s: &str,
-    ) -> Result<(bool, RangeMap<u64, usize>), SummersetError> {
-        let mut using_dist = false;
+    ) -> Result<RangeMap<u64, usize>, SummersetError> {
         let mut value_size = RangeMap::new();
-
         if s.is_empty() {
             return logged_err!("c"; "invalid params.value_size '{}'", s);
         } else if let Ok(size) = s.parse::<usize>() {
@@ -268,10 +282,8 @@ impl ClientBench {
             }
             debug_assert!(seg_size > 0);
             value_size.insert(seg_start..u64::MAX, seg_size);
-            using_dist = true;
         }
-
-        Ok((using_dist, value_size))
+        Ok(value_size)
     }
 
     /// Pick a value of given size. If `using_dist` is on, uses that as mean
@@ -284,10 +296,10 @@ impl ClientBench {
             return logged_err!(self.driver.id; "value size {} too big", size);
         }
 
-        if self.using_dist {
+        if let Some(normal_dist) = self.normal_dist.as_ref() {
             loop {
                 let f32_size =
-                    self.normal_dist[&size].sample(&mut rand::thread_rng());
+                    normal_dist[&size].sample(&mut rand::thread_rng());
                 size = f32_size.round() as usize;
                 if size > 0 && size <= MOM_VALUE.len() {
                     break;
@@ -295,12 +307,13 @@ impl ClientBench {
             }
         }
 
-        if self.params.unif_interval_ms > 0
-            && self.now.duration_since(self.last_unif).as_millis()
+        if let Some(unif_dist) = self.unif_dist.as_ref() {
+            if self.now.duration_since(self.last_unif).as_millis()
                 >= self.params.unif_interval_ms as u128
-        {
-            size = self.unif_dist.sample(&mut rand::thread_rng());
-            self.last_unif = self.now;
+            {
+                size = unif_dist.sample(&mut rand::thread_rng());
+                self.last_unif = self.now;
+            }
         }
 
         Ok(&MOM_VALUE[..size])

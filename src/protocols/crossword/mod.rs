@@ -102,6 +102,8 @@ pub struct ReplicaConfigCrossword {
     pub linreg_init_a: f64,
     /// Initial linear regression model intercept.
     pub linreg_init_b: f64,
+    /// Ratio of outliers to exclude in each `calc_model()`.
+    pub linreg_outlier_ratio: f32,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -132,7 +134,8 @@ impl Default for ReplicaConfigCrossword {
             rs_data_shards: 0,
             init_assignment: "".into(),
             linreg_interval_ms: 200,
-            linreg_keep_ms: 10000,
+            linreg_keep_ms: 5000,
+            linreg_outlier_ratio: 0.1,
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
             perf_storage_a: 0,
@@ -600,6 +603,7 @@ impl GenericReplica for CrosswordReplica {
                                     rs_total_shards, rs_data_shards,
                                     init_assignment,
                                     linreg_interval_ms, linreg_keep_ms,
+                                    linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
@@ -650,6 +654,13 @@ impl GenericReplica for CrosswordReplica {
                 id;
                 "invalid config.linreg_keep_ms '{}'",
                 config.linreg_keep_ms
+            );
+        }
+        if !(0.0..0.5).contains(&config.linreg_outlier_ratio) {
+            return logged_err!(
+                id;
+                "invalid config.linreg_outlier_ratio '{}'",
+                config.linreg_outlier_ratio
             );
         }
 

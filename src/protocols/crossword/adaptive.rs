@@ -265,13 +265,18 @@ impl CrosswordReplica {
                 *self.linreg_model.get_mut(&peer).unwrap() = (0.0, 10000.0);
             } else {
                 // otherwise, compute simple linear regression
-                match regressor.calc_model() {
+                match regressor.calc_model(self.config.linreg_outlier_ratio) {
                     Ok(mut model) => {
-                        if model.0 < 0.0 {
-                            model.0 = 0.0;
+                        // cap the model in reasonable range
+                        if model.0 < 0.05 {
+                            model.0 = 0.05;
+                        } else if model.0 > 100.0 {
+                            model.0 = 100.0;
                         }
-                        if model.1 < 0.0 {
-                            model.1 = 0.0;
+                        if model.1 < 0.1 {
+                            model.1 = 0.1;
+                        } else if model.1 > 250.0 {
+                            model.1 = 250.0;
                         }
                         *self.linreg_model.get_mut(&peer).unwrap() = model;
                     }

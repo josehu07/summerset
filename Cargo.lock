@@ -1284,6 +1284,7 @@ dependencies = [
  "linreg",
  "log",
  "rand",
+ "rangemap",
  "reed-solomon-erasure",
  "rmp-serde",
  "serde",
