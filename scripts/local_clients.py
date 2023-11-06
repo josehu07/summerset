@@ -21,7 +21,7 @@ CLIENT_OUTPUT_PATH = lambda protocol, prefix, i: f"{prefix}/{protocol}.{i}.out"
 
 UTILITY_PARAM_NAMES = {
     "repl": [],
-    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
+    "bench": ["freq_target", "value_size", "put_ratio", "length_s", "unif_interval_ms"],
     "tester": ["test_name", "keep_going", "logger_on"],
     "mess": ["pause", "resume"],
 }
@@ -180,6 +180,9 @@ if __name__ == "__main__":
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser_bench.add_argument(
+        "--unif_interval_ms", type=int, help="uniform dist usage interval"
+    )
     parser_bench.add_argument(
         "--file_prefix",
         type=str,

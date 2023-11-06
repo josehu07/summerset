@@ -18,9 +18,10 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "failover"
+EXPER_NAME = "adaptive"
 
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+PROTOCOLS = ["Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -34,22 +35,22 @@ BATCH_INTERVAL = 1
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
 
-VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
+
+LENGTH_SECS = 50
+
+VALUE_SIZES = [(0, 8), (25, 65536)]
+VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
+
+ENV_CHANGE_SEC = 20
 NETEM_MEAN = 1
-NETEM_JITTER = 0
+NETEM_JITTER = 1
 NETEM_RATE = 1
 
 
-LENGTH_SECS = 120
-CLIENT_TIMEOUT_SECS = 2
-
-FAIL1_SECS = 40
-FAIL2_SECS = 80
-
-PLOT_SECS_BEGIN = 25
-PLOT_SECS_END = 115
+PLOT_SECS_BEGIN = 5
+PLOT_SECS_END = 45
 
 
 def launch_cluster(protocol, config=None):
@@ -108,21 +109,17 @@ def run_bench_clients(protocol):
         "--use_veth",
         "--base_idx",
         str(0),
-        "--timeout_ms",
-        str(CLIENT_TIMEOUT_SECS * 1000),
         "bench",
         "-n",
         str(NUM_CLIENTS),
         "-f",
         str(0),  # closed-loop
         "-v",
-        str(VALUE_SIZE),
+        VALUE_SIZES_PARAM,
         "-w",
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        "--unif_interval_ms",
-        str(0),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
@@ -131,38 +128,15 @@ def run_bench_clients(protocol):
     )
 
 
-def run_mess_client(protocol, pauses=None, resumes=None):
-    cmd = [
-        "python3",
-        "./scripts/local_clients.py",
-        "-p",
-        protocol,
-        "-r",
-        "--use_veth",
-        "--base_idx",
-        str(NUM_CLIENTS),
-        "mess",
-    ]
-    if pauses is not None and len(pauses) > 0:
-        cmd += ["--pause", pauses]
-    if resumes is not None and len(resumes) > 0:
-        cmd += ["--resume", resumes]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
-    )
-
-
 def bench_round(protocol):
     print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}"
+        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZES_PARAM}"
         f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
     )
     utils.kill_all_local_procs()
     time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    if protocol == "Crossword":
-        config += "+init_assignment='1'"
 
     # launch service cluster
     proc_cluster = launch_cluster(protocol, config=config)
@@ -171,16 +145,6 @@ def bench_round(protocol):
 
     # start benchmarking clients
     proc_clients = run_bench_clients(protocol)
-
-    # at the first failure point, pause current leader
-    time.sleep(FAIL1_SECS)
-    print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
-
-    # at the second failure point, pause current leader
-    time.sleep(FAIL2_SECS - FAIL1_SECS)
-    print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -389,4 +353,4 @@ if __name__ == "__main__":
     else:
         results = collect_outputs()
         print_results(results)
-        plot_results(results)
+        # plot_results(results)

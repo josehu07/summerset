@@ -9,6 +9,7 @@ authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
 summerset = { path = "../" }
 tokio = { version = "1.29", features = ["full"] }
 rand = "0.8"
+rand_distr = "0.4"
 rangemap = "1.4"
 lazy_static = "1.4"
 clap = { version = "4.0", features = ["derive"] }

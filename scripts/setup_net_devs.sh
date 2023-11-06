@@ -86,3 +86,4 @@ do
     echo "Listing devices in namespace ns$s:"
     sudo ip netns exec ns$s ip link show
 done
+echo

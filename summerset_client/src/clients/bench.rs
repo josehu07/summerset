@@ -1,5 +1,7 @@
 //! Benchmarking client using open-loop driver.
 
+use std::collections::HashMap;
+
 use crate::drivers::{DriverReply, DriverOpenLoop};
 
 use lazy_static::lazy_static;
@@ -7,6 +9,8 @@ use lazy_static::lazy_static;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rand::rngs::ThreadRng;
+
+use rand_distr::{Distribution, Normal, Uniform};
 
 use rangemap::RangeMap;
 
@@ -34,6 +38,16 @@ lazy_static! {
         pool
     };
 
+    /// A very long pre-generated value string to get values from.
+    static ref MOM_VALUE: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(10 * 1024 * 1024)
+        .map(char::from)
+        .collect();
+
+    /// Value size standard deviation to mean ratio.
+    static ref STDEV_RATIO: f32 = 0.1;
+
     /// Statistics printing interval.
     static ref PRINT_INTERVAL: Duration = Duration::from_millis(100);
 }
@@ -55,7 +69,15 @@ pub struct ModeParamsBench {
     ///   - a single number: fixed value size in bytes
     ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
     ///                             to v1 at t1, then change to v2 at t2, etc.
+    ///     This format also turns on using normal distributions.
     pub value_size: String,
+
+    /// Do a uniformly distributed value size write for every some interval.
+    /// Zero to turn off.
+    pub unif_interval_ms: u64,
+
+    /// Upper bound of uniform distribution to sample value size from.
+    pub unif_upper_bound: usize,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -66,6 +88,8 @@ impl Default for ModeParamsBench {
             length_s: 30,
             put_ratio: 50,
             value_size: "1024".into(),
+            unif_interval_ms: 500,
+            unif_upper_bound: 256 * 1024,
         }
     }
 }
@@ -81,9 +105,17 @@ pub struct ClientBench {
     /// Random number generator.
     rng: ThreadRng,
 
-    /// Map from time range (secs) -> fixed value generated according to
-    /// specified size.
-    values: RangeMap<u64, String>,
+    /// Map from time range (secs) -> specified value size mean value.
+    value_size: RangeMap<u64, usize>,
+
+    /// Using a normal distribution to choose a more dynamic value size?
+    using_dist: bool,
+
+    /// Map from value size mean -> normal distribution generator.
+    normal_dist: HashMap<usize, Normal<f32>>,
+
+    /// Fixed uniform distribution.
+    unif_dist: Uniform<usize>,
 
     /// Total number of requests issued.
     total_cnt: u64,
@@ -103,8 +135,14 @@ pub struct ClientBench {
     /// Number of replies to wait for before allowing the next issue.
     slowdown: u64,
 
+    /// Start timestamp.
+    start: Instant,
+
     /// Current timestamp.
     now: Instant,
+
+    /// Last timestamp when a uniform distribution gets used.
+    last_unif: Instant,
 
     /// Interval ticker for open-loop.
     ticker: Interval,
@@ -122,49 +160,63 @@ impl ClientBench {
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     freq_target, length_s, put_ratio,
-                                    value_size)?;
+                                    value_size, unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
-                                   params.freq_target);
+                                    params.freq_target);
         }
         if params.length_s == 0 {
             return logged_err!("c"; "invalid params.length_s '{}'",
-                                   params.length_s);
+                                    params.length_s);
         }
         if params.put_ratio > 100 {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
-                                   params.put_ratio);
+                                    params.put_ratio);
+        }
+        if params.unif_interval_ms > 0 && params.unif_interval_ms < 100 {
+            return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
+                                    params.unif_interval_ms);
+        }
+        if params.unif_upper_bound < 1024
+            || params.unif_upper_bound > 1024 * 1024
+        {
+            return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
+                                    params.unif_upper_bound);
         }
 
-        let values =
+        let (using_dist, value_size) =
             Self::parse_value_sizes(params.length_s, &params.value_size)?;
-        // pf_debug!("c"; "values {:?}", values);
+        let normal_dist = value_size
+            .iter()
+            .map(|(_, &vs)| {
+                (
+                    vs,
+                    Normal::new(vs as f32, vs as f32 * *STDEV_RATIO).unwrap(),
+                )
+            })
+            .collect();
+        let unif_dist = Uniform::from(1..=params.unif_upper_bound);
 
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
-            values,
+            value_size,
+            using_dist,
+            normal_dist,
+            unif_dist,
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
             chunk_lats: vec![],
             retrying: false,
             slowdown: 0,
+            start: Instant::now(),
             now: Instant::now(),
+            last_unif: Instant::now(),
             ticker: time::interval(Duration::MAX),
             curr_freq: 0,
         })
-    }
-
-    /// Generates a random string of specified size.
-    #[inline]
-    fn gen_rand_string(len: usize) -> String {
-        rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(len)
-            .map(char::from)
-            .collect()
     }
 
     /// Parses values sizes over time parameter into a rangemap of
@@ -172,8 +224,10 @@ impl ClientBench {
     fn parse_value_sizes(
         length_s: u64,
         s: &str,
-    ) -> Result<RangeMap<u64, String>, SummersetError> {
-        let mut values = RangeMap::new();
+    ) -> Result<(bool, RangeMap<u64, usize>), SummersetError> {
+        let mut using_dist = false;
+        let mut value_size = RangeMap::new();
+
         if s.is_empty() {
             return logged_err!("c"; "invalid params.value_size '{}'", s);
         } else if let Ok(size) = s.parse::<usize>() {
@@ -181,7 +235,7 @@ impl ClientBench {
             if size == 0 {
                 return logged_err!("c"; "size 0 found in params.value_size");
             }
-            values.insert(0..u64::MAX, Self::gen_rand_string(size));
+            value_size.insert(0..u64::MAX, size);
         } else {
             // changes over time
             if !s.starts_with("0:") {
@@ -204,10 +258,7 @@ impl ClientBench {
                     } else {
                         debug_assert!(time > seg_start);
                         debug_assert!(seg_size > 0);
-                        values.insert(
-                            seg_start..time,
-                            Self::gen_rand_string(seg_size),
-                        );
+                        value_size.insert(seg_start..time, seg_size);
                         seg_start = time;
                         seg_size = size;
                     }
@@ -216,22 +267,53 @@ impl ClientBench {
                 }
             }
             debug_assert!(seg_size > 0);
-            values.insert(seg_start..u64::MAX, Self::gen_rand_string(seg_size));
+            value_size.insert(seg_start..u64::MAX, seg_size);
+            using_dist = true;
         }
-        Ok(values)
+
+        Ok((using_dist, value_size))
+    }
+
+    /// Pick a value of given size. If `using_dist` is on, uses that as mean
+    /// size and goes through a normal distribution to sample a size.
+    #[inline]
+    fn gen_value_at_now(&mut self) -> Result<&'static str, SummersetError> {
+        let curr_sec = self.now.duration_since(self.start).as_secs();
+        let mut size = *self.value_size.get(&curr_sec).unwrap();
+        if size > MOM_VALUE.len() {
+            return logged_err!(self.driver.id; "value size {} too big", size);
+        }
+
+        if self.using_dist {
+            loop {
+                let f32_size =
+                    self.normal_dist[&size].sample(&mut rand::thread_rng());
+                size = f32_size.round() as usize;
+                if size > 0 && size <= MOM_VALUE.len() {
+                    break;
+                }
+            }
+        }
+
+        if self.params.unif_interval_ms > 0
+            && self.now.duration_since(self.last_unif).as_millis()
+                >= self.params.unif_interval_ms as u128
+        {
+            size = self.unif_dist.sample(&mut rand::thread_rng());
+            self.last_unif = self.now;
+        }
+
+        Ok(&MOM_VALUE[..size])
     }
 
     /// Issues a random request.
-    fn issue_rand_cmd(
-        &mut self,
-        curr_sec: u64,
-    ) -> Result<Option<RequestId>, SummersetError> {
+    fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
         // randomly choose a key from key pool; key does not matter too much
         let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
             // query the value to use for current timestamp
-            self.driver
-                .issue_put(&key, self.values.get(&curr_sec).unwrap())
+            let val = self.gen_value_at_now()?;
+            self.driver.issue_put(&key, val)
         } else {
             self.driver.issue_get(&key)
         }
@@ -246,15 +328,12 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of closed-loop style benchmark.
-    async fn closed_loop_iter(
-        &mut self,
-        curr_sec: u64,
-    ) -> Result<(), SummersetError> {
+    async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
         // send next request
         let req_id = if self.retrying {
             self.driver.issue_retry()?
         } else {
-            self.issue_rand_cmd(curr_sec)?
+            self.issue_rand_cmd()?
         };
 
         self.retrying = req_id.is_none();
@@ -285,10 +364,7 @@ impl ClientBench {
     }
 
     /// Runs one iteration action of open-loop style benchmark.
-    async fn open_loop_iter(
-        &mut self,
-        curr_sec: u64,
-    ) -> Result<(), SummersetError> {
+    async fn open_loop_iter(&mut self) -> Result<(), SummersetError> {
         tokio::select! {
             // prioritize receiving reply
             biased;
@@ -320,7 +396,7 @@ impl ClientBench {
                 let req_id = if self.retrying {
                     self.driver.issue_retry()?
                 } else {
-                    self.issue_rand_cmd(curr_sec)?
+                    self.issue_rand_cmd()?
                 };
 
                 self.retrying = req_id.is_none();
@@ -360,11 +436,11 @@ impl ClientBench {
             "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
         );
 
-        let start = Instant::now();
-        self.now = start;
+        self.start = Instant::now();
+        self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let mut last_print = start;
+        let mut last_print = self.start;
         let (mut printed_1_100, mut printed_1_10) = (false, false);
 
         if self.params.freq_target > 0 {
@@ -381,16 +457,16 @@ impl ClientBench {
         self.slowdown = 0;
 
         // run for specified length
-        let mut elapsed = self.now.duration_since(start);
+        let mut elapsed = self.now.duration_since(self.start);
         while elapsed < length {
             if self.params.freq_target == 0 {
-                self.closed_loop_iter(elapsed.as_secs()).await?;
+                self.closed_loop_iter().await?;
             } else {
-                self.open_loop_iter(elapsed.as_secs()).await?;
+                self.open_loop_iter().await?;
             }
 
             self.now = Instant::now();
-            elapsed = self.now.duration_since(start);
+            elapsed = self.now.duration_since(self.start);
 
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
