@@ -157,7 +157,7 @@ def bench_round(protocol):
 
     # at some timepoint, change env to be more jittery
     time.sleep(ENV_CHANGE_SECS - SIZE_CHANGE_SECS)
-    print("Setting tc netem qdiscs...")
+    print("    Changing env perf params...")
     for replica in range(NUM_REPLICAS):
         utils.set_tc_qdisc_netem(
             SERVER_NETNS(replica),
