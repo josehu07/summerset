@@ -73,7 +73,7 @@ impl LinearRegressor {
         &mut self,
         outliers_ratio: f32,
     ) -> Result<(f64, f64), SummersetError> {
-        debug_assert!((0.0..0.5).contains(&outliers_ratio));
+        debug_assert!((0.0..0.9).contains(&outliers_ratio));
 
         if let Some(model) = self.model {
             // pf_trace!("linreg"; "calc ts {:?} dps {:?} {:?}",

@@ -211,7 +211,7 @@ def collect_outputs():
             0.1,
         )
 
-        sd, sp, sj = 10, 0, 0
+        sd, sp, sj, sm = 10, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
             # "ghost" replies after leader has failed; removing it here
@@ -223,7 +223,7 @@ def collect_outputs():
             # setting sd here also avoids the lines to completely overlap with
             # each other
             sd, sj = 15, 50
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],

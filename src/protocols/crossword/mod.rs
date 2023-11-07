@@ -135,7 +135,7 @@ impl Default for ReplicaConfigCrossword {
             init_assignment: "".into(),
             linreg_interval_ms: 200,
             linreg_keep_ms: 5000,
-            linreg_outlier_ratio: 0.1,
+            linreg_outlier_ratio: 0.6,
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
             perf_storage_a: 0,
@@ -656,7 +656,7 @@ impl GenericReplica for CrosswordReplica {
                 config.linreg_keep_ms
             );
         }
-        if !(0.0..0.5).contains(&config.linreg_outlier_ratio) {
+        if !(0.0..0.9).contains(&config.linreg_outlier_ratio) {
             return logged_err!(
                 id;
                 "invalid config.linreg_outlier_ratio '{}'",

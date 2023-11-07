@@ -20,8 +20,7 @@ RUNTIME_LOGS_FOLDER = "runlog"
 
 EXPER_NAME = "adaptive"
 
-# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Crossword"]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -38,20 +37,21 @@ NUM_CLIENTS = 16
 PUT_RATIO = 100
 
 
-LENGTH_SECS = 50
+LENGTH_SECS = 100
 
-SIZE_CHANGE_SECS = 25
-VALUE_SIZES = [(0, 65536), (SIZE_CHANGE_SECS, 8192)]
+SIZE_CHANGE_SECS = 35
+VALUE_SIZES = [(0, 8192), (SIZE_CHANGE_SECS, 65536)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
-ENV_CHANGE_SECS = 20
+ENV_CHANGE_SECS = 65
 NETEM_MEAN = 1
-NETEM_JITTER = 1
+NETEM_JITTER_L = 1
+NETEM_JITTER_H = 5
 NETEM_RATE = 1
 
 
 PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 45
+PLOT_SECS_END = 95
 
 
 def launch_cluster(protocol, config=None):
@@ -151,6 +151,22 @@ def bench_round(protocol):
     # start benchmarking clients
     proc_clients = run_bench_clients(protocol)
 
+    # at some timepoint, change mean value size (handled by the clients)
+    time.sleep(SIZE_CHANGE_SECS)
+    print("    Changing mean value size...")
+
+    # at some timepoint, change env to be more jittery
+    time.sleep(ENV_CHANGE_SECS - SIZE_CHANGE_SECS)
+    print("Setting tc netem qdiscs...")
+    for replica in range(NUM_REPLICAS):
+        utils.set_tc_qdisc_netem(
+            SERVER_NETNS(replica),
+            SERVER_DEV(replica),
+            NETEM_MEAN,
+            NETEM_JITTER_H,
+            NETEM_RATE,
+        )
+
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
     with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
@@ -162,6 +178,16 @@ def bench_round(protocol):
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)
+
+    # revert env params to initial
+    for replica in range(NUM_REPLICAS):
+        utils.set_tc_qdisc_netem(
+            SERVER_NETNS(replica),
+            SERVER_DEV(replica),
+            NETEM_MEAN,
+            NETEM_JITTER_L,
+            NETEM_RATE,
+        )
 
     if proc_clients.returncode != 0:
         print("    Experiment FAILED!")
@@ -182,7 +208,7 @@ def collect_outputs():
             0.1,
         )
 
-        sd, sp, sj = 10, 0, 0
+        sd, sp, sj, sm = 15, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
             # "ghost" replies after leader has failed; removing it here
@@ -193,8 +219,9 @@ def collect_outputs():
             # is; smoothing a bit more here
             # setting sd here also avoids the lines to completely overlap with
             # each other
-            sd, sj = 15, 50
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj)
+            # setting sm here to compensate for the injected uniform dist reqs
+            sd, sj, sm = 20, 50, 1.1
+        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],
@@ -347,7 +374,7 @@ if __name__ == "__main__":
                 SERVER_NETNS(replica),
                 SERVER_DEV(replica),
                 NETEM_MEAN,
-                NETEM_JITTER,
+                NETEM_JITTER_L,
                 NETEM_RATE,
             )
 

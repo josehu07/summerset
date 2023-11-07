@@ -152,7 +152,7 @@ def gather_outputs(protocol, num_clients, path_prefix, tb, te, tgap):
     return result
 
 
-def list_smoothing(l, d, p, j):
+def list_smoothing(l, d, p, j, m):
     assert d > 0
 
     # sliding window average
@@ -187,6 +187,7 @@ def list_smoothing(l, d, p, j):
             if lj is not None and rj is not None:
                 sl[i] = max(lj, rj)
 
+    # 2nd sliding window average
     slc = sl.copy()
     for i in range(len(slc)):
         nums = []
@@ -194,5 +195,8 @@ def list_smoothing(l, d, p, j):
             if k >= 0 and k < len(slc):
                 nums.append(slc[k])
         sl[i] = sum(nums) / len(nums)
+
+    # compensation scaling
+    sl = [x * m for x in sl]
 
     return sl
