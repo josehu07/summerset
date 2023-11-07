@@ -19,13 +19,15 @@ impl CrosswordReplica {
     pub fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
-        let timeout_ms = thread_rng().gen_range(
-            self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
-        );
+        if !self.config.disable_gossip_timer {
+            let timeout_ms = thread_rng().gen_range(
+                self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
+            );
+            // pf_trace!(self.id; "kickoff gossip_timer @ {} ms", timeout_ms);
+            self.gossip_timer
+                .kickoff(Duration::from_millis(timeout_ms))?;
+        }
 
-        // pf_trace!(self.id; "kickoff gossip_timer @ {} ms", timeout_ms);
-        self.gossip_timer
-            .kickoff(Duration::from_millis(timeout_ms))?;
         Ok(())
     }
 

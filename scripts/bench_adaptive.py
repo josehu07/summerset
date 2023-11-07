@@ -28,11 +28,15 @@ CLIENT_PIN_CORES = 1
 
 SERVER_NETNS = lambda r: f"ns{r}"
 SERVER_DEV = lambda r: f"veths{r}"
-
-BATCH_INTERVAL = 1
+SERVER_IFB = lambda r: f"ifb{r}"
 
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
+
+FORCE_LEADER = 0
+
+
+BATCH_INTERVAL = 1
 
 PUT_RATIO = 100
 
@@ -40,14 +44,18 @@ PUT_RATIO = 100
 LENGTH_SECS = 100
 
 SIZE_CHANGE_SECS = 35
+
 VALUE_SIZES = [(0, 8192), (SIZE_CHANGE_SECS, 65536)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
 ENV_CHANGE_SECS = 65
-NETEM_MEAN = 1
-NETEM_JITTER_L = 1
-NETEM_JITTER_H = 5
-NETEM_RATE = 1
+
+NETEM_MEAN_S = lambda _: 1  # will be exagerated by #clients
+NETEM_MEAN_E = lambda r: 5 if r >= 3 else 1
+NETEM_JITTER_S = lambda _: 1
+NETEM_JITTER_E = lambda r: 5 if r >= 3 else 1
+NETEM_RATE_S = lambda _: 1
+NETEM_RATE_E = lambda r: 1 if r >= 3 else 2
 
 
 PLOT_SECS_BEGIN = 5
@@ -63,6 +71,8 @@ def launch_cluster(protocol, config=None):
         "-n",
         str(NUM_REPLICAS),
         "-r",
+        "--force_leader",
+        str(FORCE_LEADER),
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
@@ -158,14 +168,15 @@ def bench_round(protocol):
     # at some timepoint, change env to be more jittery
     time.sleep(ENV_CHANGE_SECS - SIZE_CHANGE_SECS)
     print("    Changing env perf params...")
-    for replica in range(NUM_REPLICAS):
-        utils.set_tc_qdisc_netem(
-            SERVER_NETNS(replica),
-            SERVER_DEV(replica),
-            NETEM_MEAN,
-            NETEM_JITTER_H,
-            NETEM_RATE,
-        )
+    utils.set_all_tc_qdisc_netems(
+        NUM_REPLICAS,
+        SERVER_NETNS,
+        SERVER_DEV,
+        SERVER_IFB,
+        NETEM_MEAN_E,
+        NETEM_JITTER_E,
+        NETEM_RATE_E,
+    )
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -180,14 +191,15 @@ def bench_round(protocol):
         fserr.write(serr)
 
     # revert env params to initial
-    for replica in range(NUM_REPLICAS):
-        utils.set_tc_qdisc_netem(
-            SERVER_NETNS(replica),
-            SERVER_DEV(replica),
-            NETEM_MEAN,
-            NETEM_JITTER_L,
-            NETEM_RATE,
-        )
+    utils.set_all_tc_qdisc_netems(
+        NUM_REPLICAS,
+        SERVER_NETNS,
+        SERVER_DEV,
+        SERVER_IFB,
+        NETEM_MEAN_S,
+        NETEM_JITTER_S,
+        NETEM_RATE_S,
+    )
 
     if proc_clients.returncode != 0:
         print("    Experiment FAILED!")
@@ -196,22 +208,22 @@ def bench_round(protocol):
         print("    Done!")
 
 
-def collect_outputs():
+def collect_outputs(odir):
     results = dict()
     for protocol in PROTOCOLS:
         result = utils.gather_outputs(
             protocol,
             NUM_CLIENTS,
-            f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+            odir,
             PLOT_SECS_BEGIN,
             PLOT_SECS_END,
             0.1,
         )
 
-        sd, sp, sj, sm = 15, 0, 0, 1
+        sd, sp, sj, sm = 20, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
+            # "ghost" replies after stable state has changed; removing it here
             sp = 50
         elif protocol == "Crossword":
             # due to limited sampling granularity, Crossword gossiping makes
@@ -220,13 +232,18 @@ def collect_outputs():
             # setting sd here also avoids the lines to completely overlap with
             # each other
             # setting sm here to compensate for the injected uniform dist reqs
-            sd, sj, sm = 20, 50, 1.1
+            sd, sj, sm = 30, 50, 1.1
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],
             "tput": tput_list,
         }
+
+    # integrity check that CRaft and RSPaxos are on the same level
+    results["CRaft"]["tput"] = utils.list_capping(
+        results["CRaft"]["tput"], results["RSPaxos"]["tput"], sd
+    )
 
     return results
 
@@ -242,7 +259,7 @@ def print_results(results):
             print()
 
 
-def plot_results(results):
+def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (6, 3),
@@ -346,10 +363,10 @@ def plot_results(results):
 
     plt.tight_layout()
 
-    plt.savefig(
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}/{EXPER_NAME}.png", dpi=300
-    )
+    png_name = f"{odir}/{EXPER_NAME}.png"
+    plt.savefig(png_name, dpi=300)
     plt.close()
+    print(f"Plotted: {png_name}")
 
 
 if __name__ == "__main__":
@@ -359,24 +376,32 @@ if __name__ == "__main__":
     parser.add_argument(
         "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
+    parser.add_argument(
+        "-o",
+        "--odir",
+        type=str,
+        default=f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        help=".out files directory",
+    )
     args = parser.parse_args()
 
-    runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
-    if not os.path.isdir(runlog_path):
-        os.system(f"mkdir -p {runlog_path}")
-
     if not args.plot:
+        runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
+        if not os.path.isdir(runlog_path):
+            os.system(f"mkdir -p {runlog_path}")
+
         utils.do_cargo_build(release=True)
 
         print("Setting tc netem qdiscs...")
-        for replica in range(NUM_REPLICAS):
-            utils.set_tc_qdisc_netem(
-                SERVER_NETNS(replica),
-                SERVER_DEV(replica),
-                NETEM_MEAN,
-                NETEM_JITTER_L,
-                NETEM_RATE,
-            )
+        utils.set_all_tc_qdisc_netems(
+            NUM_REPLICAS,
+            SERVER_NETNS,
+            SERVER_DEV,
+            SERVER_IFB,
+            NETEM_MEAN_S,
+            NETEM_JITTER_S,
+            NETEM_RATE_S,
+        )
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
@@ -384,13 +409,11 @@ if __name__ == "__main__":
 
         print("Clearing tc netem qdiscs...")
         utils.kill_all_local_procs()
-        for replica in range(NUM_REPLICAS):
-            utils.clear_tc_qdisc_netem(
-                SERVER_NETNS(replica),
-                SERVER_DEV(replica),
-            )
+        utils.clear_all_tc_qdisc_netems(
+            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
+        )
 
     else:
-        results = collect_outputs()
+        results = collect_outputs(args.odir)
         print_results(results)
-        plot_results(results)
+        plot_results(results, args.odir)

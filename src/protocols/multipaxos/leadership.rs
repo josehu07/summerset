@@ -190,13 +190,16 @@ impl MultiPaxosReplica {
     pub fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
         self.hb_hear_timer.cancel()?;
 
-        let timeout_ms = thread_rng().gen_range(
-            self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
-        );
+        if !self.config.disable_hb_timer {
+            let timeout_ms = thread_rng().gen_range(
+                self.config.hb_hear_timeout_min
+                    ..=self.config.hb_hear_timeout_max,
+            );
+            // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+            self.hb_hear_timer
+                .kickoff(Duration::from_millis(timeout_ms))?;
+        }
 
-        // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
-        self.hb_hear_timer
-            .kickoff(Duration::from_millis(timeout_ms))?;
         Ok(())
     }
 

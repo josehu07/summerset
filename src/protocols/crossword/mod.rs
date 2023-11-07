@@ -63,6 +63,9 @@ pub struct ReplicaConfigCrossword {
     /// Interval of leader sending heartbeats to followers.
     pub hb_send_interval_ms: u64,
 
+    /// Disable heartbeat timer (to force a deterministic leader during tests)?
+    pub disable_hb_timer: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -77,6 +80,9 @@ pub struct ReplicaConfigCrossword {
 
     /// How many slots at the end should we ignore when gossiping is triggered.
     pub gossip_tail_ignores: usize,
+
+    /// Disable gossiping timer (to force more deterministic perf behavior)?
+    pub disable_gossip_timer: bool,
 
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
@@ -123,19 +129,21 @@ impl Default for ReplicaConfigCrossword {
             hb_hear_timeout_min: 1500,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
+            disable_hb_timer: false,
             snapshot_path: "/tmp/summerset.crossword.snap".into(),
             snapshot_interval_s: 0,
             gossip_timeout_min: 10,
             gossip_timeout_max: 30,
             gossip_tail_ignores: 100,
+            disable_gossip_timer: false,
             fault_tolerance: 0,
             msg_chunk_size: 10,
             rs_total_shards: 0,
             rs_data_shards: 0,
             init_assignment: "".into(),
             linreg_interval_ms: 200,
-            linreg_keep_ms: 5000,
-            linreg_outlier_ratio: 0.6,
+            linreg_keep_ms: 10000,
+            linreg_outlier_ratio: 0.5,
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
             perf_storage_a: 0,
@@ -595,10 +603,10 @@ impl GenericReplica for CrosswordReplica {
                                     batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
-                                    hb_send_interval_ms,
+                                    hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
                                     gossip_timeout_min, gossip_timeout_max,
-                                    gossip_tail_ignores,
+                                    gossip_tail_ignores, disable_gossip_timer,
                                     fault_tolerance, msg_chunk_size,
                                     rs_total_shards, rs_data_shards,
                                     init_assignment,

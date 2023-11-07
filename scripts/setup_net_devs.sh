@@ -29,6 +29,16 @@ done
 
 
 echo
+echo "Loading ifb module & creating ifb devices..."
+sudo rmmod ifb
+sudo modprobe ifb  # by default, add ifb0 & ifb1 automatically
+for (( s = 2; s < $MAX_SERVERS; s++ ))
+do
+    sudo ip link add ifb$s type ifb
+done
+
+
+echo
 echo "Creating bridge device for manager..."
 sudo ip link add brgm type bridge
 sudo ip link set brgm mtu $MTU
@@ -51,6 +61,20 @@ do
     sudo ip link set veths$s netns ns$s
     sudo ip netns exec ns$s ip addr add "10.0.1.$s/16" dev veths$s
     sudo ip netns exec ns$s ip link set veths$s up
+done
+
+
+echo
+echo "Redirecting veth ingress to ifb..."
+for (( s = 0; s < $MAX_SERVERS; s++ ))
+do
+    sudo ip link set ifb$s mtu $MTU
+    sudo ip link set ifb$s txqlen $QLEN
+    sudo ip link set ifb$s netns ns$s
+    sudo ip netns exec ns$s tc qdisc add dev veths$s ingress
+    sudo ip netns exec ns$s tc filter add dev veths$s parent ffff: protocol all u32 match u32 0 0 flowid 1:1 action mirred egress redirect dev ifb$s
+    sudo ip netns exec ns$s ip link set ifb$s up
+    sudo ip netns exec ns$s tc qdisc replace dev ifb$s root noqueue
 done
 
 

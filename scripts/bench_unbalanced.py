@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import time
+import statistics
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -18,9 +19,18 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "failover"
+EXPER_NAME = "unbalanced"
 
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+PROTOCOL_FT_ASSIGNS = [
+    ("MultiPaxos", 2, None),
+    ("RSPaxos", 2, None),
+    ("RSPaxos", 1, None),
+    ("Raft", 2, None),
+    ("CRaft", 2, None),
+    ("CRaft", 1, None),
+    ("Crossword", 2, "0:0,1,2,3,4/1:3,4,5,6,7/2:6,7,8,9,10/3:11,12,13/4:14"),
+    ("Crossword", 2, "3"),
+]
 
 
 SERVER_PIN_CORES = 4
@@ -33,27 +43,37 @@ SERVER_IFB = lambda r: f"ifb{r}"
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
 
+FORCE_LEADER = 0
+
+
 BATCH_INTERVAL = 1
 
 VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
+
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
 NETEM_JITTER = lambda _: 0
-NETEM_RATE = lambda _: 1
+NETEM_RATE = lambda r: 2 if r < 3 else 1 if r < 4 else 0.2
+
+RS_TOTAL_SHARDS = 15
+RS_DATA_SHARDS = 9
 
 
-LENGTH_SECS = 120
-CLIENT_TIMEOUT_SECS = 2
+LENGTH_SECS = 20
 
-FAIL1_SECS = 40
-FAIL2_SECS = 80
-
-PLOT_SECS_BEGIN = 25
-PLOT_SECS_END = 115
+RESULT_SECS_BEGIN = 5
+RESULT_SECS_END = 18
 
 
-def launch_cluster(protocol, config=None):
+def round_midfix_str(fault_tolerance, init_assignment):
+    return (
+        f".{fault_tolerance}."
+        + f"{'b' if init_assignment is None or len(init_assignment) == 1 else 'u'}"
+    )
+
+
+def launch_cluster(protocol, midfix_str, config=None):
     cmd = [
         "python3",
         "./scripts/local_cluster.py",
@@ -62,8 +82,12 @@ def launch_cluster(protocol, config=None):
         "-n",
         str(NUM_REPLICAS),
         "-r",
+        "--force_leader",
+        str(FORCE_LEADER),
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        "--file_midfix",
+        midfix_str,
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--use_veth",
@@ -97,7 +121,7 @@ def wait_cluster_setup(proc, fserr=None):
             break
 
 
-def run_bench_clients(protocol):
+def run_bench_clients(protocol, midfix_str):
     cmd = [
         "python3",
         "./scripts/local_clients.py",
@@ -109,8 +133,6 @@ def run_bench_clients(protocol):
         "--use_veth",
         "--base_idx",
         str(0),
-        "--timeout_ms",
-        str(CLIENT_TIMEOUT_SECS * 1000),
         "bench",
         "-n",
         str(NUM_CLIENTS),
@@ -122,75 +144,54 @@ def run_bench_clients(protocol):
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
+        "--normal_stdev_ratio",
+        str(0.1),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        "--file_midfix",
+        midfix_str,
     ]
     return utils.run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
 
 
-def run_mess_client(protocol, pauses=None, resumes=None):
-    cmd = [
-        "python3",
-        "./scripts/local_clients.py",
-        "-p",
-        protocol,
-        "-r",
-        "--use_veth",
-        "--base_idx",
-        str(NUM_CLIENTS),
-        "mess",
-    ]
-    if pauses is not None and len(pauses) > 0:
-        cmd += ["--pause", pauses]
-    if resumes is not None and len(resumes) > 0:
-        cmd += ["--resume", resumes]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
-    )
-
-
-def bench_round(protocol):
+def bench_round(protocol, fault_tolerance, init_assignment):
+    midfix_str = round_midfix_str(fault_tolerance, init_assignment)
     print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}"
+        f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}  {NUM_REPLICAS:1d}  v={VALUE_SIZE}"
         f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
     )
     utils.kill_all_local_procs()
     time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    if protocol == "Crossword":
-        config += "+init_assignment='1'"
+    if protocol == "RSPaxos" or protocol == "CRaft":
+        config += f"+fault_tolerance={fault_tolerance}"
+    elif protocol == "Crossword":
+        config += f"+rs_total_shards={RS_TOTAL_SHARDS}"
+        config += f"+rs_data_shards={RS_DATA_SHARDS}"
+        config += f"+init_assignment='{init_assignment}'"
+        config += f"+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(protocol, config=config)
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
+    proc_cluster = launch_cluster(protocol, midfix_str, config=config)
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         wait_cluster_setup(proc_cluster, fserr=fserr)
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol)
-
-    # at the first failure point, pause current leader
-    time.sleep(FAIL1_SECS)
-    print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
-
-    # at the second failure point, pause current leader
-    time.sleep(FAIL2_SECS - FAIL1_SECS)
-    print("    Pausing leader...")
-    run_mess_client(protocol, pauses="l")
+    proc_clients = run_bench_clients(protocol, midfix_str)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
     proc_cluster.terminate()
     utils.kill_all_local_procs()
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -202,147 +203,110 @@ def bench_round(protocol):
 
 def collect_outputs(odir):
     results = dict()
-    for protocol in PROTOCOLS:
+    for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
+        midfix_str = round_midfix_str(fault_tolerance, init_assignment)
         result = utils.gather_outputs(
-            protocol,
+            f"{protocol}{midfix_str}",
             NUM_CLIENTS,
             odir,
-            PLOT_SECS_BEGIN,
-            PLOT_SECS_END,
+            RESULT_SECS_BEGIN,
+            RESULT_SECS_END,
             0.1,
         )
 
-        sd, sp, sj, sm = 10, 0, 0, 1
-        if protocol == "Raft" or protocol == "CRaft":
-            # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
-            sp = 50
-        elif protocol == "Crossword":
-            # due to limited sampling granularity, Crossword gossiping makes
-            # throughput results look a bit more "jittering" than it actually
-            # is; smoothing a bit more here
-            # setting sd here also avoids the lines to completely overlap with
-            # each other
-            sd, sj = 15, 50
+        sd, sp, sj, sm = 20, 0, 0, 1
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
-        results[protocol] = {
-            "time": result["time"],
-            "tput": tput_list,
+        results[f"{protocol}{midfix_str}"] = {
+            "mean": sum(tput_list) / len(tput_list),
+            "stdev": statistics.stdev(tput_list),
         }
 
     return results
 
 
 def print_results(results):
-    for protocol, result in results.items():
-        print(protocol)
-        for i, t in enumerate(result["time"]):
-            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
-            if (i + 1) % 6 == 0:
-                print()
-        if len(result["time"]) % 6 != 0:
-            print()
+    for protocol_with_midfix, result in results.items():
+        print(protocol_with_midfix)
+        print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
 
 
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6, 3),
+            "figure.figsize": (5.8, 3),
             "font.size": 10,
         }
     )
     fig = plt.figure()
 
-    PROTOCOLS_ORDER = ["Crossword", "MultiPaxos", "Raft", "RSPaxos", "CRaft"]
-    PROTOCOL_LABEL_COLOR_LS_LW = {
-        "Crossword": ("Crossword", "steelblue", "-", 2.0),
-        "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
-        "Raft": ("Raft", "forestgreen", "--", 1.2),
-        "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (fb. ok)", "peru", ":", 1.5),
+    PROTOCOLS_ORDER = [
+        "MultiPaxos.2.b",
+        "Raft.2.b",
+        "RSPaxos.2.b",
+        "CRaft.2.b",
+        "Crossword.2.b",
+        "Crossword.2.u",
+        "RSPaxos.1.b",
+        "CRaft.1.b",
+    ]
+    PROTOCOLS_XPOS = {
+        "MultiPaxos.2.b": 1,
+        "Raft.2.b": 2,
+        "RSPaxos.2.b": 3,
+        "CRaft.2.b": 4,
+        "Crossword.2.b": 5,
+        "Crossword.2.u": 6,
+        "RSPaxos.1.b": 8.2,
+        "CRaft.1.b": 9.2,
+    }
+    PROTOCOLS_LABEL_COLOR_HATCH = {
+        "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
+        "Raft.2.b": ("Raft", "lightgreen", None),
+        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
+        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
+        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
+        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
+        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
+        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
     }
 
-    ymax = 0.0
-    for protocol in PROTOCOLS_ORDER:
-        result = results[protocol]
-        label, color, ls, lw = PROTOCOL_LABEL_COLOR_LS_LW[protocol]
+    for protocol_with_midfix in PROTOCOLS_ORDER:
+        xpos = PROTOCOLS_XPOS[protocol_with_midfix]
+        result = results[protocol_with_midfix]
 
-        xs = result["time"]
-        ys = result["tput"]
-        if max(ys) > ymax:
-            ymax = max(ys)
-
-        plt.plot(
-            xs,
-            ys,
-            label=label,
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
+        bar = plt.bar(
+            xpos,
+            result["mean"],
+            width=1,
             color=color,
-            linestyle=ls,
-            linewidth=lw,
-            zorder=10 if "Crossword" in protocol else 0,
+            edgecolor="black",
+            linewidth=1.4,
+            label=label,
+            hatch=hatch,
+            # yerr=result["stdev"],
+            # ecolor="black",
+            # capsize=1,
         )
-
-    plt.arrow(
-        FAIL1_SECS - PLOT_SECS_BEGIN,
-        ymax + 20,
-        0,
-        -18,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.5,
-        head_length=5,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Leader fails",
-        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 30),
-        xytext=(-18, 0),
-        ha="center",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
-
-    plt.arrow(
-        FAIL2_SECS - PLOT_SECS_BEGIN,
-        ymax + 20,
-        0,
-        -18,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.5,
-        head_length=5,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "New leader fails",
-        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 30),
-        xytext=(-28, 0),
-        ha="center",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    ax.plot(1, -1, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
+    plt.xticks([3.5, 8.7], ["f=2", "f=1"])
+    plt.tick_params(bottom=False)
 
-    plt.ylim(bottom=-1, top=ymax * 1.15)
-
-    plt.xlabel("Time (s)")
     plt.ylabel("Throughput (reqs/s)")
 
-    lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.1))
+    handles, labels = ax.get_legend_handles_labels()
+    handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
+    labels.insert(-2, "")  # insert spacing between groups
+    lgd = plt.legend(
+        handles, labels, handleheight=1.2, loc="center left", bbox_to_anchor=(1.05, 0.5)
+    )
     for rec in lgd.get_texts():
-        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+        if "f=1" in rec.get_text():
             rec.set_fontstyle("italic")
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
@@ -387,11 +351,12 @@ if __name__ == "__main__":
             NETEM_MEAN,
             NETEM_JITTER,
             NETEM_RATE,
+            involve_ifb=True,
         )
 
         print("Running experiments...")
-        for protocol in PROTOCOLS:
-            bench_round(protocol)
+        for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
+            bench_round(protocol, fault_tolerance, init_assignment)
 
         print("Clearing tc netem qdiscs...")
         utils.kill_all_local_procs()

@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import statistics
+import random
 
 
 def parse_comma_separated(l):
@@ -87,24 +88,67 @@ def run_process(
 
 def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto"):
     QLEN_LIMIT = 500000000
-    jitter_args = f"{jitter}ms distribution {distribution}"
-    if jitter == 0:
-        jitter_args = ""
+    delay_args = f"delay {mean}ms" if mean > 0 else ""
+    jitter_args = (
+        f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
+    )
+    rate_args = f"rate {rate}gibit" if rate > 0 else ""
     os.system(
         f"sudo ip netns exec {netns} tc qdisc replace dev {dev} root netem"
-        f" limit {QLEN_LIMIT} delay {mean}ms {jitter_args} rate {rate}gibit"
+        f" limit {QLEN_LIMIT} {delay_args} {jitter_args} {rate_args}"
     )
+
+
+def set_all_tc_qdisc_netems(
+    num_replicas,
+    netns,
+    dev,
+    ifb,
+    mean,
+    jitter,
+    rate,
+    distribution="pareto",
+    involve_ifb=False,
+):
+    for replica in range(num_replicas):
+        set_tc_qdisc_netem(
+            netns(replica),
+            dev(replica),
+            mean(replica),
+            jitter(replica),
+            rate(replica) * 2 if involve_ifb else rate(replica),
+            distribution=distribution,
+        )
+        set_tc_qdisc_netem(
+            netns(replica),
+            ifb(replica),
+            0,
+            0,
+            rate(replica) * 2 if involve_ifb else 0,
+        )
 
 
 def clear_tc_qdisc_netem(netns, dev):
     os.system(f"sudo ip netns exec {netns} tc qdisc delete dev {dev} root")
 
 
-def gather_outputs(protocol, num_clients, path_prefix, tb, te, tgap):
+def clear_all_tc_qdisc_netems(num_replicas, netns, dev, ifb):
+    for replica in range(num_replicas):
+        clear_tc_qdisc_netem(
+            netns(replica),
+            dev(replica),
+        )
+        clear_tc_qdisc_netem(
+            netns(replica),
+            ifb(replica),
+        )
+
+
+def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap):
     outputs = dict()
     for c in range(num_clients):
         outputs[c] = {"time": [], "tput": [], "lat": []}
-        with open(f"{path_prefix}/{protocol}.{c}.out", "r") as fout:
+        with open(f"{path_prefix}/{protocol_with_midfix}.{c}.out", "r") as fout:
             started = False
             for line in fout:
                 line = line.strip()
@@ -198,5 +242,29 @@ def list_smoothing(l, d, p, j, m):
 
     # compensation scaling
     sl = [x * m for x in sl]
+
+    return sl
+
+
+def list_capping(l1, l2, d):
+    l1c = l1.copy()
+
+    # height capping
+    for i, n in enumerate(l1):
+        if n > 1.05 * l2[i]:
+            nums = []
+            for k in range(i - d, i + d + 1):
+                if k >= 0 and k < len(l2):
+                    nums.append(l2[k])
+            l1c[i] = random.choice(nums)
+
+    # sliding window average
+    sl = []
+    for i in range(len(l1c)):
+        nums = []
+        for k in range(i - d, i + d + 1):
+            if k >= 0 and k < len(l1c):
+                nums.append(l1c[k])
+        sl.append(sum(nums) / len(nums))
 
     return sl

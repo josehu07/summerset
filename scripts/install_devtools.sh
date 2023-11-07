@@ -14,16 +14,19 @@ echo
 echo "Installing Rust toolchain..."
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
+
 echo
 echo "Running sudo apt update & upgrade..."
 sudo apt update
 sudo apt --fix-broken install
 sudo apt -y upgrade
 
+
 echo
 echo "Installing necessary apt packages..."
 sudo apt install htop
 sudo apt install python3-pip
+
 
 echo
 echo "Installing necessary pip packages..."

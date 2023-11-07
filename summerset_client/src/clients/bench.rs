@@ -73,7 +73,8 @@ pub struct ModeParamsBench {
     pub normal_stdev_ratio: f32,
 
     /// Do a uniformly distributed value size write for every some interval.
-    /// Zero to turn off.
+    /// Set to 0 to turn off. Set to 1 to let every request size go through a
+    /// uniform distribution (overwriting the normal dist param).
     pub unif_interval_ms: u64,
 
     /// Upper bound of uniform distribution to sample value size from.
@@ -176,12 +177,12 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.normal_stdev_ratio '{}'",
                                     params.normal_stdev_ratio);
         }
-        if params.unif_interval_ms > 0 && params.unif_interval_ms < 100 {
+        if params.unif_interval_ms > 1 && params.unif_interval_ms < 100 {
             return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
                                     params.unif_interval_ms);
         }
         if params.unif_upper_bound < 1024
-            || params.unif_upper_bound > 1024 * 1024
+            || params.unif_upper_bound > MOM_VALUE.len()
         {
             return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
                                     params.unif_upper_bound);
@@ -209,7 +210,7 @@ impl ClientBench {
             None
         };
         let unif_dist = if params.unif_interval_ms > 0 {
-            Some(Uniform::from(1..=params.unif_upper_bound))
+            Some(Uniform::from(8..=params.unif_upper_bound))
         } else {
             None
         };
@@ -296,7 +297,16 @@ impl ClientBench {
             return logged_err!(self.driver.id; "value size {} too big", size);
         }
 
-        if let Some(normal_dist) = self.normal_dist.as_ref() {
+        // go through a probability distribution?
+        if self.unif_dist.is_some() && self.params.unif_interval_ms == 1 {
+            // go through a uniform distribution, ignoring all other settings
+            size = self
+                .unif_dist
+                .as_ref()
+                .unwrap()
+                .sample(&mut rand::thread_rng());
+        } else if let Some(normal_dist) = self.normal_dist.as_ref() {
+            // go through a normal distribution with current size as mean
             loop {
                 let f32_size =
                     normal_dist[&size].sample(&mut rand::thread_rng());
@@ -307,13 +317,18 @@ impl ClientBench {
             }
         }
 
-        if let Some(unif_dist) = self.unif_dist.as_ref() {
-            if self.now.duration_since(self.last_unif).as_millis()
+        // force this request as an injected uniform distribution req?
+        if self.unif_dist.is_some()
+            && self.params.unif_interval_ms > 1
+            && self.now.duration_since(self.last_unif).as_millis()
                 >= self.params.unif_interval_ms as u128
-            {
-                size = unif_dist.sample(&mut rand::thread_rng());
-                self.last_unif = self.now;
-            }
+        {
+            size = self
+                .unif_dist
+                .as_ref()
+                .unwrap()
+                .sample(&mut rand::thread_rng());
+            self.last_unif = self.now;
         }
 
         Ok(&MOM_VALUE[..size])

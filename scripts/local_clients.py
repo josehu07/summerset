@@ -17,7 +17,9 @@ MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_CLI_PORT = 52601
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, i: f"{prefix}/{protocol}.{i}.out"
+CLIENT_OUTPUT_PATH = (
+    lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
+)
 
 UTILITY_PARAM_NAMES = {
     "repl": [],
@@ -199,6 +201,12 @@ if __name__ == "__main__":
         default="",
         help="output file prefix folder path",
     )
+    parser_bench.add_argument(
+        "--file_midfix",
+        type=str,
+        default="",
+        help="output file extra identifier after protocol name",
+    )
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
     parser_tester.add_argument(
@@ -274,7 +282,10 @@ if __name__ == "__main__":
                 # doing automated experiments, so capture output
                 out, _ = client_proc.communicate(timeout=timeout)
                 with open(
-                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, i), "w+"
+                    CLIENT_OUTPUT_PATH(
+                        args.protocol, args.file_prefix, args.file_midfix, i
+                    ),
+                    "w+",
                 ) as fout:
                     fout.write(out.decode())
                 rcs.append(client_proc.returncode)

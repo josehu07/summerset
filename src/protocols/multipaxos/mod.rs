@@ -62,6 +62,9 @@ pub struct ReplicaConfigMultiPaxos {
     /// Interval of leader sending heartbeats to followers.
     pub hb_send_interval_ms: u64,
 
+    /// Disable heartbeat timer (to force a deterministic leader during tests).
+    pub disable_hb_timer: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -90,6 +93,7 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_hear_timeout_min: 1500,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
+            disable_hb_timer: false,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -457,7 +461,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
-                                    hb_send_interval_ms,
+                                    hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
                                     msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
