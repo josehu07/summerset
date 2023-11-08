@@ -234,11 +234,11 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (5.8, 3),
+            "figure.figsize": (4, 3),
             "font.size": 10,
         }
     )
-    fig = plt.figure()
+    fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
         "MultiPaxos.2.b",
@@ -299,11 +299,35 @@ def plot_results(results, odir):
 
     plt.ylabel("Throughput (reqs/s)")
 
-    handles, labels = ax.get_legend_handles_labels()
+    plt.tight_layout()
+
+    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+    return ax.get_legend_handles_labels()
+
+
+def plot_legend(handles, labels, odir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (2.4, 2.2),
+            "font.size": 10,
+        }
+    )
+    plt.figure("Legend")
+
+    plt.axis("off")
+
     handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
     labels.insert(-2, "")  # insert spacing between groups
     lgd = plt.legend(
-        handles, labels, handleheight=1.2, loc="center left", bbox_to_anchor=(1.05, 0.5)
+        handles,
+        labels,
+        handleheight=1.2,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
     )
     for rec in lgd.get_texts():
         if "f=1" in rec.get_text():
@@ -311,12 +335,10 @@ def plot_results(results, odir):
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    plt.tight_layout()
-
-    png_name = f"{odir}/{EXPER_NAME}.png"
-    plt.savefig(png_name, dpi=300)
+    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
-    print(f"Plotted: {png_name}")
+    print(f"Plotted: {pdf_name}")
 
 
 if __name__ == "__main__":
@@ -367,4 +389,5 @@ if __name__ == "__main__":
     else:
         results = collect_outputs(args.odir)
         print_results(results)
-        plot_results(results, args.odir)
+        handles, labels = plot_results(results, args.odir)
+        plot_legend(handles, labels, args.odir)

@@ -20,7 +20,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword, LinearRegressor};
+use crate::utils::{
+    SummersetError, Bitmap, Timer, RSCodeword, PerfModel, LinearRegressor,
+};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, CommandId, ExternalApi, ApiRequest,
@@ -111,6 +113,11 @@ pub struct ReplicaConfigCrossword {
     /// Ratio of outliers to exclude in each `calc_model()`.
     pub linreg_outlier_ratio: f32,
 
+    /// Value size lower bound of always prefering the smallest |Q| config.
+    pub vsize_lower_bound: usize,
+    /// Value size upper bound of always prefering the largest |Q| config.
+    pub vsize_upper_bound: usize,
+
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
     pub perf_storage_b: u64,
@@ -143,9 +150,11 @@ impl Default for ReplicaConfigCrossword {
             init_assignment: "".into(),
             linreg_interval_ms: 200,
             linreg_keep_ms: 10000,
-            linreg_outlier_ratio: 0.5,
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
+            linreg_outlier_ratio: 0.5,
+            vsize_lower_bound: 4096,
+            vsize_upper_bound: 1024 * 1024,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -479,7 +488,7 @@ pub struct CrosswordReplica {
     regressor: HashMap<ReplicaId, LinearRegressor>,
 
     /// Map from peer ID -> current saved linear regression perf model.
-    linreg_model: HashMap<ReplicaId, (f64, f64)>,
+    linreg_model: HashMap<ReplicaId, PerfModel>,
 }
 
 // CrosswordReplica common helpers
@@ -613,6 +622,7 @@ impl GenericReplica for CrosswordReplica {
                                     linreg_interval_ms, linreg_keep_ms,
                                     linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
+                                    vsize_lower_bound, vsize_upper_bound,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b)?;
         if config.batch_interval_ms == 0 {
@@ -664,11 +674,18 @@ impl GenericReplica for CrosswordReplica {
                 config.linreg_keep_ms
             );
         }
-        if !(0.0..0.9).contains(&config.linreg_outlier_ratio) {
+        if !(0.0..1.0).contains(&config.linreg_outlier_ratio) {
             return logged_err!(
                 id;
                 "invalid config.linreg_outlier_ratio '{}'",
                 config.linreg_outlier_ratio
+            );
+        }
+        if config.vsize_lower_bound >= config.vsize_upper_bound {
+            return logged_err!(
+                id;
+                "config.vsize_lower_bound '{}' >= config.vsize_upper_bound '{}'",
+                config.vsize_lower_bound, config.vsize_upper_bound
             );
         }
 
@@ -934,7 +951,14 @@ impl GenericReplica for CrosswordReplica {
                     if s == id {
                         None
                     } else {
-                        Some((s, (config.linreg_init_a, config.linreg_init_b)))
+                        Some((
+                            s,
+                            PerfModel::new(
+                                config.linreg_init_a,
+                                config.linreg_init_b,
+                                0.0,
+                            ),
+                        ))
                     }
                 })
                 .collect(),

@@ -122,6 +122,8 @@ impl CrosswordReplica {
                 self.majority,
                 self.config.fault_tolerance,
                 inst.reqs_cw.data_len(),
+                self.config.vsize_lower_bound,
+                self.config.vsize_upper_bound,
                 &self.linreg_model,
                 &self.peer_alive,
             );

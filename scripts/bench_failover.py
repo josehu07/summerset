@@ -252,7 +252,7 @@ def plot_results(results, odir):
             "font.size": 10,
         }
     )
-    fig = plt.figure()
+    fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = ["Crossword", "MultiPaxos", "Raft", "RSPaxos", "CRaft"]
     PROTOCOL_LABEL_COLOR_LS_LW = {
@@ -260,7 +260,7 @@ def plot_results(results, odir):
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
         "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (fb. ok)", "peru", ":", 1.5),
+        "CRaft": ("CRaft (f=1, fb ok)", "peru", ":", 1.5),
     }
 
     ymax = 0.0
@@ -340,19 +340,44 @@ def plot_results(results, odir):
     plt.xlabel("Time (s)")
     plt.ylabel("Throughput (reqs/s)")
 
-    lgd = plt.legend(handlelength=1.4, loc="upper right", bbox_to_anchor=(1.02, 1.1))
+    plt.tight_layout()
+
+    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+    return ax.get_legend_handles_labels()
+
+
+def plot_legend(handles, labels, odir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (1.8, 1.3),
+            "font.size": 10,
+        }
+    )
+    plt.figure("Legend")
+
+    plt.axis("off")
+
+    lgd = plt.legend(
+        handles,
+        labels,
+        handlelength=1.4,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
+    )
     for rec in lgd.get_texts():
         if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
             rec.set_fontstyle("italic")
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    plt.tight_layout()
-
-    png_name = f"{odir}/{EXPER_NAME}.png"
-    plt.savefig(png_name, dpi=300)
+    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
-    print(f"Plotted: {png_name}")
+    print(f"Plotted: {pdf_name}")
 
 
 if __name__ == "__main__":
@@ -402,4 +427,5 @@ if __name__ == "__main__":
     else:
         results = collect_outputs(args.odir)
         print_results(results)
-        plot_results(results, args.odir)
+        handles, labels = plot_results(results, args.odir)
+        plot_legend(handles, labels, args.odir)

@@ -20,4 +20,4 @@ pub use safetcp::{
     safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
 };
 pub use rscoding::RSCodeword;
-pub use linreg::LinearRegressor;
+pub use linreg::{PerfModel, LinearRegressor};

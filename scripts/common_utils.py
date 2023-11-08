@@ -246,12 +246,18 @@ def list_smoothing(l, d, p, j, m):
     return sl
 
 
-def list_capping(l1, l2, d):
+def list_capping(l1, l2, d, down=True):
     l1c = l1.copy()
 
     # height capping
     for i, n in enumerate(l1):
-        if n > 1.05 * l2[i]:
+        if down and n > 1.05 * l2[i]:
+            nums = []
+            for k in range(i - d, i + d + 1):
+                if k >= 0 and k < len(l2):
+                    nums.append(l2[k])
+            l1c[i] = random.choice(nums)
+        elif not down and n < 1.05 * l2[i]:
             nums = []
             for k in range(i - d, i + d + 1):
                 if k >= 0 and k < len(l2):

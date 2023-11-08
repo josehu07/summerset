@@ -22,11 +22,11 @@ impl CrosswordReplica {
     #[inline]
     #[allow(clippy::ptr_arg)]
     fn linreg_models_to_string(
-        models: &HashMap<ReplicaId, (f64, f64)>,
+        models: &HashMap<ReplicaId, PerfModel>,
     ) -> String {
         models
             .iter()
-            .map(|(r, model)| format!("{}:({:.2},{:.2})", r, model.0, model.1))
+            .map(|(r, model)| format!("{}:{}", r, model))
             .collect::<Vec<String>>()
             .join(" ")
     }
@@ -120,7 +120,9 @@ impl CrosswordReplica {
         majority: u8,
         fault_tolerance: u8,
         data_size: usize,
-        linreg_model: &HashMap<ReplicaId, (f64, f64)>,
+        vsize_lower_bound: usize,
+        vsize_upper_bound: usize,
+        linreg_model: &HashMap<ReplicaId, PerfModel>,
         peer_alive: &Bitmap,
     ) -> &'a Vec<Bitmap> {
         // if unbalanced assignment is used, don't enable adaptability and also
@@ -129,11 +131,16 @@ impl CrosswordReplica {
             return init_assignment;
         }
 
-        // query the linear regression models and pick the best config of
-        // (#shards_per_replica, quorum_size) pair along the constraint
-        // boundary line if doing adaptive config choosing
-        let best_spr = if assignment_adaptive {
-            let dj_spr = rs_data_shards / majority;
+        // NOTE: some obvious fixed assignments used here
+        let dj_spr = rs_data_shards / majority;
+        let best_spr = if data_size <= vsize_lower_bound {
+            rs_data_shards
+        } else if data_size >= vsize_upper_bound {
+            dj_spr
+        } else if assignment_adaptive {
+            // query the linear regression models and pick the best config of
+            // (#shards_per_replica, quorum_size) pair along the constraint
+            // boundary line if doing adaptive config choosing
             let mut config_times =
                 Vec::<(u8, f64)>::with_capacity(majority as usize);
             for (spr, q) in (dj_spr..=rs_data_shards)
@@ -141,13 +148,11 @@ impl CrosswordReplica {
                 .enumerate()
                 .map(|(i, spr)| (spr, majority + fault_tolerance - i as u8))
             {
-                let load_size_mb = ((data_size / rs_data_shards as usize) + 1)
-                    as f64
-                    * spr as f64
-                    / (1024 * 1024) as f64;
+                let load_size =
+                    ((data_size / rs_data_shards as usize) + 1) * spr as usize;
                 let mut peer_times: Vec<f64> = linreg_model
                     .iter()
-                    .map(|(_, model)| model.0 * load_size_mb + model.1)
+                    .map(|(_, model)| model.predict(load_size))
                     .collect();
                 peer_times.sort_by(|x, y| x.partial_cmp(y).unwrap());
                 config_times.push((spr, peer_times[q as usize - 2]));
@@ -191,14 +196,13 @@ impl CrosswordReplica {
                 debug_assert!(tr >= ts);
                 // approximate size as the PeerMsg type's stack size + shards
                 // payload size
-                let size_mb: f64 = size as f64 / (1024 * 1024) as f64;
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap()
-                    .append_sample(tr, size_mb, elapsed_ms);
+                    .append_sample(tr, size, elapsed_ms);
                 // pf_trace!(self.id; "append {} ac t {} dp {:?}",
-                //                    peer, tr, (size_mb, elapsed_ms));
+                //                    peer, tr, (size, elapsed_ms));
                 break;
             } else if slot < s {
                 // larger slot seen, meaning the send record for slot is
@@ -232,9 +236,9 @@ impl CrosswordReplica {
                 self.regressor
                     .get_mut(&peer)
                     .unwrap() // heartbeat size ~= 0
-                    .append_sample(tr, 0.0, elapsed_ms);
+                    .append_sample(tr, 0, elapsed_ms);
                 // pf_trace!(self.id; "append {} hb t {} dp {:?}",
-                //                    peer, tr, (0.0, elapsed_ms));
+                //                    peer, tr, (0, elapsed_ms));
                 break;
             } else if hb_id < id {
                 // larger ID seen, meaning the send record for hb_id is
@@ -262,22 +266,14 @@ impl CrosswordReplica {
             regressor.discard_before(keep_us);
             if !self.peer_alive.get(peer)? {
                 // if peer not considered alive, use a very high delay
-                *self.linreg_model.get_mut(&peer).unwrap() = (0.0, 10000.0);
+                self.linreg_model
+                    .get_mut(&peer)
+                    .unwrap()
+                    .update(0.0, 999.0, 0.0);
             } else {
                 // otherwise, compute simple linear regression
                 match regressor.calc_model(self.config.linreg_outlier_ratio) {
-                    Ok(mut model) => {
-                        // cap the model in reasonable range
-                        if model.0 < 0.05 {
-                            model.0 = 0.05;
-                        } else if model.0 > 100.0 {
-                            model.0 = 100.0;
-                        }
-                        if model.1 < 0.1 {
-                            model.1 = 0.1;
-                        } else if model.1 > 250.0 {
-                            model.1 = 250.0;
-                        }
+                    Ok(model) => {
                         *self.linreg_model.get_mut(&peer).unwrap() = model;
                     }
                     Err(_e) => {

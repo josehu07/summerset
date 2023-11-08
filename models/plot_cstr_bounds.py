@@ -247,7 +247,7 @@ def plot_all_cstr_bounds(output_dir):
     make_legend(fig, handles, labels)
 
     plt.tight_layout(pad=1.0)
-    plt.savefig(f"{output_dir}/cstr_bounds.png", dpi=300)
+    plt.savefig(f"{output_dir}/cstr_bounds.pdf", bbox_inches=0)
 
 
 if __name__ == "__main__":
