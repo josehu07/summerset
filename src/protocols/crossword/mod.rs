@@ -21,7 +21,8 @@ use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::utils::{
-    SummersetError, Bitmap, Timer, RSCodeword, PerfModel, LinearRegressor,
+    SummersetError, Bitmap, Timer, Stopwatch, RSCodeword, PerfModel,
+    LinearRegressor,
 };
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
@@ -123,6 +124,9 @@ pub struct ReplicaConfigCrossword {
     pub perf_storage_b: u64,
     pub perf_network_a: u64,
     pub perf_network_b: u64,
+
+    /// Recording performance breakdown statistics?
+    pub record_breakdown: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -153,12 +157,13 @@ impl Default for ReplicaConfigCrossword {
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
             linreg_outlier_ratio: 0.5,
-            vsize_lower_bound: 4096,
+            vsize_lower_bound: 1024,
             vsize_upper_bound: 1024 * 1024,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
             perf_network_b: 0,
+            record_breakdown: false,
         }
     }
 }
@@ -489,6 +494,9 @@ pub struct CrosswordReplica {
 
     /// Map from peer ID -> current saved linear regression perf model.
     linreg_model: HashMap<ReplicaId, PerfModel>,
+
+    /// Performance breakdown stopwatch if doing recording.
+    bd_stopwatch: Option<Stopwatch>,
 }
 
 // CrosswordReplica common helpers
@@ -624,7 +632,8 @@ impl GenericReplica for CrosswordReplica {
                                     linreg_init_a, linreg_init_b,
                                     vsize_lower_bound, vsize_upper_bound,
                                     perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b)?;
+                                    perf_network_a, perf_network_b,
+                                    record_breakdown)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -874,6 +883,12 @@ impl GenericReplica for CrosswordReplica {
             .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
             .collect();
 
+        let bd_stopwatch = if config.record_breakdown {
+            Some(Stopwatch::new())
+        } else {
+            None
+        };
+
         Ok(CrosswordReplica {
             id,
             population,
@@ -962,6 +977,7 @@ impl GenericReplica for CrosswordReplica {
                     }
                 })
                 .collect(),
+            bd_stopwatch,
         })
     }
 

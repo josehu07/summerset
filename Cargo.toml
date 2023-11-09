@@ -26,3 +26,4 @@ reed-solomon-erasure = { version = "6.0", features = ["simd-accel"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 get-size = { version = "0.1", features = ["derive"] }
 linreg = "0.2"
+statistical = "1.0"

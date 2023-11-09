@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import time
+import statistics
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -18,10 +19,9 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "adaptive"
+EXPER_NAME = "bd_n_space"
 
-# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Crossword"]
+PROTOCOLS = ["MultiPaxos", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -39,28 +39,20 @@ FORCE_LEADER = 0
 
 BATCH_INTERVAL = 1
 
+VALUE_SIZE = 128 * 1024
+
 PUT_RATIO = 100
 
 
-LENGTH_SECS = 90
-
-SIZE_CHANGE_SECS = 25
-
-VALUE_SIZES = [(0, 8192), (SIZE_CHANGE_SECS, 65536)]
-VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
-
-ENV_CHANGE_SECS = 55
-
-NETEM_MEAN_S = lambda _: 1  # will be exagerated by #clients
-NETEM_MEAN_E = lambda r: 1 if r < 3 else 10
-NETEM_JITTER_S = lambda _: 1
-NETEM_JITTER_E = lambda r: 0 if r < 3 else 5
-NETEM_RATE_S = lambda _: 1
-NETEM_RATE_E = lambda r: 2 if r < 3 else 0.2
+NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
+NETEM_JITTER = lambda _: 1
+NETEM_RATE = lambda _: 1
 
 
-PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 85
+LENGTH_SECS = 30
+
+RESULT_SECS_BEGIN = 5
+RESULT_SECS_END = 28
 
 
 def launch_cluster(protocol, config=None):
@@ -127,15 +119,13 @@ def run_bench_clients(protocol):
         "-f",
         str(0),  # closed-loop
         "-v",
-        VALUE_SIZES_PARAM,
+        str(VALUE_SIZE),
         "-w",
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        # "--normal_stdev_ratio",
-        # str(0.1),
-        # "--unif_interval_ms",
-        # str(500),
+        "--normal_stdev_ratio",
+        str(0.1),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
@@ -146,7 +136,7 @@ def run_bench_clients(protocol):
 
 def bench_round(protocol):
     print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZES_PARAM}"
+        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE}"
         f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
     )
     utils.kill_all_local_procs()
@@ -154,7 +144,6 @@ def bench_round(protocol):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "Crossword":
-        config += f"+vsize_lower_bound={8 * 4 * 1024}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
@@ -164,24 +153,6 @@ def bench_round(protocol):
 
     # start benchmarking clients
     proc_clients = run_bench_clients(protocol)
-
-    # at some timepoint, change mean value size (handled by the clients)
-    time.sleep(SIZE_CHANGE_SECS)
-    print("    Changing mean value size...")
-
-    # at some timepoint, change env to be more jittery
-    time.sleep(ENV_CHANGE_SECS - SIZE_CHANGE_SECS)
-    print("    Changing env perf params...")
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_E,
-        NETEM_JITTER_E,
-        NETEM_RATE_E,
-        involve_ifb=True,
-    )
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -195,18 +166,6 @@ def bench_round(protocol):
     with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)
 
-    # revert env params to initial
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_S,
-        NETEM_JITTER_S,
-        NETEM_RATE_S,
-        involve_ifb=True,
-    )
-
     if proc_clients.returncode != 0:
         print("    Experiment FAILED!")
         sys.exit(1)
@@ -218,160 +177,97 @@ def collect_outputs(odir):
     results = dict()
     for protocol in PROTOCOLS:
         result = utils.gather_outputs(
-            protocol,
+            f"{protocol}",
             NUM_CLIENTS,
             odir,
-            PLOT_SECS_BEGIN,
-            PLOT_SECS_END,
+            RESULT_SECS_BEGIN,
+            RESULT_SECS_END,
             0.1,
         )
 
         sd, sp, sj, sm = 20, 0, 0, 1
-        if protocol == "Raft" or protocol == "CRaft":
-            # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after stable state has changed; removing it here
-            # sp = 50
-            pass
-        elif protocol == "Crossword":
-            # due to limited sampling granularity, Crossword gossiping makes
-            # throughput results look a bit more "jittering" than it actually
-            # is; smoothing a bit more here
-            # setting sd here also avoids the lines to completely overlap with
-            # each other
-            # setting sm here to compensate for the injected uniform dist reqs
-            sm = 1.1
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
-        results[protocol] = {
-            "time": result["time"],
-            "tput": tput_list,
+        results[f"{protocol}"] = {
+            "mean": sum(tput_list) / len(tput_list),
+            "stdev": statistics.stdev(tput_list),
         }
-
-    # do capping for other protocols; somehow performance might go suspiciously
-    # high or low when we change the netem params during runtime?
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], sd, down=False
-    )
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], sd, down=True
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], sd, down=False
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], sd, down=True
-    )
-    results["Crossword"]["tput"] = utils.list_capping(
-        results["Crossword"]["tput"], results["MultiPaxos"]["tput"], sd, down=False
-    )
 
     return results
 
 
 def print_results(results):
-    for protocol, result in results.items():
-        print(protocol)
-        for i, t in enumerate(result["time"]):
-            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
-            if (i + 1) % 6 == 0:
-                print()
-        if len(result["time"]) % 6 != 0:
-            print()
+    for protocol_with_midfix, result in results.items():
+        print(protocol_with_midfix)
+        print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
 
 
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6, 3),
+            "figure.figsize": (4, 3),
             "font.size": 10,
         }
     )
     fig = plt.figure("Exper")
 
-    PROTOCOLS_ORDER = ["Crossword", "MultiPaxos", "Raft", "RSPaxos", "CRaft"]
-    PROTOCOL_LABEL_COLOR_LS_LW = {
-        "Crossword": ("Crossword", "steelblue", "-", 2.0),
-        "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
-        "Raft": ("Raft", "forestgreen", "--", 1.2),
-        "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (f=1)", "peru", ":", 1.5),
+    PROTOCOLS_ORDER = [
+        "MultiPaxos.2.b",
+        "Raft.2.b",
+        "RSPaxos.2.b",
+        "CRaft.2.b",
+        "Crossword.2.b",
+        "Crossword.2.u",
+        "RSPaxos.1.b",
+        "CRaft.1.b",
+    ]
+    PROTOCOLS_XPOS = {
+        "MultiPaxos.2.b": 1,
+        "Raft.2.b": 2,
+        "RSPaxos.2.b": 3,
+        "CRaft.2.b": 4,
+        "Crossword.2.b": 5,
+        "Crossword.2.u": 6,
+        "RSPaxos.1.b": 8.2,
+        "CRaft.1.b": 9.2,
+    }
+    PROTOCOLS_LABEL_COLOR_HATCH = {
+        "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
+        "Raft.2.b": ("Raft", "lightgreen", None),
+        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
+        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
+        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
+        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
+        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
+        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
     }
 
-    ymax = 0.0
-    for protocol in PROTOCOLS_ORDER:
-        result = results[protocol]
-        label, color, ls, lw = PROTOCOL_LABEL_COLOR_LS_LW[protocol]
+    for protocol_with_midfix in PROTOCOLS_ORDER:
+        xpos = PROTOCOLS_XPOS[protocol_with_midfix]
+        result = results[protocol_with_midfix]
 
-        xs = result["time"]
-        ys = result["tput"]
-        if max(ys) > ymax:
-            ymax = max(ys)
-
-        plt.plot(
-            xs,
-            ys,
-            label=label,
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
+        bar = plt.bar(
+            xpos,
+            result["mean"],
+            width=1,
             color=color,
-            linestyle=ls,
-            linewidth=lw,
-            zorder=10 if "Crossword" in protocol else 0,
+            edgecolor="black",
+            linewidth=1.4,
+            label=label,
+            hatch=hatch,
+            # yerr=result["stdev"],
+            # ecolor="black",
+            # capsize=1,
         )
-
-    plt.arrow(
-        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN,
-        ymax + 70,
-        0,
-        -140,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.2,
-        head_length=45,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Change #1:\nvalue size grows\nbw. increases",
-        (SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 140),
-        xytext=(-30, 0),
-        ha="left",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
-
-    plt.arrow(
-        ENV_CHANGE_SECS - PLOT_SECS_BEGIN,
-        ymax + 70,
-        0,
-        -140,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.2,
-        head_length=45,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Change #2:\n2 nodes experience lag\n3 nodes bw. increase",
-        (ENV_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 140),
-        xytext=(-30, 0),
-        ha="left",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    ax.plot(1, -1, ">k", transform=ax.get_yaxis_transform(), clip_on=False)
+    plt.xticks([3.5, 8.7], ["f=2", "f=1"])
+    plt.tick_params(bottom=False)
 
-    plt.ylim(bottom=-1, top=ymax * 1.15)
-
-    plt.xlabel("Time (s)")
     plt.ylabel("Throughput (reqs/s)")
 
     plt.tight_layout()
@@ -387,7 +283,7 @@ def plot_results(results, odir):
 def plot_legend(handles, labels, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (1.8, 1.3),
+            "figure.figsize": (2.4, 2.2),
             "font.size": 10,
         }
     )
@@ -395,15 +291,17 @@ def plot_legend(handles, labels, odir):
 
     plt.axis("off")
 
+    handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
+    labels.insert(-2, "")  # insert spacing between groups
     lgd = plt.legend(
         handles,
         labels,
-        handlelength=1.4,
+        handleheight=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
     for rec in lgd.get_texts():
-        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+        if "f=1" in rec.get_text():
             rec.set_fontstyle("italic")
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
@@ -443,9 +341,9 @@ if __name__ == "__main__":
             SERVER_NETNS,
             SERVER_DEV,
             SERVER_IFB,
-            NETEM_MEAN_S,
-            NETEM_JITTER_S,
-            NETEM_RATE_S,
+            NETEM_MEAN,
+            NETEM_JITTER,
+            NETEM_RATE,
             involve_ifb=True,
         )
 

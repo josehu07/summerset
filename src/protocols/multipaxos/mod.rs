@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
 
-use crate::utils::{SummersetError, Bitmap, Timer};
+use crate::utils::{SummersetError, Bitmap, Timer, Stopwatch};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
     ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
@@ -80,6 +80,9 @@ pub struct ReplicaConfigMultiPaxos {
     pub perf_storage_b: u64,
     pub perf_network_a: u64,
     pub perf_network_b: u64,
+
+    /// Recording performance breakdown statistics?
+    pub record_breakdown: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -101,6 +104,7 @@ impl Default for ReplicaConfigMultiPaxos {
             perf_storage_b: 0,
             perf_network_a: 0,
             perf_network_b: 0,
+            record_breakdown: false,
         }
     }
 }
@@ -348,6 +352,9 @@ pub struct MultiPaxosReplica {
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
+
+    /// Performance breakdown stopwatch if doing recording.
+    bd_stopwatch: Option<Stopwatch>,
 }
 
 // MultiPaxosReplica common helpers
@@ -465,7 +472,8 @@ impl GenericReplica for MultiPaxosReplica {
                                     snapshot_path, snapshot_interval_s,
                                     msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b)?;
+                                    perf_network_a, perf_network_b,
+                                    record_breakdown)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -594,6 +602,12 @@ impl GenericReplica for MultiPaxosReplica {
             .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
             .collect();
 
+        let bd_stopwatch = if config.record_breakdown {
+            Some(Stopwatch::new())
+        } else {
+            None
+        };
+
         Ok(MultiPaxosReplica {
             id,
             population,
@@ -626,6 +640,7 @@ impl GenericReplica for MultiPaxosReplica {
             snap_bar: 0,
             wal_offset: 0,
             snap_offset: 0,
+            bd_stopwatch,
         })
     }
 
