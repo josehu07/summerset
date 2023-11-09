@@ -1,10 +1,9 @@
 //! Stopwatch utility useful for bookkeeping performance breakdown stats.
 
 use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
 
 use crate::utils::SummersetError;
-
-use tokio::time::Instant;
 
 use statistical::{mean, standard_deviation};
 
@@ -19,7 +18,7 @@ type RecordId = usize;
 #[derive(Debug)]
 pub struct Stopwatch {
     /// Map from ID -> vec of the record's step timestamps.
-    records: HashMap<RecordId, Vec<Instant>>,
+    records: HashMap<RecordId, Vec<SystemTime>>,
 }
 
 impl Stopwatch {
@@ -35,6 +34,8 @@ impl Stopwatch {
         &mut self,
         id: RecordId,
         step: usize,
+        // if Some, uses this timestamp instead of fetching current timestamp
+        now: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if !self.records.contains_key(&id) && step != 0 {
             return Err(SummersetError(format!("record {} not found", id)));
@@ -49,17 +50,31 @@ impl Stopwatch {
                 step
             )))
         } else {
-            record.push(Instant::now());
+            record.push(if let Some(ts) = now {
+                ts
+            } else {
+                SystemTime::now()
+            });
             Ok(())
         }
     }
 
+    /// Checks if a record ID exists.
+    #[inline]
+    #[allow(dead_code)]
+    pub fn has_id(&self, id: RecordId) -> bool {
+        self.records.contains_key(&id)
+    }
+
     /// Removes the record of given ID.
+    #[inline]
+    #[allow(dead_code)]
     pub fn remove_id(&mut self, id: RecordId) {
         self.records.remove(&id);
     }
 
     /// Removes all current records of given ID.
+    #[inline]
     pub fn remove_all(&mut self) {
         self.records.clear();
     }
@@ -77,29 +92,34 @@ impl Stopwatch {
                 cnt += 1;
                 for i in 0..steps {
                     step_times[i].push(
-                        record[i + 1].duration_since(record[i]).as_micros()
-                            as f64,
+                        record[i + 1]
+                            .duration_since(record[i])
+                            .unwrap_or(Duration::ZERO)
+                            .as_micros() as f64,
                     );
                 }
             }
         }
 
-        let step_stats = step_times
-            .into_iter()
-            .map(|mut v| {
-                v.sort_by(|x, y| x.partial_cmp(y).unwrap());
-                let outliers = (v.len() as f32 * 0.1) as usize;
-                v.truncate(v.len() - outliers);
-                v.drain(0..outliers);
+        let outliers = (cnt as f32 * 0.1) as usize;
+        if cnt - outliers > 2 {
+            let step_stats = step_times
+                .into_iter()
+                .map(|mut v| {
+                    v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+                    v.truncate(v.len() - outliers);
+                    v.drain(0..outliers);
 
-                let mean = mean(&v);
-                let stdev = standard_deviation(&v, Some(mean));
+                    let mean = mean(&v);
+                    let stdev = standard_deviation(&v, Some(mean));
 
-                (mean, stdev)
-            })
-            .collect();
-
-        (cnt, step_stats)
+                    (mean, stdev)
+                })
+                .collect();
+            (cnt - outliers, step_stats)
+        } else {
+            (0, vec![(0.0, 0.0); steps])
+        }
     }
 }
 
@@ -111,19 +131,21 @@ mod stopwatch_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stopwatch_records() -> Result<(), SummersetError> {
         let mut sw = Stopwatch::new();
-        sw.record_now(0, 0)?;
+        sw.record_now(0, 0, None)?;
         time::sleep(Duration::from_micros(200)).await;
-        sw.record_now(0, 1)?;
+        sw.record_now(0, 1, None)?;
         time::sleep(Duration::from_micros(200)).await;
-        sw.record_now(1, 0)?;
+        sw.record_now(1, 0, Some(SystemTime::now()))?;
         time::sleep(Duration::from_micros(200)).await;
-        sw.record_now(0, 2)?;
+        sw.record_now(0, 2, Some(SystemTime::now()))?;
         time::sleep(Duration::from_micros(200)).await;
-        sw.record_now(1, 1)?;
+        sw.record_now(1, 1, None)?;
         time::sleep(Duration::from_micros(200)).await;
-        sw.record_now(2, 0)?;
-        assert!(sw.record_now(0, 4).is_err());
-        assert!(sw.record_now(3, 1).is_err());
+        sw.record_now(2, 0, None)?;
+        assert!(sw.record_now(0, 4, None).is_err());
+        assert!(sw.record_now(3, 1, None).is_err());
+        assert!(sw.has_id(1));
+        assert!(!sw.has_id(3));
         assert_eq!(sw.records.len(), 3);
         sw.remove_id(1);
         assert_eq!(sw.records.len(), 2);
@@ -137,14 +159,14 @@ mod stopwatch_tests {
         let mut sw = Stopwatch::new();
         for id in 0..3 {
             for step in 0..4 {
-                sw.record_now(id, step)?;
+                sw.record_now(id, step, None)?;
                 time::sleep(Duration::from_micros(100)).await;
             }
         }
-        sw.record_now(3, 0)?;
+        sw.record_now(3, 0, None)?;
         time::sleep(Duration::from_micros(100)).await;
-        sw.record_now(3, 1)?;
-        let (cnt, stats) = sw.summarize(3);
+        sw.record_now(3, 1, None)?;
+        let (cnt, stats) = sw.summarize(3); // should not trigger outliers
         assert_eq!(cnt, 3);
         assert_eq!(stats.len(), 3);
         Ok(())

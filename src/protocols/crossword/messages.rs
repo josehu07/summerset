@@ -319,6 +319,7 @@ impl CrosswordReplica {
         slot: usize,
         ballot: Ballot,
         size: usize,
+        reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -374,6 +375,12 @@ impl CrosswordReplica {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
                                    slot, inst.bal);
+
+                // [for perf breakdown]
+                if let Some(sw) = self.bd_stopwatch.as_mut() {
+                    let _ = sw.record_now(slot, 3, reply_ts);
+                    let _ = sw.record_now(slot, 4, None);
+                }
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -588,8 +595,13 @@ impl CrosswordReplica {
             } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs_cw, assignment)
             }
-            PeerMsg::AcceptReply { slot, ballot, size } => {
-                self.handle_msg_accept_reply(peer, slot, ballot, size)
+            PeerMsg::AcceptReply {
+                slot,
+                ballot,
+                size,
+                reply_ts,
+            } => {
+                self.handle_msg_accept_reply(peer, slot, ballot, size, reply_ts)
             }
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
             PeerMsg::Reconstruct { slots_excl } => {

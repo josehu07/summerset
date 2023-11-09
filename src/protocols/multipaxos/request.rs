@@ -106,6 +106,11 @@ impl MultiPaxosReplica {
             pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
                                slot, inst.bal);
 
+            // [for perf breakdown]
+            if let Some(sw) = self.bd_stopwatch.as_mut() {
+                sw.record_now(slot, 0, None)?;
+            }
+
             // record update to largest accepted ballot and corresponding data
             inst.voted = (inst.bal, req_batch.clone());
             self.storage_hub.submit_action(

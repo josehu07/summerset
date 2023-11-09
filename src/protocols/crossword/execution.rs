@@ -51,6 +51,13 @@ impl CrosswordReplica {
             pf_debug!(self.id; "executed all cmds in instance at slot {}",
                                slot);
 
+            // [for perf breakdown]
+            if self.is_leader() {
+                if let Some(sw) = self.bd_stopwatch.as_mut() {
+                    let _ = sw.record_now(slot, 5, None);
+                }
+            }
+
             // update index of the first non-executed instance
             if slot == self.exec_bar {
                 while self.exec_bar < self.start_slot + self.insts.len() {

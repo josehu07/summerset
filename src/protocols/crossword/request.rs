@@ -44,6 +44,14 @@ impl CrosswordReplica {
             return Ok(());
         }
 
+        // [for perf breakdown]
+        let slot = self.first_null_slot()?;
+        if self.bal_prepared > 0 {
+            if let Some(sw) = self.bd_stopwatch.as_mut() {
+                sw.record_now(slot, 0, None)?;
+            }
+        }
+
         // compute the complete Reed-Solomon codeword for the batch data
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
@@ -54,7 +62,6 @@ impl CrosswordReplica {
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist); fill it up with incoming data
-        let slot = self.first_null_slot()?;
         {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
@@ -113,6 +120,12 @@ impl CrosswordReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             inst.bal = self.bal_prepared;
             inst.status = Status::Accepting;
+
+            // [for perf breakdown]
+            if let Some(sw) = self.bd_stopwatch.as_mut() {
+                sw.record_now(slot, 1, None)?;
+            }
+
             let assignment = Self::pick_assignment_policy(
                 self.assignment_adaptive,
                 self.assignment_balanced,

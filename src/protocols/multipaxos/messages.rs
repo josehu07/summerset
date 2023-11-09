@@ -194,6 +194,7 @@ impl MultiPaxosReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
+        reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -230,6 +231,12 @@ impl MultiPaxosReplica {
                 inst.status = Status::Committed;
                 pf_debug!(self.id; "committed instance at slot {} bal {}",
                                    slot, inst.bal);
+
+                // [for perf breakdown]
+                if let Some(sw) = self.bd_stopwatch.as_mut() {
+                    let _ = sw.record_now(slot, 2, reply_ts);
+                    let _ = sw.record_now(slot, 3, None);
+                }
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -366,9 +373,11 @@ impl MultiPaxosReplica {
             PeerMsg::Accept { slot, ballot, reqs } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs)
             }
-            PeerMsg::AcceptReply { slot, ballot } => {
-                self.handle_msg_accept_reply(peer, slot, ballot)
-            }
+            PeerMsg::AcceptReply {
+                slot,
+                ballot,
+                reply_ts,
+            } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
             PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
             PeerMsg::FillHoles { slots } => {
                 self.handle_msg_fill_holes(peer, slots)

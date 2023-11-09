@@ -34,25 +34,20 @@ SERVER_IFB = lambda r: f"ifb{r}"
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
 
-FORCE_LEADER = 0
-
 
 BATCH_INTERVAL = 1
 
-VALUE_SIZE = 128 * 1024
+VALUE_SIZE = 64 * 1024
 
 PUT_RATIO = 100
 
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 1
+NETEM_JITTER = lambda _: 0
 NETEM_RATE = lambda _: 1
 
 
-LENGTH_SECS = 30
-
-RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 28
+LENGTH_SECS = 60
 
 
 def launch_cluster(protocol, config=None):
@@ -64,8 +59,6 @@ def launch_cluster(protocol, config=None):
         "-n",
         str(NUM_REPLICAS),
         "-r",
-        "--force_leader",
-        str(FORCE_LEADER),
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
@@ -143,8 +136,10 @@ def bench_round(protocol):
     time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
+    config += f"+record_breakdown=true"
     if protocol == "Crossword":
         config += f"+disable_gossip_timer=true"
+        config += f"+init_assignment='1'"
 
     # launch service cluster
     proc_cluster = launch_cluster(protocol, config=config)
@@ -173,36 +168,52 @@ def bench_round(protocol):
         print("    Done!")
 
 
-def collect_outputs(odir):
-    results = dict()
+def collect_bd_stats(ldir):
+    bd_stats = dict()
     for protocol in PROTOCOLS:
-        result = utils.gather_outputs(
-            f"{protocol}",
-            NUM_CLIENTS,
-            odir,
-            RESULT_SECS_BEGIN,
-            RESULT_SECS_END,
-            0.1,
-        )
+        bd_stats[protocol] = dict()
+        total_cnt = 0
 
-        sd, sp, sj, sm = 20, 0, 0, 1
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        with open(f"{ldir}/{protocol}.s.err", "r") as flog:
+            for line in flog:
+                if "bd cnt" in line:
+                    line = line.strip()
+                    line = line[line.find("bd cnt") + 6 :]
+                    segs = line.split()
 
-        results[f"{protocol}"] = {
-            "mean": sum(tput_list) / len(tput_list),
-            "stdev": statistics.stdev(tput_list),
-        }
+                    cnt = int(segs[0])
+                    if cnt > 0:
+                        total_cnt += cnt
+                        idx = 1
+                        while idx < segs.len():
+                            step = segs[idx]
+                            mean = float(segs[idx + 1])
+                            stdev = float(segs[idx + 2])
 
-    return results
+                            if step not in bd_stats[protocol]:
+                                bd_stats[protocol][step] = [mean, stdev**2]
+                            else:
+                                bd_stats[protocol][step][0] += mean
+                                bd_stats[protocol][step][1] += stdev**2
+
+                            idx += 3
+
+        for step in bd_stats[protocol]:
+            bd_stats[protocol][0] /= total_cnt
+            bd_stats[protocol][1] = (bd_stats[protocol][1] / total_cnt) ** 0.5
+
+    return bd_stats
 
 
-def print_results(results):
-    for protocol_with_midfix, result in results.items():
-        print(protocol_with_midfix)
-        print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
+def print_results(bd_stats, space_usage):
+    for protocol, stats in bd_stats.items():
+        print(protocol)
+        for step, stat in stats:
+            print(f"  {step} {stat[0]:.2f} ±{stat[1]:.2f}", end="")
+        print()
 
 
-def plot_results(results, odir):
+def plot_results(results, ldir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4, 3),
@@ -272,7 +283,7 @@ def plot_results(results, odir):
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    pdf_name = f"{ldir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -280,7 +291,7 @@ def plot_results(results, odir):
     return ax.get_legend_handles_labels()
 
 
-def plot_legend(handles, labels, odir):
+def plot_legend(handles, labels, ldir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.4, 2.2),
@@ -306,7 +317,7 @@ def plot_legend(handles, labels, odir):
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    pdf_name = f"{ldir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -320,11 +331,18 @@ if __name__ == "__main__":
         "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     parser.add_argument(
-        "-o",
-        "--odir",
+        "-l",
+        "--ldir",
         type=str,
-        default=f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-        help=".out files directory",
+        default=f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}",
+        help=".err files directory",
+    )
+    parser.add_argument(
+        "-s",
+        "--sdir",
+        type=str,
+        default=f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        help=".wal files directory",
     )
     args = parser.parse_args()
 
@@ -358,7 +376,8 @@ if __name__ == "__main__":
         )
 
     else:
-        results = collect_outputs(args.odir)
-        print_results(results)
-        handles, labels = plot_results(results, args.odir)
-        plot_legend(handles, labels, args.odir)
+        bd_stats = collect_bd_stats(args.ldir)
+        space_usage = collect_space_usage(args.sdir)
+        print_results(bd_stats, space_usage)
+        handles, labels = plot_results(bd_stats, space_usage, args.ldir)
+        plot_legend(handles, labels, args.ldir)

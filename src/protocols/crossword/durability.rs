@@ -65,7 +65,11 @@ impl CrosswordReplica {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal, 0)?;
+            self.handle_msg_accept_reply(self.id, slot, inst.bal, 0, None)?;
+            // [for perf breakdown]
+            if let Some(sw) = self.bd_stopwatch.as_mut() {
+                let _ = sw.record_now(slot, 2, None);
+            }
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
@@ -82,6 +86,11 @@ impl CrosswordReplica {
                             * ((inst.reqs_cw.data_len()
                                 / inst.reqs_cw.num_data_shards() as usize)
                                 + 1),
+                        reply_ts: if self.config.record_breakdown {
+                            Some(SystemTime::now())
+                        } else {
+                            None
+                        },
                     },
                     source,
                 )?;

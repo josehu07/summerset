@@ -19,6 +19,7 @@ use std::cmp;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use crate::utils::{
     SummersetError, Bitmap, Timer, Stopwatch, RSCodeword, PerfModel,
@@ -312,6 +313,8 @@ pub enum PeerMsg {
         ballot: Ballot,
         /// Data size in bytes that the corresponding Accept carried.
         size: usize,
+        /// [for perf breakdown]
+        reply_ts: Option<SystemTime>,
     },
 
     /// Commit notification from leader to replicas.
@@ -497,6 +500,9 @@ pub struct CrosswordReplica {
 
     /// Performance breakdown stopwatch if doing recording.
     bd_stopwatch: Option<Stopwatch>,
+
+    /// Performance breakdown printing interval.
+    bd_print_interval: Interval,
 }
 
 // CrosswordReplica common helpers
@@ -888,6 +894,8 @@ impl GenericReplica for CrosswordReplica {
         } else {
             None
         };
+        let mut bd_print_interval = time::interval(Duration::from_secs(5));
+        bd_print_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         Ok(CrosswordReplica {
             id,
@@ -978,6 +986,7 @@ impl GenericReplica for CrosswordReplica {
                 })
                 .collect(),
             bd_stopwatch,
+            bd_print_interval,
         })
     }
 
@@ -1089,6 +1098,21 @@ impl GenericReplica for CrosswordReplica {
                 _ = self.gossip_timer.timeout(), if !paused && !self.is_leader() => {
                     if let Err(e) = self.trigger_gossiping() {
                         pf_error!(self.id; "error triggering gossiping: {}", e);
+                    }
+                },
+
+                // performance breakdown stats printing
+                _ = self.bd_print_interval.tick(), if !paused && self.is_leader()
+                                                      && self.config.record_breakdown => {
+                    if let Some(sw) = self.bd_stopwatch.as_mut() {
+                        let (cnt, stats) = sw.summarize(5);
+                        pf_info!(self.id; "bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
+                                                     arep {:.2} {:.2} qrum {:.2} {:.2} \
+                                                     exec {:.2} {:.2}",
+                                          cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
+                                               stats[2].0, stats[2].1, stats[3].0, stats[3].1,
+                                               stats[4].0, stats[4].1);
+                        sw.remove_all();
                     }
                 },
 

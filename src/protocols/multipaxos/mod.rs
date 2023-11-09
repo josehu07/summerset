@@ -19,6 +19,7 @@ mod control;
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use crate::utils::{SummersetError, Bitmap, Timer, Stopwatch};
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
@@ -239,7 +240,12 @@ pub enum PeerMsg {
     },
 
     /// Accept reply from replica to leader.
-    AcceptReply { slot: usize, ballot: Ballot },
+    AcceptReply {
+        slot: usize,
+        ballot: Ballot,
+        /// [for perf breakdown]
+        reply_ts: Option<SystemTime>,
+    },
 
     /// Commit notification from leader to replicas.
     Commit { slot: usize },
@@ -355,6 +361,9 @@ pub struct MultiPaxosReplica {
 
     /// Performance breakdown stopwatch if doing recording.
     bd_stopwatch: Option<Stopwatch>,
+
+    /// Performance breakdown printing interval.
+    bd_print_interval: Interval,
 }
 
 // MultiPaxosReplica common helpers
@@ -607,6 +616,8 @@ impl GenericReplica for MultiPaxosReplica {
         } else {
             None
         };
+        let mut bd_print_interval = time::interval(Duration::from_secs(5));
+        bd_print_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         Ok(MultiPaxosReplica {
             id,
@@ -641,6 +652,7 @@ impl GenericReplica for MultiPaxosReplica {
             wal_offset: 0,
             snap_offset: 0,
             bd_stopwatch,
+            bd_print_interval,
         })
     }
 
@@ -735,6 +747,19 @@ impl GenericReplica for MultiPaxosReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
+                    }
+                },
+
+                // performance breakdown stats printing
+                _ = self.bd_print_interval.tick(), if !paused && self.is_leader()
+                                                      && self.config.record_breakdown => {
+                    if let Some(sw) = self.bd_stopwatch.as_mut() {
+                        let (cnt, stats) = sw.summarize(4);
+                        pf_info!(self.id; "bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
+                                                     qrum {:.2} {:.2} exec {:.2} {:.2}",
+                                          cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
+                                               stats[2].0, stats[2].1, stats[3].0, stats[3].1);
+                        sw.remove_all();
                     }
                 },
 
