@@ -7,6 +7,7 @@ import matplotlib  # type: ignore
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # type: ignore
+import numpy as np  # type: ignore
 
 
 BENCH_GROUP_NAME = "rse_bench"
@@ -72,11 +73,78 @@ def print_bench_results(results):
 def plot_bench_results(results, output_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6, 3),
+            "figure.figsize": (3.6, 1.6),
             "font.size": 10,
         }
     )
     fig = plt.figure("Bench")
+
+    xs, ys = [], []
+    for r in results:
+        if r[0] not in xs:
+            xs.append(r[0])
+        if r[1] not in ys:
+            ys.append(r[1])
+    xs.sort()
+    ys.sort(reverse=True)
+
+    data = [[0.0 for _ in xs] for _ in ys]
+    vmin, vmax = float("inf"), 0.0
+    for r, ms in results.items():
+        xi, yi = xs.index(r[0]), ys.index(r[1])
+        data[yi][xi] = ms
+        if ms > vmax:
+            vmax = ms
+        if ms < vmin:
+            vmin = ms
+
+    cmap = plt.get_cmap("Reds")
+    colors = cmap(np.linspace(1.0 - (vmax - vmin) / float(vmax), 0.6, cmap.N))
+    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list("Reds", colors)
+
+    plt.imshow(data, cmap=new_cmap, aspect="equal", norm="log")
+    plt.colorbar(
+        aspect=12,
+        shrink=0.85,
+        ticks=[vmin, 1, 10],
+        format="{x:.0f}ms",
+    )
+
+    def readable_size(size):
+        if size >= 1024 * 1024:
+            return f"{size // (1024*1024)}M"
+        elif size >= 1024:
+            return f"{size // 1024}K"
+        else:
+            return size
+
+    def readable_time(ms):
+        if ms < 0.1:
+            return f"{ms*1000:.0f}μs"
+        elif ms < 1.0:
+            return f".{ms*10:.0f}ms"
+        else:
+            return f"{ms:.0f}ms"
+
+    for r, ms in results.items():
+        xi, yi = xs.index(r[0]), ys.index(r[1])
+        plt.text(
+            xi,
+            yi,
+            readable_time(ms),
+            horizontalalignment="center",
+            verticalalignment="center",
+            color="black",
+            fontsize=8,
+        )
+
+    xticks = [readable_size(x) for x in xs]
+    plt.xticks(list(range(len(xticks))), xticks)
+
+    yticks = [f"({d+p},{p})" for d, p in ys]
+    plt.yticks(list(range(len(yticks))), yticks)
+
+    plt.tight_layout()
 
     pdf_name = f"{output_dir}/rs_coding.pdf"
     plt.savefig(pdf_name, bbox_inches=0)

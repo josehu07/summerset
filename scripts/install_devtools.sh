@@ -30,5 +30,6 @@ sudo apt install python3-pip
 
 echo
 echo "Installing necessary pip packages..."
+pip3 install numpy
 pip3 install matplotlib
 echo

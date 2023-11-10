@@ -17,7 +17,7 @@ use criterion::{
 
 use lazy_static::lazy_static;
 
-static SCHEMES: [(u8, u8); 3] = [(3, 2), (9, 6), (27, 18)];
+static SCHEMES: [(u8, u8); 4] = [(3, 2), (6, 4), (9, 6), (12, 8)];
 static SIZES: [usize; 6] = [
     4096,
     16 * 1024,
