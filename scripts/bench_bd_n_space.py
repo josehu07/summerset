@@ -37,17 +37,17 @@ NUM_CLIENTS = 16
 
 BATCH_INTERVAL = 1
 
-VALUE_SIZE = 64 * 1024
+VALUE_SIZE = 128 * 1024
 
 PUT_RATIO = 100
 
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 0
+NETEM_JITTER = lambda _: 1
 NETEM_RATE = lambda _: 1
 
 
-LENGTH_SECS = 60
+LENGTH_SECS = 30
 
 
 def launch_cluster(protocol, config=None):
@@ -128,10 +128,7 @@ def run_bench_clients(protocol):
 
 
 def bench_round(protocol):
-    print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE}"
-        f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
-    )
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
     utils.kill_all_local_procs()
     time.sleep(1)
 
@@ -169,9 +166,9 @@ def bench_round(protocol):
 
 
 def collect_bd_stats(ldir):
-    bd_stats = dict()
+    raw_stats = dict()
     for protocol in PROTOCOLS:
-        bd_stats[protocol] = dict()
+        raw_stats[protocol] = dict()
         total_cnt = 0
 
         with open(f"{ldir}/{protocol}.s.err", "r") as flog:
@@ -185,101 +182,179 @@ def collect_bd_stats(ldir):
                     if cnt > 0:
                         total_cnt += cnt
                         idx = 1
-                        while idx < segs.len():
+                        while idx < len(segs):
                             step = segs[idx]
-                            mean = float(segs[idx + 1])
-                            stdev = float(segs[idx + 2])
+                            mean = float(segs[idx + 1]) / 1000.0
+                            stdev = float(segs[idx + 2]) / 1000.0
 
-                            if step not in bd_stats[protocol]:
-                                bd_stats[protocol][step] = [mean, stdev**2]
+                            if step not in raw_stats[protocol]:
+                                raw_stats[protocol][step] = [mean, stdev**2]
                             else:
-                                bd_stats[protocol][step][0] += mean
-                                bd_stats[protocol][step][1] += stdev**2
+                                raw_stats[protocol][step][0] += mean * cnt
+                                raw_stats[protocol][step][1] += stdev**2 * cnt
 
                             idx += 3
 
-        for step in bd_stats[protocol]:
-            bd_stats[protocol][0] /= total_cnt
-            bd_stats[protocol][1] = (bd_stats[protocol][1] / total_cnt) ** 0.5
+        for step in raw_stats[protocol]:
+            raw_stats[protocol][step][0] /= total_cnt
+            raw_stats[protocol][step][1] = (
+                raw_stats[protocol][step][1] / total_cnt
+            ) ** 0.5
+
+    bd_stats = dict()
+    for protocol, stats in raw_stats.items():
+        bd_stats[protocol] = dict()
+        bd_stats[protocol]["comp"] = stats["comp"] if "comp" in stats else (0.0, 0.0)
+        bd_stats[protocol]["acc"] = (
+            stats["arep"][0] - stats["ldur"][0],
+            stats["arep"][1] - stats["ldur"][1],
+        )
+        bd_stats[protocol]["dur"] = stats["ldur"]
+        bd_stats[protocol]["rep"] = stats["qrum"]
+        bd_stats[protocol]["exec"] = stats["exec"]
 
     return bd_stats
+
+
+def collect_space_usage(sdir):
+    space_usage = dict()
+    for protocol in PROTOCOLS:
+        wal_size = os.path.getsize(f"{sdir}/{protocol}.0.wal")
+        space_usage[protocol] = wal_size / (1024.0 * 1024.0)
+
+    return space_usage
 
 
 def print_results(bd_stats, space_usage):
     for protocol, stats in bd_stats.items():
         print(protocol)
-        for step, stat in stats:
-            print(f"  {step} {stat[0]:.2f} ±{stat[1]:.2f}", end="")
+        for step, stat in stats.items():
+            print(f"  {step} {stat[0]:5.2f} ±{stat[1]:5.2f} ms", end="")
         print()
+        print(f"  usage {space_usage[protocol]:7.2f} MB")
 
 
-def plot_results(results, ldir):
+def plot_breakdown(bd_stats, ldir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4, 3),
+            "figure.figsize": (3, 2),
             "font.size": 10,
         }
     )
     fig = plt.figure("Exper")
 
-    PROTOCOLS_ORDER = [
-        "MultiPaxos.2.b",
-        "Raft.2.b",
-        "RSPaxos.2.b",
-        "CRaft.2.b",
-        "Crossword.2.b",
-        "Crossword.2.u",
-        "RSPaxos.1.b",
-        "CRaft.1.b",
-    ]
-    PROTOCOLS_XPOS = {
-        "MultiPaxos.2.b": 1,
-        "Raft.2.b": 2,
-        "RSPaxos.2.b": 3,
-        "CRaft.2.b": 4,
-        "Crossword.2.b": 5,
-        "Crossword.2.u": 6,
-        "RSPaxos.1.b": 8.2,
-        "CRaft.1.b": 9.2,
+    PROTOCOLS_ORDER = ["MultiPaxos", "Crossword"]
+    PROTOCOLS_YPOS = {
+        "MultiPaxos": 3.4,
+        "Crossword": 1.4,
     }
-    PROTOCOLS_LABEL_COLOR_HATCH = {
-        "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
-        "Raft.2.b": ("Raft", "lightgreen", None),
-        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
-        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
-        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
-        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
-        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
+    STEPS_ORDER = ["comp", "acc", "dur", "rep", "exec"]
+    STEPS_LABEL_COLOR_HATCH = {
+        "comp": ("RS coding computation", "lightgreen", "---"),
+        "acc": ("Leader→follower Accept", "salmon", None),
+        "dur": ("Writing to durable WAL", "orange", "///"),
+        "rep": ("Follower→leader AcceptReply", "honeydew", None),
+        "exec": ("Commit & execution", "lightskyblue", "xxx"),
     }
+    BAR_HEIGHT = 0.8
 
-    for protocol_with_midfix in PROTOCOLS_ORDER:
-        xpos = PROTOCOLS_XPOS[protocol_with_midfix]
-        result = results[protocol_with_midfix]
+    xmax = 0
+    range_xs = {protocol: [] for protocol in PROTOCOLS_ORDER}
+    for protocol in PROTOCOLS_ORDER:
+        ypos = PROTOCOLS_YPOS[protocol]
+        stats = bd_stats[protocol]
 
-        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
-        bar = plt.bar(
-            xpos,
-            result["mean"],
-            width=1,
-            color=color,
-            edgecolor="black",
-            linewidth=1.4,
-            label=label,
-            hatch=hatch,
-            # yerr=result["stdev"],
-            # ecolor="black",
-            # capsize=1,
+        xnow = 0
+        for step in STEPS_ORDER:
+            label, color, hatch = STEPS_LABEL_COLOR_HATCH[step]
+
+            if step == "exec":
+                stdev = sum([bd_stats[protocol][s][1] for s in STEPS_ORDER])
+                stdev /= len(STEPS_ORDER)
+                plt.barh(
+                    ypos,
+                    stats[step][0],
+                    left=xnow,
+                    height=BAR_HEIGHT,
+                    color=color,
+                    edgecolor="black",
+                    linewidth=1,
+                    label=label if protocol == "Crossword" else None,
+                    hatch=hatch,
+                    xerr=[[0], [stdev]],
+                    ecolor="black",
+                    capsize=3,
+                )
+            else:
+                plt.barh(
+                    ypos,
+                    stats[step][0],
+                    left=xnow,
+                    height=BAR_HEIGHT,
+                    color=color,
+                    edgecolor="black",
+                    linewidth=1,
+                    label=label if protocol == "Crossword" else None,
+                    hatch=hatch,
+                )
+
+            xnow += stats[step][0]
+            if xnow > xmax:
+                xmax = xnow
+
+            if step in ("comp", "dur", "exec"):
+                range_xs[protocol].append(xnow)
+
+    plt.text(0.3, 4.2, "MultiPaxos", verticalalignment="center")
+    plt.text(0.3, 0.5, "Crossword", verticalalignment="center")
+
+    for i in range(3):
+        plt.plot(
+            [range_xs["MultiPaxos"][i], range_xs["Crossword"][i]],
+            [
+                PROTOCOLS_YPOS["MultiPaxos"] - BAR_HEIGHT / 2,
+                PROTOCOLS_YPOS["Crossword"] + BAR_HEIGHT / 2,
+            ],
+            color="dimgray",
+            linestyle="--",
+            linewidth=1,
         )
+
+    plt.text(
+        0.65,
+        2.4,
+        "due to bw. save",
+        verticalalignment="center",
+        color="dimgray",
+        fontsize=9,
+    )
+
+    plt.text(
+        xmax * 0.7,
+        1,
+        "due to\nmore replies\nto wait for",
+        verticalalignment="center",
+        color="dimgray",
+        fontsize=9,
+    )
+    plt.plot(
+        [(range_xs["MultiPaxos"][1] + range_xs["Crossword"][1]) / 2, xmax * 0.76],
+        [2.15, 1.85],
+        color="dimgray",
+        linestyle="-",
+        linewidth=1,
+    )
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xticks([3.5, 8.7], ["f=2", "f=1"])
-    plt.tick_params(bottom=False)
+    plt.ylim((0, 4.7))
+    plt.tick_params(left=False)
+    plt.yticks([])
 
-    plt.ylabel("Throughput (reqs/s)")
+    plt.xlim((0, xmax * 1.1))
+    plt.xlabel("Elapsed time (ms)")
 
     plt.tight_layout()
 
@@ -294,7 +369,7 @@ def plot_results(results, ldir):
 def plot_legend(handles, labels, ldir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.4, 2.2),
+            "figure.figsize": (2.6, 1.4),
             "font.size": 10,
         }
     )
@@ -302,25 +377,27 @@ def plot_legend(handles, labels, ldir):
 
     plt.axis("off")
 
-    handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
-    labels.insert(-2, "")  # insert spacing between groups
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=1.2,
+        handlelength=0.6,
+        handleheight=1.5,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
-    for rec in lgd.get_texts():
-        if "f=1" in rec.get_text():
-            rec.set_fontstyle("italic")
-        # if "Crossword" in rec.get_text():
-        #     rec.set_fontweight("bold")
 
     pdf_name = f"{ldir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
+
+
+def save_space_usage(space_usage, ldir):
+    txt_name = f"{ldir}/exper-wal-space.txt"
+    with open(txt_name, "w") as ftxt:
+        for protocol, size_mb in space_usage.items():
+            ftxt.write(f"{protocol}  {size_mb:.2f} MB\n")
+    print(f"Saved: {txt_name}")
 
 
 if __name__ == "__main__":
@@ -377,7 +454,8 @@ if __name__ == "__main__":
 
     else:
         bd_stats = collect_bd_stats(args.ldir)
-        space_usage = collect_space_usage(args.sdir)
-        print_results(bd_stats, space_usage)
-        handles, labels = plot_results(bd_stats, space_usage, args.ldir)
+        # space_usage = collect_space_usage(args.sdir)
+        # print_results(bd_stats, space_usage)
+        handles, labels = plot_breakdown(bd_stats, args.ldir)
         plot_legend(handles, labels, args.ldir)
+        # save_space_usage(space_usage, args.ldir)

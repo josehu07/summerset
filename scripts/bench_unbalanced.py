@@ -158,10 +158,7 @@ def run_bench_clients(protocol, midfix_str):
 
 def bench_round(protocol, fault_tolerance, init_assignment):
     midfix_str = round_midfix_str(fault_tolerance, init_assignment)
-    print(
-        f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}  {NUM_REPLICAS:1d}  v={VALUE_SIZE}"
-        f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
-    )
+    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
     utils.kill_all_local_procs()
     time.sleep(1)
 

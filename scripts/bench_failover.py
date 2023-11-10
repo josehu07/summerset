@@ -153,8 +153,7 @@ def run_mess_client(protocol, pauses=None, resumes=None):
 
 def bench_round(protocol):
     print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZE:<9d}"
-        f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
+        f"  {EXPER_NAME}  {protocol:<10s}"
     )
     utils.kill_all_local_procs()
     time.sleep(1)

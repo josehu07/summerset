@@ -145,10 +145,7 @@ def run_bench_clients(protocol):
 
 
 def bench_round(protocol):
-    print(
-        f"  {EXPER_NAME}  {protocol:<10s}  {NUM_REPLICAS:1d}  v={VALUE_SIZES_PARAM}"
-        f"  w%={PUT_RATIO:<3d}  {LENGTH_SECS:3d}s  {NUM_CLIENTS:2d}"
-    )
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
     utils.kill_all_local_procs()
     time.sleep(1)
 
