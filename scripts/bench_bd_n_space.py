@@ -338,8 +338,11 @@ def plot_breakdown(bd_stats, ldir):
         fontsize=9,
     )
     plt.plot(
-        [(range_xs["MultiPaxos"][1] + range_xs["Crossword"][1]) / 2, xmax * 0.76],
-        [2.15, 1.85],
+        [
+            ((range_xs["MultiPaxos"][1] + range_xs["Crossword"][1]) / 2) * 1.1,
+            xmax * 0.72,
+        ],
+        [2.12, 1.88],
         color="dimgray",
         linestyle="-",
         linewidth=1,

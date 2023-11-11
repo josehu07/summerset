@@ -141,7 +141,7 @@ def plot_bench_results(results, output_dir):
     xticks = [readable_size(x) for x in xs]
     plt.xticks(list(range(len(xticks))), xticks)
 
-    yticks = [f"({d+p},{p})" for d, p in ys]
+    yticks = [f"({d+p},{d})" for d, p in ys]
     plt.yticks(list(range(len(yticks))), yticks)
 
     plt.tight_layout()
