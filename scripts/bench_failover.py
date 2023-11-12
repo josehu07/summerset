@@ -152,9 +152,7 @@ def run_mess_client(protocol, pauses=None, resumes=None):
 
 
 def bench_round(protocol):
-    print(
-        f"  {EXPER_NAME}  {protocol:<10s}"
-    )
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
     utils.kill_all_local_procs()
     time.sleep(1)
 
@@ -259,7 +257,7 @@ def plot_results(results, odir):
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
         "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (f=1, fb ok)", "peru", ":", 1.5),
+        "CRaft": ("CRaft (f=1, fb. ok)", "peru", ":", 1.5),
     }
 
     ymax = 0.0
@@ -282,51 +280,118 @@ def plot_results(results, odir):
             zorder=10 if "Crossword" in protocol else 0,
         )
 
-    plt.arrow(
-        FAIL1_SECS - PLOT_SECS_BEGIN,
-        ymax + 20,
-        0,
-        -18,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.5,
-        head_length=5,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Leader fails",
-        (FAIL1_SECS - PLOT_SECS_BEGIN, ymax + 30),
-        xytext=(-18, 0),
-        ha="center",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
+    # failure indicators
+    def draw_failure_indicator(x, t, toffx):
+        plt.arrow(
+            x,
+            ymax + 20,
+            0,
+            -18,
+            color="darkred",
+            width=0.2,
+            length_includes_head=True,
+            head_width=1.5,
+            head_length=5,
+            overhang=0.5,
+            clip_on=False,
+        )
+        plt.annotate(
+            t,
+            (x, ymax + 30),
+            xytext=(toffx, 0),
+            ha="center",
+            textcoords="offset points",
+            color="darkred",
+            annotation_clip=False,
+        )
+
+    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN, "Leader fails", -18)
+    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN, "New leader fails", -28)
+
+    # recovery time indicators (hardcoded!)
+    def draw_recovery_indicator(x, y, w, t, toffx, toffy):
+        plt.arrow(
+            x,
+            y,
+            -w,
+            0,
+            color="gray",
+            width=0.1,
+            length_includes_head=True,
+            head_width=3,
+            head_length=0.3,
+            overhang=0.5,
+        )
+        plt.arrow(
+            x,
+            y,
+            w,
+            0,
+            color="gray",
+            width=0.1,
+            length_includes_head=True,
+            head_width=3,
+            head_length=0.3,
+            overhang=0.5,
+        )
+        if t is not None:
+            plt.annotate(
+                t,
+                (x + toffx, y + toffy),
+                xytext=(0, 0),
+                ha="center",
+                textcoords="offset points",
+                color="gray",
+                fontsize=8,
+            )
+
+    draw_recovery_indicator(19, 135, 3.2, "bounded", 1, 10)
+    draw_recovery_indicator(59.2, 135, 3.2, "bounded", 1, 10)
+
+    plt.vlines(
+        63.5,
+        110,
+        140,
+        colors="gray",
+        linestyles="solid",
+        linewidth=0.8,
     )
 
-    plt.arrow(
-        FAIL2_SECS - PLOT_SECS_BEGIN,
-        ymax + 20,
-        0,
-        -18,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.5,
-        head_length=5,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "New leader fails",
-        (FAIL2_SECS - PLOT_SECS_BEGIN, ymax + 30),
-        xytext=(-28, 0),
-        ha="center",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
+    draw_recovery_indicator(23, 40, 6.3, None, None, None)
+    draw_recovery_indicator(25.2, 54, 8.6, "unbounded", 3, 9)
+    draw_recovery_indicator(67.5, 54, 11, "unbounded", 3, 9)
+
+    # configuration indicators
+    def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
+        t = f"<c={c},q={q}>"
+        if fb:
+            t += "\nfb. ok"
+        if unavail:
+            t += "\nunavail."
+        plt.annotate(
+            t,
+            (x, y),
+            xytext=(0, 0),
+            ha="center",
+            textcoords="offset points",
+            color=color,
+            fontsize=8,
+        )
+
+    draw_config_indicator(5, 228, 1, 5, "steelblue")
+    draw_config_indicator(5, 202, 1, 4, "red")
+    draw_config_indicator(5, 187, 1, 4, "peru")
+    draw_config_indicator(5, 110, 3, 3, "forestgreen")
+
+    draw_config_indicator(45, 148, 2, 4, "steelblue")
+    draw_config_indicator(45, 202, 1, 4, "red")
+    draw_config_indicator(45, 72, 3, 3, "peru", fb=True)
+    draw_config_indicator(45, 110, 3, 3, "forestgreen")
+
+    draw_config_indicator(89, 125, 3, 3, "steelblue")
+    draw_config_indicator(89, 9, 1, 4, "red", unavail=True)
+    draw_config_indicator(89, 85, 3, 3, "peru")
+    draw_config_indicator(89, 110, 3, 3, "forestgreen")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
