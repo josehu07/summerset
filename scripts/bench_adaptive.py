@@ -368,9 +368,9 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "data smaller", 0)
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "bw drops", 0)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "bw recovers", -4)
+    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", 0)
+    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 0)
+    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 0)
     draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 0)
 
     # configuration indicators
