@@ -23,7 +23,7 @@ use std::time::SystemTime;
 
 use crate::utils::{
     SummersetError, Bitmap, Timer, Stopwatch, RSCodeword, PerfModel,
-    LinearRegressor,
+    LinearRegressor, QdiscInfo,
 };
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
@@ -115,10 +115,8 @@ pub struct ReplicaConfigCrossword {
     /// Ratio of outliers to exclude in each `calc_model()`.
     pub linreg_outlier_ratio: f32,
 
-    /// Value size lower bound of always prefering the smallest |Q| config.
-    pub vsize_lower_bound: usize,
-    /// Value size upper bound of always prefering the largest |Q| config.
-    pub vsize_upper_bound: usize,
+    /// Knob that controls choosing the best config with perf model values.
+    pub b_to_d_threshold: f64,
 
     // Performance simulation params (all zeros means no perf simulation):
     pub perf_storage_a: u64,
@@ -154,12 +152,11 @@ impl Default for ReplicaConfigCrossword {
             rs_data_shards: 0,
             init_assignment: "".into(),
             linreg_interval_ms: 200,
-            linreg_keep_ms: 10000,
+            linreg_keep_ms: 2000,
             linreg_init_a: 10.0,
             linreg_init_b: 10.0,
             linreg_outlier_ratio: 0.5,
-            vsize_lower_bound: 1024,
-            vsize_upper_bound: 1024 * 1024,
+            b_to_d_threshold: 0.0,
             perf_storage_a: 0,
             perf_storage_b: 0,
             perf_network_a: 0,
@@ -498,6 +495,9 @@ pub struct CrosswordReplica {
     /// Map from peer ID -> current saved linear regression perf model.
     linreg_model: HashMap<ReplicaId, PerfModel>,
 
+    /// Queueing discipline information tracker.
+    qdisc_info: QdiscInfo,
+
     /// Performance breakdown stopwatch if doing recording.
     bd_stopwatch: Option<Stopwatch>,
 
@@ -636,7 +636,7 @@ impl GenericReplica for CrosswordReplica {
                                     linreg_interval_ms, linreg_keep_ms,
                                     linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
-                                    vsize_lower_bound, vsize_upper_bound,
+                                    b_to_d_threshold,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b,
                                     record_breakdown)?;
@@ -696,11 +696,11 @@ impl GenericReplica for CrosswordReplica {
                 config.linreg_outlier_ratio
             );
         }
-        if config.vsize_lower_bound >= config.vsize_upper_bound {
+        if config.b_to_d_threshold < 0.0 {
             return logged_err!(
                 id;
-                "config.vsize_lower_bound '{}' >= config.vsize_upper_bound '{}'",
-                config.vsize_lower_bound, config.vsize_upper_bound
+                "invalid config.b_to_d_threshold '{}'",
+                config.b_to_d_threshold
             );
         }
 
@@ -985,6 +985,7 @@ impl GenericReplica for CrosswordReplica {
                     }
                 })
                 .collect(),
+            qdisc_info: QdiscInfo::new(),
             bd_stopwatch,
             bd_print_interval,
         })
@@ -1091,6 +1092,9 @@ impl GenericReplica for CrosswordReplica {
                 _ = self.linreg_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.update_linreg_model(self.config.linreg_keep_ms) {
                         pf_error!(self.id; "error updating linear regression model: {}", e);
+                    }
+                    if let Err(e) = self.update_qdisc_info() {
+                        pf_error!(self.id; "error updating tc qdisc info: {}", e);
                     }
                 },
 

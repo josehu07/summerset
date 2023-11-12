@@ -268,7 +268,7 @@ def list_capping(l1, l2, d, down=True):
     sl = []
     for i in range(len(l1c)):
         nums = []
-        for k in range(i - d, i + d + 1):
+        for k in range(i - int(d * 1.5), i + int(d * 1.5) + 1):
             if k >= 0 and k < len(l1c):
                 nums.append(l1c[k])
         sl.append(sum(nums) / len(nums))

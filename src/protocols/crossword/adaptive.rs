@@ -120,9 +120,9 @@ impl CrosswordReplica {
         majority: u8,
         fault_tolerance: u8,
         data_size: usize,
-        vsize_lower_bound: usize,
-        vsize_upper_bound: usize,
         linreg_model: &HashMap<ReplicaId, PerfModel>,
+        b_to_d_threshold: f64,
+        qdisc_info: &QdiscInfo,
         peer_alive: &Bitmap,
     ) -> &'a Vec<Bitmap> {
         // if unbalanced assignment is used, don't enable adaptability and also
@@ -131,12 +131,23 @@ impl CrosswordReplica {
             return init_assignment;
         }
 
-        // NOTE: some obvious fixed assignments used here
         let dj_spr = rs_data_shards / majority;
-        let best_spr = if data_size <= vsize_lower_bound {
-            rs_data_shards
-        } else if data_size >= vsize_upper_bound {
-            dj_spr
+        let best_spr = if b_to_d_threshold > 0.0 {
+            // NOTE: use obvious fixed assignments if having a b_to_d_threshold
+            if qdisc_info.rate <= 0.0 {
+                rs_data_shards
+            } else if qdisc_info.delay + qdisc_info.jitter <= 0.0 {
+                dj_spr
+            } else {
+                let b_ms = (data_size as f64 * 1000.0)
+                    / (qdisc_info.rate * 1024.0 * 1024.0 * 1024.0 / 8.0);
+                let d_ms = qdisc_info.delay + qdisc_info.jitter;
+                if b_ms / d_ms > b_to_d_threshold {
+                    dj_spr
+                } else {
+                    rs_data_shards
+                }
+            }
         } else if assignment_adaptive {
             // query the linear regression models and pick the best config of
             // (#shards_per_replica, quorum_size) pair along the constraint
@@ -289,5 +300,10 @@ impl CrosswordReplica {
             self.last_linreg_print = now_us;
         }
         Ok(())
+    }
+
+    /// Updates `tc qdisc` netem information.
+    pub fn update_qdisc_info(&mut self) -> Result<(), SummersetError> {
+        self.qdisc_info.update()
     }
 }

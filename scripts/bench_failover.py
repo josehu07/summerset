@@ -385,7 +385,7 @@ def plot_results(results, odir):
 
     draw_config_indicator(45, 148, 2, 4, "steelblue")
     draw_config_indicator(45, 202, 1, 4, "red")
-    draw_config_indicator(45, 72, 3, 3, "peru", fb=True)
+    draw_config_indicator(45, 71, 3, 3, "peru", fb=True)
     draw_config_indicator(45, 110, 3, 3, "forestgreen")
 
     draw_config_indicator(89, 125, 3, 3, "steelblue")

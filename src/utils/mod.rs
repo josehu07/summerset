@@ -13,6 +13,7 @@ mod timer;
 mod safetcp;
 mod rscoding;
 mod linreg;
+mod qdisc;
 
 pub use error::SummersetError;
 pub use bitmap::Bitmap;
@@ -23,3 +24,4 @@ pub use safetcp::{
 };
 pub use rscoding::RSCodeword;
 pub use linreg::{PerfModel, LinearRegressor};
+pub use qdisc::QdiscInfo;

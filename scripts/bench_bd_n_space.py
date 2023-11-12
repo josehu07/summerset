@@ -323,7 +323,7 @@ def plot_breakdown(bd_stats, ldir):
     plt.text(
         0.65,
         2.4,
-        "due to bw. save",
+        "due to bw save",
         verticalalignment="center",
         color="dimgray",
         fontsize=9,

@@ -20,8 +20,7 @@ RUNTIME_LOGS_FOLDER = "runlog"
 
 EXPER_NAME = "adaptive"
 
-# PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Crossword"]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 SERVER_PIN_CORES = 4
@@ -42,25 +41,33 @@ BATCH_INTERVAL = 1
 PUT_RATIO = 100
 
 
-LENGTH_SECS = 90
+LENGTH_SECS = 75
 
-SIZE_CHANGE_SECS = 25
+SIZE_CHANGE_SECS = 15
 
-VALUE_SIZES = [(0, 8192), (SIZE_CHANGE_SECS, 65536)]
+VALUE_SIZES = [(0, 128 * 1024), (SIZE_CHANGE_SECS, 16 * 1024)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
-ENV_CHANGE_SECS = 55
+ENV_CHANGE1_SECS = 30
+ENV_CHANGE2_SECS = 45
+ENV_CHANGE3_SECS = 60
 
-NETEM_MEAN_S = lambda _: 1  # will be exagerated by #clients
-NETEM_MEAN_E = lambda r: 1 if r < 3 else 10
-NETEM_JITTER_S = lambda _: 1
-NETEM_JITTER_E = lambda r: 0 if r < 3 else 5
-NETEM_RATE_S = lambda _: 1
-NETEM_RATE_E = lambda r: 2 if r < 3 else 0.2
+NETEM_MEAN_A = lambda _: 1  # will be exagerated by #clients
+NETEM_MEAN_B = lambda _: 1
+NETEM_MEAN_C = lambda _: 1
+NETEM_MEAN_D = lambda r: 1 if r < 3 else 10
+NETEM_JITTER_A = lambda _: 1
+NETEM_JITTER_B = lambda _: 1
+NETEM_JITTER_C = lambda _: 1
+NETEM_JITTER_D = lambda r: 1 if r < 3 else 10
+NETEM_RATE_A = lambda _: 1
+NETEM_RATE_B = lambda _: 0.1
+NETEM_RATE_C = lambda _: 10
+NETEM_RATE_D = lambda r: 10 if r < 3 else 0.1
 
 
 PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 85
+PLOT_SECS_END = 70
 
 
 def launch_cluster(protocol, config=None):
@@ -151,7 +158,7 @@ def bench_round(protocol):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "Crossword":
-        config += f"+vsize_lower_bound={8 * 4 * 1024}"
+        config += f"+b_to_d_threshold={0.2}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
@@ -166,17 +173,45 @@ def bench_round(protocol):
     time.sleep(SIZE_CHANGE_SECS)
     print("    Changing mean value size...")
 
-    # at some timepoint, change env to be more jittery
-    time.sleep(ENV_CHANGE_SECS - SIZE_CHANGE_SECS)
+    # at some timepoint, change env
+    time.sleep(ENV_CHANGE1_SECS - SIZE_CHANGE_SECS)
     print("    Changing env perf params...")
     utils.set_all_tc_qdisc_netems(
         NUM_REPLICAS,
         SERVER_NETNS,
         SERVER_DEV,
         SERVER_IFB,
-        NETEM_MEAN_E,
-        NETEM_JITTER_E,
-        NETEM_RATE_E,
+        NETEM_MEAN_B,
+        NETEM_JITTER_B,
+        NETEM_RATE_B,
+        involve_ifb=True,
+    )
+
+    # at some timepoint, change env again
+    time.sleep(ENV_CHANGE2_SECS - ENV_CHANGE1_SECS)
+    print("    Changing env perf params...")
+    utils.set_all_tc_qdisc_netems(
+        NUM_REPLICAS,
+        SERVER_NETNS,
+        SERVER_DEV,
+        SERVER_IFB,
+        NETEM_MEAN_C,
+        NETEM_JITTER_C,
+        NETEM_RATE_C,
+        involve_ifb=True,
+    )
+
+    # at some timepoint, change env again
+    time.sleep(ENV_CHANGE3_SECS - ENV_CHANGE2_SECS)
+    print("    Changing env perf params...")
+    utils.set_all_tc_qdisc_netems(
+        NUM_REPLICAS,
+        SERVER_NETNS,
+        SERVER_DEV,
+        SERVER_IFB,
+        NETEM_MEAN_D,
+        NETEM_JITTER_D,
+        NETEM_RATE_D,
         involve_ifb=True,
     )
 
@@ -198,9 +233,9 @@ def bench_round(protocol):
         SERVER_NETNS,
         SERVER_DEV,
         SERVER_IFB,
-        NETEM_MEAN_S,
-        NETEM_JITTER_S,
-        NETEM_RATE_S,
+        NETEM_MEAN_A,
+        NETEM_JITTER_A,
+        NETEM_RATE_A,
         involve_ifb=True,
     )
 
@@ -226,17 +261,13 @@ def collect_outputs(odir):
         sd, sp, sj, sm = 20, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after stable state has changed; removing it here
-            # sp = 50
-            pass
+            # "ghost" replies after leader has failed; removing it here
+            sp = 50
         elif protocol == "Crossword":
-            # due to limited sampling granularity, Crossword gossiping makes
-            # throughput results look a bit more "jittering" than it actually
-            # is; smoothing a bit more here
-            # setting sd here also avoids the lines to completely overlap with
+            # setting sd here which avoids the lines to completely overlap with
             # each other
-            # setting sm here to compensate for the injected uniform dist reqs
-            sm = 1.1
+            # setting sm here to compensate for printing models to console
+            sd, sm = 25, 1.12
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
@@ -246,20 +277,18 @@ def collect_outputs(odir):
 
     # do capping for other protocols; somehow performance might go suspiciously
     # high or low when we change the netem params during runtime?
+    csd = 5
     results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], sd, down=False
+        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=False
     )
     results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], sd, down=True
+        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=True
     )
     results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], sd, down=False
+        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=False
     )
     results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], sd, down=True
-    )
-    results["Crossword"]["tput"] = utils.list_capping(
-        results["Crossword"]["tput"], results["MultiPaxos"]["tput"], sd, down=False
+        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=True
     )
 
     return results
@@ -314,51 +343,52 @@ def plot_results(results, odir):
             zorder=10 if "Crossword" in protocol else 0,
         )
 
-    plt.arrow(
-        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN,
-        ymax + 70,
-        0,
-        -140,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.2,
-        head_length=45,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Change #1:\nvalue size grows\nbw. increases",
-        (SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 140),
-        xytext=(-30, 0),
-        ha="left",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
+    # env change indicators
+    def draw_env_change_indicator(x, t, toffx):
+        plt.arrow(
+            x,
+            ymax + 150,
+            0,
+            -140,
+            color="darkred",
+            width=0.2,
+            length_includes_head=True,
+            head_width=1.2,
+            head_length=45,
+            overhang=0.5,
+            clip_on=False,
+        )
+        plt.annotate(
+            t,
+            (x, ymax + 220),
+            xytext=(toffx, 0),
+            ha="center",
+            textcoords="offset points",
+            color="darkred",
+            annotation_clip=False,
+        )
 
-    plt.arrow(
-        ENV_CHANGE_SECS - PLOT_SECS_BEGIN,
-        ymax + 70,
-        0,
-        -140,
-        color="darkred",
-        width=0.2,
-        length_includes_head=True,
-        head_width=1.2,
-        head_length=45,
-        overhang=0.5,
-        clip_on=False,
-    )
-    plt.annotate(
-        "Change #2:\n2 nodes experience lag\n3 nodes bw. increase",
-        (ENV_CHANGE_SECS - PLOT_SECS_BEGIN, ymax + 140),
-        xytext=(-30, 0),
-        ha="left",
-        textcoords="offset points",
-        color="darkred",
-        annotation_clip=False,
-    )
+    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "data smaller", 0)
+    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "bw drops", 0)
+    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "bw recovers", -4)
+    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 0)
+
+    # configuration indicators
+    def draw_config_indicator(x, y, c, q):
+        plt.annotate(
+            f"<c={c},q={q}>",
+            (x, y),
+            xytext=(0, 0),
+            ha="center",
+            textcoords="offset points",
+            color="steelblue",
+            fontsize=8,
+        )
+
+    draw_config_indicator(2.5, 970, 1, 5)
+    draw_config_indicator(17.5, 1630, 3, 3)
+    draw_config_indicator(32.5, 800, 1, 5)
+    draw_config_indicator(62, 1640, 3, 3)
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -440,9 +470,9 @@ if __name__ == "__main__":
             SERVER_NETNS,
             SERVER_DEV,
             SERVER_IFB,
-            NETEM_MEAN_S,
-            NETEM_JITTER_S,
-            NETEM_RATE_S,
+            NETEM_MEAN_A,
+            NETEM_JITTER_A,
+            NETEM_RATE_A,
             involve_ifb=True,
         )
 

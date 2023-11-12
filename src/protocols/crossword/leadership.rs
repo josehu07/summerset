@@ -203,6 +203,8 @@ impl CrosswordReplica {
             )?;
             pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
         }
+
+        self.update_qdisc_info()?;
         Ok(())
     }
 
@@ -432,9 +434,9 @@ impl CrosswordReplica {
                     self.majority,
                     self.config.fault_tolerance,
                     inst.reqs_cw.data_len(),
-                    self.config.vsize_lower_bound,
-                    self.config.vsize_upper_bound,
                     &self.linreg_model,
+                    self.config.b_to_d_threshold,
+                    &self.qdisc_info,
                     &self.peer_alive,
                 );
                 pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
