@@ -374,21 +374,23 @@ def plot_results(results, odir):
     draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 0)
 
     # configuration indicators
-    def draw_config_indicator(x, y, c, q):
+    def draw_config_indicator(x, y, c, q, color):
         plt.annotate(
             f"<c={c},q={q}>",
             (x, y),
             xytext=(0, 0),
             ha="center",
             textcoords="offset points",
-            color="steelblue",
+            color=color,
             fontsize=8,
         )
 
-    draw_config_indicator(2.5, 970, 1, 5)
-    draw_config_indicator(17.5, 1630, 3, 3)
-    draw_config_indicator(32.5, 800, 1, 5)
-    draw_config_indicator(62, 1640, 3, 3)
+    draw_config_indicator(2.5, 730, 1, 5, "red")
+    draw_config_indicator(2.5, 290, 3, 3, "forestgreen")
+    draw_config_indicator(2.5, 970, 1, 5, "steelblue")
+    draw_config_indicator(17.5, 1630, 3, 3, "steelblue")
+    draw_config_indicator(32.5, 800, 1, 5, "steelblue")
+    draw_config_indicator(62, 1640, 3, 3, "steelblue")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
