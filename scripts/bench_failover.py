@@ -305,8 +305,8 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN, "Leader fails", -18)
-    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN, "New leader fails", -28)
+    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN, "Leader fails", 0)
+    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN, "New leader fails", 0)
 
     # recovery time indicators (hardcoded!)
     def draw_recovery_indicator(x, y, w, t, toffx, toffy):
