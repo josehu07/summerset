@@ -57,10 +57,6 @@ where
             .map(|s| if let Some(b) = s { b.len() } else { 0 })
             .sum()
     }
-
-    fn get_size(&self) -> usize {
-        Self::get_stack_size() + self.get_heap_size()
-    }
 }
 
 impl<T> RSCodeword<T>
@@ -162,7 +158,7 @@ where
     /// shards, and a complete copy of the original data if required.
     pub fn subset_copy(
         &self,
-        subset: Bitmap,
+        subset: &Bitmap,
         copy_data: bool,
     ) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
@@ -305,21 +301,16 @@ where
         self.shards.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    /// Gets a vec of available shard indexes.
-    #[inline]
-    pub fn avail_shards_vec(&self) -> Vec<u8> {
-        self.shards
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| if s.is_some() { Some(i as u8) } else { None })
-            .collect()
-    }
-
     /// Gets a bitmap of available shard indexes set true.
     #[inline]
     pub fn avail_shards_map(&self) -> Bitmap {
-        let ones = self.avail_shards_vec();
-        Bitmap::from(self.num_shards(), ones)
+        let mut map = Bitmap::new(self.num_shards(), false);
+        for (i, s) in self.shards.iter().enumerate() {
+            if s.is_some() {
+                map.set(i as u8, true).unwrap();
+            }
+        }
+        map
     }
 
     /// Gets length of original data in bytes.
@@ -656,11 +647,13 @@ mod rscoding_tests {
         let data = TestData("interesting_value".into());
         let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
         // invalid subset
-        assert!(cwa.subset_copy(Bitmap::from(6, vec![0, 5]), false).is_err());
+        assert!(cwa
+            .subset_copy(&Bitmap::from(6, vec![0, 5]), false)
+            .is_err());
         // valid subsets
-        let cw01 = cwa.subset_copy(Bitmap::from(5, vec![0, 1]), false)?;
+        let cw01 = cwa.subset_copy(&Bitmap::from(5, vec![0, 1]), false)?;
         assert_eq!(cw01.avail_data_shards(), 2);
-        let cw02 = cwa.subset_copy(Bitmap::from(5, vec![0, 2]), true)?;
+        let cw02 = cwa.subset_copy(&Bitmap::from(5, vec![0, 2]), true)?;
         assert_eq!(cw02.avail_data_shards(), 2);
         assert!(cw02.data_copy.is_some());
         // valid absorbing

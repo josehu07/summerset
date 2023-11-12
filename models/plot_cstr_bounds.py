@@ -102,7 +102,8 @@ def plot_cstr_bound(idx, cluster_size):
         linewidth=1,
         color="dimgray",
         length_includes_head=True,
-        head_width=0.3,
+        head_width=0.2,
+        head_length=0.25,
         overhang=0.5,
         clip_on=False,
         label="Tradeoff decisions",
@@ -123,7 +124,8 @@ def plot_cstr_bound(idx, cluster_size):
         linewidth=1,
         color="dimgray",
         length_includes_head=True,
-        head_width=0.3,
+        head_width=0.2,
+        head_length=0.25,
         overhang=0.5,
         clip_on=False,
     )
@@ -247,7 +249,7 @@ def plot_all_cstr_bounds(output_dir):
     make_legend(fig, handles, labels)
 
     plt.tight_layout(pad=1.0)
-    plt.savefig(f"{output_dir}/cstr_bounds.png", dpi=300)
+    plt.savefig(f"{output_dir}/cstr_bounds.pdf", bbox_inches=0)
 
 
 if __name__ == "__main__":

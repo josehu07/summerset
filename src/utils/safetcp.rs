@@ -172,6 +172,7 @@ pub async fn tcp_connect_with_retry(
         socket.set_linger(None)?;
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
         socket.bind(bind_addr)?;
         // pf_info!("X"; "{} {}", socket.send_buffer_size()?, socket.recv_buffer_size()?);
 

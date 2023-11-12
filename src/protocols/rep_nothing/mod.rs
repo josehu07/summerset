@@ -3,15 +3,20 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
+mod request;
+mod durability;
+mod execution;
+mod recovery;
+mod control;
+
 use std::path::Path;
 use std::net::SocketAddr;
 
 use crate::utils::SummersetError;
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
-    ApiRequest, ApiReply, StorageHub, LogAction, LogResult, LogActionId,
-    GenericReplica,
+    ReplicaId, ControlHub, StateMachine, CommandId, ExternalApi, ApiRequest,
+    ApiReply, StorageHub, GenericReplica,
 };
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
 use crate::protocols::SmrProtocol;
@@ -26,7 +31,7 @@ use tokio::time::Duration;
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReplicaConfigRepNothing {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -61,12 +66,12 @@ impl Default for ReplicaConfigRepNothing {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-struct WalEntry {
+pub struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
 
 /// In-memory instance containing a commands batch.
-struct Instance {
+pub struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     execed: Vec<bool>,
@@ -122,286 +127,6 @@ impl RepNothingReplica {
         let inst_idx = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (inst_idx, cmd_idx)
-    }
-}
-
-// RepNothingReplica client requests entrance
-impl RepNothingReplica {
-    /// Handler of client request batch chan recv.
-    fn handle_req_batch(
-        &mut self,
-        req_batch: Vec<(ClientId, ApiRequest)>,
-    ) -> Result<(), SummersetError> {
-        let batch_size = req_batch.len();
-        debug_assert!(batch_size > 0);
-
-        let inst = Instance {
-            reqs: req_batch.clone(),
-            durable: false,
-            execed: vec![false; batch_size],
-        };
-        let inst_idx = self.insts.len();
-        self.insts.push(inst);
-
-        // submit log action to make this instance durable
-        let wal_entry = WalEntry { reqs: req_batch };
-        self.storage_hub.submit_action(
-            inst_idx as LogActionId,
-            LogAction::Append {
-                entry: wal_entry,
-                sync: self.config.logger_sync,
-            },
-        )?;
-
-        Ok(())
-    }
-}
-
-// RepNothingReplica durable WAL logging
-impl RepNothingReplica {
-    /// Handler of durable logging result chan recv.
-    fn handle_log_result(
-        &mut self,
-        action_id: LogActionId,
-        log_result: LogResult<WalEntry>,
-    ) -> Result<(), SummersetError> {
-        let inst_idx = action_id as usize;
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid log action ID {} seen", inst_idx);
-        }
-
-        match log_result {
-            LogResult::Append { now_size } => {
-                debug_assert!(now_size >= self.wal_offset);
-                self.wal_offset = now_size;
-            }
-            _ => {
-                return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
-            }
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if inst.durable {
-            return logged_err!(self.id; "duplicate log action ID {} seen", inst_idx);
-        }
-        inst.durable = true;
-
-        // submit execution commands in order
-        for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-            match req {
-                ApiRequest::Req { cmd, .. } => self.state_machine.submit_cmd(
-                    Self::make_command_id(inst_idx, cmd_idx),
-                    cmd.clone(),
-                )?,
-                _ => continue, // ignore other types of requests
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// RepNothingReplica state machine execution
-impl RepNothingReplica {
-    /// Handler of state machine exec result chan recv.
-    fn handle_cmd_result(
-        &mut self,
-        cmd_id: CommandId,
-        cmd_result: CommandResult,
-    ) -> Result<(), SummersetError> {
-        let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
-        if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-
-        let inst = &mut self.insts[inst_idx];
-        if cmd_idx >= inst.reqs.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
-        }
-        if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
-        }
-        if !inst.durable {
-            return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
-        }
-        inst.execed[cmd_idx] = true;
-
-        // reply to the corresponding client of this request
-        let (client, req) = &inst.reqs[cmd_idx];
-        match req {
-            ApiRequest::Req { id: req_id, .. } => {
-                if self.external_api.has_client(*client) {
-                    self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: *req_id,
-                            result: Some(cmd_result),
-                            redirect: None,
-                        },
-                        *client,
-                    )?;
-                }
-            }
-            _ => {
-                return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
-            }
-        }
-
-        Ok(())
-    }
-}
-
-// RepNothingReplica control messages handling
-impl RepNothingReplica {
-    /// Handler of ResetState control message.
-    async fn handle_ctrl_reset_state(
-        &mut self,
-        durable: bool,
-    ) -> Result<(), SummersetError> {
-        // send leave notification to manager and wait for its reply
-        self.control_hub.send_ctrl(CtrlMsg::Leave)?;
-        while self.control_hub.recv_ctrl().await? != CtrlMsg::LeaveReply {}
-
-        // if `durable` is false, truncate backer file
-        if !durable {
-            // use 0 as a special log action ID here
-            self.storage_hub
-                .submit_action(0, LogAction::Truncate { offset: 0 })?;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id == 0 {
-                    if log_result
-                        != (LogResult::Truncate {
-                            offset_ok: true,
-                            now_size: 0,
-                        })
-                    {
-                        return logged_err!(self.id; "failed to truncate log to 0");
-                    } else {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handler of Pause control message.
-    fn handle_ctrl_pause(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got pause req");
-        *paused = true;
-        self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
-        Ok(())
-    }
-
-    /// Handler of Resume control message.
-    fn handle_ctrl_resume(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got resume req");
-        *paused = false;
-        self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
-        Ok(())
-    }
-
-    /// Synthesized handler of manager control messages. If ok, returns
-    /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
-    /// decides to shutdown completely, and `None` if not terminating.
-    async fn handle_ctrl_msg(
-        &mut self,
-        msg: CtrlMsg,
-        paused: &mut bool,
-    ) -> Result<Option<bool>, SummersetError> {
-        match msg {
-            CtrlMsg::ResetState { durable } => {
-                self.handle_ctrl_reset_state(durable).await?;
-                Ok(Some(true))
-            }
-
-            CtrlMsg::Pause => {
-                self.handle_ctrl_pause(paused)?;
-                Ok(None)
-            }
-
-            CtrlMsg::Resume => {
-                self.handle_ctrl_resume(paused)?;
-                Ok(None)
-            }
-
-            _ => Ok(None), // ignore all other types
-        }
-    }
-}
-
-// RepNothingReplica recovery from WAL log
-impl RepNothingReplica {
-    /// Recover state from durable storage WAL log.
-    async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
-        debug_assert_eq!(self.wal_offset, 0);
-        loop {
-            // using 0 as a special log action ID
-            self.storage_hub.submit_action(
-                0,
-                LogAction::Read {
-                    offset: self.wal_offset,
-                },
-            )?;
-            let (_, log_result) = self.storage_hub.get_result().await?;
-
-            match log_result {
-                LogResult::Read {
-                    entry: Some(entry),
-                    end_offset,
-                } => {
-                    // execute all commands on state machine synchronously
-                    for (_, req) in entry.reqs.clone() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            // using 0 as a special command ID
-                            self.state_machine.submit_cmd(0, cmd)?;
-                            let _ = self.state_machine.get_result().await?;
-                        }
-                    }
-                    // rebuild in-memory log entry
-                    let num_reqs = entry.reqs.len();
-                    self.insts.push(Instance {
-                        reqs: entry.reqs,
-                        durable: true,
-                        execed: vec![true; num_reqs],
-                    });
-                    // update log offset
-                    self.wal_offset = end_offset;
-                }
-                LogResult::Read { entry: None, .. } => {
-                    // end of log reached
-                    break;
-                }
-                _ => {
-                    return logged_err!(self.id; "unexpected log result type");
-                }
-            }
-        }
-
-        // do an extra Truncate to remove paritial entry at the end if any
-        self.storage_hub.submit_action(
-            0,
-            LogAction::Truncate {
-                offset: self.wal_offset,
-            },
-        )?;
-        let (_, log_result) = self.storage_hub.get_result().await?;
-        if let LogResult::Truncate {
-            offset_ok: true, ..
-        } = log_result
-        {
-            Ok(())
-        } else {
-            logged_err!(self.id; "unexpected log result type")
-        }
     }
 }
 

@@ -1,5 +1,7 @@
 //! Benchmarking client using open-loop driver.
 
+use std::collections::HashMap;
+
 use crate::drivers::{DriverReply, DriverOpenLoop};
 
 use lazy_static::lazy_static;
@@ -7,6 +9,10 @@ use lazy_static::lazy_static;
 use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rand::rngs::ThreadRng;
+
+use rand_distr::{Distribution, Normal, Uniform};
+
+use rangemap::RangeMap;
 
 use serde::Deserialize;
 
@@ -32,6 +38,13 @@ lazy_static! {
         pool
     };
 
+    /// A very long pre-generated value string to get values from.
+    static ref MOM_VALUE: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(10 * 1024 * 1024)
+        .map(char::from)
+        .collect();
+
     /// Statistics printing interval.
     static ref PRINT_INTERVAL: Duration = Duration::from_millis(100);
 }
@@ -39,7 +52,8 @@ lazy_static! {
 /// Mode parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ModeParamsBench {
-    /// Target frequency of issuing requests per second.
+    /// Target frequency of issuing requests per second. Zero means closed-loop
+    /// style client.
     pub freq_target: u64,
 
     /// Time length to benchmark in seconds.
@@ -48,18 +62,36 @@ pub struct ModeParamsBench {
     /// Percentage of put requests.
     pub put_ratio: u8,
 
-    /// Value size in bytes.
-    pub value_size: usize,
+    /// String in one of the following formats:
+    ///   - a single number: fixed value size in bytes
+    ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
+    ///                             to v1 at t1, then change to v2 at t2, etc.
+    pub value_size: String,
+
+    /// If non-zero, use a normal distribution of this standard deviation
+    /// ratio for every write command.
+    pub normal_stdev_ratio: f32,
+
+    /// Do a uniformly distributed value size write for every some interval.
+    /// Set to 0 to turn off. Set to 1 to let every request size go through a
+    /// uniform distribution (overwriting the normal dist param).
+    pub unif_interval_ms: u64,
+
+    /// Upper bound of uniform distribution to sample value size from.
+    pub unif_upper_bound: usize,
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for ModeParamsBench {
     fn default() -> Self {
         ModeParamsBench {
-            freq_target: 200000,
+            freq_target: 0,
             length_s: 30,
             put_ratio: 50,
-            value_size: 1024,
+            value_size: "1024".into(),
+            normal_stdev_ratio: 0.0,
+            unif_interval_ms: 0,
+            unif_upper_bound: 128 * 1024,
         }
     }
 }
@@ -75,8 +107,14 @@ pub struct ClientBench {
     /// Random number generator.
     rng: ThreadRng,
 
-    /// Fixed value generated according to specified size.
-    value: String,
+    /// Map from time range (secs) -> specified value size mean value.
+    value_size: RangeMap<u64, usize>,
+
+    /// Map from value size mean -> normal distribution generator.
+    normal_dist: Option<HashMap<usize, Normal<f32>>>,
+
+    /// Fixed uniform distribution.
+    unif_dist: Option<Uniform<usize>>,
 
     /// Total number of requests issued.
     total_cnt: u64,
@@ -96,8 +134,14 @@ pub struct ClientBench {
     /// Number of replies to wait for before allowing the next issue.
     slowdown: u64,
 
+    /// Start timestamp.
+    start: Instant,
+
     /// Current timestamp.
     now: Instant,
+
+    /// Last timestamp when a uniform distribution gets used.
+    last_unif: Instant,
 
     /// Interval ticker for open-loop.
     ticker: Interval,
@@ -115,52 +159,189 @@ impl ClientBench {
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     freq_target, length_s, put_ratio,
-                                    value_size)?;
+                                    value_size, normal_stdev_ratio,
+                                    unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
-                                   params.freq_target);
+                                    params.freq_target);
         }
         if params.length_s == 0 {
             return logged_err!("c"; "invalid params.length_s '{}'",
-                                   params.length_s);
+                                    params.length_s);
         }
         if params.put_ratio > 100 {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
-                                   params.put_ratio);
+                                    params.put_ratio);
         }
-        if params.value_size == 0 {
-            return logged_err!("c"; "invalid params.value_size '{}'",
-                                   params.value_size);
+        if params.normal_stdev_ratio < 0.0 {
+            return logged_err!("c"; "invalid params.normal_stdev_ratio '{}'",
+                                    params.normal_stdev_ratio);
+        }
+        if params.unif_interval_ms > 1 && params.unif_interval_ms < 100 {
+            return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
+                                    params.unif_interval_ms);
+        }
+        if params.unif_upper_bound < 1024
+            || params.unif_upper_bound > MOM_VALUE.len()
+        {
+            return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
+                                    params.unif_upper_bound);
         }
 
-        let value = rand::thread_rng()
-            .sample_iter(&Alphanumeric)
-            .take(params.value_size)
-            .map(char::from)
-            .collect();
+        let value_size =
+            Self::parse_value_sizes(params.length_s, &params.value_size)?;
+        let normal_dist = if params.normal_stdev_ratio > 0.0 {
+            Some(
+                value_size
+                    .iter()
+                    .map(|(_, &vs)| {
+                        (
+                            vs,
+                            Normal::new(
+                                vs as f32,
+                                vs as f32 * params.normal_stdev_ratio,
+                            )
+                            .unwrap(),
+                        )
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        let unif_dist = if params.unif_interval_ms > 0 {
+            Some(Uniform::from(8..=params.unif_upper_bound))
+        } else {
+            None
+        };
 
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
-            value,
+            value_size,
+            normal_dist,
+            unif_dist,
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
             chunk_lats: vec![],
             retrying: false,
             slowdown: 0,
+            start: Instant::now(),
             now: Instant::now(),
+            last_unif: Instant::now(),
             ticker: time::interval(Duration::MAX),
             curr_freq: 0,
         })
     }
 
+    /// Parses values sizes over time parameter into a rangemap of
+    /// pre-generated values.
+    fn parse_value_sizes(
+        length_s: u64,
+        s: &str,
+    ) -> Result<RangeMap<u64, usize>, SummersetError> {
+        let mut value_size = RangeMap::new();
+        if s.is_empty() {
+            return logged_err!("c"; "invalid params.value_size '{}'", s);
+        } else if let Ok(size) = s.parse::<usize>() {
+            // a single number
+            if size == 0 {
+                return logged_err!("c"; "size 0 found in params.value_size");
+            }
+            value_size.insert(0..u64::MAX, size);
+        } else {
+            // changes over time
+            if !s.starts_with("0:") {
+                return logged_err!("c"; "params.value_size must start with '0:'");
+            }
+            let (mut seg_start, mut seg_size) = (0, 0);
+            for (i, seg) in s.split('/').enumerate() {
+                if let Some(idx) = seg.find(':') {
+                    let time = seg[..idx].parse::<u64>()?;
+                    let size = seg[idx + 1..].parse::<usize>()?;
+                    if size == 0 {
+                        return logged_err!("c"; "size 0 found in params.value_size");
+                    } else if time >= length_s {
+                        return logged_err!("c"; "sec {} >= length_s {} in params.value_size",
+                                                time, length_s);
+                    }
+                    if i == 0 {
+                        debug_assert_eq!(time, 0);
+                        seg_size = size;
+                    } else {
+                        debug_assert!(time > seg_start);
+                        debug_assert!(seg_size > 0);
+                        value_size.insert(seg_start..time, seg_size);
+                        seg_start = time;
+                        seg_size = size;
+                    }
+                } else {
+                    return logged_err!("c"; "invalid params.value_size '{}'", s);
+                }
+            }
+            debug_assert!(seg_size > 0);
+            value_size.insert(seg_start..u64::MAX, seg_size);
+        }
+        Ok(value_size)
+    }
+
+    /// Pick a value of given size. If `using_dist` is on, uses that as mean
+    /// size and goes through a normal distribution to sample a size.
+    #[inline]
+    fn gen_value_at_now(&mut self) -> Result<&'static str, SummersetError> {
+        let curr_sec = self.now.duration_since(self.start).as_secs();
+        let mut size = *self.value_size.get(&curr_sec).unwrap();
+        if size > MOM_VALUE.len() {
+            return logged_err!(self.driver.id; "value size {} too big", size);
+        }
+
+        // go through a probability distribution?
+        if self.unif_dist.is_some() && self.params.unif_interval_ms == 1 {
+            // go through a uniform distribution, ignoring all other settings
+            size = self
+                .unif_dist
+                .as_ref()
+                .unwrap()
+                .sample(&mut rand::thread_rng());
+        } else if let Some(normal_dist) = self.normal_dist.as_ref() {
+            // go through a normal distribution with current size as mean
+            loop {
+                let f32_size =
+                    normal_dist[&size].sample(&mut rand::thread_rng());
+                size = f32_size.round() as usize;
+                if size > 0 && size <= MOM_VALUE.len() {
+                    break;
+                }
+            }
+        }
+
+        // force this request as an injected uniform distribution req?
+        if self.unif_dist.is_some()
+            && self.params.unif_interval_ms > 1
+            && self.now.duration_since(self.last_unif).as_millis()
+                >= self.params.unif_interval_ms as u128
+        {
+            size = self
+                .unif_dist
+                .as_ref()
+                .unwrap()
+                .sample(&mut rand::thread_rng());
+            self.last_unif = self.now;
+        }
+
+        Ok(&MOM_VALUE[..size])
+    }
+
     /// Issues a random request.
     fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
+        // randomly choose a key from key pool; key does not matter too much
         let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
-            self.driver.issue_put(&key, &self.value)
+            // query the value to use for current timestamp
+            let val = self.gen_value_at_now()?;
+            self.driver.issue_put(&key, val)
         } else {
             self.driver.issue_get(&key)
         }
@@ -283,11 +464,11 @@ impl ClientBench {
             "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
         );
 
-        let start = Instant::now();
-        self.now = start;
+        self.start = Instant::now();
+        self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let mut last_print = start;
+        let mut last_print = self.start;
         let (mut printed_1_100, mut printed_1_10) = (false, false);
 
         if self.params.freq_target > 0 {
@@ -304,7 +485,8 @@ impl ClientBench {
         self.slowdown = 0;
 
         // run for specified length
-        while self.now.duration_since(start) < length {
+        let mut elapsed = self.now.duration_since(self.start);
+        while elapsed < length {
             if self.params.freq_target == 0 {
                 self.closed_loop_iter().await?;
             } else {
@@ -312,9 +494,9 @@ impl ClientBench {
             }
 
             self.now = Instant::now();
+            elapsed = self.now.duration_since(self.start);
 
             // print statistics if print interval passed
-            let elapsed = self.now.duration_since(start);
             let print_elapsed = self.now.duration_since(last_print);
             if print_elapsed >= *PRINT_INTERVAL
                 || (!printed_1_100 && elapsed >= *PRINT_INTERVAL / 100)

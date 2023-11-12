@@ -242,8 +242,8 @@ def plot_all_env_results(results, output_dir):
     fig.subplots_adjust(bottom=0.16, top=0.9, left=0.23, right=0.75)
 
     plt.savefig(
-        f"{output_dir}/calc.envs.r_{CLUSTER}.png",
-        dpi=300,
+        f"{output_dir}/calc.envs.r_{CLUSTER}.pdf",
+        bbox_inches=0,
     )
     plt.close()
 

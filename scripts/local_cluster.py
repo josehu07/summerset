@@ -21,8 +21,12 @@ MANAGER_SRV_PORT = 52600
 MANAGER_CLI_PORT = 52601
 
 
-PROTOCOL_BACKER_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.wal"
-PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, r: f"{prefix}/{protocol}.{r}.snap"
+PROTOCOL_BACKER_PATH = (
+    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+)
+PROTOCOL_SNAPSHOT_PATH = (
+    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
+)
 
 PROTOCOL_MAY_SNAPSHOT = {
     "RepNothing": False,
@@ -56,7 +60,14 @@ def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=
 
 
 def config_with_defaults(
-    protocol, config, num_replicas, replica_id, file_prefix, fresh_files
+    protocol,
+    config,
+    num_replicas,
+    replica_id,
+    hb_timer_off,
+    file_prefix,
+    file_midfix,
+    fresh_files,
 ):
     def config_str_to_dict(s):
         l = s.strip().split("+")
@@ -69,14 +80,16 @@ def config_with_defaults(
         l = ["=".join([k, v]) for k, v in d.items()]
         return "+".join(l)
 
-    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, replica_id)
+    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files and os.path.isfile(backer_path):
         print(f"Delete: {backer_path}")
         os.remove(backer_path)
 
     if PROTOCOL_MAY_SNAPSHOT[protocol]:
-        snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, file_prefix, replica_id)
+        snapshot_path = PROTOCOL_SNAPSHOT_PATH(
+            protocol, file_prefix, file_midfix, replica_id
+        )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files and os.path.isfile(snapshot_path):
             print(f"Delete: {snapshot_path}")
@@ -91,6 +104,9 @@ def config_with_defaults(
 
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
+
+    if hb_timer_off:
+        config_dict["disable_hb_timer"] = "true"
 
     return config_dict_to_str(config_dict)
 
@@ -173,7 +189,9 @@ def launch_servers(
     num_replicas,
     release,
     config,
+    force_leader,
     file_prefix,
+    file_midfix,
     fresh_files,
     pin_cores,
     use_veth,
@@ -196,7 +214,14 @@ def launch_servers(
             SERVER_P2P_PORT(replica),
             manager_addr,
             config_with_defaults(
-                protocol, config, num_replicas, replica, file_prefix, fresh_files
+                protocol,
+                config,
+                num_replicas,
+                replica,
+                force_leader >= 0 and force_leader != replica,
+                file_prefix,
+                file_midfix,
+                fresh_files,
             ),
             release,
         )
@@ -230,10 +255,19 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
+        "--force_leader", type=int, default=-1, help="force this server to be leader"
+    )
+    parser.add_argument(
         "--file_prefix",
         type=str,
         default="/tmp/summerset",
         help="states file prefix folder path",
+    )
+    parser.add_argument(
+        "--file_midfix",
+        type=str,
+        default="",
+        help="states file extra identifier after protocol name",
     )
     parser.add_argument(
         "--keep_files", action="store_true", help="if set, keep any old durable files"
@@ -287,7 +321,9 @@ if __name__ == "__main__":
         args.num_replicas,
         args.release,
         args.config,
+        args.force_leader,
         args.file_prefix,
+        args.file_midfix,
         not args.keep_files,
         args.pin_cores,
         args.use_veth,

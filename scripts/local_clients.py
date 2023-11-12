@@ -17,11 +17,20 @@ MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_CLI_PORT = 52601
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, i: f"{prefix}/{protocol}.{i}.out"
+CLIENT_OUTPUT_PATH = (
+    lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
+)
 
 UTILITY_PARAM_NAMES = {
     "repl": [],
-    "bench": ["freq_target", "value_size", "put_ratio", "length_s"],
+    "bench": [
+        "freq_target",
+        "value_size",
+        "put_ratio",
+        "length_s",
+        "normal_stdev_ratio",
+        "unif_interval_ms",
+    ],
     "tester": ["test_name", "keep_going", "logger_on"],
     "mess": ["pause", "resume"],
 }
@@ -176,15 +185,27 @@ if __name__ == "__main__":
         "-f", "--freq_target", type=int, help="frequency target reqs per sec"
     )
     parser_bench.add_argument(
-        "-v", "--value_size", type=int, help="value size in bytes"
+        "-v", "--value_size", type=str, help="value sizes over time"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser_bench.add_argument(
+        "--normal_stdev_ratio", type=float, help="normal dist stdev ratio"
+    )
+    parser_bench.add_argument(
+        "--unif_interval_ms", type=int, help="uniform dist usage interval"
+    )
     parser_bench.add_argument(
         "--file_prefix",
         type=str,
         default="",
         help="output file prefix folder path",
+    )
+    parser_bench.add_argument(
+        "--file_midfix",
+        type=str,
+        default="",
+        help="output file extra identifier after protocol name",
     )
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
@@ -261,7 +282,10 @@ if __name__ == "__main__":
                 # doing automated experiments, so capture output
                 out, _ = client_proc.communicate(timeout=timeout)
                 with open(
-                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, i), "w+"
+                    CLIENT_OUTPUT_PATH(
+                        args.protocol, args.file_prefix, args.file_midfix, i
+                    ),
+                    "w+",
                 ) as fout:
                     fout.write(out.decode())
                 rcs.append(client_proc.returncode)

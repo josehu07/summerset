@@ -26,9 +26,9 @@ mod raft;
 use raft::{RaftReplica, RaftClient};
 pub use raft::{ReplicaConfigRaft, ClientConfigRaft};
 
-mod rs_paxos;
-use rs_paxos::{RSPaxosReplica, RSPaxosClient};
-pub use rs_paxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
+mod rspaxos;
+use rspaxos::{RSPaxosReplica, RSPaxosClient};
+pub use rspaxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
 
 mod craft;
 use craft::{CRaftReplica, CRaftClient};
