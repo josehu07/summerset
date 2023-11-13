@@ -31,4 +31,11 @@ do
     echo "    cropping $FILE"
     pdfcropmargins -p 5 -mo -o results/slides "results/slides/$FILE"
 done
+
+echo
+echo "Deleting old uncropped files..."
+for FILE in $(ls results/slides/ | grep _uncropped.pdf);
+do
+    rm "results/slides/$FILE"
+done
 echo
