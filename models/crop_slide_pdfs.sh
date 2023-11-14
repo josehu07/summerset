@@ -28,6 +28,7 @@ do
     echo "    cropping $FILE"
     pdfcropmargins -p 0 -mo -o results/slides "results/slides/$FILE"
 done
+pdfcropmargins -p 8 -mo -o results results/cstr_bounds.pdf
 
 echo
 echo "Deleting uncropped files..."
@@ -35,6 +36,7 @@ for FILE in $(ls results/slides/ | grep _uncropped.pdf);
 do
     rm "results/slides/$FILE"
 done
+rm results/*_uncropped.pdf
 rm "results/slide-figures.pdf:Zone.Identifier"
 
 echo
