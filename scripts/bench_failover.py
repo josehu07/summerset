@@ -246,7 +246,7 @@ def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (6, 3),
-            "font.size": 10,
+            "font.size": 13,
         }
     )
     fig = plt.figure("Exper")
@@ -305,8 +305,8 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN, "Leader fails", 0)
-    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN, "New leader fails", 0)
+    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN + 2, "Leader fails", 0)
+    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN + 2, "New leader fails", 0)
 
     # recovery time indicators (hardcoded!)
     def draw_recovery_indicator(x, y, w, t, toffx, toffy):
@@ -342,11 +342,11 @@ def plot_results(results, odir):
                 ha="center",
                 textcoords="offset points",
                 color="gray",
-                fontsize=8,
+                fontsize=10,
             )
 
-    draw_recovery_indicator(19, 135, 3.2, "bounded", 1, 10)
-    draw_recovery_indicator(59.2, 135, 3.2, "bounded", 1, 10)
+    draw_recovery_indicator(19, 135, 3.6, "bounded", 2.5, 11)
+    draw_recovery_indicator(59.2, 135, 3.6, "bounded", 2.5, 11)
 
     plt.vlines(
         63.5,
@@ -357,13 +357,13 @@ def plot_results(results, odir):
         linewidth=0.8,
     )
 
-    draw_recovery_indicator(23, 40, 6.3, None, None, None)
-    draw_recovery_indicator(25.2, 54, 8.6, "unbounded", 3, 9)
-    draw_recovery_indicator(67.5, 54, 11, "unbounded", 3, 9)
+    draw_recovery_indicator(23, 40, 6.5, None, None, None)
+    draw_recovery_indicator(25.2, 54, 8.8, "unbounded", 3.8, -35)
+    draw_recovery_indicator(67.5, 54, 11.3, "unbounded", 3.5, -20)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
-        t = f"<c={c},q={q}>"
+        t = f"[c={c},q={q}]"
         if fb:
             t += "\nfb. ok"
         if unavail:
@@ -375,23 +375,23 @@ def plot_results(results, odir):
             ha="center",
             textcoords="offset points",
             color=color,
-            fontsize=8,
+            fontsize=11,
         )
 
     draw_config_indicator(5, 228, 1, 5, "steelblue")
-    draw_config_indicator(5, 202, 1, 4, "red")
-    draw_config_indicator(5, 187, 1, 4, "peru")
-    draw_config_indicator(5, 110, 3, 3, "forestgreen")
+    draw_config_indicator(5, 198, 1, 4, "red")
+    draw_config_indicator(5, 175, 1, 4, "peru")
+    draw_config_indicator(5, 112, 3, 3, "forestgreen")
 
-    draw_config_indicator(45, 148, 2, 4, "steelblue")
-    draw_config_indicator(45, 202, 1, 4, "red")
-    draw_config_indicator(45, 71, 3, 3, "peru", fb=True)
-    draw_config_indicator(45, 110, 3, 3, "forestgreen")
+    draw_config_indicator(44.8, 148, 2, 4, "steelblue")
+    draw_config_indicator(44.8, 198, 1, 4, "red")
+    draw_config_indicator(44.8, 58, 3, 3, "peru", fb=True)
+    draw_config_indicator(44.8, 112, 3, 3, "forestgreen")
 
-    draw_config_indicator(89, 125, 3, 3, "steelblue")
-    draw_config_indicator(89, 9, 1, 4, "red", unavail=True)
-    draw_config_indicator(89, 85, 3, 3, "peru")
-    draw_config_indicator(89, 110, 3, 3, "forestgreen")
+    draw_config_indicator(89.2, 135, 3, 3, "steelblue")
+    draw_config_indicator(89.2, 9, 1, 4, "red", unavail=True)
+    draw_config_indicator(89.2, 78, 3, 3, "peru")
+    draw_config_indicator(89.2, 112, 3, 3, "forestgreen")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)

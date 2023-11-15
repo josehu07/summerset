@@ -308,8 +308,8 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6, 3),
-            "font.size": 10,
+            "figure.figsize": (5.6, 3),
+            "font.size": 13,
         }
     )
     fig = plt.figure("Exper")
@@ -368,29 +368,29 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", 0)
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 0)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 0)
-    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 0)
+    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", -12)
+    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 2)
+    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 4)
+    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 15)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color):
         plt.annotate(
-            f"<c={c},q={q}>",
+            f"[c={c},q={q}]",
             (x, y),
             xytext=(0, 0),
             ha="center",
             textcoords="offset points",
             color=color,
-            fontsize=8,
+            fontsize=11,
         )
 
-    draw_config_indicator(2.5, 730, 1, 5, "red")
-    draw_config_indicator(2.5, 290, 3, 3, "forestgreen")
-    draw_config_indicator(2.5, 970, 1, 5, "steelblue")
+    draw_config_indicator(62, 460, 1, 5, "red")
+    draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
+    draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
     draw_config_indicator(17.5, 1630, 3, 3, "steelblue")
-    draw_config_indicator(32.5, 800, 1, 5, "steelblue")
-    draw_config_indicator(62, 1640, 3, 3, "steelblue")
+    draw_config_indicator(32.5, 1100, 1, 5, "steelblue")
+    draw_config_indicator(62, 1350, 3, 3, "steelblue")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)

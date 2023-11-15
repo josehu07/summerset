@@ -251,7 +251,7 @@ def plot_breakdown(bd_stats, ldir):
     STEPS_ORDER = ["comp", "acc", "dur", "rep", "exec"]
     STEPS_LABEL_COLOR_HATCH = {
         "comp": ("RS coding computation", "lightgreen", "---"),
-        "acc": ("Leader→follower Accept", "salmon", None),
+        "acc": ("Leader→follower Accept msg", "salmon", None),
         "dur": ("Writing to durable WAL", "orange", "///"),
         "rep": ("Follower→leader AcceptReply", "honeydew", None),
         "exec": ("Commit & execution", "lightskyblue", "xxx"),

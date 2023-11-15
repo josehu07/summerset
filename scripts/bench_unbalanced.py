@@ -232,7 +232,7 @@ def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4, 3),
-            "font.size": 10,
+            "font.size": 12,
         }
     )
     fig = plt.figure("Exper")
@@ -254,8 +254,8 @@ def plot_results(results, odir):
         "CRaft.2.b": 4,
         "Crossword.2.b": 5,
         "Crossword.2.u": 6,
-        "RSPaxos.1.b": 8.2,
-        "CRaft.1.b": 9.2,
+        "RSPaxos.1.b": 7.8,
+        "CRaft.1.b": 8.8,
     }
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
@@ -291,7 +291,7 @@ def plot_results(results, odir):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xticks([3.5, 8.7], ["f=2", "f=1"])
+    plt.xticks([3.5, 8.3], ["f=2", "f=1"])
     plt.tick_params(bottom=False)
 
     plt.ylabel("Throughput (reqs/s)")

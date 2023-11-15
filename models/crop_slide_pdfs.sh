@@ -22,20 +22,28 @@ pdfseparate -l $TAKE_PAGES $ORIGINAL_PDF "results/slides/slide-%d.pdf"
 
 
 echo
-echo "Cropping pages into separate PDFs..."
+echo "Cropping separated pages..."
 for FILE in $(ls results/slides/ | grep .pdf);
 do
     echo "    cropping $FILE"
-    pdfcropmargins -p 0 -mo -o results/slides "results/slides/$FILE"
+    pdfcropmargins -p 0 -t 255 -mo -o results "results/slides/$FILE"
 done
-pdfcropmargins -p 8 -mo -o results results/cstr_bounds.pdf
+
+echo
+echo "Cropping extra files..."
+EXTRA_FILES=("cstr_bounds" "rs_coding"
+             "backup/adaptive/exper-adaptive" "backup/adaptive/legend-adaptive"
+             "backup/bd_n_space/exper-bd_n_space" "backup/bd_n_space/legend-bd_n_space"
+             "backup/failover/exper-failover" "backup/failover/legend-failover"
+             "backup/unbalanced/exper-unbalanced" "backup/unbalanced/legend-unbalanced")
+for FILE_NAME in ${EXTRA_FILES[@]};
+do
+    echo "    cropping results/${FILE_NAME}.pdf"
+    pdfcropmargins -p 0 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
+done
 
 echo
 echo "Deleting uncropped files..."
-for FILE in $(ls results/slides/ | grep _uncropped.pdf);
-do
-    rm "results/slides/$FILE"
-done
 rm results/*_uncropped.pdf
 rm "results/slide-figures.pdf:Zone.Identifier"
 
