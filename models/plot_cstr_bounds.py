@@ -241,6 +241,7 @@ def plot_all_cstr_bounds(output_dir):
             "figure.figsize": (10, 3),
             "font.size": 10,
             "axes.axisbelow": False,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure()

@@ -231,8 +231,9 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4, 3),
+            "figure.figsize": (3.6, 2.9),
             "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
