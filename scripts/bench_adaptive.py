@@ -446,6 +446,7 @@ def plot_legend(handles, labels, odir):
 
 if __name__ == "__main__":
     utils.check_proper_cwd()
+    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(

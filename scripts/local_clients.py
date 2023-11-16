@@ -3,6 +3,7 @@ import sys
 import argparse
 import subprocess
 import multiprocessing
+import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -30,6 +31,7 @@ UTILITY_PARAM_NAMES = {
         "length_s",
         "normal_stdev_ratio",
         "unif_interval_ms",
+        "unif_upper_bound",
     ],
     "tester": ["test_name", "keep_going", "logger_on"],
     "mess": ["pause", "resume"],
@@ -38,12 +40,24 @@ UTILITY_PARAM_NAMES = {
 
 def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
     cpu_list = None
-    if cores_per_proc > 0:
-        # pin client cores from last CPU down
+    if cores_per_proc != 0:
+        # parse cores_per_proc setting
+        if cores_per_proc != int(cores_per_proc) and (
+            cores_per_proc > 1 or cores_per_proc < -1
+        ):
+            raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
         num_cpus = multiprocessing.cpu_count()
-        core_end = num_cpus - 1 - i * cores_per_proc
-        core_start = core_end - cores_per_proc + 1
-        assert core_start >= 0
+        if cores_per_proc < 0:
+            # negative means starting from CPU 0 (instead from last)
+            cores_per_proc *= -1
+            core_start = math.floor(i * cores_per_proc)
+            core_end = math.ceil(core_start + cores_per_proc - 1)
+            assert core_end < num_cpus
+        else:
+            # else pin client cores from last CPU down
+            core_end = math.ceil(num_cpus - 1 - i * cores_per_proc)
+            core_start = math.floor(core_end - cores_per_proc + 1)
+            assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
     return utils.run_process(cmd, capture_stdout=capture_stdout, cpu_list=cpu_list)
 
@@ -150,7 +164,7 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
     )
     parser.add_argument(
         "--use_veth", action="store_true", help="if set, use netns and veth setting"
@@ -194,6 +208,9 @@ if __name__ == "__main__":
     )
     parser_bench.add_argument(
         "--unif_interval_ms", type=int, help="uniform dist usage interval"
+    )
+    parser_bench.add_argument(
+        "--unif_upper_bound", type=int, help="uniform dist upper bound"
     )
     parser_bench.add_argument(
         "--file_prefix",

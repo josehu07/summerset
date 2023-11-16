@@ -26,7 +26,7 @@ PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 # requires a minimum of 40 CPUs to make everyone strictly isolated
 SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
+CLIENT_PIN_CORES = lambda n: 1 if n <= 5 else 0.5 if n <= 7 else -0.25
 
 SERVER_NETNS = lambda r: f"ns{r}"
 SERVER_DEV = lambda r: f"veths{r}"
@@ -49,15 +49,21 @@ class RoundParams:
         jitter,
         rate,
         paxos_only,
+        tags,
     ):
         self.num_replicas = num_replicas
+
         self.value_dist = value_dist
         self.value_size = value_size
+
         self.put_ratio = put_ratio
+
         self.delay = delay
         self.jitter = jitter
         self.rate = rate
+
         self.paxos_only = paxos_only
+        self.tags = tags
 
     def __str__(self):
         return (
@@ -66,25 +72,27 @@ class RoundParams:
         )
 
 
-ROUNDS_RAPAMS = [
-    RoundParams(5, "normal", 128, 50, 1, 0, 100, False),
-    RoundParams(5, "normal", 256 * 1024, 50, 1, 0, 100, False),
-    RoundParams(5, "uniform", 300 * 1024, 50, 1, 0, 100, False),
-    RoundParams(5, "normal", 128, 50, 10, 5, 1, False),
-    RoundParams(5, "normal", 256 * 1024, 50, 10, 5, 1, False),
-    RoundParams(5, "uniform", 300 * 1024, 50, 10, 5, 1, False),
-    RoundParams(3, "uniform", 300 * 1024, 50, 10, 5, 1, True),
-    RoundParams(7, "uniform", 300 * 1024, 50, 10, 5, 1, True),
-    RoundParams(9, "uniform", 300 * 1024, 50, 10, 5, 1, True),
-    RoundParams(5, "uniform", 300 * 1024, 5, 10, 5, 1, True),
-    RoundParams(5, "uniform", 300 * 1024, 100, 10, 5, 1, True),
+# fmt: off
+ROUNDS_PARAMS = [
+    RoundParams(5,   "normal",  128,          100,   0,  0, 100,   False, ["single"]),
+    # RoundParams(5,   "normal",  256 * 1024,   50,    1,  0, 100,   False, ["single"]),
+    # RoundParams(5,   "uniform", 300 * 1024,   50,    1,  0, 100,   False, ["single"]),
+    # RoundParams(5,   "normal",  128,          50,    10, 5, 1,     False, ["single"]),
+    # RoundParams(5,   "normal",  256 * 1024,   50,    10, 5, 1,     False, ["single"]),
+    # RoundParams(5,   "uniform", 300 * 1024,   50,    10, 5, 1,     False, ["single", "cluster-5", "ratio-50"]),
+    # RoundParams(3,   "uniform", 300 * 1024,   50,    10, 5, 1,     True,  ["cluster-3"]),
+    # RoundParams(7,   "uniform", 300 * 1024,   50,    10, 5, 1,     True,  ["cluster-7"]),
+    # RoundParams(9,   "uniform", 300 * 1024,   50,    10, 5, 1,     True,  ["cluster-9"]),
+    # RoundParams(5,   "uniform", 300 * 1024,   5,     10, 5, 1,     True,  ["ratio-5"]),
+    # RoundParams(5,   "uniform", 300 * 1024,   100,   10, 5, 1,     True,  ["ratio-100"]),
 ]
+# fmt: on
 
 
-LENGTH_SECS = 20
+LENGTH_SECS = 120
 
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 18
+RESULT_SECS_END = 115
 
 
 def launch_cluster(protocol, round_params, config=None):
@@ -141,7 +149,7 @@ def run_bench_clients(protocol, round_params):
         protocol,
         "-r",
         "--pin_cores",
-        str(CLIENT_PIN_CORES),
+        str(CLIENT_PIN_CORES(round_params.num_replicas)),
         "--use_veth",
         "--base_idx",
         str(0),
@@ -188,15 +196,16 @@ def bench_round(protocol, round_params):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "Crossword":
+        config += f"+b_to_d_threshold={0.2}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
     proc_cluster = launch_cluster(protocol, round_params, config=config)
     with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
-        wait_cluster_setup(proc_cluster, fserr=fserr)
+        wait_cluster_setup(proc_cluster, round_params, fserr=fserr)
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol, midfix_str)
+    proc_clients = run_bench_clients(protocol, round_params)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -217,36 +226,37 @@ def bench_round(protocol, round_params):
         print("    Done!")
 
 
-def collect_outputs(odir, round_params):
+def collect_outputs(odir):
     results = dict()
-    for protocol in PROTOCOLS:
-        if round_params.paxos_only and "Raft" in protocol:
-            continue
+    for round_params in ROUNDS_PARAMS:
+        for protocol in PROTOCOLS:
+            if round_params.paxos_only and "Raft" in protocol:
+                continue
 
-        midfix_str = str(round_params)
-        result = utils.gather_outputs(
-            f"{protocol}{midfix_str}",
-            NUM_CLIENTS,
-            odir,
-            RESULT_SECS_BEGIN,
-            RESULT_SECS_END,
-            0.1,
-        )
+            midfix_str = str(round_params)
+            result = utils.gather_outputs(
+                f"{protocol}{midfix_str}",
+                NUM_CLIENTS,
+                odir,
+                RESULT_SECS_BEGIN,
+                RESULT_SECS_END,
+                0.1,
+            )
 
-        sd, sp, sj, sm = 20, 0, 0, 1
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
-        lat_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, sm)
+            sd, sp, sj, sm = 20, 0, 0, 1
+            tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+            lat_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, sm)
 
-        results[f"{protocol}{midfix_str}"] = {
-            "tput": {
-                "mean": sum(tput_list) / len(tput_list),
-                "stdev": statistics.stdev(tput_list),
-            },
-            "lat": {
-                "mean": sum(lat_list) / len(lat_list),
-                "stdev": statistics.stdev(lat_list),
-            },
-        }
+            results[f"{protocol}{midfix_str}"] = {
+                "tput": {
+                    "mean": sum(tput_list) / len(tput_list),
+                    "stdev": statistics.stdev(tput_list),
+                },
+                "lat": {
+                    "mean": sum(lat_list) / len(lat_list),
+                    "stdev": statistics.stdev(lat_list),
+                },
+            }
 
     return results
 
@@ -254,10 +264,13 @@ def collect_outputs(odir, round_params):
 def print_results(results):
     for protocol_with_midfix, result in results.items():
         print(protocol_with_midfix)
-        print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
+        print(
+            f"  tput  mean {result['tput']['mean']:7.2f}  stdev {result['tput']['stdev']:7.2f}"
+            + f"  lat  mean {result['lat']['mean']:8.2f}  stdev {result['lat']['stdev']:7.2f}"
+        )
 
 
-def plot_results(results, odir):
+def plot_single_case_results(results, round_params, odir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4, 3),
@@ -267,39 +280,26 @@ def plot_results(results, odir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
-        "MultiPaxos.2.b",
-        "Raft.2.b",
-        "RSPaxos.2.b",
-        "CRaft.2.b",
-        "Crossword.2.b",
-        "Crossword.2.u",
-        "RSPaxos.1.b",
-        "CRaft.1.b",
+        "MultiPaxos",
+        "Raft",
+        "RSPaxos",
+        "CRaft",
+        "Crossword",
     ]
-    PROTOCOLS_XPOS = {
-        "MultiPaxos.2.b": 1,
-        "Raft.2.b": 2,
-        "RSPaxos.2.b": 3,
-        "CRaft.2.b": 4,
-        "Crossword.2.b": 5,
-        "Crossword.2.u": 6,
-        "RSPaxos.1.b": 7.8,
-        "CRaft.1.b": 8.8,
-    }
     PROTOCOLS_LABEL_COLOR_HATCH = {
-        "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
-        "Raft.2.b": ("Raft", "lightgreen", None),
-        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
-        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
-        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
-        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
-        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
+        "MultiPaxos": ("MultiPaxos", "darkgray", None),
+        "Raft": ("Raft", "lightgreen", None),
+        "RSPaxos": ("RSPaxos", "pink", "//"),
+        "CRaft": ("CRaft", "cornsilk", "\\\\"),
+        "Crossword": ("Crossword", "lightsteelblue", "xx"),
     }
 
-    for protocol_with_midfix in PROTOCOLS_ORDER:
-        xpos = PROTOCOLS_XPOS[protocol_with_midfix]
-        result = results[protocol_with_midfix]
+    # throughput
+    ax1 = plt.subplot(211)
+
+    for i, protocol_with_midfix in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        result = results[protocol_with_midfix]["tput"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
         bar = plt.bar(
@@ -316,23 +316,58 @@ def plot_results(results, odir):
             # capsize=1,
         )
 
-    ax = fig.axes[0]
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
 
-    plt.xticks([3.5, 8.3], ["f=2", "f=1"])
-    plt.tick_params(bottom=False)
+    plt.tick_params(bottom=False, labelbottom=False)
 
     plt.ylabel("Throughput (reqs/s)")
 
+    # latency
+    ax2 = plt.subplot(212)
+
+    for i, protocol_with_midfix in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        result = results[protocol_with_midfix]["lat"]
+
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
+        bar = plt.bar(
+            xpos,
+            result["mean"],
+            width=1,
+            color=color,
+            edgecolor="black",
+            linewidth=1.4,
+            label=label,
+            hatch=hatch,
+            # yerr=result["stdev"],
+            # ecolor="black",
+            # capsize=1,
+        )
+
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
+
+    plt.tick_params(bottom=False, labelbottom=False)
+
+    plt.ylabel("Latency (ms)")
+
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    pdf_name = f"{odir}/exper-{EXPER_NAME}-{str(round_params)}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
-    return ax.get_legend_handles_labels()
+    return ax1.get_legend_handles_labels()
+
+
+def plot_cluster_size_results(results, rounds_params, odir):
+    pass
+
+
+def plot_write_ratio_results(results, rounds_params, odir):
+    pass
 
 
 def plot_legend(handles, labels, odir):
@@ -370,6 +405,7 @@ def plot_legend(handles, labels, odir):
 
 if __name__ == "__main__":
     utils.check_proper_cwd()
+    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -391,16 +427,16 @@ if __name__ == "__main__":
 
         utils.do_cargo_build(release=True)
 
-        for round_params in ROUNDS_RAPAMS:
+        for round_params in ROUNDS_PARAMS:
             print("Setting tc netem qdiscs...")
             utils.set_all_tc_qdisc_netems(
                 round_params.num_replicas,
                 SERVER_NETNS,
                 SERVER_DEV,
                 SERVER_IFB,
-                round_params.delay,
-                round_params.jitter,
-                round_params.rate,
+                lambda _: round_params.delay,
+                lambda _: round_params.jitter,
+                lambda _: round_params.rate,
                 involve_ifb=True,
             )
 
@@ -419,5 +455,25 @@ if __name__ == "__main__":
     else:
         results = collect_outputs(args.odir)
         print_results(results)
-        handles, labels = plot_results(results, args.odir)
-        plot_legend(handles, labels, args.odir)
+
+        legend_plotted = False
+        for round_params in ROUNDS_PARAMS:
+            if "single" in round_params.tags:
+                handles, labels = plot_single_case_results(
+                    results, round_params, args.odir
+                )
+                if not legend_plotted:
+                    plot_legend(handles, labels, args.odir)
+                    legend_plotted = True
+
+        cluster_rounds = [
+            rp for rp in ROUNDS_PARAMS if any(map(lambda t: "cluster" in t, rp.tags))
+        ]
+        cluster_rounds.sort(key=lambda rp: rp.num_replicas)
+        plot_cluster_size_results(results, cluster_rounds, args.odir)
+
+        ratio_rounds = [
+            rp for rp in ROUNDS_PARAMS if any(map(lambda t: "ratio" in t, rp.tags))
+        ]
+        ratio_rounds.sort(key=lambda rp: rp.put_ratio)
+        plot_write_ratio_results(results, ratio_rounds, args.odir)

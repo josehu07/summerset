@@ -3,6 +3,7 @@ import os
 import subprocess
 import statistics
 import random
+import multiprocessing
 
 
 def parse_comma_separated(l):
@@ -33,6 +34,15 @@ def check_proper_cwd():
             "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
         )
         sys.exit(1)
+
+
+def check_enough_cpus():
+    EXPECTED_CPUS = 40
+    cpus = multiprocessing.cpu_count()
+    if cpus < EXPECTED_CPUS:
+        print(
+            f"WARN: benchmarking scripts expect >= {EXPECTED_CPUS} CPUs, found {cpus}"
+        )
 
 
 def do_cargo_build(release):
