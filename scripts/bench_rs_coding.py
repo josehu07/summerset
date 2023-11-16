@@ -75,6 +75,7 @@ def plot_bench_results(results, output_dir):
         {
             "figure.figsize": (3.6, 1.6),
             "font.size": 10,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Bench")

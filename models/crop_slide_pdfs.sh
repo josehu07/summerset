@@ -31,15 +31,15 @@ done
 
 echo
 echo "Cropping extra files..."
-EXTRA_FILES=("cstr_bounds" "rs_coding"
-             "backup/adaptive/exper-adaptive" "backup/adaptive/legend-adaptive"
-             "backup/bd_n_space/exper-bd_n_space" "backup/bd_n_space/legend-bd_n_space"
-             "backup/failover/exper-failover" "backup/failover/legend-failover"
-             "backup/unbalanced/exper-unbalanced" "backup/unbalanced/legend-unbalanced")
+EXTRA_FILES=("models/cstr_bounds" "rs_coding/rs_coding"
+             "adaptive/exper-adaptive" "adaptive/legend-adaptive"
+             "bd_n_space/exper-bd_n_space" "bd_n_space/legend-bd_n_space"
+             "failover/exper-failover" "failover/legend-failover"
+             "unbalanced/exper-unbalanced" "unbalanced/legend-unbalanced")
 for FILE_NAME in ${EXTRA_FILES[@]};
 do
-    echo "    cropping results/${FILE_NAME}.pdf"
-    pdfcropmargins -p 0 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
+    echo "    cropping results/final/${FILE_NAME}.pdf"
+    pdfcropmargins -p 0 -t 255 -mo -o results "results/final/${FILE_NAME}.pdf"
 done
 
 echo
@@ -48,7 +48,7 @@ rm results/*_uncropped.pdf
 rm "results/slide-figures.pdf:Zone.Identifier"
 
 echo
-echo "Renaming cropped files..."
+echo "Renaming cropped slide pages..."
 TARGET_NAMES=("status_diagram" "log_in_action" "rs_codeword_space" "policy-multipaxos"
               "policy-rspaxos" "policy-balanced_rr" "policy-unbalanced" "concurrent_failures")
 for IDX in ${!TARGET_NAMES[@]};
