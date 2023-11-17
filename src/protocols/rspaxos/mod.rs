@@ -238,9 +238,6 @@ pub enum PeerMsg {
     /// Accept reply from replica to leader.
     AcceptReply { slot: usize, ballot: Ballot },
 
-    /// Commit notification from leader to replicas.
-    Commit { slot: usize },
-
     /// Reconstruction read from new leader to replicas.
     Reconstruct { slots: Vec<usize> },
 
@@ -253,6 +250,9 @@ pub enum PeerMsg {
     /// Leader activity heartbeat.
     Heartbeat {
         ballot: Ballot,
+        /// For notifying followers about safe-to-commit slots (in a bit
+        /// conservative way).
+        commit_bar: usize,
         /// For leader step-up as well as conservative snapshotting purpose.
         exec_bar: usize,
         /// For conservative snapshotting purpose.

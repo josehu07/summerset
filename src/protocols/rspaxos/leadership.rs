@@ -76,6 +76,9 @@ impl RSPaxosReplica {
             .map(|(s, i)| (self.start_slot + s, i))
             .skip(self.exec_bar - self.start_slot)
         {
+            if inst.status == Status::Null {
+                continue;
+            }
             if inst.status < Status::Executed {
                 inst.external = true; // so replies to clients can be triggered
             }
@@ -123,6 +126,7 @@ impl RSPaxosReplica {
                     self.transport_hub.bcast_msg(
                         PeerMsg::Heartbeat {
                             ballot: self.bal_max_seen,
+                            commit_bar: self.commit_bar,
                             exec_bar: self.exec_bar,
                             snap_bar: self.snap_bar,
                         },
@@ -153,6 +157,7 @@ impl RSPaxosReplica {
             self.transport_hub.bcast_msg(
                 PeerMsg::Heartbeat {
                     ballot: self.bal_max_seen,
+                    commit_bar: self.commit_bar,
                     exec_bar: self.exec_bar,
                     snap_bar: self.snap_bar,
                 },
@@ -167,6 +172,7 @@ impl RSPaxosReplica {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
+                commit_bar: self.commit_bar,
                 exec_bar: self.exec_bar,
                 snap_bar: self.snap_bar,
             },
@@ -203,6 +209,7 @@ impl RSPaxosReplica {
         self.heard_heartbeat(
             self.id,
             self.bal_max_seen,
+            self.commit_bar,
             self.exec_bar,
             self.snap_bar,
         )?;
@@ -236,6 +243,7 @@ impl RSPaxosReplica {
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
+        commit_bar: usize,
         exec_bar: usize,
         snap_bar: usize,
     ) -> Result<(), SummersetError> {
@@ -255,6 +263,7 @@ impl RSPaxosReplica {
                 self.transport_hub.send_msg(
                     PeerMsg::Heartbeat {
                         ballot: self.bal_max_seen,
+                        commit_bar: self.commit_bar,
                         exec_bar: self.exec_bar,
                         snap_bar: self.snap_bar,
                     },
@@ -270,6 +279,46 @@ impl RSPaxosReplica {
         self.kickoff_hb_hear_timer()?;
         if exec_bar < self.exec_bar {
             return Ok(());
+        }
+
+        // all slots up to received commit_bar are safe to commit; submit their
+        // commands for execution
+        if commit_bar > self.commit_bar {
+            while self.start_slot + self.insts.len() < commit_bar {
+                self.insts.push(self.null_instance()?);
+            }
+
+            let mut commit_cnt = 0;
+            for slot in self.commit_bar..commit_bar {
+                let inst = &mut self.insts[slot - self.start_slot];
+                if inst.status < Status::Accepting {
+                    break;
+                } else if inst.status >= Status::Committed {
+                    continue;
+                }
+
+                // mark this instance as committed
+                inst.status = Status::Committed;
+                pf_debug!(self.id; "committed instance at slot {} bal {}",
+                                   slot, inst.bal);
+
+                // record commit event
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Committed),
+                    LogAction::Append {
+                        entry: WalEntry::CommitSlot { slot },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
+                                   slot, inst.bal);
+
+                commit_cnt += 1;
+            }
+
+            if commit_cnt > 0 {
+                pf_trace!(self.id; "heartbeat commit <- {} < slot {}", peer, commit_bar);
+            }
         }
 
         if peer != self.id {

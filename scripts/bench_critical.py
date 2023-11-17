@@ -89,10 +89,10 @@ ROUNDS_PARAMS = [
 # fmt: on
 
 
-LENGTH_SECS = 120
+LENGTH_SECS = 20
 
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 115
+RESULT_SECS_END = 18
 
 
 def launch_cluster(protocol, round_params, config=None):
@@ -165,18 +165,18 @@ def run_bench_clients(protocol, round_params):
         "-l",
         str(LENGTH_SECS),
     ]
-    if round_params.value_dist == "normal":
-        cmd += [
-            "--normal_stdev_ratio",
-            str(0.1),
-        ]
-    else:
-        cmd += [
-            "--unif_interval_ms",
-            str(1),
-            "--unif_upper_bound",
-            str(round_params.value_size),
-        ]
+    # if round_params.value_dist == "normal":
+    #     cmd += [
+    #         "--normal_stdev_ratio",
+    #         str(0.1),
+    #     ]
+    # else:
+    #     cmd += [
+    #         "--unif_interval_ms",
+    #         str(1),
+    #         "--unif_upper_bound",
+    #         str(round_params.value_size),
+    #     ]
     cmd += [
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
@@ -253,8 +253,8 @@ def collect_outputs(odir):
                     "stdev": statistics.stdev(tput_list),
                 },
                 "lat": {
-                    "mean": sum(lat_list) / len(lat_list),
-                    "stdev": statistics.stdev(lat_list),
+                    "mean": (sum(lat_list) / len(lat_list)) / 1000,
+                    "stdev": (statistics.stdev(lat_list)) / 1000,
                 },
             }
 
@@ -266,7 +266,7 @@ def print_results(results):
         print(protocol_with_midfix)
         print(
             f"  tput  mean {result['tput']['mean']:7.2f}  stdev {result['tput']['stdev']:7.2f}"
-            + f"  lat  mean {result['lat']['mean']:8.2f}  stdev {result['lat']['stdev']:7.2f}"
+            + f"  lat  mean {result['lat']['mean']:7.2f}  stdev {result['lat']['stdev']:7.2f}"
         )
 
 
@@ -429,16 +429,17 @@ if __name__ == "__main__":
 
         for round_params in ROUNDS_PARAMS:
             print("Setting tc netem qdiscs...")
-            utils.set_all_tc_qdisc_netems(
-                round_params.num_replicas,
-                SERVER_NETNS,
-                SERVER_DEV,
-                SERVER_IFB,
-                lambda _: round_params.delay,
-                lambda _: round_params.jitter,
-                lambda _: round_params.rate,
-                involve_ifb=True,
-            )
+            utils.clear_fs_cache()
+            # utils.set_all_tc_qdisc_netems(
+            #     round_params.num_replicas,
+            #     SERVER_NETNS,
+            #     SERVER_DEV,
+            #     SERVER_IFB,
+            #     lambda _: round_params.delay,
+            #     lambda _: round_params.jitter,
+            #     lambda _: round_params.rate,
+            #     involve_ifb=True,
+            # )
 
             print("Running experiments...")
             for protocol in PROTOCOLS:
@@ -448,9 +449,12 @@ if __name__ == "__main__":
 
             print("Clearing tc netem qdiscs...")
             utils.kill_all_local_procs()
-            utils.clear_all_tc_qdisc_netems(
-                round_params.num_replicas, SERVER_NETNS, SERVER_DEV, SERVER_IFB
-            )
+            # utils.clear_all_tc_qdisc_netems(
+            #     round_params.num_replicas, SERVER_NETNS, SERVER_DEV, SERVER_IFB
+            # )
+
+            state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
+            utils.remove_files_in_dir(state_path)
 
     else:
         results = collect_outputs(args.odir)

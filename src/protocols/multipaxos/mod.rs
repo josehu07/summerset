@@ -247,16 +247,12 @@ pub enum PeerMsg {
         reply_ts: Option<SystemTime>,
     },
 
-    /// Commit notification from leader to replicas.
-    Commit { slot: usize },
-
-    /// Request by a lagging replica to leader asking to re-send Accepts for
-    /// missing holes
-    FillHoles { slots: Vec<usize> },
-
     /// Leader activity heartbeat.
     Heartbeat {
         ballot: Ballot,
+        /// For notifying followers about safe-to-commit slots (in a bit
+        /// conservative way).
+        commit_bar: usize,
         /// For leader step-up as well as conservative snapshotting purpose.
         exec_bar: usize,
         /// For conservative snapshotting purpose.

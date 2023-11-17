@@ -392,57 +392,8 @@ impl CrosswordReplica {
                 )?;
                 pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
                                    slot, inst.bal);
-
-                // send Commit messages to all peers
-                self.transport_hub
-                    .bcast_msg(PeerMsg::Commit { slot }, None)?;
-                pf_trace!(self.id; "broadcast Commit messages for slot {} bal {}",
-                                   slot, ballot);
             }
         }
-
-        Ok(())
-    }
-
-    /// Handler of Commit message from leader.
-    fn handle_msg_commit(
-        &mut self,
-        peer: ReplicaId,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
-        }
-        pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
-
-        self.kickoff_hb_hear_timer()?;
-
-        // locate instance in memory, filling in null instances if needed
-        while self.start_slot + self.insts.len() <= slot {
-            self.insts.push(self.null_instance()?);
-        }
-        let inst = &mut self.insts[slot - self.start_slot];
-
-        // ignore spurious duplications
-        if inst.status != Status::Accepting {
-            return Ok(());
-        }
-
-        // mark this instance as committed
-        inst.status = Status::Committed;
-        pf_debug!(self.id; "committed instance at slot {} bal {}",
-                           slot, inst.bal);
-
-        // record commit event
-        self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Committed),
-            LogAction::Append {
-                entry: WalEntry::CommitSlot { slot },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                           slot, inst.bal);
 
         Ok(())
     }
@@ -603,7 +554,6 @@ impl CrosswordReplica {
             } => {
                 self.handle_msg_accept_reply(peer, slot, ballot, size, reply_ts)
             }
-            PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
             PeerMsg::Reconstruct { slots_excl } => {
                 self.handle_msg_reconstruct(peer, slots_excl)
             }
@@ -613,9 +563,12 @@ impl CrosswordReplica {
             PeerMsg::Heartbeat {
                 id: hb_id,
                 ballot,
+                commit_bar,
                 exec_bar,
                 snap_bar,
-            } => self.heard_heartbeat(peer, hb_id, ballot, exec_bar, snap_bar),
+            } => self.heard_heartbeat(
+                peer, hb_id, ballot, commit_bar, exec_bar, snap_bar,
+            ),
         }
     }
 }

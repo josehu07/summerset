@@ -436,6 +436,7 @@ if __name__ == "__main__":
         utils.do_cargo_build(release=True)
 
         print("Setting tc netem qdiscs...")
+        utils.clear_fs_cache()
         utils.set_all_tc_qdisc_netems(
             NUM_REPLICAS,
             SERVER_NETNS,
@@ -456,6 +457,9 @@ if __name__ == "__main__":
         utils.clear_all_tc_qdisc_netems(
             NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
         )
+
+        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
+        utils.remove_files_in_dir(state_path)
 
     else:
         bd_stats = collect_bd_stats(args.ldir)
