@@ -111,7 +111,7 @@ ROUNDS_PARAMS = [
     RoundParams(7,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-7"]),
     RoundParams(9,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-9"]),
     RoundParams(5,   SIZE_MIXED,   10,    ENV_WAN,   True,  ["ratio-10"],  read_lease=True),
-    RoundParams(5,   SIZE_MIXED,   25,    ENV_WAN,   True,  ["ratio-25"],  read_lease=True),
+    # RoundParams(5,   SIZE_MIXED,   25,    ENV_WAN,   True,  ["ratio-25"],  read_lease=True),
     RoundParams(5,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["ratio-50"],  read_lease=True),
     RoundParams(5,   SIZE_MIXED,   100,   ENV_WAN,   True,  ["ratio-100"], read_lease=True),
 ]
@@ -376,7 +376,7 @@ def print_results(results):
 def plot_single_case_results(results, round_params, odir, ymax=None):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.2, 2.2),
+            "figure.figsize": (2.6, 2.6),
             "font.size": 12,
         }
     )
@@ -425,7 +425,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
 
     plt.tick_params(bottom=False, labelbottom=False)
 
-    plt.ylabel("Throughput\n(reqs/s)" if round_params.value_size == SIZE_S else " \n ")
+    plt.ylabel(" \n ")
     ax1.yaxis.set_label_coords(-0.7, 0.5)
 
     if ymax is not None:
@@ -446,7 +446,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
             result["mean"],
             width=1,
             color=color,
-            edgecolor="dimgray",
+            edgecolor="gray",
             linewidth=1.4,
             label=label,
             hatch=hatch,
@@ -460,7 +460,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
 
     plt.tick_params(bottom=False, labelbottom=False)
 
-    plt.ylabel("Latency\n(ms)" if round_params.value_size == SIZE_S else " \n ")
+    plt.ylabel(" \n ")
     ax2.yaxis.set_label_coords(-0.7, 0.5)
 
     if ymax is not None:
@@ -471,7 +471,12 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}-{str(round_params)}.pdf"
+    pdf_midfix = (
+        f"{round_params.num_replicas}."
+        + f"{'small' if round_params.value_size == SIZE_S else 'large' if round_params.value_size == SIZE_L else 'mixed'}."
+        + f"{round_params.put_ratio}.{round_params.env_setting.name}"
+    )
+    pdf_name = f"{odir}/exper-{EXPER_NAME}-{pdf_midfix}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -497,19 +502,20 @@ def plot_single_rounds_results(results, rounds_params, odir):
             if lat_mean > env_ymax[env_name]["lat"]:
                 env_ymax[env_name]["lat"] = lat_mean
 
-    legend_plotted = False
+    common_plotted = False
     for round_params in rounds_params:
         if "single" in round_params.tags:
             handles, labels = plot_single_case_results(
-                # results, round_params, odir, env_ymax[round_params.env_setting.name]
                 results,
                 round_params,
                 odir,
-                None,
+                # None,
+                env_ymax[round_params.env_setting.name],
             )
-            if not legend_plotted:
-                plot_legend(handles, labels, odir)
-                legend_plotted = True
+            if not common_plotted:
+                plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], odir)
+                plot_major_legend(handles, labels, odir)
+                common_plotted = True
 
 
 def plot_cluster_size_results(results, rounds_params, odir):
@@ -529,7 +535,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
+        "RSPaxos": ("RSPaxos", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)
@@ -554,7 +560,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
                 color=color,
                 edgecolor="black",
                 linewidth=1.4,
-                label=label,
+                label=label if i == 0 else None,
                 hatch=hatch,
             )
             xpos += 1
@@ -576,11 +582,13 @@ def plot_cluster_size_results(results, rounds_params, odir):
     plt.close()
     print(f"Plotted: {pdf_name}")
 
+    return ax.get_legend_handles_labels()
+
 
 def plot_write_ratio_results(results, rounds_params, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.5, 2),
+            "figure.figsize": (2.8, 2),
             "font.size": 12,
         }
     )
@@ -594,7 +602,7 @@ def plot_write_ratio_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
+        "RSPaxos": ("RSPaxos", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)
@@ -619,7 +627,7 @@ def plot_write_ratio_results(results, rounds_params, odir):
                 color=color,
                 edgecolor="black",
                 linewidth=1.4,
-                label=label,
+                label=label if i == 0 else None,
                 hatch=hatch,
             )
             xpos += 1
@@ -631,8 +639,8 @@ def plot_write_ratio_results(results, rounds_params, odir):
 
     plt.tick_params(bottom=False)
 
-    plt.xticks([2, 6, 10, 14], [f"{10}%", f"{25}%", f"{50}%", f"{100}%"])
-    plt.ylabel("Throughput (reqs/s)")
+    plt.xticks([2, 6, 10], [f"{10}%", f"{50}%", f"{100}%"])
+    # plt.ylabel("Throughput (reqs/s)")
 
     plt.tight_layout()
 
@@ -642,10 +650,43 @@ def plot_write_ratio_results(results, rounds_params, odir):
     print(f"Plotted: {pdf_name}")
 
 
-def plot_legend(handles, labels, odir):
+def plot_major_ylabels(ylabels, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.4, 2.2),
+            "figure.figsize": (1.5, 2.2),
+            "font.size": 12,
+        }
+    )
+    fig = plt.figure(f"Ylabels")
+
+    assert len(ylabels) == 2
+
+    ax1 = plt.subplot(211)
+    plt.ylabel(ylabels[0])
+    for spine in ax1.spines.values():
+        spine.set_visible(False)
+    plt.tick_params(bottom=False, labelbottom=False, left=False, labelleft=False)
+
+    ax2 = plt.subplot(212)
+    plt.ylabel(ylabels[1])
+    for spine in ax2.spines.values():
+        spine.set_visible(False)
+    plt.tick_params(bottom=False, labelbottom=False, left=False, labelleft=False)
+
+    fig.subplots_adjust(left=0.5)
+
+    fig.align_labels()
+
+    pdf_name = f"{odir}/ylabels-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+
+def plot_major_legend(handles, labels, odir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (5.6, 0.5),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -654,14 +695,17 @@ def plot_legend(handles, labels, odir):
 
     plt.axis("off")
 
-    handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
-    labels.insert(-2, "")  # insert spacing between groups
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=1.2,
+        handleheight=0.8,
+        handlelength=1.0,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
+        ncol=len(labels),
+        borderpad=0.3,
+        handletextpad=0.3,
+        columnspacing=0.9,
     )
     for rec in lgd.get_texts():
         if "f=1" in rec.get_text():
@@ -675,9 +719,44 @@ def plot_legend(handles, labels, odir):
     print(f"Plotted: {pdf_name}")
 
 
+def plot_minor_legend(handles, labels, odir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (4, 0.5),
+            "font.size": 10,
+            "pdf.fonttype": 42,
+        }
+    )
+    plt.figure("Legend")
+
+    plt.axis("off")
+
+    lgd = plt.legend(
+        handles,
+        labels,
+        handleheight=0.8,
+        handlelength=1.2,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
+        ncol=len(labels),
+        borderpad=0.3,
+        handletextpad=0.3,
+        columnspacing=1.1,
+    )
+    for rec in lgd.get_texts():
+        if "RSPaxos" in rec.get_text():
+            rec.set_fontstyle("italic")
+        # if "Crossword" in rec.get_text():
+        #     rec.set_fontweight("bold")
+
+    pdf_name = f"{odir}/legend-{EXPER_NAME}-minor.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+
 if __name__ == "__main__":
     utils.check_proper_cwd()
-    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -693,6 +772,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
@@ -741,7 +822,8 @@ if __name__ == "__main__":
             rp for rp in ROUNDS_PARAMS if any(map(lambda t: "cluster" in t, rp.tags))
         ]
         cluster_rounds.sort(key=lambda rp: rp.num_replicas)
-        plot_cluster_size_results(results, cluster_rounds, args.odir)
+        handles, labels = plot_cluster_size_results(results, cluster_rounds, args.odir)
+        plot_minor_legend(handles, labels, args.odir)
 
         ratio_rounds = [
             rp for rp in ROUNDS_PARAMS if any(map(lambda t: "ratio" in t, rp.tags))

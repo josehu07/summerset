@@ -305,8 +305,8 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN + 2, "Leader fails", 0)
-    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN + 2, "New leader fails", 0)
+    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN + 2, "Leader fails", 12)
+    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN + 2, "New leader fails", 12)
 
     # recovery time indicators (hardcoded!)
     def draw_recovery_indicator(x, y, w, t, toffx, toffy):
@@ -345,8 +345,8 @@ def plot_results(results, odir):
                 fontsize=10,
             )
 
-    draw_recovery_indicator(19, 135, 3.6, "bounded", 2.5, 11)
-    draw_recovery_indicator(59.2, 135, 3.6, "bounded", 2.5, 11)
+    draw_recovery_indicator(19, 135, 3.6, "small\ngossip\ngap", 1, 11)
+    draw_recovery_indicator(59.2, 135, 3.6, "small\ngossip\ngap", 1, 11)
 
     plt.vlines(
         63.5,
@@ -357,9 +357,9 @@ def plot_results(results, odir):
         linewidth=0.8,
     )
 
-    draw_recovery_indicator(23, 40, 6.5, None, None, None)
-    draw_recovery_indicator(25.2, 54, 8.8, "unbounded", 3.8, -35)
-    draw_recovery_indicator(67.5, 54, 11.3, "unbounded", 3.5, -20)
+    draw_recovery_indicator(23, 50, 7, None, None, None)
+    draw_recovery_indicator(25.2, 62, 9.2, "state-send\nsnapshot int.", 4.6, -53)
+    draw_recovery_indicator(67.5, 56, 11.5, "state-send\nsnapshot int.", 2.9, -47)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
@@ -378,20 +378,20 @@ def plot_results(results, odir):
             fontsize=11,
         )
 
-    draw_config_indicator(5, 228, 1, 5, "steelblue")
-    draw_config_indicator(5, 198, 1, 4, "red")
-    draw_config_indicator(5, 175, 1, 4, "peru")
-    draw_config_indicator(5, 112, 3, 3, "forestgreen")
+    draw_config_indicator(4.8, 228, 1, 5, "steelblue")
+    draw_config_indicator(4.8, 198, 1, 4, "red")
+    draw_config_indicator(4.8, 175, 1, 4, "peru")
+    draw_config_indicator(4.8, 112, 3, 3, "forestgreen")
 
     draw_config_indicator(44.8, 148, 2, 4, "steelblue")
     draw_config_indicator(44.8, 198, 1, 4, "red")
     draw_config_indicator(44.8, 58, 3, 3, "peru", fb=True)
     draw_config_indicator(44.8, 112, 3, 3, "forestgreen")
 
-    draw_config_indicator(89.2, 135, 3, 3, "steelblue")
-    draw_config_indicator(89.2, 9, 1, 4, "red", unavail=True)
-    draw_config_indicator(89.2, 78, 3, 3, "peru")
-    draw_config_indicator(89.2, 112, 3, 3, "forestgreen")
+    draw_config_indicator(89.5, 135, 3, 3, "steelblue")
+    draw_config_indicator(89.5, 9, 1, 4, "red", unavail=True)
+    draw_config_indicator(89.5, 78, 3, 3, "peru")
+    draw_config_indicator(89.5, 112, 3, 3, "forestgreen")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -447,7 +447,6 @@ def plot_legend(handles, labels, odir):
 
 if __name__ == "__main__":
     utils.check_proper_cwd()
-    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -463,6 +462,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+        
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")

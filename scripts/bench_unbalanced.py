@@ -259,8 +259,8 @@ def plot_results(results, odir):
         "CRaft.2.b": 4,
         "Crossword.2.b": 5,
         "Crossword.2.u": 6,
-        "RSPaxos.1.b": 7.8,
-        "CRaft.1.b": 8.8,
+        "RSPaxos.1.b": 8,
+        "CRaft.1.b": 9,
     }
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
@@ -327,7 +327,8 @@ def plot_legend(handles, labels, odir):
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=1.2,
+        handleheight=0.9,
+        handlelength=1.3,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
@@ -345,7 +346,6 @@ def plot_legend(handles, labels, odir):
 
 if __name__ == "__main__":
     utils.check_proper_cwd()
-    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -361,6 +361,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")

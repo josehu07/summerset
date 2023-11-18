@@ -406,7 +406,6 @@ def save_space_usage(space_usage, ldir):
 
 if __name__ == "__main__":
     utils.check_proper_cwd()
-    utils.check_enough_cpus()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -429,6 +428,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+        
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
