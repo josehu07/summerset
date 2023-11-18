@@ -212,11 +212,15 @@ def collect_outputs(odir):
         )
 
         sd, sp, sj, sm = 20, 0, 0, 1
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_stdev_list = result["tput_stdev"]
 
         results[f"{protocol}{midfix_str}"] = {
-            "mean": sum(tput_list) / len(tput_list),
-            "stdev": statistics.stdev(tput_list),
+            "mean": sum(tput_mean_list) / len(tput_mean_list),
+            "stdev": (
+                sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
+            )
+            ** 0.5,
         }
 
     return results

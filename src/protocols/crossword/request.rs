@@ -5,14 +5,14 @@ use std::collections::HashMap;
 use super::*;
 
 use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ApiRequest, ApiReply, LogAction};
+use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
 
 // CrosswordReplica client requests entrance
 impl CrosswordReplica {
     /// Handler of client request batch chan recv.
     pub fn handle_req_batch(
         &mut self,
-        req_batch: ReqBatch,
+        mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
@@ -41,6 +41,41 @@ impl CrosswordReplica {
                                        client, target);
                 }
             }
+            return Ok(());
+        }
+
+        // if simulating read leases, extract all the reads and immediately
+        // reply to them with a dummy value
+        // TODO: only for benchmarking purposes
+        if self.config.sim_read_lease {
+            for (client, req) in &req_batch {
+                if let ApiRequest::Req {
+                    id: req_id,
+                    cmd: Command::Get { .. },
+                } = req
+                {
+                    self.external_api.send_reply(
+                        ApiReply::Reply {
+                            id: *req_id,
+                            result: Some(CommandResult::Get { value: None }),
+                            redirect: None,
+                        },
+                        *client,
+                    )?;
+                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                }
+            }
+        }
+        req_batch.retain(|(_, req)| {
+            !matches!(
+                req,
+                ApiRequest::Req {
+                    cmd: Command::Get { .. },
+                    ..
+                }
+            )
+        });
+        if req_batch.is_empty() {
             return Ok(());
         }
 

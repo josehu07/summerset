@@ -7,6 +7,10 @@ use crate::utils::SummersetError;
 
 static DEV_PATTERN: &str = "veths";
 
+static DEFAULT_DELAY: f64 = 0.0;
+static DEFAULT_JITTER: f64 = 0.0;
+static DEFAULT_RATE: f64 = 100.0;
+
 /// Helper struct holding qdisc information.
 pub struct QdiscInfo {
     /// Delay in ms.
@@ -30,6 +34,15 @@ impl fmt::Display for QdiscInfo {
 }
 
 impl QdiscInfo {
+    /// Creates a new qdisc info struct.
+    pub fn new() -> Self {
+        QdiscInfo {
+            delay: DEFAULT_DELAY,
+            jitter: DEFAULT_JITTER,
+            rate: DEFAULT_RATE,
+        }
+    }
+
     /// Query `tc qdisc` info by running the command. Returns the output line
     /// with expected device.
     fn run_qdisc_show() -> Result<String, SummersetError> {
@@ -132,7 +145,8 @@ impl QdiscInfo {
     fn parse_output_line(
         line: &str,
     ) -> Result<(f64, f64, f64), SummersetError> {
-        let (mut delay, mut jitter, mut rate) = (0.0, 0.0, 0.0);
+        let (mut delay, mut jitter, mut rate) =
+            (DEFAULT_DELAY, DEFAULT_JITTER, DEFAULT_RATE);
         let (mut stage, mut idx) = (0, 0);
         for seg in line.split_ascii_whitespace() {
             if seg == "netem" {
@@ -155,15 +169,6 @@ impl QdiscInfo {
             }
         }
         Ok((delay, jitter, rate))
-    }
-
-    /// Creates a new qdisc info struct.
-    pub fn new() -> Self {
-        QdiscInfo {
-            delay: 1.0,
-            jitter: 0.0,
-            rate: 1.0,
-        }
     }
 
     /// Updates my fields with a new query.

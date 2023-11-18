@@ -261,7 +261,7 @@ def collect_outputs(odir):
         sd, sp, sj, sm = 20, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
+            # "ghost" replies after env changes; removing it here
             sp = 50
         elif protocol == "Crossword":
             # setting sd here which avoids the lines to completely overlap with
@@ -277,19 +277,15 @@ def collect_outputs(odir):
 
     # do capping for other protocols; somehow performance might go suspiciously
     # high or low when we change the netem params during runtime?
-    csd = 5
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=False
-    )
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=True
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=False
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=True
-    )
+    def result_cap(pa, pb, down):
+        results[pa]["tput"] = utils.list_capping(
+            results[pa]["tput"], results[pb]["tput"], 5, down=down
+        )
+
+    result_cap("CRaft", "RSPaxos", False)
+    result_cap("CRaft", "RSPaxos", True)
+    result_cap("MultiPaxos", "Raft", False)
+    result_cap("MultiPaxos", "Raft", True)
 
     return results
 

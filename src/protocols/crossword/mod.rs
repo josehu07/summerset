@@ -126,6 +126,11 @@ pub struct ReplicaConfigCrossword {
 
     /// Recording performance breakdown statistics?
     pub record_breakdown: bool,
+
+    /// Simulate local read lease implementation?
+    // TODO: actual read lease impl later? (won't affect anything about
+    // evalutaion results though)
+    pub sim_read_lease: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -162,6 +167,7 @@ impl Default for ReplicaConfigCrossword {
             perf_network_a: 0,
             perf_network_b: 0,
             record_breakdown: false,
+            sim_read_lease: false,
         }
     }
 }
@@ -639,7 +645,7 @@ impl GenericReplica for CrosswordReplica {
                                     b_to_d_threshold,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b,
-                                    record_breakdown)?;
+                                    record_breakdown, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
