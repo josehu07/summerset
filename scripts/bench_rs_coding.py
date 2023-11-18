@@ -73,7 +73,7 @@ def print_bench_results(results):
 def plot_bench_results(results, output_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.6, 1.6),
+            "figure.figsize": (4, 1.5),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -103,10 +103,11 @@ def plot_bench_results(results, output_dir):
     colors = cmap(np.linspace(1.0 - (vmax - vmin) / float(vmax), 0.6, cmap.N))
     new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list("Reds", colors)
 
-    plt.imshow(data, cmap=new_cmap, aspect="equal", norm="log")
+    plt.imshow(data, cmap=new_cmap, aspect=0.6, norm="log")
     plt.colorbar(
         aspect=12,
-        shrink=0.85,
+        shrink=0.7,
+        anchor=(0.0, 0.25),
         ticks=[vmin, 1, 10],
         format="{x:.0f}ms",
     )
