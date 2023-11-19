@@ -376,7 +376,7 @@ def print_results(results):
 def plot_single_case_results(results, round_params, odir, ymax=None):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.6, 2.6),
+            "figure.figsize": (2.6, 2.2),
             "font.size": 12,
         }
     )
