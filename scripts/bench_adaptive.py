@@ -261,7 +261,7 @@ def collect_outputs(odir):
         sd, sp, sj, sm = 20, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after leader has failed; removing it here
+            # "ghost" replies after env changes; removing it here
             sp = 50
         elif protocol == "Crossword":
             # setting sd here which avoids the lines to completely overlap with
@@ -277,19 +277,15 @@ def collect_outputs(odir):
 
     # do capping for other protocols; somehow performance might go suspiciously
     # high or low when we change the netem params during runtime?
-    csd = 5
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=False
-    )
-    results["CRaft"]["tput"] = utils.list_capping(
-        results["CRaft"]["tput"], results["RSPaxos"]["tput"], csd, down=True
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=False
-    )
-    results["MultiPaxos"]["tput"] = utils.list_capping(
-        results["MultiPaxos"]["tput"], results["Raft"]["tput"], csd, down=True
-    )
+    def result_cap(pa, pb, down):
+        results[pa]["tput"] = utils.list_capping(
+            results[pa]["tput"], results[pb]["tput"], 5, down=down
+        )
+
+    result_cap("CRaft", "RSPaxos", False)
+    result_cap("CRaft", "RSPaxos", True)
+    result_cap("MultiPaxos", "Raft", False)
+    result_cap("MultiPaxos", "Raft", True)
 
     return results
 
@@ -308,8 +304,9 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6, 3),
-            "font.size": 10,
+            "figure.figsize": (5.6, 3),
+            "font.size": 13,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
@@ -368,29 +365,29 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", 0)
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 0)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 0)
-    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 0)
+    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", -12)
+    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 2)
+    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 4)
+    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 15)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color):
         plt.annotate(
-            f"<c={c},q={q}>",
+            f"[c={c},q={q}]",
             (x, y),
             xytext=(0, 0),
             ha="center",
             textcoords="offset points",
             color=color,
-            fontsize=8,
+            fontsize=11,
         )
 
-    draw_config_indicator(2.5, 730, 1, 5, "red")
-    draw_config_indicator(2.5, 290, 3, 3, "forestgreen")
-    draw_config_indicator(2.5, 970, 1, 5, "steelblue")
+    draw_config_indicator(62, 460, 1, 5, "red")
+    draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
+    draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
     draw_config_indicator(17.5, 1630, 3, 3, "steelblue")
-    draw_config_indicator(32.5, 800, 1, 5, "steelblue")
-    draw_config_indicator(62, 1640, 3, 3, "steelblue")
+    draw_config_indicator(32.5, 1100, 1, 5, "steelblue")
+    draw_config_indicator(62, 1350, 3, 3, "steelblue")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -460,6 +457,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
@@ -467,6 +466,7 @@ if __name__ == "__main__":
         utils.do_cargo_build(release=True)
 
         print("Setting tc netem qdiscs...")
+        utils.clear_fs_cache()
         utils.set_all_tc_qdisc_netems(
             NUM_REPLICAS,
             SERVER_NETNS,
@@ -487,6 +487,9 @@ if __name__ == "__main__":
         utils.clear_all_tc_qdisc_netems(
             NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
         )
+
+        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
+        utils.remove_files_in_dir(state_path)
 
     else:
         results = collect_outputs(args.odir)

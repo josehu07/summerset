@@ -248,107 +248,6 @@ impl MultiPaxosReplica {
                 )?;
                 pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
                                    slot, inst.bal);
-
-                // send Commit messages to all peers
-                self.transport_hub
-                    .bcast_msg(PeerMsg::Commit { slot }, None)?;
-                pf_trace!(self.id; "broadcast Commit messages for slot {} bal {}",
-                                   slot, ballot);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handler of Commit message from leader.
-    fn handle_msg_commit(
-        &mut self,
-        peer: ReplicaId,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
-            return Ok(()); // ignore if slot index outdated
-        }
-        pf_trace!(self.id; "received Commit <- {} for slot {}", peer, slot);
-
-        self.kickoff_hb_hear_timer()?;
-
-        // locate instance in memory, filling in null instances if needed
-        while self.start_slot + self.insts.len() <= slot {
-            self.insts.push(self.null_instance());
-        }
-        let inst = &mut self.insts[slot - self.start_slot];
-
-        // ignore spurious duplications
-        if inst.status != Status::Accepting {
-            return Ok(());
-        }
-
-        // mark this instance as committed
-        inst.status = Status::Committed;
-        pf_debug!(self.id; "committed instance at slot {} bal {}",
-                           slot, inst.bal);
-
-        // record commit event
-        self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Committed),
-            LogAction::Append {
-                entry: WalEntry::CommitSlot { slot },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                           slot, inst.bal);
-
-        Ok(())
-    }
-
-    /// Handler of FillHoles message from a lagging peer.
-    fn handle_msg_fill_holes(
-        &mut self,
-        peer: ReplicaId,
-        slots: Vec<usize>,
-    ) -> Result<(), SummersetError> {
-        if !self.is_leader() {
-            return Ok(());
-        }
-        pf_trace!(self.id; "received FillHoles <- {} for slots {:?}", peer, slots);
-
-        let mut chunk_cnt = 0;
-        for slot in slots {
-            if slot < self.start_slot {
-                continue;
-            } else if slot >= self.start_slot + self.insts.len() {
-                break;
-            }
-            let inst = &self.insts[slot - self.start_slot];
-
-            if inst.status >= Status::Committed {
-                // re-send Accept message for this slot
-                self.transport_hub.send_msg(
-                    PeerMsg::Accept {
-                        slot,
-                        ballot: self.bal_prepared,
-                        reqs: inst.reqs.clone(),
-                    },
-                    peer,
-                )?;
-                pf_trace!(self.id; "sent Accept -> {} for slot {} bal {}",
-                                   peer, slot, self.bal_prepared);
-                chunk_cnt += 1;
-
-                // inject heartbeats in the middle to keep peers happy
-                if chunk_cnt >= self.config.msg_chunk_size {
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Heartbeat {
-                            ballot: self.bal_max_seen,
-                            exec_bar: self.exec_bar,
-                            snap_bar: self.snap_bar,
-                        },
-                        None,
-                    )?;
-                    chunk_cnt = 0;
-                }
             }
         }
 
@@ -378,15 +277,13 @@ impl MultiPaxosReplica {
                 ballot,
                 reply_ts,
             } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
-            PeerMsg::Commit { slot } => self.handle_msg_commit(peer, slot),
-            PeerMsg::FillHoles { slots } => {
-                self.handle_msg_fill_holes(peer, slots)
-            }
             PeerMsg::Heartbeat {
                 ballot,
+                commit_bar,
                 exec_bar,
                 snap_bar,
-            } => self.heard_heartbeat(peer, ballot, exec_bar, snap_bar),
+            } => self
+                .heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar),
         }
     }
 }

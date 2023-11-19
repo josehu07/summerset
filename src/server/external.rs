@@ -27,7 +27,7 @@ use tokio::time::{self, Duration, MissedTickBehavior};
 pub type RequestId = u64;
 
 /// Request received from client.
-// TODO: add information fields such as read-only flag...
+// TODO: add proper read-only flag field/type...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum ApiRequest {
     /// Regular request.

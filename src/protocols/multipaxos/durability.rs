@@ -136,21 +136,6 @@ impl MultiPaxosReplica {
             }
         }
 
-        // if there are hole(s) between current commit_bar and newly committed
-        // slot, ask the leader to re-send Accept messages for those slots
-        if slot > self.commit_bar && !self.is_leader() {
-            if let Some(leader) = self.leader {
-                let holes: Vec<usize> = (self.commit_bar..slot).collect();
-                self.transport_hub.send_msg(
-                    PeerMsg::FillHoles {
-                        slots: holes.clone(),
-                    },
-                    leader,
-                )?;
-                pf_trace!(self.id; "sent FillHoles -> {} slots {:?}", leader, holes);
-            }
-        }
-
         Ok(())
     }
 

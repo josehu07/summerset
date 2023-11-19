@@ -80,6 +80,11 @@ pub struct ReplicaConfigRSPaxos {
     pub perf_storage_b: u64,
     pub perf_network_a: u64,
     pub perf_network_b: u64,
+
+    /// Simulate local read lease implementation?
+    // TODO: actual read lease impl later? (won't affect anything about
+    // evalutaion results though)
+    pub sim_read_lease: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -102,6 +107,7 @@ impl Default for ReplicaConfigRSPaxos {
             perf_storage_b: 0,
             perf_network_a: 0,
             perf_network_b: 0,
+            sim_read_lease: false,
         }
     }
 }
@@ -238,9 +244,6 @@ pub enum PeerMsg {
     /// Accept reply from replica to leader.
     AcceptReply { slot: usize, ballot: Ballot },
 
-    /// Commit notification from leader to replicas.
-    Commit { slot: usize },
-
     /// Reconstruction read from new leader to replicas.
     Reconstruct { slots: Vec<usize> },
 
@@ -253,6 +256,9 @@ pub enum PeerMsg {
     /// Leader activity heartbeat.
     Heartbeat {
         ballot: Ballot,
+        /// For notifying followers about safe-to-commit slots (in a bit
+        /// conservative way).
+        commit_bar: usize,
         /// For leader step-up as well as conservative snapshotting purpose.
         exec_bar: usize,
         /// For conservative snapshotting purpose.
@@ -483,7 +489,8 @@ impl GenericReplica for RSPaxosReplica {
                                     snapshot_path, snapshot_interval_s,
                                     fault_tolerance, msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b)?;
+                                    perf_network_a, perf_network_b,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;

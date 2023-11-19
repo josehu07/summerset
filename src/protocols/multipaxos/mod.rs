@@ -84,6 +84,11 @@ pub struct ReplicaConfigMultiPaxos {
 
     /// Recording performance breakdown statistics?
     pub record_breakdown: bool,
+
+    /// Simulate local read lease implementation?
+    // TODO: actual read lease impl later? (won't affect anything about
+    // evalutaion results though)
+    pub sim_read_lease: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -106,6 +111,7 @@ impl Default for ReplicaConfigMultiPaxos {
             perf_network_a: 0,
             perf_network_b: 0,
             record_breakdown: false,
+            sim_read_lease: false,
         }
     }
 }
@@ -247,16 +253,12 @@ pub enum PeerMsg {
         reply_ts: Option<SystemTime>,
     },
 
-    /// Commit notification from leader to replicas.
-    Commit { slot: usize },
-
-    /// Request by a lagging replica to leader asking to re-send Accepts for
-    /// missing holes
-    FillHoles { slots: Vec<usize> },
-
     /// Leader activity heartbeat.
     Heartbeat {
         ballot: Ballot,
+        /// For notifying followers about safe-to-commit slots (in a bit
+        /// conservative way).
+        commit_bar: usize,
         /// For leader step-up as well as conservative snapshotting purpose.
         exec_bar: usize,
         /// For conservative snapshotting purpose.
@@ -482,7 +484,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
                                     perf_network_a, perf_network_b,
-                                    record_breakdown)?;
+                                    record_breakdown, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;

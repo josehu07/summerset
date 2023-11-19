@@ -3,6 +3,7 @@ import os
 import subprocess
 import statistics
 import random
+import multiprocessing
 
 
 def parse_comma_separated(l):
@@ -35,6 +36,25 @@ def check_proper_cwd():
         sys.exit(1)
 
 
+def remove_files_in_dir(path):
+    if not os.path.isdir(path):
+        raise RuntimeError(f"{path} is not a directory")
+    for name in os.listdir(path):
+        child = os.path.join(path, name)
+        if not os.path.isfile(child):
+            raise RuntimeError(f"{child} is not a regular file")
+        os.unlink(child)
+
+
+def check_enough_cpus():
+    EXPECTED_CPUS = 40
+    cpus = multiprocessing.cpu_count()
+    if cpus < EXPECTED_CPUS:
+        print(
+            f"WARN: benchmarking scripts expect >= {EXPECTED_CPUS} CPUs, found {cpus}"
+        )
+
+
 def do_cargo_build(release):
     print("Building everything...")
     cmd = ["cargo", "build", "--workspace"]
@@ -53,9 +73,13 @@ def kill_all_matching(name):
 
 def kill_all_local_procs():
     # print("Killing all local procs...")
-    cmd = ["sudo", "./scripts/kill_local_procs.sh"]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
+    cmd = "sudo ./scripts/kill_local_procs.sh"
+    os.system(cmd)
+
+
+def clear_fs_cache():
+    cmd = 'sudo bash -c "echo 3 > /proc/sys/vm/drop_caches"'
+    os.system(cmd)
 
 
 def run_process(

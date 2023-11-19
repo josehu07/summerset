@@ -80,6 +80,11 @@ pub struct ReplicaConfigCRaft {
     pub perf_storage_b: u64,
     pub perf_network_a: u64,
     pub perf_network_b: u64,
+
+    /// Simulate local read lease implementation?
+    // TODO: actual read lease impl later? (won't affect anything about
+    // evalutaion results though)
+    pub sim_read_lease: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -102,6 +107,7 @@ impl Default for ReplicaConfigCRaft {
             perf_storage_b: 0,
             perf_network_a: 0,
             perf_network_b: 0,
+            sim_read_lease: false,
         }
     }
 }
@@ -417,7 +423,8 @@ impl GenericReplica for CRaftReplica {
                                     snapshot_path, snapshot_interval_s,
                                     fault_tolerance, msg_chunk_size,
                                     perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b)?;
+                                    perf_network_a, perf_network_b,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;

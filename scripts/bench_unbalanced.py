@@ -212,11 +212,15 @@ def collect_outputs(odir):
         )
 
         sd, sp, sj, sm = 20, 0, 0, 1
-        tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_stdev_list = result["tput_stdev"]
 
         results[f"{protocol}{midfix_str}"] = {
-            "mean": sum(tput_list) / len(tput_list),
-            "stdev": statistics.stdev(tput_list),
+            "mean": sum(tput_mean_list) / len(tput_mean_list),
+            "stdev": (
+                sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
+            )
+            ** 0.5,
         }
 
     return results
@@ -231,8 +235,9 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4, 3),
-            "font.size": 10,
+            "figure.figsize": (3.6, 2.5),
+            "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
@@ -254,8 +259,8 @@ def plot_results(results, odir):
         "CRaft.2.b": 4,
         "Crossword.2.b": 5,
         "Crossword.2.u": 6,
-        "RSPaxos.1.b": 8.2,
-        "CRaft.1.b": 9.2,
+        "RSPaxos.1.b": 8,
+        "CRaft.1.b": 9,
     }
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
@@ -291,7 +296,7 @@ def plot_results(results, odir):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xticks([3.5, 8.7], ["f=2", "f=1"])
+    plt.xticks([3.5, 8.3], ["f=2", "f=1"])
     plt.tick_params(bottom=False)
 
     plt.ylabel("Throughput (reqs/s)")
@@ -322,7 +327,8 @@ def plot_legend(handles, labels, odir):
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=1.2,
+        handleheight=0.9,
+        handlelength=1.3,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
@@ -355,6 +361,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if not args.plot:
+        utils.check_enough_cpus()
+
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
@@ -362,6 +370,7 @@ if __name__ == "__main__":
         utils.do_cargo_build(release=True)
 
         print("Setting tc netem qdiscs...")
+        utils.clear_fs_cache()
         utils.set_all_tc_qdisc_netems(
             NUM_REPLICAS,
             SERVER_NETNS,
@@ -382,6 +391,9 @@ if __name__ == "__main__":
         utils.clear_all_tc_qdisc_netems(
             NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
         )
+
+        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
+        utils.remove_files_in_dir(state_path)
 
     else:
         results = collect_outputs(args.odir)

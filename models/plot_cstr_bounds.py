@@ -95,8 +95,8 @@ def plot_cstr_bound(idx, cluster_size):
 
     # environment tradeoff arrows
     plt.arrow(
-        m + 0.1,
-        n + 0.68 if n <= 5 else m + 2.1,
+        m + 0.1 if n <= 3 else m + 0.6,
+        n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
         -1.3,
         0,
         linewidth=1,
@@ -109,9 +109,9 @@ def plot_cstr_bound(idx, cluster_size):
         label="Tradeoff decisions",
     )
     plt.text(
-        m + 0.3 if n <= 5 else m + 0.5,
-        n + 1.1 if n <= 5 else m + 2.5,
-        "if high\njitter",
+        m + 0.3 if n <= 3 else m + 0.8 if n <= 5 else m + 0.8,
+        n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
+        "if high\njitter" if n <= 3 else "if high jitter",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
@@ -149,13 +149,19 @@ def plot_cstr_bound(idx, cluster_size):
     )
     plt.yticks(Y_TICKS[:cluster_size], list(map(str, Y_TICKS))[:cluster_size])
 
-    plt.xlabel("|Quorum|", loc="right")
-    plt.ylabel("#Shards\n/replica", loc="top", rotation=0, backgroundcolor="white")
     if idx < 2:
-        ax.xaxis.set_label_coords(1.05, -0.1)
+        plt.xlabel("|Quorum| (q)", loc="right")
+        ax.xaxis.set_label_coords(1.15, -0.06)
     else:
-        ax.xaxis.set_label_coords(1.05, -0.18)
-    ax.yaxis.set_label_coords(0.2, 0.8)
+        plt.xlabel("q")
+        ax.xaxis.set_label_coords(1.06, 0.06)
+    plt.ylabel(
+        "Shards per\nserver (c)",
+        loc="top",
+        rotation=0,
+        backgroundcolor="white",
+    )
+    ax.yaxis.set_label_coords(0.19, 0.76)
 
     # plt.title(
     #     f"|Cluster|={n}  f={f}",
@@ -165,8 +171,8 @@ def plot_cstr_bound(idx, cluster_size):
     #     # fontweight="bold",
     #     # backgroundcolor=fill_color,
     # )
-    plt.text(2.2, -3.2, f"|Cluster|={n}  f={f}", fontsize=11)
-    plt.text(1, -3.2, "▬", fontsize=11, color=line_color)
+    plt.text(5.4, -2.4, f"n={n}, f={f}", fontsize=11, ha="center", va="center")
+    plt.text(2.8, -2.4, "▬", fontsize=11, color=line_color, ha="center", va="center")
 
     return ax
 
@@ -216,7 +222,7 @@ def make_legend(fig, handles, labels):
         sorted_handles,
         sorted_labels,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.81),
+        bbox_to_anchor=(0.5, 0.72),
         ncol=len(handles),
         handlelength=1.5,
         handletextpad=0.5,
@@ -235,6 +241,7 @@ def plot_all_cstr_bounds(output_dir):
             "figure.figsize": (10, 3),
             "font.size": 10,
             "axes.axisbelow": False,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure()

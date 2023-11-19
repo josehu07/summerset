@@ -1,6 +1,6 @@
 (***************************************************************************)
 (* The consensus problem specification, extended with an array of          *)
-(* istances where each instance is a basic consensus problem.              *)
+(* instances where each instance is a basic consensus problem.             *)
 (*                                                                         *)
 (* Adapted from:                                                           *)
 (*   https://lamport.azurewebsites.net/tla/Consensus.tla                   *)
