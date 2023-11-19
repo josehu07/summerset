@@ -63,18 +63,19 @@ impl RSPaxosReplica {
                     pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
                 }
             }
-        }
-        req_batch.retain(|(_, req)| {
-            !matches!(
-                req,
-                ApiRequest::Req {
-                    cmd: Command::Get { .. },
-                    ..
-                }
-            )
-        });
-        if req_batch.is_empty() {
-            return Ok(());
+
+            req_batch.retain(|(_, req)| {
+                !matches!(
+                    req,
+                    ApiRequest::Req {
+                        cmd: Command::Get { .. },
+                        ..
+                    }
+                )
+            });
+            if req_batch.is_empty() {
+                return Ok(());
+            }
         }
 
         // compute the complete Reed-Solomon codeword for the batch data
