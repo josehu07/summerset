@@ -458,7 +458,7 @@ if __name__ == "__main__":
 
     if not args.plot:
         utils.check_enough_cpus()
-        
+
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
