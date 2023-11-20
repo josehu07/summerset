@@ -434,9 +434,9 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     if ymax is not None:
         plt.ylim(0.0, ymax["tput"] * 1.1)
     else:
-        plt.ylim(bottom=0.0)
         ytickmax = math.ceil(ymaxl / 10) * 10
         plt.yticks([0, ytickmax // 2, ytickmax])
+        plt.ylim(0.0, ytickmax * 1.2)
 
     # latency
     ax2 = plt.subplot(212)
@@ -474,9 +474,9 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     if ymax is not None:
         plt.ylim(0.0, ymax["lat"] * 1.1)
     else:
-        plt.ylim(bottom=0.0)
         ytickmax = math.ceil(ymaxl / 10) * 10
         plt.yticks([0, ytickmax // 2, ytickmax])
+        plt.ylim(0.0, ytickmax * 1.2)
 
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
