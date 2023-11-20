@@ -432,6 +432,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
         plt.ylim(0.0, ymax["tput"] * 1.1)
     else:
         plt.ylim(bottom=0.0)
+    ax1.locator_params(min_n_ticks=4, steps=[2, 4, 6, 8, 10])
 
     # latency
     ax2 = plt.subplot(212)
@@ -467,6 +468,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
         plt.ylim(0.0, ymax["lat"] * 1.1)
     else:
         plt.ylim(bottom=0.0)
+    ax2.locator_params(min_n_ticks=4, steps=[2, 4, 6, 8, 10])
 
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
