@@ -2,7 +2,7 @@ import sys
 import os
 import argparse
 import time
-import statistics
+import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -284,7 +284,7 @@ def collect_outputs(odir):
                     if round_params.read_lease:
                         sm = 1 + (round_params.put_ratio / 100) * 0.5
                     else:
-                        sm = 1 + (round_params.put_ratio / 100)
+                        sm = 1 + (round_params.put_ratio / 100) * 0.6
             tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
             tput_stdev_list = result["tput_stdev"]
             lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
@@ -401,9 +401,12 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     # throughput
     ax1 = plt.subplot(211)
 
+    ymaxl = 0.0
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["tput"]
+        if result["mean"] > ymaxl:
+            ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         bar = plt.bar(
@@ -432,14 +435,18 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
         plt.ylim(0.0, ymax["tput"] * 1.1)
     else:
         plt.ylim(bottom=0.0)
-    ax1.locator_params(min_n_ticks=4, steps=[2, 4, 6, 8, 10])
+        ytickmax = math.ceil(ymaxl / 10) * 10
+        plt.yticks([0, ytickmax // 2, ytickmax])
 
     # latency
     ax2 = plt.subplot(212)
 
+    ymaxl = 0.0
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["lat"]
+        if result["mean"] > ymaxl:
+            ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         bar = plt.bar(
@@ -468,7 +475,8 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
         plt.ylim(0.0, ymax["lat"] * 1.1)
     else:
         plt.ylim(bottom=0.0)
-    ax2.locator_params(min_n_ticks=4, steps=[2, 4, 6, 8, 10])
+        ytickmax = math.ceil(ymaxl / 10) * 10
+        plt.yticks([0, ytickmax // 2, ytickmax])
 
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
@@ -511,8 +519,8 @@ def plot_single_rounds_results(results, rounds_params, odir):
                 results,
                 round_params,
                 odir,
-                # None,
-                env_ymax[round_params.env_setting.name],
+                None,
+                # env_ymax[round_params.env_setting.name],
             )
             if not common_plotted:
                 plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], odir)
