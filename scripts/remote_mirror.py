@@ -6,6 +6,8 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
 
 
+TOML_FILENAME = "scripts/remote_hosts.toml"
+
 BASE_PATH = "/mnt/eval"
 
 EXCLUDE_NAMES = [
@@ -18,15 +20,15 @@ EXCLUDE_NAMES = [
 ]
 
 
-def compose_rsync_cmd(src_path, dst_path, target):
+def compose_rsync_cmd(src_path, dst_path, remote):
     rsync_cmd = ["rsync", "-aP", "--delete"]
     for name in EXCLUDE_NAMES:
         rsync_cmd += ["--exclude", f"{name}"]
-    rsync_cmd += [src_path, f"{target}:{dst_path}"]
+    rsync_cmd += [src_path, f"{remote}:{dst_path}"]
     return rsync_cmd
 
 
-def mirror_folder(targets, src_path, dst_path, repo_name):
+def mirror_folder(remotes, src_path, dst_path, repo_name):
     """WARNING: this deletes all unmatched files on remote!"""
     # source path must exist, end with the correct folder name, followed by a trailing '/'
     if not os.path.isdir(src_path):
@@ -54,8 +56,8 @@ def mirror_folder(targets, src_path, dst_path, repo_name):
 
     # compose rsync commands and execute
     cmds = []
-    for target in targets:
-        cmd = compose_rsync_cmd(src_path, dst_path, target)
+    for remote in remotes:
+        cmd = compose_rsync_cmd(src_path, dst_path, remote)
         cmds.append(cmd)
 
     for cmd in cmds:
@@ -72,26 +74,22 @@ if __name__ == "__main__":
         "--targets",
         type=str,
         required=True,
-        help="comma-separated remote machines hostnames",
-    )
-    parser.add_argument(
-        "-s", "--src_path", type=str, default="./", help="src folder path on local host"
-    )
-    parser.add_argument(
-        "-d",
-        "--dst_path",
-        type=str,
-        default=f"{BASE_PATH}/summerset-private",
-        help="dst folder absolute path on remote",
-    )
-    parser.add_argument(
-        "-r",
-        "--repo_name",
-        type=str,
-        default="summerset-private",
-        help="GitHub repo name",
+        help="comma-separated remote hosts' nicknames",
     )
     args = parser.parse_args()
 
+    hosts_config = utils.read_toml_file(TOML_FILENAME)
+    repo = hosts_config["repo_name"]
+    hosts = hosts_config["hosts"]
+
     targets = utils.parse_comma_separated(args.targets)
-    mirror_folder(targets, args.src_path, args.dst_path, args.repo_name)
+    remotes = []
+    for target in targets:
+        if target not in hosts:
+            raise ValueError(f"nickname '{target}' not found in toml file")
+        remotes.append(hosts[target])
+
+    SRC_PATH = "./"
+    DST_PATH = f"{BASE_PATH}/{repo}"
+
+    mirror_folder(remotes, SRC_PATH, DST_PATH, repo)

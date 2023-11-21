@@ -1,0 +1,6 @@
+repo_name = "summerset-private"
+
+[hosts]
+host0 = "josehu@c220g2-010608.wisc.cloudlab.us"
+host1 = "josehu@clnode035.clemson.cloudlab.us"
+host2 = "josehu@ms0905.utah.cloudlab.us"
