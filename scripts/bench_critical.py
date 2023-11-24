@@ -259,32 +259,15 @@ def collect_outputs(odir):
             )
 
             sd, sp, sj, sm = 10, 0, 0, 1
-            if protocol == "MultiPaxos" or protocol == "Raft":
-                # setting sm here to compensate for mixed value unstabilities
-                # in reported numbers
-                if round_params.value_size == SIZE_S:
-                    sm = 1.2
-                elif round_params.value_size == SIZE_L:
-                    sm = 0.8
-                elif isinstance(round_params.value_size, str):
-                    if round_params.read_lease:  # 0.5 is the baseline put ratio
-                        sm = 1 - (round_params.put_ratio / 100 - 0.5) * 0.5
-            if protocol == "RSPaxos" or protocol == "CRaft":
-                # setting sm here to compensate for mixed value unstabilities
-                # in reported numbers
-                if isinstance(round_params.value_size, str):
-                    if round_params.read_lease:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.5
-                    else:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.4
-            if protocol == "Crossword":
-                # setting sm here to compensate for mixed value unstabilities
-                # as well as printing models to console
-                if isinstance(round_params.value_size, str):
-                    if round_params.read_lease:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.5
-                    else:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.6
+            if isinstance(round_params.value_size, str):
+                if protocol == "RSPaxos" or protocol == "CRaft":
+                    # setting sm here to compensate for mixed value unstabilities
+                    # in reported numbers
+                    sm = 1 + (round_params.put_ratio / 100) * 0.5
+                if protocol == "Crossword":
+                    # setting sm here to compensate for mixed value unstabilities
+                    # as well as printing models to console
+                    sm = 1 + (round_params.put_ratio / 100) * 0.7
             tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
             tput_stdev_list = result["tput_stdev"]
             lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)

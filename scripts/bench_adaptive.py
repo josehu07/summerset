@@ -267,7 +267,7 @@ def collect_outputs(odir):
             # setting sd here which avoids the lines to completely overlap with
             # each other
             # setting sm here to compensate for printing models to console
-            sd, sm = 25, 1.12
+            sd, sm = 25, 1.1
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
