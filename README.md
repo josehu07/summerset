@@ -1,10 +1,12 @@
-This is a private mirror of [Summerset](https://github.com/josehu07/summerset). Below are a memo of development commands...
+This is a private mirror of [Summerset](https://github.com/josehu07/summerset).
 
 [![Format check](https://github.com/josehu07/summerset-private/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Aformat)
 [![Build status](https://github.com/josehu07/summerset-private/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Abuild)
 [![Unit tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_unit.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_unit)
 [![Proc tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_proc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+## Private-Public Sync Commands
 
 To create a branch to track public repo `main`, pull new things from it, and merge into the private `main`:
 
@@ -34,6 +36,39 @@ git pull private
 git push origin <PR_name>
 # then, on GitHub, make a squashing PR from <PR_name> branch to main
 ```
+
+## Commands Memo for AE
+
+For a shell command, `$` indicates running it on the local development machine, while `%` indicates running it on a CloudLab remote host.
+
+1. On you local dev machine, change into the repo's path
+    1. `cd path/to/summerset`
+1. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
+2. For each of the hosts (examples below are for `host0`), do the following setup work
+    1. SSH to it
+        1. `$ python3 scripts/remote_ssh_to.py -t host0`
+    2. Mount a proper storage device at `/mnt/eval/` (if no separate disk is available on the node, leaving the path under the default `/` mountpoint is fine, as long as the node is only involved in the `bench_physical` experiment)
+        1. `% sudo lsblk`
+        2. `% sudo mkfs.ext4 /dev/sdX`
+        3. `% sudo mkdir /mnt/eval`
+        4. `% sudo mount /dev/sdX /mnt/eval`
+        5. `% sudo chown -R $USER /mnt/eval`
+    3. Back to the local machine, sync the repo folder to the remote host
+        1. `$ python3 scripts/remote_mirror.py -t host0`
+    4. On `host0`, you will find the mirrored repo at `/mnt/eval/summerset`
+    5. Update Linux kernel version to v.6.5.7, the one used for evaluations presented in the paper
+        1. `% cd /mnt/eval/summerset`
+        2. `% ./scripts/install_kernel.sh`
+        3. `% sudo reboot`
+    6. After rebooting, double check the kernel version and re-mount if necessary
+        1. `% uname -a`
+        2. `% sudo mount /dev/sdX /mnt/eval`
+        3. `% cd /mnt/eval/summerset`
+    7. Install necessary dependencies
+        1. `% ./scripts/devtools.sh`
+    8. Set up virtual network devices (used only for the main experiments) and TCP buffer sizes (should be done on all hosts)
+        1. `% ./scripts/setup_net_devs.sh`
+        2. `% ./scripts/setup_tcp_bufs.sh`
 
 # Summerset
 

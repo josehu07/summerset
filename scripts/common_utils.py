@@ -304,3 +304,12 @@ def read_toml_file(filename):
     import toml  # type: ignore
 
     return toml.load(filename)
+
+
+def split_remote_string(remote):
+    if "@" not in remote:
+        raise ValueError(f"invalid remote string '{remote}'")
+    segs = remote.strip().split("@")
+    if len(segs) != 2 or len(segs[0]) == 0 or len(segs[1]) == 0:
+        raise ValueError(f"invalid remote string '{remote}'")
+    return segs[0], segs[1]

@@ -8,14 +8,10 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
 
 
-SERVER_LOOP_IP = "127.0.0.1"
-SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
 SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 SERVER_BIND_BASE_PORT = lambda r: 50000 + r * 100
 
-MANAGER_LOOP_IP = "127.0.0.1"
-MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_SRV_PORT = 52600
 MANAGER_CLI_PORT = 52601
 
@@ -44,7 +40,7 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
+def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0):
     cpu_list = None
     if cores_per_proc > 0:
         # pin servers from CPU 0 up
@@ -53,9 +49,7 @@ def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
-    return utils.run_process(
-        cmd, capture_stderr=capture_stderr, cpu_list=cpu_list, in_netns=in_netns
-    )
+    return utils.run_process(cmd, capture_stderr=capture_stderr, cpu_list=cpu_list)
 
 
 def config_with_defaults(

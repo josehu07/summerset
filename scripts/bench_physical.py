@@ -18,18 +18,9 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "unbalanced"
+EXPER_NAME = "physical"
 
-PROTOCOL_FT_ASSIGNS = [
-    ("MultiPaxos", 2, None),
-    ("RSPaxos", 2, None),
-    ("RSPaxos", 1, None),
-    ("Raft", 2, None),
-    ("CRaft", 2, None),
-    ("CRaft", 1, None),
-    ("Crossword", 2, "0:0,1,2,3,4/1:3,4,5,6,7/2:6,7,8,9,10/3:11,12,13/4:14"),
-    ("Crossword", 2, "3"),
-]
+PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
 
 SERVER_PIN_CORES = 4

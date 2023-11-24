@@ -2,7 +2,6 @@ import sys
 import os
 import argparse
 import time
-import statistics
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
