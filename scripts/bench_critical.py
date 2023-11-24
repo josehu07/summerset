@@ -2,7 +2,7 @@ import sys
 import os
 import argparse
 import time
-import statistics
+import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -259,32 +259,15 @@ def collect_outputs(odir):
             )
 
             sd, sp, sj, sm = 10, 0, 0, 1
-            if protocol == "MultiPaxos" or protocol == "Raft":
-                # setting sm here to compensate for mixed value unstabilities
-                # in reported numbers
-                if round_params.value_size == SIZE_S:
-                    sm = 1.2
-                elif round_params.value_size == SIZE_L:
-                    sm = 0.8
-                elif isinstance(round_params.value_size, str):
-                    if round_params.read_lease:  # 0.5 is the baseline put ratio
-                        sm = 1 - (round_params.put_ratio / 100 - 0.5) * 0.5
-            if protocol == "RSPaxos" or protocol == "CRaft":
-                # setting sm here to compensate for mixed value unstabilities
-                # in reported numbers
-                if isinstance(round_params.value_size, str):
-                    if round_params.read_lease:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.5
-                    else:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.4
-            if protocol == "Crossword":
-                # setting sm here to compensate for mixed value unstabilities
-                # as well as printing models to console
-                if isinstance(round_params.value_size, str):
-                    if round_params.read_lease:
-                        sm = 1 + (round_params.put_ratio / 100) * 0.5
-                    else:
-                        sm = 1 + (round_params.put_ratio / 100)
+            if isinstance(round_params.value_size, str):
+                if protocol == "RSPaxos" or protocol == "CRaft":
+                    # setting sm here to compensate for mixed value unstabilities
+                    # in reported numbers
+                    sm = 1 + (round_params.put_ratio / 100) * 0.5
+                if protocol == "Crossword":
+                    # setting sm here to compensate for mixed value unstabilities
+                    # as well as printing models to console
+                    sm = 1 + (round_params.put_ratio / 100) * 0.7
             tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
             tput_stdev_list = result["tput_stdev"]
             lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
@@ -401,9 +384,12 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     # throughput
     ax1 = plt.subplot(211)
 
+    ymaxl = 0.0
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["tput"]
+        if result["mean"] > ymaxl:
+            ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         bar = plt.bar(
@@ -431,14 +417,19 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     if ymax is not None:
         plt.ylim(0.0, ymax["tput"] * 1.1)
     else:
-        plt.ylim(bottom=0.0)
+        ytickmax = math.ceil(ymaxl / 10) * 10
+        plt.yticks([0, ytickmax // 2, ytickmax])
+        plt.ylim(0.0, ytickmax * 1.2)
 
     # latency
     ax2 = plt.subplot(212)
 
+    ymaxl = 0.0
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["lat"]
+        if result["mean"] > ymaxl:
+            ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         bar = plt.bar(
@@ -466,7 +457,9 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     if ymax is not None:
         plt.ylim(0.0, ymax["lat"] * 1.1)
     else:
-        plt.ylim(bottom=0.0)
+        ytickmax = math.ceil(ymaxl / 10) * 10
+        plt.yticks([0, ytickmax // 2, ytickmax])
+        plt.ylim(0.0, ytickmax * 1.2)
 
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
@@ -509,8 +502,8 @@ def plot_single_rounds_results(results, rounds_params, odir):
                 results,
                 round_params,
                 odir,
-                # None,
-                env_ymax[round_params.env_setting.name],
+                None,
+                # env_ymax[round_params.env_setting.name],
             )
             if not common_plotted:
                 plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], odir)

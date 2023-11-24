@@ -12,13 +12,13 @@ fi
 
 echo
 echo "Installing Rust toolchain..."
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 
 echo
 echo "Running sudo apt update & upgrade..."
-sudo apt update
-sudo apt --fix-broken install
+sudo apt -y update
+sudo apt -y --fix-broken install
 sudo apt -y upgrade
 
 
@@ -34,4 +34,5 @@ echo
 echo "Installing necessary pip packages..."
 pip3 install numpy
 pip3 install matplotlib
+pip3 install toml
 echo

@@ -17,7 +17,7 @@ sudo ubuntu-mainline-kernel.sh -c
 
 echo
 echo "Installing latest stable kernel..."
-sudo ubuntu-mainline-kernel.sh -i
+sudo ubuntu-mainline-kernel.sh -i "6.5.7"
 
 
 echo

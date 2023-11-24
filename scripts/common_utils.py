@@ -298,3 +298,9 @@ def list_capping(l1, l2, d, down=True):
         sl.append(sum(nums) / len(nums))
 
     return sl
+
+
+def read_toml_file(filename):
+    import toml  # type: ignore
+
+    return toml.load(filename)

@@ -267,7 +267,7 @@ def collect_outputs(odir):
             # setting sd here which avoids the lines to completely overlap with
             # each other
             # setting sm here to compensate for printing models to console
-            sd, sm = 25, 1.12
+            sd, sm = 25, 1.1
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
@@ -365,10 +365,12 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(SIZE_CHANGE_SECS - PLOT_SECS_BEGIN, "Data smaller", -12)
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN, "Bw drops", 2)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN, "Bw frees", 4)
-    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN, "2 nodes lag", 15)
+    draw_env_change_indicator(
+        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN - 2, "Data smaller", -7
+    )
+    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN - 2, "Bw drops", 8)
+    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN - 2, "Bw frees", 10)
+    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN - 2, "2 nodes lag", 20)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color):
@@ -385,7 +387,7 @@ def plot_results(results, odir):
     draw_config_indicator(62, 460, 1, 5, "red")
     draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
     draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
-    draw_config_indicator(17.5, 1630, 3, 3, "steelblue")
+    draw_config_indicator(16, 1630, 3, 3, "steelblue")
     draw_config_indicator(32.5, 1100, 1, 5, "steelblue")
     draw_config_indicator(62, 1350, 3, 3, "steelblue")
 
