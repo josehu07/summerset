@@ -5,8 +5,6 @@ import statistics
 import random
 import multiprocessing
 
-import toml  # type: ignore
-
 
 def parse_comma_separated(l):
     l = l.strip().split(",")
@@ -303,4 +301,6 @@ def list_capping(l1, l2, d, down=True):
 
 
 def read_toml_file(filename):
+    import toml  # type: ignore
+
     return toml.load(filename)
