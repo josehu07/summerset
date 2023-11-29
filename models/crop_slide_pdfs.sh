@@ -42,7 +42,8 @@ EXTRA_FILES=("models/cstr_bounds" "rs_coding/rs_coding"
              "critical/exper-critical-5.large.50.dc" "critical/exper-critical-5.large.50.wan"
              "critical/exper-critical-5.mixed.50.dc" "critical/exper-critical-5.mixed.50.wan"
              "critical/exper-critical-cluster_size" "critical/exper-critical-write_ratio"
-             "critical/legend-critical" "critical/legend-critical-minor")
+             "critical/legend-critical" "critical/legend-critical-minor"
+             "tidb/tidb_profile_cdf")
 for FILE_NAME in ${EXTRA_FILES[@]};
 do
     echo "    cropping results/final/${FILE_NAME}.pdf"
