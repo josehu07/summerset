@@ -9,7 +9,7 @@
 #    2. run: ./models/crop_slides_pdfs.sh
 
 ORIGINAL_PDF=results/slide-figures.pdf
-TAKE_PAGES=8
+TAKE_PAGES=9
 
 
 echo
@@ -62,7 +62,8 @@ rm "results/slide-figures.pdf:Zone.Identifier"
 echo
 echo "Renaming cropped slide pages..."
 TARGET_NAMES=("status_diagram" "log_in_action" "rs_codeword_space" "policy-multipaxos"
-              "policy-rspaxos" "policy-balanced_rr" "policy-unbalanced" "concurrent_failures")
+              "policy-rspaxos" "policy-balanced_rr_2" "policy-balanced_rr_3"
+              "policy-unbalanced" "concurrent_failures")
 for IDX in ${!TARGET_NAMES[@]};
 do
     OLD_NAME="slide-$((IDX+1)).pdf"

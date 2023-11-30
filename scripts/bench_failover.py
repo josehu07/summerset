@@ -35,11 +35,11 @@ NUM_CLIENTS = 16
 
 BATCH_INTERVAL = 1
 
-VALUE_SIZE = 128 * 1024
+VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 1
+NETEM_JITTER = lambda _: 0
 NETEM_RATE = lambda _: 1
 
 

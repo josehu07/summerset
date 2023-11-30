@@ -304,8 +304,8 @@ def plot_breakdown(bd_stats, ldir):
             if step in ("comp", "dur", "exec"):
                 range_xs[protocol].append(xnow)
 
-    plt.text(0.3, 4.2, "MultiPaxos", verticalalignment="center")
-    plt.text(0.3, 0.5, "Crossword", verticalalignment="center")
+    plt.text(0.3, 4.2, "MultiPaxos & Raft", verticalalignment="center")
+    plt.text(0.3, 0.5, "Crossword & others", verticalalignment="center")
 
     for i in range(3):
         plt.plot(
@@ -320,8 +320,8 @@ def plot_breakdown(bd_stats, ldir):
         )
 
     plt.text(
-        0.65,
-        2.4,
+        0.3,
+        2.5,
         "due to bw save",
         verticalalignment="center",
         color="dimgray",
@@ -329,7 +329,7 @@ def plot_breakdown(bd_stats, ldir):
     )
 
     plt.text(
-        xmax * 0.7,
+        xmax * 0.82,
         1,
         "due to\nmore replies\nto wait for",
         verticalalignment="center",
@@ -338,10 +338,10 @@ def plot_breakdown(bd_stats, ldir):
     )
     plt.plot(
         [
-            ((range_xs["MultiPaxos"][1] + range_xs["Crossword"][1]) / 2) * 1.1,
-            xmax * 0.72,
+            xmax * 0.8,
+            xmax * 0.84,
         ],
-        [2.12, 1.88],
+        [2.32, 1.88],
         color="dimgray",
         linestyle="-",
         linewidth=1,

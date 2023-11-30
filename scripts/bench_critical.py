@@ -330,7 +330,7 @@ def collect_outputs(odir):
                             / len(lat_stdev_list)
                         )
                         ** 0.5
-                        / 1000,
+                        / (1000 * NUM_CLIENTS / SERVER_PIN_CORES),
                     },
                 }
 
