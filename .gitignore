@@ -11,7 +11,6 @@
 /tla+/**/states/
 /tla+/**/*.out
 /tla+/**/*.old
-/tla+/**/*.tex
 
 /results/
 /backups/

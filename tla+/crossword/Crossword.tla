@@ -10,8 +10,7 @@
 EXTENDS FiniteSets, Integers, TLC
 
 CONSTANT
-    \* set of servers
-    Replicas,
+    Replicas, \* set of servers
     \* set of values
     Values,
     \* set of slots (instances); 1 should be enough
