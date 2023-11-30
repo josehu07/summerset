@@ -518,7 +518,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos", "pink", "//"),
+        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)
@@ -585,7 +585,7 @@ def plot_write_ratio_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos", "pink", "//"),
+        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)

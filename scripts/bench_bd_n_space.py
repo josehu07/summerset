@@ -224,13 +224,14 @@ def collect_space_usage(sdir):
     return space_usage
 
 
-def print_results(bd_stats, space_usage):
+def print_results(bd_stats, space_usage=None):
     for protocol, stats in bd_stats.items():
         print(protocol)
         for step, stat in stats.items():
             print(f"  {step} {stat[0]:5.2f} ±{stat[1]:5.2f} ms", end="")
         print()
-        print(f"  usage {space_usage[protocol]:7.2f} MB")
+        if space_usage is not None:
+            print(f"  usage {space_usage[protocol]:7.2f} MB")
 
 
 def plot_breakdown(bd_stats, ldir):
@@ -301,7 +302,7 @@ def plot_breakdown(bd_stats, ldir):
             if xnow > xmax:
                 xmax = xnow
 
-            if step in ("comp", "dur", "exec"):
+            if step in ("comp", "dur", "rep"):
                 range_xs[protocol].append(xnow)
 
     plt.text(0.3, 4.2, "MultiPaxos & Raft", verticalalignment="center")
@@ -338,10 +339,10 @@ def plot_breakdown(bd_stats, ldir):
     )
     plt.plot(
         [
-            xmax * 0.8,
-            xmax * 0.84,
+            xmax * 0.78,
+            xmax * 0.83,
         ],
-        [2.32, 1.88],
+        [2.42, 1.9],
         color="dimgray",
         linestyle="-",
         linewidth=1,
@@ -465,6 +466,7 @@ if __name__ == "__main__":
         bd_stats = collect_bd_stats(args.ldir)
         # space_usage = collect_space_usage(args.sdir)
         # print_results(bd_stats, space_usage)
+        print_results(bd_stats)
         handles, labels = plot_breakdown(bd_stats, args.ldir)
         plot_legend(handles, labels, args.ldir)
         # save_space_usage(space_usage, args.ldir)
