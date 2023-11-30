@@ -47,12 +47,12 @@ FORCE_LEADER = 0
 
 BATCH_INTERVAL = 1
 
-VALUE_SIZE = 256 * 1024
+VALUE_SIZE = 128 * 1024
 PUT_RATIO = 100
 
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 0
+NETEM_JITTER = lambda _: 1
 NETEM_RATE = lambda r: 2 if r < 3 else 1 if r < 4 else 0.2
 
 RS_TOTAL_SHARDS = 15

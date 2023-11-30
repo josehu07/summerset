@@ -12,6 +12,7 @@ BASE_PATH = "/mnt/eval"
 
 EXCLUDE_NAMES = [
     "results/",
+    "backups/",
     "target/",
     ".git/",
     ".vscode/",
