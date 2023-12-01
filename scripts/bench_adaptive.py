@@ -384,7 +384,7 @@ def plot_results(results, odir):
             fontsize=11,
         )
 
-    draw_config_indicator(62, 460, 1, 5, "red")
+    draw_config_indicator(62, 460, 1, 4, "red")
     draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
     draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
     draw_config_indicator(16, 1630, 3, 3, "steelblue")

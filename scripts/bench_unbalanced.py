@@ -295,7 +295,7 @@ def plot_results(results, odir):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xticks([3.5, 8.3], ["f=2", "f=1"])
+    plt.xticks([3.5, 8.5], ["f=2", "f=1"])
     plt.tick_params(bottom=False)
 
     plt.ylabel("Throughput (reqs/s)")
