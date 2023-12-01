@@ -60,7 +60,7 @@ def plot_len_cnts(len_cnts):
     plt.hist(
         x,
         bins=3000,
-        range=(0, xright),
+        range=(0, xright * 1.05),
         density=True,
         cumulative=True,
         histtype="step",
@@ -72,7 +72,7 @@ def plot_len_cnts(len_cnts):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xlim(xmin, xright * 1.03)
+    plt.xlim(xmin, xright)
     plt.xticks(
         [4096, 32 * 1024, 64 * 1024, 96 * 1024, xright],
         ["4KB", "32KB", "64KB", "96KB", "290KB"],
@@ -106,15 +106,15 @@ def plot_len_cnts(len_cnts):
     )
     plt.text(7000, 0.2, "44% are ≥ 4KB", color="dimgray")
 
-    arrow = patches.FancyArrowPatch(
-        (96 * 1024, 0.45),
-        (xright, 0.25),
-        connectionstyle="arc3,rad=.12",
-        arrowstyle="Simple, tail_width=0.1, head_width=2.5, head_length=4",
-        color="dimgray",
-    )
-    ax.add_patch(arrow)
-    plt.text(89000, 0.55, "max 290KB", color="dimgray")
+    # arrow = patches.FancyArrowPatch(
+    #     (96 * 1024, 0.45),
+    #     (xright, 0.25),
+    #     connectionstyle="arc3,rad=.12",
+    #     arrowstyle="Simple, tail_width=0.1, head_width=2.5, head_length=4",
+    #     color="dimgray",
+    # )
+    # ax.add_patch(arrow)
+    # plt.text(89000, 0.55, "max 290KB", color="dimgray")
 
     xs = [108 * 1024, 108 * 1024, 115 * 1024, 115 * 1024]
     ys = [-0.1, 0.1, 0.1, -0.1]
