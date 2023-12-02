@@ -70,6 +70,12 @@ For a shell command, `$` indicates running it on the local development machine, 
         1. `% ./scripts/setup_tcp_bufs.sh`
     9. (`host0` only) Set up network namespaces and virtual devices
         1. `% ./scripts/setup_net_devs.sh`
+    10. (`host0` only) Generate an internal key-pair use by `host0` to ssh to other hosts
+        1. `% ssh-keygen -t rsa`
+        2. `% cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys`
+        3. Append the generated `id_rsa.pub` to other hosts `authorized_keys` as well
+    12. Build Summerset in release mode:
+        1. `% cargo build -r --workspace`
 
 # Summerset
 

@@ -9,7 +9,7 @@ import common_utils as utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-IPERF_PORT = 7777
+IPERF_PORT = 37777
 IPERF_SECS = 6
 
 PING_SECS = 5

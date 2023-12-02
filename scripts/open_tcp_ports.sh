@@ -14,7 +14,7 @@ sudo iptables -D INPUT -p tcp --match multiport --dports "52800:$((52800+${NUM_S
 sudo iptables -D INPUT -p tcp --match multiport --dports "50000:$((50000+100*${NUM_SERVERS}-1))" -j ACCEPT
 sudo iptables -D INPUT -p tcp --match multiport --dports "52600:52601" -j ACCEPT
 sudo iptables -D INPUT -p tcp --match multiport --dports "40000:$((40000+100*${NUM_CLIENTS}-1))" -j ACCEPT
-sudo iptables -D INPUT -p tcp --dport "7777" -j ACCEPT
+sudo iptables -D INPUT -p tcp --dport "37777" -j ACCEPT
 
 
 
@@ -33,7 +33,7 @@ sudo iptables -A INPUT -p tcp --match multiport --dports "40000:$((40000+100*${N
 
 echo
 echo "Allowing required iperf port..."
-sudo iptables -A INPUT -p tcp --dport "7777" -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport "37777" -j ACCEPT
 
 
 echo
