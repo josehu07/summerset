@@ -11,11 +11,6 @@ fi
 
 
 echo
-echo "Installing Rust toolchain..."
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-
-echo
 echo "Running sudo apt update & upgrade..."
 sudo apt -y update
 sudo apt -y --fix-broken install
@@ -29,6 +24,12 @@ sudo apt -y install tree
 sudo apt -y install cloc
 sudo apt -y install python3-pip
 sudo apt -y install iperf3
+
+
+echo
+echo "Installing Rust toolchain..."
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
 
 
 echo

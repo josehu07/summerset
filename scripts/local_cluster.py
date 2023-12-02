@@ -335,6 +335,8 @@ if __name__ == "__main__":
         for proc in server_procs:
             proc.wait()
         manager_proc.terminate()
+        # utils.kill_all_matching("summerset_server")
+        # utils.kill_all_matching("summerset_manager")
 
     signal.signal(signal.SIGINT, kill_spawned_procs)
     signal.signal(signal.SIGTERM, kill_spawned_procs)

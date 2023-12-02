@@ -67,7 +67,7 @@ def do_cargo_build(release):
 def kill_all_matching(name):
     print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = f"killall -9 {name} > /dev/null 2>&1"
+    cmd = f"sudo killall -9 {name} > /dev/null 2>&1"
     os.system(cmd)
 
 
