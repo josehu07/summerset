@@ -35,7 +35,7 @@ echo
 echo "Cropping extra files..."
 EXTRA_FILES=("models/cstr_bounds" "rs_coding/rs_coding"
              "adaptive/exper-adaptive" "adaptive/legend-adaptive"
-             "bd_n_space/exper-bd_n_space" "bd_n_space/legend-bd_n_space"
+             "breakdown/exper-breakdown" "breakdown/legend-breakdown"
              "failover/exper-failover" "failover/legend-failover"
              "unbalanced/exper-unbalanced" "unbalanced/legend-unbalanced"
              "critical/exper-critical-5.small.50.dc" "critical/exper-critical-5.small.50.wan"

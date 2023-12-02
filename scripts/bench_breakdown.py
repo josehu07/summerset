@@ -18,7 +18,7 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "bd_n_space"
+EXPER_NAME = "breakdown"
 
 PROTOCOLS = ["MultiPaxos", "Crossword"]
 

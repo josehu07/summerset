@@ -110,15 +110,45 @@ def run_process(
     return proc
 
 
-def run_process_over_ssh(remote, cmd, print_cmd=True, cpu_list=None):
+def run_process_over_ssh(
+    remote,
+    cmd,
+    cd_dir=None,
+    capture_stdout=False,
+    capture_stderr=False,
+    print_cmd=True,
+    cpu_list=None,
+):
+    stdout, stderr = None, None
+    if capture_stdout:
+        stdout = subprocess.PIPE
+    if capture_stderr:
+        stderr = subprocess.PIPE
+
     if cpu_list is not None and "-" in cpu_list:
         cmd = ["sudo", "taskset", "-c", cpu_list] + cmd
 
     if print_cmd:
         print(f"Run on {remote}: {' '.join(cmd)}")
 
-    cmd = ["ssh", remote] + cmd
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # ugly hack to solve the quote parsing issue
+    config_seg = False
+    for i, seg in enumerate(cmd):
+        if seg.startswith("--"):
+            if seg.strip() == "--config":
+                config_seg = True
+            else:
+                config_seg = False
+        elif config_seg:
+            new_seg = "\\'".join(seg.split("'"))
+            cmd[i] = new_seg
+
+    if cd_dir is None or len(cd_dir) == 0:
+        cmd = ["ssh", remote] + cmd
+    else:
+        cmd = ["ssh", remote, f"cd {cd_dir}; {' '.join(cmd)}"]
+
+    proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc
 
 
@@ -325,3 +355,29 @@ def split_remote_string(remote):
     if len(segs) != 2 or len(segs[0]) == 0 or len(segs[1]) == 0:
         raise ValueError(f"invalid remote string '{remote}'")
     return segs[0], segs[1]
+
+
+def check_remote_is_me(remote):
+    proc_l = run_process(["hostname"], capture_stdout=True, print_cmd=False)
+    out_l, _ = proc_l.communicate()
+    hostname_l = out_l.decode().strip()
+
+    proc_r = run_process_over_ssh(
+        remote, ["hostname"], capture_stdout=True, print_cmd=False
+    )
+    out_r, _ = proc_r.communicate()
+    hostname_r = out_r.decode().strip()
+
+    if hostname_l != hostname_r:
+        raise RuntimeError(f"remote {remote} is not me")
+
+
+def lookup_dns_to_ip(domain):
+    proc = run_process(["dig", "+short", domain], capture_stdout=True, print_cmd=False)
+    out, _ = proc.communicate()
+    out = out.decode().strip()
+    if len(out) == 0:
+        raise RuntimeError(f"dns lookup for {domain} failed")
+    ip = out.split("\n")[0]
+    assert ip.count(".") == 3
+    return ip

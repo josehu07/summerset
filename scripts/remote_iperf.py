@@ -37,7 +37,9 @@ def iperf_test(remotes, domains, na, nb):
         "-O",
         f"{1}",
     ]
-    proc_c = utils.run_process_over_ssh(remotes[na], iperf_c_cmd)
+    proc_c = utils.run_process_over_ssh(
+        remotes[na], iperf_c_cmd, capture_stdout=True, capture_stderr=True
+    )
     out, err = proc_c.communicate()
 
     utils.run_process_over_ssh(remotes[nb], kill_cmd).wait()
@@ -51,7 +53,9 @@ def iperf_test(remotes, domains, na, nb):
 
 def ping_test(remotes, domains, na, nb):
     ping_cmd = ["ping", domains[nb], "-w", f"{PING_SECS}"]
-    proc_p = utils.run_process_over_ssh(remotes[na], ping_cmd)
+    proc_p = utils.run_process_over_ssh(
+        remotes[na], ping_cmd, capture_stdout=True, capture_stderr=True
+    )
     out, err = proc_p.communicate()
 
     print(f"\nResult of ping {na} -> {nb}:")
@@ -65,10 +69,10 @@ if __name__ == "__main__":
 
     hosts_config = utils.read_toml_file(TOML_FILENAME)
     remotes = hosts_config["hosts"]
+    hosts = sorted(list(remotes.keys()))
     domains = {
         name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
     }
-    hosts = sorted(list(remotes.keys()))
 
     for ia in range(len(hosts)):
         for ib in range(ia + 1, len(hosts)):
