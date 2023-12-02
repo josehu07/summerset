@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/setup_tcp_ports.sh
+# Usage: sudo scripts/open_tcp_ports.sh
 
 
 echo

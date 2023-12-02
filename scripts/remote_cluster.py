@@ -268,9 +268,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
-    parser.add_argument(
-        "--use_veth", action="store_true", help="if set, use netns and veth setting"
-    )
     args = parser.parse_args()
 
     # kill all existing server and manager processes

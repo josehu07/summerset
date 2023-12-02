@@ -110,6 +110,18 @@ def run_process(
     return proc
 
 
+def run_process_over_ssh(remote, cmd, print_cmd=True, cpu_list=None):
+    if cpu_list is not None and "-" in cpu_list:
+        cmd = ["sudo", "taskset", "-c", cpu_list] + cmd
+
+    if print_cmd:
+        print(f"Run on {remote}: {' '.join(cmd)}")
+
+    cmd = ["ssh", remote] + cmd
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return proc
+
+
 def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto"):
     QLEN_LIMIT = 500000000
     delay_args = f"delay {mean}ms" if mean > 0 else ""

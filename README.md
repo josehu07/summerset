@@ -66,9 +66,14 @@ For a shell command, `$` indicates running it on the local development machine, 
         3. `% cd /mnt/eval/summerset`
     7. Install necessary dependencies
         1. `% ./scripts/devtools.sh`
-    8. Set up virtual network devices (used only for the main experiments) and TCP buffer sizes (should be done on all hosts)
+    8. Set up TCP buffer sizes
         1. `% ./scripts/setup_net_devs.sh`
-        2. `% ./scripts/setup_tcp_bufs.sh`
+    9. (`host0` only) Set up virtual network devices
+        1. `% ./scripts/setup_tcp_bufs.sh`
+    10. (`host0` only) Generate an internal key-pair use by `host0` to ssh to other hosts
+        1. `% ssh-keygen -t rsa`
+        2. `% cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys`
+    11. Append the generated `id_rsa.pub` to other hosts `authorized_keys` as well
 
 # Summerset
 
