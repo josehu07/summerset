@@ -1,1 +1,6 @@
-Crossword.cfg
+*
+!ConsensusMulti.cfg
+!ConsensusMulti.tla
+!Crossword_MC.cfg
+!Crossword_MC.tla
+!Crossword.tla

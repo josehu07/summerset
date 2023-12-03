@@ -1,6 +1,8 @@
 //! Benchmarking client using open-loop driver.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 use crate::drivers::{DriverReply, DriverOpenLoop};
 
@@ -62,6 +64,10 @@ pub struct ModeParamsBench {
     /// Percentage of put requests.
     pub put_ratio: u8,
 
+    /// Path to cleaned YCSB trace file.
+    /// Having a valid path here overwrites the `put_ratio` setting.
+    pub ycsb_trace: String,
+
     /// String in one of the following formats:
     ///   - a single number: fixed value size in bytes
     ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
@@ -88,6 +94,7 @@ impl Default for ModeParamsBench {
             freq_target: 0,
             length_s: 30,
             put_ratio: 50,
+            ycsb_trace: "".into(),
             value_size: "1024".into(),
             normal_stdev_ratio: 0.0,
             unif_interval_ms: 0,
@@ -103,6 +110,12 @@ pub struct ClientBench {
 
     /// Mode parameters struct.
     params: ModeParamsBench,
+
+    /// Trace of (op, key) pairs to (repeatedly) replay.
+    trace_vec: Option<Vec<(bool, String)>>,
+
+    /// Trace operation index to play next.
+    trace_idx: usize,
 
     /// Random number generator.
     rng: ThreadRng,
@@ -158,7 +171,8 @@ impl ClientBench {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
-                                    freq_target, length_s, put_ratio,
+                                    freq_target, length_s,
+                                    put_ratio, ycsb_trace,
                                     value_size, normal_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
@@ -187,6 +201,12 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
                                     params.unif_upper_bound);
         }
+
+        let trace_vec = if !params.ycsb_trace.is_empty() {
+            Some(Self::load_trace_file(&params.ycsb_trace)?)
+        } else {
+            None
+        };
 
         let value_size =
             Self::parse_value_sizes(params.length_s, &params.value_size)?;
@@ -218,6 +238,8 @@ impl ClientBench {
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
+            trace_vec,
+            trace_idx: 0,
             rng: rand::thread_rng(),
             value_size,
             normal_dist,
@@ -234,6 +256,40 @@ impl ClientBench {
             ticker: time::interval(Duration::MAX),
             curr_freq: 0,
         })
+    }
+
+    /// Loads in given input trace file. Expects it to be a cleaned YCSB trace.
+    fn load_trace_file(
+        path: &str,
+    ) -> Result<Vec<(bool, String)>, SummersetError> {
+        let file = File::open(path)?;
+        let mut trace_vec = vec![];
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if !(line.is_empty()) {
+                let mut seg_idx = 0;
+                let mut read = false;
+                for seg in line.split(' ') {
+                    if seg.is_empty() {
+                        continue;
+                    }
+                    if seg_idx == 0 {
+                        read = if seg == "READ" {
+                            true
+                        } else if seg == "UPDATE" {
+                            false
+                        } else {
+                            return logged_err!("c"; "unrecognized trace op '{}'", seg);
+                        }
+                    } else if seg_idx == 1 {
+                        trace_vec.push((read, seg.into()));
+                        break;
+                    }
+                    seg_idx += 1;
+                }
+            }
+        }
+        Ok(trace_vec)
     }
 
     /// Parses values sizes over time parameter into a rangemap of
@@ -347,6 +403,30 @@ impl ClientBench {
         }
     }
 
+    /// Issues a request following the trace vec.
+    fn issue_trace_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
+        debug_assert!(self.trace_vec.is_some());
+        let (read, key) = self
+            .trace_vec
+            .as_ref()
+            .unwrap()
+            .get(self.trace_idx)
+            .unwrap()
+            .clone();
+        // update trace_idx, rounding back to 0 if reaching end
+        self.trace_idx += 1;
+        if self.trace_idx == self.trace_vec.as_ref().unwrap().len() {
+            self.trace_idx = 0;
+        }
+        if read {
+            self.driver.issue_get(&key)
+        } else {
+            // query the value to use for current timestamp
+            let val = self.gen_value_at_now()?;
+            self.driver.issue_put(&key, val)
+        }
+    }
+
     /// Leaves and reconnects to the service in case the previous server fails.
     async fn leave_reconnect(&mut self) -> Result<(), SummersetError> {
         pf_debug!(self.driver.id; "leave and reconnecting...");
@@ -360,6 +440,8 @@ impl ClientBench {
         // send next request
         let req_id = if self.retrying {
             self.driver.issue_retry()?
+        } else if self.trace_vec.is_some() {
+            self.issue_trace_cmd()?
         } else {
             self.issue_rand_cmd()?
         };
@@ -423,6 +505,8 @@ impl ClientBench {
             _ = self.ticker.tick(), if self.slowdown == 0 => {
                 let req_id = if self.retrying {
                     self.driver.issue_retry()?
+                } else if self.trace_vec.is_some() {
+                    self.issue_trace_cmd()?
                 } else {
                     self.issue_rand_cmd()?
                 };

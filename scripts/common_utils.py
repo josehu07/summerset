@@ -67,13 +67,19 @@ def do_cargo_build(release):
 def kill_all_matching(name):
     print("Kill all:", name)
     assert name.count(" ") == 0
-    cmd = f"killall -9 {name} > /dev/null 2>&1"
+    cmd = f"sudo killall -9 {name} > /dev/null 2>&1"
     os.system(cmd)
 
 
 def kill_all_local_procs():
     # print("Killing all local procs...")
     cmd = "sudo ./scripts/kill_local_procs.sh"
+    os.system(cmd)
+
+
+def kill_all_chain_procs():
+    # print("Killing all chain procs...")
+    cmd = "sudo ./scripts/kill_chain_procs.sh"
     os.system(cmd)
 
 
@@ -84,6 +90,7 @@ def clear_fs_cache():
 
 def run_process(
     cmd,
+    cd_dir=None,
     capture_stdout=False,
     capture_stderr=False,
     print_cmd=True,
@@ -105,6 +112,48 @@ def run_process(
 
     if print_cmd:
         print("Run:", " ".join(cmd))
+
+    proc = subprocess.Popen(cmd, cwd=cd_dir, stdout=stdout, stderr=stderr)
+    return proc
+
+
+def run_process_over_ssh(
+    remote,
+    cmd,
+    cd_dir=None,
+    capture_stdout=False,
+    capture_stderr=False,
+    print_cmd=True,
+    cpu_list=None,
+):
+    stdout, stderr = None, None
+    if capture_stdout:
+        stdout = subprocess.PIPE
+    if capture_stderr:
+        stderr = subprocess.PIPE
+
+    if cpu_list is not None and "-" in cpu_list:
+        cmd = ["sudo", "taskset", "-c", cpu_list] + cmd
+
+    if print_cmd:
+        print(f"Run on {remote}: {' '.join(cmd)}")
+
+    # ugly hack to solve the quote parsing issue
+    config_seg = False
+    for i, seg in enumerate(cmd):
+        if seg.startswith("--"):
+            if seg.strip() == "--config":
+                config_seg = True
+            else:
+                config_seg = False
+        elif config_seg:
+            new_seg = "\\'".join(seg.split("'"))
+            cmd[i] = new_seg
+
+    if cd_dir is None or len(cd_dir) == 0:
+        cmd = ["ssh", remote] + cmd
+    else:
+        cmd = ["ssh", remote, f"cd {cd_dir}; {' '.join(cmd)}"]
 
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc
@@ -220,6 +269,48 @@ def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap)
     return result
 
 
+def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te):
+    tputs, tput_stdevs, lats, lat_stdevs = [], [], [], []
+    with open(f"{path_prefix}/{protocol_with_midfix}.out", "r") as fout:
+        for line in fout:
+            if "current ops/sec" in line:
+                tput = float(
+                    line[line.find("operations; ") + 12 : line.find("current ops/sec")]
+                )
+                tput_stdev = 0.0
+
+                line = line[line.find("[UPDATE:") :]
+                lat = float(line[line.find("Avg=") + 4 : line.find(", 90=")]) / 1000.0
+                lat_90p = (
+                    float(line[line.find("90=") + 3 : line.find(", 99=")]) / 1000.0
+                )
+                lat_stdev = (lat_90p - lat) / 4
+
+                tputs.append(tput)
+                tput_stdevs.append(tput_stdev)
+                lats.append(lat)
+                lat_stdevs.append(lat_stdev)
+
+    if len(tputs) <= tb + te:
+        raise ValueError(f"YCSB log too short to exclude tb {tb} te {te}")
+    tputs = tputs[tb:-te]
+    tput_stdevs = tput_stdevs[tb:-te]
+    lats = lats[tb:-te]
+    lat_stdevs = lat_stdevs[tb:-te]
+
+    return {
+        "tput": {
+            "mean": sum(tputs) / len(tputs),
+            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs))
+            ** 0.5,
+        },
+        "lat": {
+            "mean": sum(lats) / len(lats),
+            "stdev": (sum(map(lambda s: s**2, lat_stdevs)) / len(lat_stdevs)) ** 0.5,
+        },
+    }
+
+
 def list_smoothing(l, d, p, j, m):
     assert d > 0
 
@@ -304,3 +395,38 @@ def read_toml_file(filename):
     import toml  # type: ignore
 
     return toml.load(filename)
+
+
+def split_remote_string(remote):
+    if "@" not in remote:
+        raise ValueError(f"invalid remote string '{remote}'")
+    segs = remote.strip().split("@")
+    if len(segs) != 2 or len(segs[0]) == 0 or len(segs[1]) == 0:
+        raise ValueError(f"invalid remote string '{remote}'")
+    return segs[0], segs[1]
+
+
+def check_remote_is_me(remote):
+    proc_l = run_process(["hostname"], capture_stdout=True, print_cmd=False)
+    out_l, _ = proc_l.communicate()
+    hostname_l = out_l.decode().strip()
+
+    proc_r = run_process_over_ssh(
+        remote, ["hostname"], capture_stdout=True, print_cmd=False
+    )
+    out_r, _ = proc_r.communicate()
+    hostname_r = out_r.decode().strip()
+
+    if hostname_l != hostname_r:
+        raise RuntimeError(f"remote {remote} is not me")
+
+
+def lookup_dns_to_ip(domain):
+    proc = run_process(["dig", "+short", domain], capture_stdout=True, print_cmd=False)
+    out, _ = proc.communicate()
+    out = out.decode().strip()
+    if len(out) == 0:
+        raise RuntimeError(f"dns lookup for {domain} failed")
+    ip = out.split("\n")[0]
+    assert ip.count(".") == 3
+    return ip

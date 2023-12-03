@@ -45,7 +45,7 @@ LENGTH_SECS = 75
 
 SIZE_CHANGE_SECS = 15
 
-VALUE_SIZES = [(0, 128 * 1024), (SIZE_CHANGE_SECS, 16 * 1024)]
+VALUE_SIZES = [(0, 256 * 1024), (SIZE_CHANGE_SECS, 4096)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
 ENV_CHANGE1_SECS = 30
@@ -275,8 +275,8 @@ def collect_outputs(odir):
             "tput": tput_list,
         }
 
-    # do capping for other protocols; somehow performance might go suspiciously
-    # high or low when we change the netem params during runtime?
+    # do capping for other protocols to remove weird spikes/dips introduced by
+    # changing netem parameters at runtime
     def result_cap(pa, pb, down):
         results[pa]["tput"] = utils.list_capping(
             results[pa]["tput"], results[pb]["tput"], 5, down=down
@@ -384,7 +384,7 @@ def plot_results(results, odir):
             fontsize=11,
         )
 
-    draw_config_indicator(62, 460, 1, 5, "red")
+    draw_config_indicator(62, 460, 1, 4, "red")
     draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
     draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
     draw_config_indicator(16, 1630, 3, 3, "steelblue")

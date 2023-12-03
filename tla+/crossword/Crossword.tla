@@ -10,20 +10,13 @@
 EXTENDS FiniteSets, Integers, TLC
 
 CONSTANT
-    \* set of servers
-    Replicas,
-    \* set of values
-    Values,
-    \* set of slots (instances); 1 should be enough
-    Slots,
-    \* set of ballot numbers
-    Ballots,
-    \* set of numbers representing shards (columns)
-    Shards,
-    \* number of data shards needed to reconstruct
-    NumDataShards,
-    \* fault-tolerance level
-    MaxFaults
+    Replicas,       \* set of servers
+    Values,         \* set of values
+    Slots,          \* set of slots (instances); 1 should be enough
+    Ballots,        \* set of ballot numbers
+    Shards,         \* set of numbers representing shards (columns)
+    NumDataShards,  \* number of data shards needed to reconstruct
+    MaxFaults       \* fault-tolerance level
 
 MajorityNum == (Cardinality(Replicas) \div 2) + 1
 
@@ -44,13 +37,11 @@ BallotsAssumption == /\ IsFiniteSet(Ballots)
 ShardsAssumption == /\ IsFiniteSet(Shards)
                     /\ Shards # {}
 
-NumDataShardsAssumption ==
-    /\ NumDataShards > 0
-    /\ NumDataShards =< Cardinality(Shards)
+NumDataShardsAssumption == /\ NumDataShards > 0
+                           /\ NumDataShards =< Cardinality(Shards)
 
-MaxFaultsAssumption ==
-    /\ MaxFaults >= 0
-    /\ MaxFaults =< (Cardinality(Replicas) - MajorityNum)
+MaxFaultsAssumption == /\ MaxFaults >= 0
+                       /\ MaxFaults =< (Cardinality(Replicas) - MajorityNum)
 
 ASSUME /\ ReplicasAssumption
        /\ ValuesAssumption
@@ -63,38 +54,35 @@ ASSUME /\ ReplicasAssumption
 (*--algorithm Crossword
 variable msgs = {},
          lBallot = [r \in Replicas |-> -1],
-         lStatus = [r \in Replicas |->
-                        [s \in Slots |-> ""]],
+         lStatus = [r \in Replicas |-> [s \in Slots |-> ""]],
          rBallot = [r \in Replicas |-> -1],
-         rVoted  = [r \in Replicas |->
-                        [s \in Slots |->
-                            [bal |-> -1, val |-> 0,
-                             shards |-> {}]]],
+         rVoted  = [r \in Replicas |-> [s \in Slots |-> [bal |-> -1,
+                                                         val |-> 0,
+                                                         shards |-> {}]]],
          proposed = [s \in Slots |-> {}],
          learned = [s \in Slots |-> {}];
 
 define
-    \* Is g a large enough subset of u under MaxFaults?
+  \* Is g a large enough subset of u under MaxFaults?
     BigEnoughUnderFaults(g, u) ==
         Cardinality(g) >= (Cardinality(u) - MaxFaults)
 
-    \* Set of subsets of u that we consider under MaxFaults.
+  \* Set of subsets of u that we consider under MaxFaults.
     SubsetsUnderFaults(u) ==
         {g \in SUBSET u: BigEnoughUnderFaults(g, u)}
     
-    \* Is cs a coverage set (i.e., a set of sets of shards)
-    \* from which we can reconstruct the original data?
+  \* Is cs a coverage set (i.e., a set of sets of shards) from which we can
+  \* reconstruct the original data?
     IsGoodCoverageSet(cs) ==
         Cardinality(UNION cs) >= NumDataShards
 
-    \* Set of all valid shard assignments.
+  \* Set of all valid shard assignments.
     ValidAssignments ==
         {assign \in [Replicas -> SUBSET Shards]:
             \A group \in SubsetsUnderFaults(Replicas):
                 IsGoodCoverageSet({assign[r]: r \in group})}
 
-    \* Is v a safely prepared value given the prepare reply
-    \* pattern and ballot?
+  \* Is v a safely prepared value given the prepare reply pattern and ballot?
     ValuePreparedIn(v, prPat, pBal) ==
         \/ /\ Cardinality(prPat) >= MajorityNum
            /\ \A pr \in prPat: pr.vBal = -1
@@ -103,24 +91,21 @@ define
                 /\ \A pr \in prPat: pr.vBal =< c
                 /\ \E pr \in prPat: pr.vBal = c /\ pr.vVal = v
                 /\ IsGoodCoverageSet(
-                    {pr.vShards: pr \in
-                        {prr \in prPat: prr.vVal = v}})
+                     {pr.vShards: pr \in {prr \in prPat: prr.vVal = v}})
         \/ /\ BigEnoughUnderFaults(prPat, Replicas)
            /\ ~\E vv \in Values:
                 IsGoodCoverageSet(
-                    {pr.vShards: pr \in
-                        {prr \in prPat: prr.vVal = vv}})
+                  {pr.vShards: pr \in {prr \in prPat: prr.vVal = vv}})
 
-    \* Does the given accept reply pattern decide a value to
-    \* be chosen?
+  \* Does the given accept reply pattern decide a value to be chosen?
     PatternDecidesChosen(arPat) ==
         /\ Cardinality(arPat) >= MajorityNum
         /\ \A group \in SubsetsUnderFaults(arPat):
-                IsGoodCoverageSet({ar.aShards: ar \in group})
+             IsGoodCoverageSet({ar.aShards: ar \in group})
 end define;
 
-\* Send message helpers.
 macro Send(m) begin
+\* Send message helpers.
     msgs := msgs \cup {m};
 end macro;
 
@@ -128,15 +113,13 @@ macro SendAll(ms) begin
     msgs := msgs \cup ms;
 end macro;
 
-\* Leader sends Prepare message to replicas.
-\* This is the first message a leader makes after election.
-\* Think of this as a Prepare message that covers infinitely
-\* many slots up to infinity.
 macro Prepare(r) begin
+\* Leader sends Prepare message to replicas.
+\* This is the first message a leader makes after election. Think of this as a
+\* Prepare message that covers infinitely many slots up to infinity.
     with b \in Ballots do
         await /\ b > lBallot[r]
-              /\ ~\E m \in msgs:
-                    (m.type = "Prepare") /\ (m.bal = b);
+              /\ ~\E m \in msgs: (m.type = "Prepare") /\ (m.bal = b);
                  \* using this clause to model that ballot
                  \* nums from different proposers be unique
         Send([type |-> "Prepare",
@@ -144,16 +127,15 @@ macro Prepare(r) begin
               bal |-> b]);
         lBallot[r] := b;
         lStatus[r] := [s \in Slots |->
-                            IF lStatus[r][s] = "Learned"
-                                THEN "Learned"
-                                ELSE "Preparing"];
+                         IF lStatus[r][s] = "Learned"
+                           THEN "Learned"
+                           ELSE "Preparing"];
     end with;
 end macro;
 
-\* Replica replies to a Prepare message.
-\* Replicas reply with known value shards for necessary
-\* recovery reconstruction.
 macro PrepareReply(r) begin
+\* Replica replies to a Prepare message.
+\* Replicas reply with known shards for necessary recovery reconstruction.
     with m \in msgs do
         await (m.type = "Prepare") /\ (m.bal > rBallot[r]);
         Send([type |-> "PrepareReply",
@@ -164,21 +146,19 @@ macro PrepareReply(r) begin
     end with;
 end macro;
 
-\* Leader sends Accept message to replicas for a slot.
-\* Shards are assigned according to some assignment policy,
-\* from a set where all reasonable assignments considered.
 macro Accept(r, s) begin
+\* Leader sends Accept message to replicas for a slot.
+\* Shards are assigned according to some assignment policy, from a set where
+\* all reasonable assignments are considered.
     await lStatus[r][s] = "Preparing";
     with v \in Values do
         await \E MS \in SUBSET {
-                m \in msgs:
-                    /\ m.type = "PrepareReply"
-                    /\ m.bal = lBallot[r]}:
+                m \in msgs: /\ m.type = "PrepareReply"
+                            /\ m.bal = lBallot[r]}:
                 LET prPat == {[replica |-> m.from,
                                vBal |-> m.voted[s].bal,
                                vVal |-> m.voted[s].val,
-                               vShards |-> m.voted[s].shards]:
-                              m \in MS}
+                               vShards |-> m.voted[s].shards]: m \in MS}
                 IN  ValuePreparedIn(v, prPat, lBallot[r]);
         with assign \in ValidAssignments do
             SendAll({[type |-> "Accept",
@@ -187,19 +167,17 @@ macro Accept(r, s) begin
                       slot |-> s,
                       bal |-> lBallot[r],
                       val |-> v,
-                      shards |-> assign[rt]]:
-                     rt \in Replicas});
+                      shards |-> assign[rt]]: rt \in Replicas});
         end with;
         lStatus[r][s] := "Accepting";
         proposed[s] := proposed[s] \cup {v};
     end with;
 end macro;
 
-\* Replica replies to an Accept message.
-\* Such a reply will not carry actual value data in practice;
-\* just the shards assignment metadata is enough for the
-\* leader to gather Acceptance Patterns.
 macro AcceptReply(r) begin
+\* Replica replies to an Accept message.
+\* Such a reply will not carry actual value data in practice; just the shards
+\* assignment metadata is enough for the leader to gather Acceptance Patterns.
     with m \in msgs do
         await /\ (m.type = "Accept")
               /\ (m.to = r)
@@ -211,21 +189,21 @@ macro AcceptReply(r) begin
               val |-> m.val,
               shards |-> m.shards]);
         rBallot[r] := m.bal;
-        rVoted[r][m.slot] := [bal |-> m.bal, val |-> m.val,
+        rVoted[r][m.slot] := [bal |-> m.bal,
+                              val |-> m.val,
                               shards |-> m.shards];
     end with;
 end macro;
 
-\* Leader learns a chosen value at a slot.
 macro Learn(r, s) begin
+\* Leader learns a chosen value at a slot.
     await lStatus[r][s] = "Accepting";
     with v \in Values do
         await \E MS \in SUBSET {
-            m \in msgs:
-                /\ m.type = "AcceptReply"
-                /\ m.slot = s
-                /\ m.bal = lBallot[r]
-                /\ m.val = v}:
+            m \in msgs: /\ m.type = "AcceptReply"
+                        /\ m.slot = s
+                        /\ m.bal = lBallot[r]
+                        /\ m.val = v}:
             LET arPat == {[replica |-> m.from,
                            aShards |-> m.shards]: m \in MS}
             IN  PatternDecidesChosen(arPat);
@@ -261,7 +239,7 @@ begin
 end process;
 end algorithm; *)
 
-\* BEGIN TRANSLATION (chksum(pcal) = "50e87803" /\ chksum(tla) = "228525c6")
+\* BEGIN TRANSLATION (chksum(pcal) = "5ca7da7d" /\ chksum(tla) = "8b7bd479")
 VARIABLES msgs, lBallot, lStatus, rBallot, rVoted, proposed, learned
 
 (* define statement *)
@@ -284,7 +262,6 @@ ValidAssignments ==
             IsGoodCoverageSet({assign[r]: r \in group})}
 
 
-
 ValuePreparedIn(v, prPat, pBal) ==
     \/ /\ Cardinality(prPat) >= MajorityNum
        /\ \A pr \in prPat: pr.vBal = -1
@@ -293,20 +270,17 @@ ValuePreparedIn(v, prPat, pBal) ==
             /\ \A pr \in prPat: pr.vBal =< c
             /\ \E pr \in prPat: pr.vBal = c /\ pr.vVal = v
             /\ IsGoodCoverageSet(
-                {pr.vShards: pr \in
-                    {prr \in prPat: prr.vVal = v}})
+                 {pr.vShards: pr \in {prr \in prPat: prr.vVal = v}})
     \/ /\ BigEnoughUnderFaults(prPat, Replicas)
        /\ ~\E vv \in Values:
             IsGoodCoverageSet(
-                {pr.vShards: pr \in
-                    {prr \in prPat: prr.vVal = vv}})
-
+              {pr.vShards: pr \in {prr \in prPat: prr.vVal = vv}})
 
 
 PatternDecidesChosen(arPat) ==
     /\ Cardinality(arPat) >= MajorityNum
     /\ \A group \in SubsetsUnderFaults(arPat):
-            IsGoodCoverageSet({ar.aShards: ar \in group})
+         IsGoodCoverageSet({ar.aShards: ar \in group})
 
 
 vars == << msgs, lBallot, lStatus, rBallot, rVoted, proposed, learned >>
@@ -316,28 +290,25 @@ ProcSet == (Replicas)
 Init == (* Global variables *)
         /\ msgs = {}
         /\ lBallot = [r \in Replicas |-> -1]
-        /\ lStatus = [r \in Replicas |->
-                          [s \in Slots |-> ""]]
+        /\ lStatus = [r \in Replicas |-> [s \in Slots |-> ""]]
         /\ rBallot = [r \in Replicas |-> -1]
-        /\ rVoted = [r \in Replicas |->
-                         [s \in Slots |->
-                             [bal |-> -1, val |-> 0,
-                              shards |-> {}]]]
+        /\ rVoted = [r \in Replicas |-> [s \in Slots |-> [bal |-> -1,
+                                                          val |-> 0,
+                                                          shards |-> {}]]]
         /\ proposed = [s \in Slots |-> {}]
         /\ learned = [s \in Slots |-> {}]
 
 Replica(self) == \/ /\ \E b \in Ballots:
                          /\ /\ b > lBallot[self]
-                            /\ ~\E m \in msgs:
-                                  (m.type = "Prepare") /\ (m.bal = b)
+                            /\ ~\E m \in msgs: (m.type = "Prepare") /\ (m.bal = b)
                          /\ msgs' = (msgs \cup {([type |-> "Prepare",
                                                   from |-> self,
                                                   bal |-> b])})
                          /\ lBallot' = [lBallot EXCEPT ![self] = b]
                          /\ lStatus' = [lStatus EXCEPT ![self] = [s \in Slots |->
-                                                                       IF lStatus[self][s] = "Learned"
-                                                                           THEN "Learned"
-                                                                           ELSE "Preparing"]]
+                                                                    IF lStatus[self][s] = "Learned"
+                                                                      THEN "Learned"
+                                                                      ELSE "Preparing"]]
                     /\ UNCHANGED <<rBallot, rVoted, proposed, learned>>
                  \/ /\ \E m \in msgs:
                          /\ (m.type = "Prepare") /\ (m.bal > rBallot[self])
@@ -351,14 +322,12 @@ Replica(self) == \/ /\ \E b \in Ballots:
                          /\ lStatus[self][s] = "Preparing"
                          /\ \E v \in Values:
                               /\ \E MS \in SUBSET {
-                                   m \in msgs:
-                                       /\ m.type = "PrepareReply"
-                                       /\ m.bal = lBallot[self]}:
+                                   m \in msgs: /\ m.type = "PrepareReply"
+                                               /\ m.bal = lBallot[self]}:
                                    LET prPat == {[replica |-> m.from,
                                                   vBal |-> m.voted[s].bal,
                                                   vVal |-> m.voted[s].val,
-                                                  vShards |-> m.voted[s].shards]:
-                                                 m \in MS}
+                                                  vShards |-> m.voted[s].shards]: m \in MS}
                                    IN  ValuePreparedIn(v, prPat, lBallot[self])
                               /\ \E assign \in ValidAssignments:
                                    msgs' = (msgs \cup ({[type |-> "Accept",
@@ -367,8 +336,7 @@ Replica(self) == \/ /\ \E b \in Ballots:
                                                          slot |-> s,
                                                          bal |-> lBallot[self],
                                                          val |-> v,
-                                                         shards |-> assign[rt]]:
-                                                        rt \in Replicas}))
+                                                         shards |-> assign[rt]]: rt \in Replicas}))
                               /\ lStatus' = [lStatus EXCEPT ![self][s] = "Accepting"]
                               /\ proposed' = [proposed EXCEPT ![s] = proposed[s] \cup {v}]
                     /\ UNCHANGED <<lBallot, rBallot, rVoted, learned>>
@@ -383,18 +351,18 @@ Replica(self) == \/ /\ \E b \in Ballots:
                                                   val |-> m.val,
                                                   shards |-> m.shards])})
                          /\ rBallot' = [rBallot EXCEPT ![self] = m.bal]
-                         /\ rVoted' = [rVoted EXCEPT ![self][m.slot] = [bal |-> m.bal, val |-> m.val,
+                         /\ rVoted' = [rVoted EXCEPT ![self][m.slot] = [bal |-> m.bal,
+                                                                        val |-> m.val,
                                                                         shards |-> m.shards]]
                     /\ UNCHANGED <<lBallot, lStatus, proposed, learned>>
                  \/ /\ \E s \in Slots:
                          /\ lStatus[self][s] = "Accepting"
                          /\ \E v \in Values:
                               /\   \E MS \in SUBSET {
-                                 m \in msgs:
-                                     /\ m.type = "AcceptReply"
-                                     /\ m.slot = s
-                                     /\ m.bal = lBallot[self]
-                                     /\ m.val = v}:
+                                 m \in msgs: /\ m.type = "AcceptReply"
+                                             /\ m.slot = s
+                                             /\ m.bal = lBallot[self]
+                                             /\ m.val = v}:
                                  LET arPat == {[replica |-> m.from,
                                                 aShards |-> m.shards]: m \in MS}
                                  IN  PatternDecidesChosen(arPat)

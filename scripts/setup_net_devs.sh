@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/setup_net_devs.sh
+# Usage: ./scripts/setup_net_devs.sh
 
 MAX_SERVERS=9
 MAX_CLIENTS=21
@@ -110,4 +110,3 @@ do
     echo "Listing devices in namespace ns$s:"
     sudo ip netns exec ns$s ip link show
 done
-echo

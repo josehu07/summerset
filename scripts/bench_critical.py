@@ -64,7 +64,7 @@ class RoundParams:
         env_setting,
         paxos_only,
         tags,
-        read_lease=False,
+        read_lease=True,
     ):
         self.num_replicas = num_replicas
 
@@ -89,7 +89,7 @@ ENV_DC  = EnvSetting("dc",  lambda r: 1, lambda r : r if r < 3 else 12, lambda _
 ENV_WAN = EnvSetting("wan", lambda r: 5, lambda r : r if r < 3 else 3,  lambda _: 0.5)
 
 SIZE_S = 100
-SIZE_L = 512 * 1024
+SIZE_L = 256 * 1024
 SIZE_MIXED = [
     (0, SIZE_L),
     (LENGTH_SECS // 6, SIZE_S),
@@ -106,14 +106,12 @@ ROUNDS_PARAMS = [
     RoundParams(5,   SIZE_MIXED,   50,    ENV_DC,    False, ["single"]),
     RoundParams(5,   SIZE_S,       50,    ENV_WAN,   False, ["single"]),
     RoundParams(5,   SIZE_L,       50,    ENV_WAN,   False, ["single"]),
-    RoundParams(5,   SIZE_MIXED,   50,    ENV_WAN,   False, ["single", "cluster-5"]),
+    RoundParams(5,   SIZE_MIXED,   50,    ENV_WAN,   False, ["single", "cluster-5", "ratio-50"]),
     RoundParams(3,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-3"]),
     RoundParams(7,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-7"]),
     RoundParams(9,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-9"]),
-    RoundParams(5,   SIZE_MIXED,   10,    ENV_WAN,   True,  ["ratio-10"],  read_lease=True),
-    # RoundParams(5,   SIZE_MIXED,   25,    ENV_WAN,   True,  ["ratio-25"],  read_lease=True),
-    RoundParams(5,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["ratio-50"],  read_lease=True),
-    RoundParams(5,   SIZE_MIXED,   100,   ENV_WAN,   True,  ["ratio-100"], read_lease=True),
+    RoundParams(5,   SIZE_MIXED,   10,    ENV_WAN,   True,  ["ratio-10"]),
+    RoundParams(5,   SIZE_MIXED,   100,   ENV_WAN,   True,  ["ratio-100"]),
 ]
 # fmt: on
 
@@ -287,8 +285,6 @@ def collect_outputs(odir):
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
 
-        # do capping for Raft protocols; somehow performance might go sharply
-        # high or low because of the implicit batching of AppendEntries
         def result_cap(pa, pb, down):
             if f"{pa}{midfix_str}" in results and f"{pb}{midfix_str}" in results:
                 for metric in ("tput", "lat"):
@@ -300,20 +296,14 @@ def collect_outputs(odir):
                             down=down if metric == "tput" else not down,
                         )
 
-        result_cap("CRaft", "RSPaxos", down=False)
-        result_cap("CRaft", "RSPaxos", down=True)
-        result_cap("Raft", "MultiPaxos", down=False)
-        result_cap("Raft", "MultiPaxos", down=True)
-
-        # do capping for Crossword as well to get smoother results for the
-        # mixed sizes rounds
-        result_cap("Crossword", "MultiPaxos", down=False)
-        result_cap("Crossword", "RSPaxos", down=False)
-        if round_params.env_setting.name == "dc" and round_params.value_size == SIZE_S:
-            # small value in dc setting might show unexpectedly good performance
-            # for Crossword (mostly due to normal distribution sampled a very large
-            # value)
-            result_cap("Crossword", "MultiPaxos", down=True)
+        # list capping to remove unexpected performance spikes/dips due to
+        # normal distribution sampling a very small/large value
+        result_cap("CRaft", "RSPaxos", False)
+        result_cap("CRaft", "RSPaxos", True)
+        result_cap("Raft", "MultiPaxos", False)
+        result_cap("Raft", "MultiPaxos", True)
+        result_cap("Crossword", "MultiPaxos", False)
+        result_cap("Crossword", "RSPaxos", False)
 
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
@@ -340,7 +330,7 @@ def collect_outputs(odir):
                             / len(lat_stdev_list)
                         )
                         ** 0.5
-                        / 1000,
+                        / (1000 * NUM_CLIENTS / SERVER_PIN_CORES),
                     },
                 }
 
@@ -595,7 +585,7 @@ def plot_write_ratio_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos", "pink", "//"),
+        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)

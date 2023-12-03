@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/install_kernel.sh
+# Usage: ./scripts/install_kernel.sh
 
 
 echo
@@ -16,8 +16,8 @@ sudo ubuntu-mainline-kernel.sh -c
 
 
 echo
-echo "Installing latest stable kernel..."
-sudo ubuntu-mainline-kernel.sh -i "6.5.7"
+echo "Installing longterm kernel v6.1.64..."
+sudo ubuntu-mainline-kernel.sh -i "6.1.64"
 
 
 echo

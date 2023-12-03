@@ -1,5 +1,8 @@
 #! /bin/bash
 
+# Usage: ./scripts/kill_local_procs.sh
+
+
 kill_all_matching () {
     for pid in $(pgrep -f $1)
     do
@@ -7,8 +10,10 @@ kill_all_matching () {
     done
 }
 
+
 kill_all_matching summerset_server
 kill_all_matching summerset_client
 kill_all_matching summerset_manager
+
 kill_all_matching local_cluster.py
 kill_all_matching local_client.py

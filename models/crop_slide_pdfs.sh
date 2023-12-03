@@ -9,7 +9,7 @@
 #    2. run: ./models/crop_slides_pdfs.sh
 
 ORIGINAL_PDF=results/slide-figures.pdf
-TAKE_PAGES=8
+TAKE_PAGES=9
 
 
 echo
@@ -35,14 +35,16 @@ echo
 echo "Cropping extra files..."
 EXTRA_FILES=("models/cstr_bounds" "rs_coding/rs_coding"
              "adaptive/exper-adaptive" "adaptive/legend-adaptive"
-             "bd_n_space/exper-bd_n_space" "bd_n_space/legend-bd_n_space"
+             "breakdown/exper-breakdown" "breakdown/legend-breakdown"
              "failover/exper-failover" "failover/legend-failover"
              "unbalanced/exper-unbalanced" "unbalanced/legend-unbalanced"
              "critical/exper-critical-5.small.50.dc" "critical/exper-critical-5.small.50.wan"
              "critical/exper-critical-5.large.50.dc" "critical/exper-critical-5.large.50.wan"
              "critical/exper-critical-5.mixed.50.dc" "critical/exper-critical-5.mixed.50.wan"
              "critical/exper-critical-cluster_size" "critical/exper-critical-write_ratio"
-             "critical/legend-critical" "critical/legend-critical-minor")
+             "critical/legend-critical" "critical/legend-critical-minor"
+             "ycsb_3sites/exper-ycsb_3sites" "ycsb_3sites/legend-ycsb_3sites"
+             "tidb/tidb_profile_cdf")
 for FILE_NAME in ${EXTRA_FILES[@]};
 do
     echo "    cropping results/final/${FILE_NAME}.pdf"
@@ -61,7 +63,8 @@ rm "results/slide-figures.pdf:Zone.Identifier"
 echo
 echo "Renaming cropped slide pages..."
 TARGET_NAMES=("status_diagram" "log_in_action" "rs_codeword_space" "policy-multipaxos"
-              "policy-rspaxos" "policy-balanced_rr" "policy-unbalanced" "concurrent_failures")
+              "policy-rspaxos" "policy-balanced_rr_2" "policy-balanced_rr_3"
+              "policy-unbalanced" "concurrent_failures")
 for IDX in ${!TARGET_NAMES[@]};
 do
     OLD_NAME="slide-$((IDX+1)).pdf"
