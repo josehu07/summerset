@@ -77,6 +77,12 @@ def kill_all_local_procs():
     os.system(cmd)
 
 
+def kill_all_chain_procs():
+    # print("Killing all chain procs...")
+    cmd = "sudo ./scripts/kill_chain_procs.sh"
+    os.system(cmd)
+
+
 def clear_fs_cache():
     cmd = 'sudo bash -c "echo 3 > /proc/sys/vm/drop_caches"'
     os.system(cmd)
@@ -84,6 +90,7 @@ def clear_fs_cache():
 
 def run_process(
     cmd,
+    cd_dir=None,
     capture_stdout=False,
     capture_stderr=False,
     print_cmd=True,
@@ -106,7 +113,7 @@ def run_process(
     if print_cmd:
         print("Run:", " ".join(cmd))
 
-    proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+    proc = subprocess.Popen(cmd, cwd=cd_dir, stdout=stdout, stderr=stderr)
     return proc
 
 
@@ -260,6 +267,51 @@ def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap)
         t += tgap
 
     return result
+
+
+def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te):
+    tputs, tput_stdevs, lats, lat_stdevs = [], [], [], []
+    with open(f"{path_prefix}/{protocol_with_midfix}.out", "r") as fout:
+        for line in fout:
+            if "current ops/sec" in line:
+                tput = float(
+                    line[line.find("operations; ") + 12 : line.find("current ops/sec")]
+                )
+                tput_stdev = 0.0
+
+                line = line[line.find("[UPDATE:") :]
+                lat = float(line[line.find("Avg=") + 4 : line.find(", 90=")]) / 1000.0
+                lat_min = (
+                    float(line[line.find("Min=") + 4 : line.find(", Avg=")]) / 1000.0
+                )
+                lat_99p = (
+                    float(line[line.find("99=") + 3 : line.find(", 99.9=")]) / 1000.0
+                )
+                lat_stdev = (lat_99p - lat_min) / 4
+
+                tputs.append(tput)
+                tput_stdevs.append(tput_stdev)
+                lats.append(lat)
+                lat_stdevs.append(lat_stdev)
+
+    if len(tputs) <= tb + te:
+        raise ValueError(f"YCSB log too short to exclude tb {tb} te {te}")
+    tputs = tputs[tb:-te]
+    tput_stdevs = tput_stdevs[tb:-te]
+    lats = lats[tb:-te]
+    lat_stdevs = lat_stdevs[tb:-te]
+
+    return {
+        "tput": {
+            "mean": sum(tputs) / len(tputs),
+            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs))
+            ** 0.5,
+        },
+        "lat": {
+            "mean": sum(lats) / len(lats),
+            "stdev": (sum(map(lambda s: s**2, lat_stdevs)) / len(lat_stdevs)) ** 0.5,
+        },
+    }
 
 
 def list_smoothing(l, d, p, j, m):

@@ -4,3 +4,8 @@ repo_name = "summerset-private"
 host0 = "josehu@c220g2-011302.wisc.cloudlab.us"
 host1 = "josehu@clnode030.clemson.cloudlab.us"
 host2 = "josehu@ms1037.utah.cloudlab.us"
+
+[intfs] # only for the ChainPaxos codebase experiments
+host0 = "enp1s0f0"
+host1 = "eno1"
+host2 = "eno1"

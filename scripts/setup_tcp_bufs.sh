@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/setup_tcp_bufs.sh
+# Usage: ./scripts/setup_tcp_bufs.sh
 
 
 echo

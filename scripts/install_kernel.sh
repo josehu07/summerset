@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/install_kernel.sh
+# Usage: ./scripts/install_kernel.sh
 
 
 echo

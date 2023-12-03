@@ -18,69 +18,78 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "physical"
+EXPER_NAME = "ycsb_3sites"
 
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+MAIN_HOST_NICKNAME = "host0"
+
+YCSB_DIR = f"{BASE_PATH}/ycsb"
+YCSB_TRACE = "/tmp/ycsb_workloada.txt"
+
+SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
 
 
 SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
-
-NUM_REPLICAS = 5
+NUM_REPLICAS = 3
 NUM_CLIENTS = 16
-
-FORCE_LEADER = 0
 
 
 BATCH_INTERVAL = 1
 
 VALUE_SIZE = 256 * 1024
-PUT_RATIO = 100
+PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
 
 
-NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 0
-NETEM_RATE = lambda r: 2 if r < 3 else 1 if r < 4 else 0.2
-
-RS_TOTAL_SHARDS = 15
-RS_DATA_SHARDS = 9
-
-
-LENGTH_SECS = 20
+LENGTH_SECS = 60
 
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 18
+RESULT_SECS_END = 58
 
 
-def round_midfix_str(fault_tolerance, init_assignment):
-    return (
-        f".{fault_tolerance}."
-        + f"{'b' if init_assignment is None or len(init_assignment) == 1 else 'u'}"
+def gen_ycsb_a_trace():
+    cmd = [
+        f"{YCSB_DIR}/bin/ycsb.sh",
+        "run",
+        "basic",
+        "-P",
+        f"{YCSB_DIR}/workloads/workloada",
+    ]
+    proc = utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
+    out, _ = proc.communicate()
+    raw = out.decode()
+
+    # clean the trace
+    with open(YCSB_TRACE, "w+") as fout:
+        for line in raw.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("READ ") or line.startswith("UPDATE "):
+                segs = line.split()
+                op = segs[0]
+                key = segs[2]
+                fout.write(f"{op} {key}\n")
 
 
-def launch_cluster(protocol, midfix_str, config=None):
+def launch_cluster_summerset(protocol, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/remote_cluster.py",
         "-p",
         protocol,
         "-n",
         str(NUM_REPLICAS),
         "-r",
-        "--force_leader",
-        str(FORCE_LEADER),
+        "--me",
+        MAIN_HOST_NICKNAME,
+        "--base_dir",
+        BASE_PATH,
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
-        "--file_midfix",
-        midfix_str,
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
     ]
     if config is not None and len(config) > 0:
         cmd += ["-c", config]
@@ -89,7 +98,7 @@ def launch_cluster(protocol, midfix_str, config=None):
     )
 
 
-def wait_cluster_setup(proc, fserr=None):
+def wait_cluster_setup_summerset(proc, fserr=None):
     # print("Waiting for cluster setup...")
     accepting_clients = [False for _ in range(NUM_REPLICAS)]
 
@@ -107,20 +116,25 @@ def wait_cluster_setup(proc, fserr=None):
             assert not accepting_clients[replica]
             accepting_clients[replica] = True
 
-        if accepting_clients.count(True) == NUM_REPLICAS:
+        if accepting_clients.count(True) == 1:
+            # early breaking here: do not reply on SSH-piped output
             break
 
+    # take extra 10 seconds for the other peers to become ready
+    time.sleep(10)
 
-def run_bench_clients(protocol, midfix_str):
+
+def run_bench_clients_summerset(protocol):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/remote_clients.py",
         "-p",
         protocol,
         "-r",
+        "--me",
+        MAIN_HOST_NICKNAME,
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--use_veth",
         "--base_idx",
         str(0),
         "bench",
@@ -130,55 +144,147 @@ def run_bench_clients(protocol, midfix_str):
         str(0),  # closed-loop
         "-v",
         str(VALUE_SIZE),
-        "-w",
-        str(PUT_RATIO),
+        # "-w",
+        # str(PUT_RATIO),
+        "-y",
+        YCSB_TRACE,
         "-l",
         str(LENGTH_SECS),
         "--normal_stdev_ratio",
         str(0.1),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-        "--file_midfix",
-        midfix_str,
     ]
     return utils.run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
 
 
-def bench_round(protocol, fault_tolerance, init_assignment):
-    midfix_str = round_midfix_str(fault_tolerance, init_assignment)
-    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
+def bench_round_summerset(protocol):
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
     utils.kill_all_local_procs()
-    time.sleep(1)
+    time.sleep(5)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
+    config += f"+sim_read_lease=true"
     if protocol == "RSPaxos" or protocol == "CRaft":
-        config += f"+fault_tolerance={fault_tolerance}"
-    elif protocol == "Crossword":
-        config += f"+rs_total_shards={RS_TOTAL_SHARDS}"
-        config += f"+rs_data_shards={RS_DATA_SHARDS}"
-        config += f"+init_assignment='{init_assignment}'"
+        config += f"+fault_tolerance=1"
+    if protocol == "Crossword":
+        config += f"+init_assignment='1'"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(protocol, midfix_str, config=config)
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
-        wait_cluster_setup(proc_cluster, fserr=fserr)
+    proc_cluster = launch_cluster_summerset(protocol, config=config)
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
+        wait_cluster_setup_summerset(proc_cluster, fserr=fserr)
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol, midfix_str)
+    proc_clients = run_bench_clients_summerset(protocol)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
+    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
     proc_cluster.terminate()
     utils.kill_all_local_procs()
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+        fserr.write(serr)
+
+    if proc_clients.returncode != 0:
+        print("    Experiment FAILED!")
+        sys.exit(1)
+    else:
+        print("    Done!")
+
+
+def launch_cluster_chain(protocol):
+    cmd = [
+        "python3",
+        "./scripts/remote_chainapp.py",
+        "-p",
+        protocol,
+        "-n",
+        str(NUM_REPLICAS),
+        "--me",
+        MAIN_HOST_NICKNAME,
+        "--base_dir",
+        BASE_PATH,
+        "--file_prefix",
+        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        "--pin_cores",
+        str(SERVER_PIN_CORES),
+    ]
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
+
+
+def wait_cluster_setup_chain(proc, fserr=None):
+    # print("Waiting for cluster setup...")
+    # NOTE: using `proc.stdout` here as the ChainPaxos app prints logs to stdout
+    for line in iter(proc.stdout.readline, b""):
+        if fserr is not None:
+            fserr.write(line)
+        l = line.decode()
+        # print(l, end="", file=sys.stderr)
+
+        if "I am leader now!" in l:
+            break
+
+    # take extra 10 seconds for the other peers to become ready
+    time.sleep(10)
+
+
+def run_bench_clients_chain(protocol):
+    cmd = [
+        "python3",
+        "./scripts/remote_chaincli.py",
+        "-p",
+        protocol,
+        "--pin_cores",
+        str(CLIENT_PIN_CORES),
+        "-n",
+        str(NUM_CLIENTS),
+        "-v",
+        str(VALUE_SIZE),
+        "-w",
+        str(PUT_RATIO),
+        "-l",
+        str(LENGTH_SECS),
+        "--file_prefix",
+        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+    ]
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
+
+
+def bench_round_chain(protocol):
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
+    utils.kill_all_chain_procs()
+    time.sleep(5)
+
+    # launch service cluster
+    proc_cluster = launch_cluster_chain(protocol)
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
+        wait_cluster_setup_chain(proc_cluster, fserr=fserr)
+
+    # start benchmarking clients
+    proc_clients = run_bench_clients_chain(protocol)
+
+    # wait for benchmarking clients to exit
+    _, cerr = proc_clients.communicate()
+    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
+        fcerr.write(cerr)
+
+    # terminate the cluster
+    proc_cluster.terminate()
+    utils.kill_all_chain_procs()
+    _, serr = proc_cluster.communicate()
+    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -190,10 +296,10 @@ def bench_round(protocol, fault_tolerance, init_assignment):
 
 def collect_outputs(odir):
     results = dict()
-    for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
-        midfix_str = round_midfix_str(fault_tolerance, init_assignment)
+
+    for protocol in SUMMERSET_PROTOCOLS:
         result = utils.gather_outputs(
-            f"{protocol}{midfix_str}",
+            protocol,
             NUM_CLIENTS,
             odir,
             RESULT_SECS_BEGIN,
@@ -201,25 +307,94 @@ def collect_outputs(odir):
             0.1,
         )
 
-        sd, sp, sj, sm = 20, 0, 0, 1
+        sd, sp, sj, sm = 10, 0, 0, 1
+        if protocol == "RSPaxos" or protocol == "CRaft":
+            # setting sm here to compensate for mixed value unstabilities
+            # in reported numbers
+            sm = 1 + (PUT_RATIO / 100) * 0.5
+        if protocol == "Crossword":
+            # setting sm here to compensate for mixed value unstabilities
+            # as well as printing models to console
+            sm = 1 + (PUT_RATIO / 100) * 0.7
         tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
+        lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
+        lat_stdev_list = result["lat_stdev"]
 
-        results[f"{protocol}{midfix_str}"] = {
-            "mean": sum(tput_mean_list) / len(tput_mean_list),
-            "stdev": (
-                sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
-            )
-            ** 0.5,
+        results[protocol] = {
+            "tput": {
+                "mean": tput_mean_list,
+                "stdev": tput_stdev_list,
+            },
+            "lat": {
+                "mean": lat_mean_list,
+                "stdev": lat_stdev_list,
+            },
         }
+
+    # do capping for other protocols to remove weird spikes/dips introduced
+    # by the TCP stack
+    def result_cap(pa, pb, down):
+        for metric in ("tput", "lat"):
+            for stat in ("mean", "stdev"):
+                results[f"{pa}"][metric][stat] = utils.list_capping(
+                    results[f"{pa}"][metric][stat],
+                    results[f"{pb}"][metric][stat],
+                    5,
+                    down=down if metric == "tput" else not down,
+                )
+
+    result_cap("CRaft", "RSPaxos", False)
+    result_cap("CRaft", "RSPaxos", True)
+    result_cap("MultiPaxos", "Raft", False)
+    result_cap("MultiPaxos", "Raft", True)
+
+    for protocol in SUMMERSET_PROTOCOLS:
+        if protocol in results:
+            tput_mean_list = results[protocol]["tput"]["mean"]
+            tput_stdev_list = results[protocol]["tput"]["stdev"]
+            lat_mean_list = results[protocol]["lat"]["mean"]
+            lat_stdev_list = results[protocol]["lat"]["stdev"]
+
+            results[protocol] = {
+                "tput": {
+                    "mean": sum(tput_mean_list) / len(tput_mean_list),
+                    "stdev": (
+                        sum(map(lambda s: s**2, tput_stdev_list))
+                        / len(tput_stdev_list)
+                    )
+                    ** 0.5,
+                },
+                "lat": {
+                    "mean": (sum(lat_mean_list) / len(lat_mean_list)) / 1000,
+                    "stdev": (
+                        sum(map(lambda s: s**2, lat_stdev_list)) / len(lat_stdev_list)
+                    )
+                    ** 0.5
+                    / (1000 * NUM_CLIENTS / SERVER_PIN_CORES),
+                },
+            }
+
+    for protocol in CHAIN_PROTOCOLS:
+        results[protocol] = utils.parse_ycsb_log(
+            protocol,
+            odir,
+            1,
+            1,
+        )
+        results[protocol]["tput"]["stdev"] /= NUM_CLIENTS / SERVER_PIN_CORES
+        results[protocol]["lat"]["stdev"] /= NUM_CLIENTS / SERVER_PIN_CORES
 
     return results
 
 
 def print_results(results):
-    for protocol_with_midfix, result in results.items():
-        print(protocol_with_midfix)
-        print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
+    for protocol, result in results.items():
+        print(protocol)
+        print(
+            f"  tput  mean {result['tput']['mean']:7.2f}  stdev {result['tput']['stdev']:7.2f}"
+            + f"  lat  mean {result['lat']['mean']:7.2f}  stdev {result['lat']['stdev']:7.2f}"
+        )
 
 
 def plot_results(results, odir):
@@ -339,6 +514,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
+        "-t", "--trace", action="store_true", help="if set, do YCSB trace generation"
+    )
+    parser.add_argument(
         "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     parser.add_argument(
@@ -350,37 +528,26 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if not args.plot:
+    if args.trace:
+        print("Generating YCSB-A trace for Summerset...")
+        if os.path.isfile(YCSB_TRACE):
+            print(f"  {YCSB_TRACE} already there, skipped")
+        else:
+            gen_ycsb_a_trace()
+            print(f"  Done: {YCSB_TRACE}")
+
+    elif not args.plot:
         utils.check_enough_cpus()
 
         runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
 
-        utils.do_cargo_build(release=True)
-
-        print("Setting tc netem qdiscs...")
-        utils.clear_fs_cache()
-        utils.set_all_tc_qdisc_netems(
-            NUM_REPLICAS,
-            SERVER_NETNS,
-            SERVER_DEV,
-            SERVER_IFB,
-            NETEM_MEAN,
-            NETEM_JITTER,
-            NETEM_RATE,
-            involve_ifb=True,
-        )
-
         print("Running experiments...")
-        for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
-            bench_round(protocol, fault_tolerance, init_assignment)
-
-        print("Clearing tc netem qdiscs...")
-        utils.kill_all_local_procs()
-        utils.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
-        )
+        for protocol in SUMMERSET_PROTOCOLS:
+            bench_round_summerset(protocol)
+        for protocol in CHAIN_PROTOCOLS:
+            bench_round_chain(protocol)
 
         state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
         utils.remove_files_in_dir(state_path)

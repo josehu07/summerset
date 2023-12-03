@@ -289,6 +289,10 @@ if __name__ == "__main__":
         print("ERROR: #replicas > 9 not supported yet (as some ports are hardcoded)")
         sys.exit(1)
 
+    # check protocol name
+    if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
+        print(f"ERROR: unrecognized protocol name '{args.protocol}'")
+
     # check that the prefix folder path exists, or create it if not
     if not os.path.isdir(args.file_prefix):
         os.system(f"mkdir -p {args.file_prefix}")

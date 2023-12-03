@@ -298,12 +298,12 @@ def collect_outputs(odir):
 
         # list capping to remove unexpected performance spikes/dips due to
         # normal distribution sampling a very small/large value
-        result_cap("CRaft", "RSPaxos", down=False)
-        result_cap("CRaft", "RSPaxos", down=True)
-        result_cap("Raft", "MultiPaxos", down=False)
-        result_cap("Raft", "MultiPaxos", down=True)
-        result_cap("Crossword", "MultiPaxos", down=False)
-        result_cap("Crossword", "RSPaxos", down=False)
+        result_cap("CRaft", "RSPaxos", False)
+        result_cap("CRaft", "RSPaxos", True)
+        result_cap("Raft", "MultiPaxos", False)
+        result_cap("Raft", "MultiPaxos", True)
+        result_cap("Crossword", "MultiPaxos", False)
+        result_cap("Crossword", "RSPaxos", False)
 
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
@@ -518,7 +518,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos (f=1)", "pink", "//"),
+        "RSPaxos": ("RSPaxos", "pink", "//"),
     }
 
     rounds_params.sort(key=lambda rp: rp.num_replicas)

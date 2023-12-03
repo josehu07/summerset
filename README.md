@@ -65,7 +65,7 @@ For a shell command, `$` indicates running it on the local development machine, 
         1. `% uname -a`
         3. `% cd /mnt/eval/summerset`
     7. Install necessary dependencies
-        1. `% ./scripts/install_devtools.sh`
+        1. `% ./scripts/install_devdeps.sh`
     8. Set up TCP buffer sizes
         1. `% ./scripts/setup_tcp_bufs.sh`
     9. (`host0` only) Set up network namespaces and virtual devices

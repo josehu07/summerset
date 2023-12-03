@@ -57,7 +57,9 @@ def run_process_pinned(
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
-        return utils.run_process(cmd, capture_stderr=capture_stderr, cpu_list=cpu_list)
+        return utils.run_process(
+            cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+        )
     else:
         return utils.run_process_over_ssh(
             remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
@@ -69,6 +71,7 @@ def config_with_defaults(
     config,
     num_replicas,
     replica_id,
+    remote,
     hb_timer_off,
     file_prefix,
     file_midfix,
@@ -87,18 +90,24 @@ def config_with_defaults(
 
     backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
-    if fresh_files and os.path.isfile(backer_path):
-        print(f"Delete: {backer_path}")
-        os.remove(backer_path)
+    if fresh_files:
+        utils.run_process_over_ssh(
+            remote,
+            ["rm", "-f", backer_path],
+            print_cmd=False,
+        ).wait()
 
     if PROTOCOL_MAY_SNAPSHOT[protocol]:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(
             protocol, file_prefix, file_midfix, replica_id
         )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
-        if fresh_files and os.path.isfile(snapshot_path):
-            print(f"Delete: {snapshot_path}")
-            os.remove(snapshot_path)
+        if fresh_files:
+            utils.run_process_over_ssh(
+                remote,
+                ["rm", "-f", snapshot_path],
+                print_cmd=False,
+            ).wait()
 
     if protocol in PROTOCOL_EXTRA_DEFAULTS:
         config_dict.update(
@@ -226,6 +235,7 @@ def launch_servers(
                 config,
                 num_replicas,
                 replica,
+                remotes[host],
                 host != me,
                 file_prefix,
                 file_midfix,
@@ -318,6 +328,10 @@ if __name__ == "__main__":
     if args.num_replicas != len(remotes):
         print("ERROR: #replicas does not match #hosts in config file")
         sys.exit(1)
+
+    # check protocol name
+    if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
+        print(f"ERROR: unrecognized protocol name '{args.protocol}'")
 
     # check that I am indeed the "me" host
     utils.check_remote_is_me(remotes[args.me])

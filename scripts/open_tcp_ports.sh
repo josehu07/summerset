@@ -1,6 +1,6 @@
 #! /bin/bash
 
-# Usage: sudo scripts/open_tcp_ports.sh
+# Usage: ./scripts/open_tcp_ports.sh
 
 
 NUM_SERVERS=3

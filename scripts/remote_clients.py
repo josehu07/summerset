@@ -28,6 +28,7 @@ UTILITY_PARAM_NAMES = {
         "freq_target",
         "value_size",
         "put_ratio",
+        "ycsb_trace",
         "length_s",
         "normal_stdev_ratio",
         "unif_interval_ms",
@@ -203,6 +204,7 @@ if __name__ == "__main__":
         "-v", "--value_size", type=str, help="value sizes over time"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
+    parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
     parser_bench.add_argument(
         "--normal_stdev_ratio", type=float, help="normal dist stdev ratio"
