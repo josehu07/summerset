@@ -307,15 +307,10 @@ def collect_outputs(odir):
             0.1,
         )
 
-        sd, sp, sj, sm = 10, 0, 0, 1
-        if protocol == "RSPaxos" or protocol == "CRaft":
-            # setting sm here to compensate for mixed value unstabilities
-            # in reported numbers
-            sm = 1 + (PUT_RATIO / 100) * 0.5
+        sd, sp, sj, sm = 20, 0, 0, 1
         if protocol == "Crossword":
-            # setting sm here to compensate for mixed value unstabilities
-            # as well as printing models to console
-            sm = 1 + (PUT_RATIO / 100) * 0.7
+            # setting sm here to compensate for printing models to console
+            sm = 1.1
         tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
         lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
@@ -344,8 +339,8 @@ def collect_outputs(odir):
                     down=down if metric == "tput" else not down,
                 )
 
-    result_cap("CRaft", "RSPaxos", False)
-    result_cap("CRaft", "RSPaxos", True)
+    result_cap("RSPaxos", "CRaft", False)
+    result_cap("RSPaxos", "CRaft", True)
     result_cap("MultiPaxos", "Raft", False)
     result_cap("MultiPaxos", "Raft", True)
 
@@ -400,7 +395,7 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.6, 2.5),
+            "figure.figsize": (4.5, 2),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -408,41 +403,28 @@ def plot_results(results, odir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
-        "MultiPaxos.2.b",
-        "Raft.2.b",
-        "RSPaxos.2.b",
-        "CRaft.2.b",
-        "Crossword.2.b",
-        "Crossword.2.u",
-        "RSPaxos.1.b",
-        "CRaft.1.b",
+        "MultiPaxos",
+        "Raft",
+        "Crossword",
+        "RSPaxos",
+        "CRaft",
+        "chain_delayed",
     ]
-    PROTOCOLS_XPOS = {
-        "MultiPaxos.2.b": 1,
-        "Raft.2.b": 2,
-        "RSPaxos.2.b": 3,
-        "CRaft.2.b": 4,
-        "Crossword.2.b": 5,
-        "Crossword.2.u": 6,
-        "RSPaxos.1.b": 8,
-        "CRaft.1.b": 9,
-    }
     PROTOCOLS_LABEL_COLOR_HATCH = {
-        "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
-        "Raft.2.b": ("Raft", "lightgreen", None),
-        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
-        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
-        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
-        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
-        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
+        "MultiPaxos": ("MultiPaxos", "darkgray", None),
+        "Raft": ("Raft", "lightgreen", None),
+        "Crossword": ("Crossword", "lightsteelblue", "xx"),
+        "RSPaxos": ("RSPaxos", "salmon", "//"),
+        "CRaft": ("CRaft", "wheat", "\\\\"),
+        "chain_delayed": ("ChainPaxos", "plum", "--"),
     }
 
-    for protocol_with_midfix in PROTOCOLS_ORDER:
-        xpos = PROTOCOLS_XPOS[protocol_with_midfix]
-        result = results[protocol_with_midfix]
+    ax1 = plt.subplot(121)
+    for i, protocol in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        result = results[protocol]["tput"]
 
-        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         bar = plt.bar(
             xpos,
             result["mean"],
@@ -457,14 +439,34 @@ def plot_results(results, odir):
             # capsize=1,
         )
 
-    ax = fig.axes[0]
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-    plt.xticks([3.5, 8.3], ["f=2", "f=1"])
-    plt.tick_params(bottom=False)
-
+    plt.tick_params(bottom=False, labelbottom=False)
     plt.ylabel("Throughput (reqs/s)")
+
+    ax2 = plt.subplot(122)
+    for i, protocol in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        result = results[protocol]["lat"]
+
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
+        bar = plt.bar(
+            xpos,
+            result["mean"],
+            width=1,
+            color=color,
+            edgecolor="gray",
+            linewidth=1.4,
+            hatch=hatch,
+            yerr=result["stdev"],
+            ecolor="black",
+            capsize=1,
+        )
+
+    plt.tick_params(bottom=False, labelbottom=False)
+    plt.ylabel("Latency (ms)")
+
+    for ax in fig.axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
 
@@ -473,13 +475,13 @@ def plot_results(results, odir):
     plt.close()
     print(f"Plotted: {pdf_name}")
 
-    return ax.get_legend_handles_labels()
+    return ax1.get_legend_handles_labels()
 
 
 def plot_legend(handles, labels, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.4, 2.2),
+            "figure.figsize": (2, 2),
             "font.size": 10,
         }
     )
@@ -487,8 +489,6 @@ def plot_legend(handles, labels, odir):
 
     plt.axis("off")
 
-    handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
-    labels.insert(-2, "")  # insert spacing between groups
     lgd = plt.legend(
         handles,
         labels,
@@ -497,11 +497,6 @@ def plot_legend(handles, labels, odir):
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
-    for rec in lgd.get_texts():
-        if "f=1" in rec.get_text():
-            rec.set_fontstyle("italic")
-        # if "Crossword" in rec.get_text():
-        #     rec.set_fontweight("bold")
 
     pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)

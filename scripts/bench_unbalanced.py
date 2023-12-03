@@ -244,30 +244,30 @@ def plot_results(results, odir):
     PROTOCOLS_ORDER = [
         "MultiPaxos.2.b",
         "Raft.2.b",
-        "RSPaxos.2.b",
-        "CRaft.2.b",
         "Crossword.2.b",
         "Crossword.2.u",
+        "RSPaxos.2.b",
+        "CRaft.2.b",
         "RSPaxos.1.b",
         "CRaft.1.b",
     ]
     PROTOCOLS_XPOS = {
         "MultiPaxos.2.b": 1,
         "Raft.2.b": 2,
-        "RSPaxos.2.b": 3,
-        "CRaft.2.b": 4,
-        "Crossword.2.b": 5,
-        "Crossword.2.u": 6,
+        "Crossword.2.b": 3,
+        "Crossword.2.u": 4,
+        "RSPaxos.2.b": 5,
+        "CRaft.2.b": 6,
         "RSPaxos.1.b": 8,
         "CRaft.1.b": 9,
     }
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
         "Raft.2.b": ("Raft", "lightgreen", None),
-        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
         "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
         "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
+        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
+        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
         "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
         "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
     }

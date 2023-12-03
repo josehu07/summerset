@@ -281,13 +281,10 @@ def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te):
 
                 line = line[line.find("[UPDATE:") :]
                 lat = float(line[line.find("Avg=") + 4 : line.find(", 90=")]) / 1000.0
-                lat_min = (
-                    float(line[line.find("Min=") + 4 : line.find(", Avg=")]) / 1000.0
+                lat_90p = (
+                    float(line[line.find("90=") + 3 : line.find(", 99=")]) / 1000.0
                 )
-                lat_99p = (
-                    float(line[line.find("99=") + 3 : line.find(", 99.9=")]) / 1000.0
-                )
-                lat_stdev = (lat_99p - lat_min) / 4
+                lat_stdev = (lat_90p - lat) / 4
 
                 tputs.append(tput)
                 tput_stdevs.append(tput_stdev)
