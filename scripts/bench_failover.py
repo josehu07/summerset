@@ -257,7 +257,7 @@ def plot_results(results, odir):
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
         "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (f=1, fb. ok)", "peru", ":", 1.5),
+        "CRaft": ("CRaft (f=1, fb=ok)", "peru", ":", 1.5),
     }
 
     ymax = 0.0
@@ -365,7 +365,7 @@ def plot_results(results, odir):
     def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
         t = f"[c={c},q={q}]"
         if fb:
-            t += "\nfb. ok"
+            t += "\nfb=ok"
         if unavail:
             t += "\nunavail."
         plt.annotate(
