@@ -6,15 +6,16 @@ import multiprocessing
 import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import common_utils as utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
-
-CLIENT_LOOP_IP = "0.0.0.0"
+CLIENT_LOOP_IP = "127.0.0.1"
+CLIENT_VETH_IP = lambda c: f"10.0.2.{c}"
 CLIENT_BIND_BASE_PORT = lambda c: 40000 + c * 100
 
+MANAGER_LOOP_IP = "127.0.0.1"
+MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_CLI_PORT = 52601
 
 
@@ -110,8 +111,6 @@ def compose_client_cmd(
 
 
 def run_clients(
-    ipaddrs,
-    me,
     protocol,
     utility,
     num_clients,
@@ -120,20 +119,21 @@ def run_clients(
     config,
     capture_stdout,
     pin_cores,
+    use_veth,
     base_idx,
     timeout_ms,
 ):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
-    # assuming I am the machine to run manager
-    manager_pub_ip = ipaddrs[me]
-
     client_procs = []
     for i in range(num_clients):
         client = base_idx + i
         bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(client)}"
-        manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT}"
+        manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_CLI_PORT}"
+        if use_veth:
+            bind_base = f"{CLIENT_VETH_IP(client)}:{CLIENT_BIND_BASE_PORT(client)}"
+            manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_CLI_PORT}"
 
         cmd = compose_client_cmd(
             protocol,
@@ -166,10 +166,10 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
     )
     parser.add_argument(
-        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
+        "--use_veth", action="store_true", help="if set, use netns and veth setting"
     )
     parser.add_argument(
         "--base_idx",
@@ -249,15 +249,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # parse hosts config file
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    remotes = hosts_config["hosts"]
-    hosts = sorted(list(remotes.keys()))
-    domains = {
-        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
-    ipaddrs = {name: utils.lookup_dns_to_ip(domain) for name, domain in domains.items()}
-
     # check that number of replicas does not exceed 99
     if args.utility == "bench" and args.num_clients > 99:
         print("ERROR: #clients > 99 not supported yet (as some ports are hardcoded)")
@@ -282,8 +273,6 @@ if __name__ == "__main__":
 
     # run client executable(s)
     client_procs = run_clients(
-        ipaddrs,
-        args.me,
         args.protocol,
         args.utility,
         num_clients,
@@ -292,6 +281,7 @@ if __name__ == "__main__":
         args.config,
         capture_stdout,
         args.pin_cores,
+        args.use_veth,
         args.base_idx,
         args.timeout_ms,
     )

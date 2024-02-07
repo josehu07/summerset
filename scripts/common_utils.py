@@ -30,9 +30,8 @@ def path_get_last_segment(path):
 def check_proper_cwd():
     cwd = os.getcwd()
     if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print(
-            "ERROR: script must be run under top-level repo with `python3 scripts/<script>.py ...`"
-        )
+        print("ERROR: script must be run under top-level repo!")
+        print("       example: python3 scripts/<paper>/<script>.py")
         sys.exit(1)
 
 
@@ -301,8 +300,7 @@ def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te):
     return {
         "tput": {
             "mean": sum(tputs) / len(tputs),
-            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs))
-            ** 0.5,
+            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs)) ** 0.5,
         },
         "lat": {
             "mean": sum(lats) / len(lats),

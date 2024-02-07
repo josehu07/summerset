@@ -1,7 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/install_devdeps.sh
-
 
 if [ $(id -u) -eq 0 ];
 then

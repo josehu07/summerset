@@ -1,7 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/open_tcp_ports.sh
-
 
 NUM_SERVERS=3
 NUM_CLIENTS=16

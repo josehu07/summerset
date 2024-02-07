@@ -1,6 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/setup_net_devs.sh
 
 MAX_SERVERS=9
 MAX_CLIENTS=21

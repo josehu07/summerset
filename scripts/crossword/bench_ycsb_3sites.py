@@ -4,6 +4,7 @@ import argparse
 import time
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import common_utils as utils
 
 import matplotlib  # type: ignore
@@ -355,8 +356,7 @@ def collect_outputs(odir):
                 "tput": {
                     "mean": sum(tput_mean_list) / len(tput_mean_list),
                     "stdev": (
-                        sum(map(lambda s: s**2, tput_stdev_list))
-                        / len(tput_stdev_list)
+                        sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
                     )
                     ** 0.5,
                 },

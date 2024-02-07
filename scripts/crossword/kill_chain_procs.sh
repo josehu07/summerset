@@ -1,7 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/kill_chain_procs.sh
-
 
 kill_all_matching () {
     for pid in $(pgrep -f $1)

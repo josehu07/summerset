@@ -1,7 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/setup_tcp_bufs.sh
-
 
 echo
 echo "Per-socket TCP send/receive buffer:"

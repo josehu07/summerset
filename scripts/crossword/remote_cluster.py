@@ -5,17 +5,19 @@ import argparse
 import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import common_utils as utils
 
 
-SERVER_LOOP_IP = "127.0.0.1"
-SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
+TOML_FILENAME = "scripts/remote_hosts.toml"
+
+
+SERVER_LOOP_IP = "0.0.0.0"
 SERVER_API_PORT = lambda r: 52700 + r
 SERVER_P2P_PORT = lambda r: 52800 + r
 SERVER_BIND_BASE_PORT = lambda r: 50000 + r * 100
 
-MANAGER_LOOP_IP = "127.0.0.1"
-MANAGER_VETH_IP = "10.0.0.0"
+MANAGER_LOOP_IP = "0.0.0.0"
 MANAGER_SRV_PORT = 52600
 MANAGER_CLI_PORT = 52601
 
@@ -44,7 +46,9 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
+def run_process_pinned(
+    i, cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
+):
     cpu_list = None
     if cores_per_proc > 0:
         # pin servers from CPU 0 up
@@ -53,9 +57,14 @@ def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
-    return utils.run_process(
-        cmd, capture_stderr=capture_stderr, cpu_list=cpu_list, in_netns=in_netns
-    )
+    if remote is None or len(remote) == 0:
+        return utils.run_process(
+            cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+        )
+    else:
+        return utils.run_process_over_ssh(
+            remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+        )
 
 
 def config_with_defaults(
@@ -63,6 +72,7 @@ def config_with_defaults(
     config,
     num_replicas,
     replica_id,
+    remote,
     hb_timer_off,
     file_prefix,
     file_midfix,
@@ -81,18 +91,24 @@ def config_with_defaults(
 
     backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
-    if fresh_files and os.path.isfile(backer_path):
-        print(f"Delete: {backer_path}")
-        os.remove(backer_path)
+    if fresh_files:
+        utils.run_process_over_ssh(
+            remote,
+            ["rm", "-f", backer_path],
+            print_cmd=False,
+        ).wait()
 
     if PROTOCOL_MAY_SNAPSHOT[protocol]:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(
             protocol, file_prefix, file_midfix, replica_id
         )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
-        if fresh_files and os.path.isfile(snapshot_path):
-            print(f"Delete: {snapshot_path}")
-            os.remove(snapshot_path)
+        if fresh_files:
+            utils.run_process_over_ssh(
+                remote,
+                ["rm", "-f", snapshot_path],
+                print_cmd=False,
+            ).wait()
 
     if protocol in PROTOCOL_EXTRA_DEFAULTS:
         config_dict.update(
@@ -127,10 +143,8 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release, pin_cores, use_veth):
+def launch_manager(protocol, num_replicas, release, pin_cores):
     bind_ip = MANAGER_LOOP_IP
-    if use_veth:
-        bind_ip = MANAGER_VETH_IP
 
     cmd = compose_manager_cmd(
         protocol,
@@ -184,27 +198,32 @@ def compose_server_cmd(
 
 
 def launch_servers(
+    remotes,
+    ipaddrs,
+    hosts,
+    me,
+    cd_dir,
     protocol,
     num_replicas,
     release,
     config,
-    force_leader,
     file_prefix,
     file_midfix,
     fresh_files,
     pin_cores,
-    use_veth,
 ):
-    if num_replicas not in (3, 5, 7, 9):
+    if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
+
+    # assuming I am the machine to run manager
+    manager_pub_ip = ipaddrs[me]
 
     server_procs = []
     for replica in range(num_replicas):
+        host = hosts[replica]
+
         bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(replica)}"
-        manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_SRV_PORT}"
-        if use_veth:
-            bind_base = f"{SERVER_VETH_IP(replica)}:{SERVER_BIND_BASE_PORT(replica)}"
-            manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_SRV_PORT}"
+        manager_addr = f"{manager_pub_ip}:{MANAGER_SRV_PORT}"
 
         cmd = compose_server_cmd(
             protocol,
@@ -217,20 +236,32 @@ def launch_servers(
                 config,
                 num_replicas,
                 replica,
-                force_leader >= 0 and force_leader != replica,
+                remotes[host],
+                host != me,
                 file_prefix,
                 file_midfix,
                 fresh_files,
             ),
             release,
         )
-        proc = run_process_pinned(
-            replica + 1,
-            cmd,
-            capture_stderr=False,
-            cores_per_proc=pin_cores,
-            in_netns=f"ns{replica}" if use_veth else None,
-        )
+        if host == me:
+            # run my responsible server locally
+            proc = run_process_pinned(
+                replica + 1,
+                cmd,
+                capture_stderr=False,
+                cores_per_proc=pin_cores,
+            )
+        else:
+            # spawn server process on remote server through ssh
+            proc = run_process_pinned(
+                replica + 1,
+                cmd,
+                capture_stderr=False,
+                cores_per_proc=pin_cores,
+                remote=remotes[host],
+                cd_dir=cd_dir,
+            )
 
         server_procs.append(proc)
 
@@ -254,7 +285,13 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--force_leader", type=int, default=-1, help="force this server to be leader"
+        "--me", type=str, default="host0", help="main script runner's host nickname"
+    )
+    parser.add_argument(
+        "--base_dir",
+        type=str,
+        default="/mnt/eval",
+        help="base cd dir after ssh",
     )
     parser.add_argument(
         "--file_prefix",
@@ -274,38 +311,71 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
-    parser.add_argument(
-        "--use_veth", action="store_true", help="if set, use netns and veth setting"
-    )
     args = parser.parse_args()
 
-    # kill all existing server and manager processes
-    if args.pin_cores == 0:
-        utils.kill_all_matching("summerset_server")
-        utils.kill_all_matching("summerset_manager")
+    # parse hosts config file
+    hosts_config = utils.read_toml_file(TOML_FILENAME)
+    remotes = hosts_config["hosts"]
+    hosts = sorted(list(remotes.keys()))
+    domains = {
+        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
+    }
+    ipaddrs = {name: utils.lookup_dns_to_ip(domain) for name, domain in domains.items()}
 
-    # check that number of replicas does not exceed 9
-    if args.num_replicas > 9:
-        print("ERROR: #replicas > 9 not supported yet (as some ports are hardcoded)")
+    repo = hosts_config["repo_name"]
+    cd_dir = f"{args.base_dir}/{repo}"
+
+    # check that number of replicas equals 3
+    if args.num_replicas != len(remotes):
+        print("ERROR: #replicas does not match #hosts in config file")
         sys.exit(1)
 
     # check protocol name
     if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
         print(f"ERROR: unrecognized protocol name '{args.protocol}'")
 
+    # check that I am indeed the "me" host
+    utils.check_remote_is_me(remotes[args.me])
+
+    # kill all existing server and manager processes
+    print("Killing related processes...")
+    for host, remote in remotes.items():
+        print(f"  {host}")
+        utils.run_process_over_ssh(
+            remote,
+            ["./scripts/kill_local_procs.sh"],
+            cd_dir=cd_dir,
+            print_cmd=False,
+        ).wait()
+
     # check that the prefix folder path exists, or create it if not
-    if not os.path.isdir(args.file_prefix):
-        os.system(f"mkdir -p {args.file_prefix}")
+    print("Preparing states folder...")
+    for host, remote in remotes.items():
+        print(f"  {host}")
+        utils.run_process_over_ssh(
+            remote,
+            ["mkdir", "-p", args.file_prefix],
+            cd_dir=cd_dir,
+            print_cmd=False,
+        ).wait()
 
     # build everything
-    rc = utils.do_cargo_build(args.release)
-    if rc != 0:
-        print("ERROR: cargo build failed")
-        sys.exit(rc)
+    print("Building everything...")
+    cargo_cmd = ["source", "$HOME/.cargo/env;", "cargo", "build", "--workspace"]
+    if args.release:
+        cargo_cmd.append("-r")
+    for host, remote in remotes.items():
+        print(f"  {host}")
+        utils.run_process_over_ssh(
+            remote,
+            cargo_cmd,
+            cd_dir=cd_dir,
+            print_cmd=False,
+        ).wait()
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(
-        args.protocol, args.num_replicas, args.release, args.pin_cores, args.use_veth
+        args.protocol, args.num_replicas, args.release, args.pin_cores
     )
     wait_manager_setup(manager_proc)
 
@@ -320,27 +390,38 @@ if __name__ == "__main__":
 
     # then launch server replicas
     server_procs = launch_servers(
+        remotes,
+        ipaddrs,
+        hosts,
+        args.me,
+        cd_dir,
         args.protocol,
         args.num_replicas,
         args.release,
         args.config,
-        args.force_leader,
         args.file_prefix,
         args.file_midfix,
         not args.keep_files,
         args.pin_cores,
-        args.use_veth,
     )
 
     # register termination signals handler
     def kill_spawned_procs(*args):
+        print("Killing related processes...")
+        for host, remote in remotes.items():
+            print(f"  {host}")
+            utils.run_process_over_ssh(
+                remote,
+                ["./scripts/kill_local_procs.sh"],
+                cd_dir=cd_dir,
+                print_cmd=False,
+            ).wait()
+
         for proc in server_procs:
             proc.terminate()
         for proc in server_procs:
             proc.wait()
         manager_proc.terminate()
-        # utils.kill_all_matching("summerset_server")
-        # utils.kill_all_matching("summerset_manager")
 
     signal.signal(signal.SIGINT, kill_spawned_procs)
     signal.signal(signal.SIGTERM, kill_spawned_procs)

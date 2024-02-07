@@ -4,6 +4,7 @@ import argparse
 import time
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import common_utils as utils
 
 import matplotlib  # type: ignore
@@ -18,7 +19,7 @@ SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"
 
-EXPER_NAME = "adaptive"
+EXPER_NAME = "failover"
 
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
@@ -33,41 +34,24 @@ SERVER_IFB = lambda r: f"ifb{r}"
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
 
-FORCE_LEADER = 0
-
-
 BATCH_INTERVAL = 1
 
+VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
-
-LENGTH_SECS = 75
-
-SIZE_CHANGE_SECS = 15
-
-VALUE_SIZES = [(0, 256 * 1024), (SIZE_CHANGE_SECS, 4096)]
-VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
-
-ENV_CHANGE1_SECS = 30
-ENV_CHANGE2_SECS = 45
-ENV_CHANGE3_SECS = 60
-
-NETEM_MEAN_A = lambda _: 1  # will be exagerated by #clients
-NETEM_MEAN_B = lambda _: 1
-NETEM_MEAN_C = lambda _: 1
-NETEM_MEAN_D = lambda r: 1 if r < 3 else 10
-NETEM_JITTER_A = lambda _: 1
-NETEM_JITTER_B = lambda _: 1
-NETEM_JITTER_C = lambda _: 1
-NETEM_JITTER_D = lambda r: 1 if r < 3 else 10
-NETEM_RATE_A = lambda _: 1
-NETEM_RATE_B = lambda _: 0.1
-NETEM_RATE_C = lambda _: 10
-NETEM_RATE_D = lambda r: 10 if r < 3 else 0.1
+NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
+NETEM_JITTER = lambda _: 0
+NETEM_RATE = lambda _: 1
 
 
-PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 70
+LENGTH_SECS = 120
+CLIENT_TIMEOUT_SECS = 2
+
+FAIL1_SECS = 40
+FAIL2_SECS = 80
+
+PLOT_SECS_BEGIN = 25
+PLOT_SECS_END = 115
 
 
 def launch_cluster(protocol, config=None):
@@ -79,8 +63,6 @@ def launch_cluster(protocol, config=None):
         "-n",
         str(NUM_REPLICAS),
         "-r",
-        "--force_leader",
-        str(FORCE_LEADER),
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
@@ -128,24 +110,43 @@ def run_bench_clients(protocol):
         "--use_veth",
         "--base_idx",
         str(0),
+        "--timeout_ms",
+        str(CLIENT_TIMEOUT_SECS * 1000),
         "bench",
         "-n",
         str(NUM_CLIENTS),
         "-f",
         str(0),  # closed-loop
         "-v",
-        VALUE_SIZES_PARAM,
+        str(VALUE_SIZE),
         "-w",
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        # "--normal_stdev_ratio",
-        # str(0.1),
-        # "--unif_interval_ms",
-        # str(500),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
     ]
+    return utils.run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    )
+
+
+def run_mess_client(protocol, pauses=None, resumes=None):
+    cmd = [
+        "python3",
+        "./scripts/local_clients.py",
+        "-p",
+        protocol,
+        "-r",
+        "--use_veth",
+        "--base_idx",
+        str(NUM_CLIENTS),
+        "mess",
+    ]
+    if pauses is not None and len(pauses) > 0:
+        cmd += ["--pause", pauses]
+    if resumes is not None and len(resumes) > 0:
+        cmd += ["--resume", resumes]
     return utils.run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
@@ -158,8 +159,7 @@ def bench_round(protocol):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.2}"
-        config += f"+disable_gossip_timer=true"
+        config += "+init_assignment='1'"
 
     # launch service cluster
     proc_cluster = launch_cluster(protocol, config=config)
@@ -169,51 +169,15 @@ def bench_round(protocol):
     # start benchmarking clients
     proc_clients = run_bench_clients(protocol)
 
-    # at some timepoint, change mean value size (handled by the clients)
-    time.sleep(SIZE_CHANGE_SECS)
-    print("    Changing mean value size...")
+    # at the first failure point, pause current leader
+    time.sleep(FAIL1_SECS)
+    print("    Pausing leader...")
+    run_mess_client(protocol, pauses="l")
 
-    # at some timepoint, change env
-    time.sleep(ENV_CHANGE1_SECS - SIZE_CHANGE_SECS)
-    print("    Changing env perf params...")
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_B,
-        NETEM_JITTER_B,
-        NETEM_RATE_B,
-        involve_ifb=True,
-    )
-
-    # at some timepoint, change env again
-    time.sleep(ENV_CHANGE2_SECS - ENV_CHANGE1_SECS)
-    print("    Changing env perf params...")
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_C,
-        NETEM_JITTER_C,
-        NETEM_RATE_C,
-        involve_ifb=True,
-    )
-
-    # at some timepoint, change env again
-    time.sleep(ENV_CHANGE3_SECS - ENV_CHANGE2_SECS)
-    print("    Changing env perf params...")
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_D,
-        NETEM_JITTER_D,
-        NETEM_RATE_D,
-        involve_ifb=True,
-    )
+    # at the second failure point, pause current leader
+    time.sleep(FAIL2_SECS - FAIL1_SECS)
+    print("    Pausing leader...")
+    run_mess_client(protocol, pauses="l")
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -226,18 +190,6 @@ def bench_round(protocol):
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)
-
-    # revert env params to initial
-    utils.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
-        NETEM_MEAN_A,
-        NETEM_JITTER_A,
-        NETEM_RATE_A,
-        involve_ifb=True,
-    )
 
     if proc_clients.returncode != 0:
         print("    Experiment FAILED!")
@@ -258,34 +210,24 @@ def collect_outputs(odir):
             0.1,
         )
 
-        sd, sp, sj, sm = 20, 0, 0, 1
+        sd, sp, sj, sm = 10, 0, 0, 1
         if protocol == "Raft" or protocol == "CRaft":
             # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after env changes; removing it here
+            # "ghost" replies after leader has failed; removing it here
             sp = 50
         elif protocol == "Crossword":
-            # setting sd here which avoids the lines to completely overlap with
+            # due to limited sampling granularity, Crossword gossiping makes
+            # throughput results look a bit more "jittering" than it actually
+            # is; smoothing a bit more here
+            # setting sd here also avoids the lines to completely overlap with
             # each other
-            # setting sm here to compensate for printing models to console
-            sd, sm = 25, 1.1
+            sd, sj = 15, 50
         tput_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],
             "tput": tput_list,
         }
-
-    # do capping for other protocols to remove weird spikes/dips introduced by
-    # changing netem parameters at runtime
-    def result_cap(pa, pb, down):
-        results[pa]["tput"] = utils.list_capping(
-            results[pa]["tput"], results[pb]["tput"], 5, down=down
-        )
-
-    result_cap("CRaft", "RSPaxos", False)
-    result_cap("CRaft", "RSPaxos", True)
-    result_cap("MultiPaxos", "Raft", False)
-    result_cap("MultiPaxos", "Raft", True)
 
     return results
 
@@ -304,9 +246,8 @@ def print_results(results):
 def plot_results(results, odir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (5.6, 3),
+            "figure.figsize": (6, 3),
             "font.size": 13,
-            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
@@ -317,7 +258,7 @@ def plot_results(results, odir):
         "MultiPaxos": ("MultiPaxos", "dimgray", "--", 1.2),
         "Raft": ("Raft", "forestgreen", "--", 1.2),
         "RSPaxos": ("RSPaxos (f=1)", "red", "-.", 1.3),
-        "CRaft": ("CRaft (f=1)", "peru", ":", 1.5),
+        "CRaft": ("CRaft (f=1, fb=ok)", "peru", ":", 1.5),
     }
 
     ymax = 0.0
@@ -340,24 +281,24 @@ def plot_results(results, odir):
             zorder=10 if "Crossword" in protocol else 0,
         )
 
-    # env change indicators
-    def draw_env_change_indicator(x, t, toffx):
+    # failure indicators
+    def draw_failure_indicator(x, t, toffx):
         plt.arrow(
             x,
-            ymax + 150,
+            ymax + 20,
             0,
-            -140,
+            -18,
             color="darkred",
             width=0.2,
             length_includes_head=True,
-            head_width=1.2,
-            head_length=45,
+            head_width=1.5,
+            head_length=5,
             overhang=0.5,
             clip_on=False,
         )
         plt.annotate(
             t,
-            (x, ymax + 220),
+            (x, ymax + 30),
             xytext=(toffx, 0),
             ha="center",
             textcoords="offset points",
@@ -365,17 +306,71 @@ def plot_results(results, odir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(
-        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN - 2, "Data smaller", -7
+    draw_failure_indicator(FAIL1_SECS - PLOT_SECS_BEGIN, "Leader fails", 12)
+    draw_failure_indicator(FAIL2_SECS - PLOT_SECS_BEGIN, "New leader fails", 12)
+
+    # recovery time indicators (hardcoded!)
+    def draw_recovery_indicator(x, y, w, t, toffx, toffy):
+        plt.arrow(
+            x,
+            y,
+            -w,
+            0,
+            color="gray",
+            width=0.1,
+            length_includes_head=True,
+            head_width=3,
+            head_length=0.3,
+            overhang=0.5,
+        )
+        plt.arrow(
+            x,
+            y,
+            w,
+            0,
+            color="gray",
+            width=0.1,
+            length_includes_head=True,
+            head_width=3,
+            head_length=0.3,
+            overhang=0.5,
+        )
+        if t is not None:
+            plt.annotate(
+                t,
+                (x + toffx, y + toffy),
+                xytext=(0, 0),
+                ha="center",
+                textcoords="offset points",
+                color="gray",
+                fontsize=10,
+            )
+
+    draw_recovery_indicator(19, 135, 3.6, "small\ngossip\ngap", 1, 11)
+    draw_recovery_indicator(59.2, 135, 3.6, "small\ngossip\ngap", 1, 11)
+
+    plt.vlines(
+        63.5,
+        110,
+        140,
+        colors="gray",
+        linestyles="solid",
+        linewidth=0.8,
     )
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN - 2, "Bw drops", 8)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN - 2, "Bw frees", 10)
-    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN - 2, "2 nodes lag", 20)
+
+    draw_recovery_indicator(23, 50, 7, None, None, None)
+    draw_recovery_indicator(25.2, 62, 9.2, "state-send\nsnapshot int.", 4.6, -53)
+    draw_recovery_indicator(67.5, 56, 11.5, "state-send\nsnapshot int.", 2.9, -47)
 
     # configuration indicators
-    def draw_config_indicator(x, y, c, q, color):
+    def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
+        t = f"[c={c},q={q}]"
+        if fb:
+            t += "\nfb=ok"
+        if unavail:
+            t += "\nunavail."
         plt.annotate(
-            f"[c={c},q={q}]",
+            t,
             (x, y),
             xytext=(0, 0),
             ha="center",
@@ -384,12 +379,20 @@ def plot_results(results, odir):
             fontsize=11,
         )
 
-    draw_config_indicator(62, 460, 1, 4, "red")
-    draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
-    draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
-    draw_config_indicator(16, 1630, 3, 3, "steelblue")
-    draw_config_indicator(32.5, 1100, 1, 5, "steelblue")
-    draw_config_indicator(62, 1350, 3, 3, "steelblue")
+    draw_config_indicator(4.8, 228, 1, 5, "steelblue")
+    draw_config_indicator(4.8, 198, 1, 4, "red")
+    draw_config_indicator(4.8, 175, 1, 4, "peru")
+    draw_config_indicator(4.8, 112, 3, 3, "forestgreen")
+
+    draw_config_indicator(44.8, 148, 2, 4, "steelblue")
+    draw_config_indicator(44.8, 198, 1, 4, "red")
+    draw_config_indicator(44.8, 58, 3, 3, "peru", fb=True)
+    draw_config_indicator(44.8, 112, 3, 3, "forestgreen")
+
+    draw_config_indicator(89.5, 135, 3, 3, "steelblue")
+    draw_config_indicator(89.5, 9, 1, 4, "red", unavail=True)
+    draw_config_indicator(89.5, 78, 3, 3, "peru")
+    draw_config_indicator(89.5, 112, 3, 3, "forestgreen")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -417,6 +420,7 @@ def plot_legend(handles, labels, odir):
         {
             "figure.figsize": (1.8, 1.3),
             "font.size": 10,
+            "pdf.fonttype": 42,
         }
     )
     plt.figure("Legend")
@@ -474,10 +478,9 @@ if __name__ == "__main__":
             SERVER_NETNS,
             SERVER_DEV,
             SERVER_IFB,
-            NETEM_MEAN_A,
-            NETEM_JITTER_A,
-            NETEM_RATE_A,
-            involve_ifb=True,
+            NETEM_MEAN,
+            NETEM_JITTER,
+            NETEM_RATE,
         )
 
         print("Running experiments...")

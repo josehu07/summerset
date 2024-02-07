@@ -1,7 +1,5 @@
 #! /bin/bash
 
-# Usage: ./scripts/install_kernel.sh
-
 
 echo
 echo "Fetching ubuntu-mainline-kernel.sh..."
