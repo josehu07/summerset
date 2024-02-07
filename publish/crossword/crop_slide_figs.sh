@@ -7,7 +7,7 @@
 
 # Usage:
 #    1. save slides exported PDF as results/slide-figures.pdf
-#    2. run from repo root: ./pubtools/<paper>/crop_slide_figs.sh
+#    2. run from repo root: ./publish/<paper>/crop_slide_figs.sh
 
 
 if [ $(id -u) -eq 0 ];

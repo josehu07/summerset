@@ -7,7 +7,7 @@
 
 # Usage:
 #    1. save final bench plots to results/final/...
-#    2. run from repo root: ./pubtools/<paper>/crop_bench_figs.sh
+#    2. run from repo root: ./publish/<paper>/crop_bench_figs.sh
 
 
 if [ $(id -u) -eq 0 ];
