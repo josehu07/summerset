@@ -4,9 +4,9 @@ import math
 class RingWorld:
     def __init__(self):
         self.ticks = 24
-        self.servers = [3, 0, 19, 14, 11]
+        self.servers = [3, 0, 18, 14, 12]
         self.clients = list(range(4)) + list(range(11, 20))
-        self.leader_id = 0
+        self.leader_id = 4
         self.leader = self.servers[self.leader_id]
 
     def distance(self, a, b):
@@ -55,7 +55,8 @@ class RingWorld:
 
 
 class Protocol:
-    def __init__(self, world):
+    def __init__(self, world, name):
+        self.name = name
         self.world = world
         assert len(self.world.servers) % 2 == 1
 
@@ -91,7 +92,7 @@ class Protocol:
 
 class MultiPaxos(Protocol):
     def __init__(self, world):
-        super().__init__(world)
+        super().__init__(world, "MP")
         self.majority = (len(world.servers) + 1) // 2
 
     def write_from(self, client):
@@ -112,7 +113,7 @@ class MultiPaxos(Protocol):
 
 class EPaxos(Protocol):
     def __init__(self, world):
-        super().__init__(world)
+        super().__init__(world, "EP")
         self.majority = (len(world.servers) + 1) // 2
         self.supermajority = math.floor((3 * len(world.servers) - 1) / 4)
 
@@ -145,7 +146,7 @@ class EPaxos(Protocol):
 
 class QuorumLease(Protocol):
     def __init__(self, world, lessees):
-        super().__init__(world)
+        super().__init__(world, f"QL-{len(lessees)}")
         self.majority = (len(world.servers) + 1) // 2
         self.lessees = [self.world.servers[l] for l in lessees]
 
@@ -180,7 +181,7 @@ class QuorumLease(Protocol):
 
 class NearbyRead(Protocol):
     def __init__(self, world, read_qsize):
-        super().__init__(world)
+        super().__init__(world, f"NR-{read_qsize}")
         self.majority = (len(world.servers) + 1) // 2
         self.read_qsize = read_qsize
         self.write_qsize = max(len(world.servers) + 1 - read_qsize, self.majority)
@@ -210,9 +211,10 @@ def ring_world_model():
         MultiPaxos(world),
         EPaxos(world),
         QuorumLease(world, list(range(5))),
-        NearbyRead(world, 1),
         QuorumLease(world, [0, 2, 4]),
+        NearbyRead(world, 1),
         NearbyRead(world, 2),
+        NearbyRead(world, 3),
     ]
 
     results = {
@@ -227,6 +229,10 @@ def ring_world_model():
         results["read-busy"].append(p.read_busy_avg())
         results["window"].append(p.window_avg())
 
+    print(f"{' ':9s}", end="")
+    for p in protocols:
+        print(f" {p.name:>4s}", end="")
+    print()
     for w in results:
         print(f"{w:>9s}", end="")
         for i in range(len(protocols)):
