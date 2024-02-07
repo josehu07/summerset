@@ -78,7 +78,7 @@ def kill_all_local_procs():
 
 def kill_all_chain_procs():
     # print("Killing all chain procs...")
-    cmd = "sudo ./scripts/kill_chain_procs.sh"
+    cmd = "sudo ./scripts/others/kill_chain_procs.sh"
     os.system(cmd)
 
 

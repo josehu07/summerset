@@ -204,7 +204,7 @@ def bench_round_summerset(protocol):
 def launch_cluster_chain(protocol):
     cmd = [
         "python3",
-        "./scripts/remote_chainapp.py",
+        "./scripts/others/remote_chainapp.py",
         "-p",
         protocol,
         "-n",
@@ -242,7 +242,7 @@ def wait_cluster_setup_chain(proc, fserr=None):
 def run_bench_clients_chain(protocol):
     cmd = [
         "python3",
-        "./scripts/remote_chaincli.py",
+        "./scripts/others/remote_chaincli.py",
         "-p",
         protocol,
         "--pin_cores",
