@@ -1,6 +1,13 @@
 #! /bin/bash
 
 
+if [ $(id -u) -eq 0 ];
+then
+    echo "Please run this script as normal user!"
+    exit 1
+fi
+
+
 echo
 echo "Per-socket TCP send/receive buffer:"
 echo "  min       default   max"

@@ -1,6 +1,13 @@
 #! /bin/bash
 
 
+if [ $(id -u) -eq 0 ];
+then
+    echo "Please run this script as normal user!"
+    exit 1
+fi
+
+
 echo
 echo "Fetching ubuntu-mainline-kernel.sh..."
 wget https://raw.githubusercontent.com/pimlie/ubuntu-mainline-kernel.sh/master/ubuntu-mainline-kernel.sh

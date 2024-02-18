@@ -1,6 +1,13 @@
 #! /bin/bash
 
 
+if [ $(id -u) -eq 0 ];
+then
+    echo "Please run this script as normal user!"
+    exit 1
+fi
+
+
 kill_all_matching () {
     for pid in $(pgrep -f $1)
     do

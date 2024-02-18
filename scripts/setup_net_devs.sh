@@ -1,6 +1,13 @@
 #! /bin/bash
 
 
+if [ $(id -u) -eq 0 ];
+then
+    echo "Please run this script as normal user!"
+    exit 1
+fi
+
+
 MAX_SERVERS=9
 MAX_CLIENTS=21
 
