@@ -4,10 +4,11 @@ EXTENDS MultiPaxos
 (****************************)
 (* TLC config-related defs. *)
 (****************************)
-ConditionalPerm(set) == IF Cardinality(set) > 1 THEN Permutations(set)
-                                                ELSE {}
+ConditionalPerm(set) == IF Cardinality(set) > 1
+                          THEN Permutations(set)
+                          ELSE {}
 
-SymmetricPerms ==      ConditionalPerm(Servers)
+SymmetricPerms ==      ConditionalPerm(Replicas)
                   \cup ConditionalPerm(Writes)
                   \cup ConditionalPerm(Reads)
 
@@ -19,12 +20,14 @@ ConstMaxBallot == 2
 (* Type check invariant. *)
 (*************************)
 TypeOK == /\ \A m \in msgs: m \in Messages
-          /\ \A s \in Servers: node[s] \in NodeStates
-          /\ Cardinality(pending) =< NumCommands
-          /\ \A e \in pending: e \in ClientEvents /\ e.type = "Req"
+          /\ \A s \in Replicas: node[s] \in NodeStates
+          /\ Len(pending) =< NumCommands
+          /\ Cardinality(Range(pending)) = Len(pending)
+          /\ \A c \in Range(pending): c \in Commands
           /\ Len(observed) =< 2 * NumCommands
-          /\ Cardinality(observedSet) = Len(observed)
-          /\ \A e \in observedSet: e \in ClientEvents
+          /\ Cardinality(Range(observed)) = Len(observed)
+          /\ Cardinality(requestsMade) >= Cardinality(responsesGot)
+          /\ \A e \in Range(observed): e \in ClientEvents
 
 THEOREM Spec => []TypeOK
 
@@ -49,7 +52,7 @@ LastWriteBefore(order, j) ==
     LET k == CHOOSE k \in 0..(j-1):
                     /\ (k = 0 \/ order[k] \in Writes)
                     /\ \A l \in (k+1)..(j-1): order[l] \in Reads
-    IN  IF k = 0 THEN 0 ELSE order[k]
+    IN  IF k = 0 THEN "nil" ELSE order[k]
 
 IsLinearOrder(order) ==
     /\ {order[j]: j \in 1..Len(order)} = Commands
