@@ -26,7 +26,7 @@ TypeOK == /\ \A m \in msgs: m \in Messages
           /\ \A c \in Range(pending): c \in Commands
           /\ Len(observed) =< 2 * NumCommands
           /\ Cardinality(Range(observed)) = Len(observed)
-          /\ Cardinality(requestsMade) >= Cardinality(responsesGot)
+          /\ Cardinality(reqsMade) >= Cardinality(acksRecv)
           /\ \A e \in Range(observed): e \in ClientEvents
 
 THEOREM Spec => []TypeOK

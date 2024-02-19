@@ -2,6 +2,12 @@
 (* MultiPaxos in state machine replication (SMR) style with write/read commands   *)
 (* on a single key.                                                               *)
 (*                                                                                *)
+(* Network is modeled as a monotonic set of sent messages. This is a particularly *)
+(* efficient model for a practical non-Byzantine asynchronous network: messages   *)
+(* may be arbitrarily delayed, may be duplicatedly received, and may be lost (but *)
+(* in this case the sender would repeatedly retry and thus the message should     *)
+(* eventually gets received).                                                     *)
+(*                                                                                *)
 (* Linearizability is checked from global client's point of view on the sequence  *)
 (* of client observed events after termination.                                   *)
 (*                                                                                *)
@@ -183,13 +189,13 @@ variable msgs = {},                             \* messages in the network
 define
     Unobserved(e) == e \notin Range(observed)
 
-    requestsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
+    reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
     
-    responsesGot == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
+    acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
 
     terminated == /\ Len(pending) = 0
-                  /\ Cardinality(requestsMade) = NumCommands
-                  /\ Cardinality(responsesGot) = NumCommands
+                  /\ Cardinality(reqsMade) = NumCommands
+                  /\ Cardinality(acksRecv) = NumCommands
 end define;
 
 \* Send messages helper.
@@ -326,10 +332,10 @@ macro HandleAcceptReplies(r) begin
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
                 \* only enabling the next slot after commitUpTo here to
                 \* make the body of this macro simpler
-    \* for a slot, when there are enough number of AcceptReplies
+    \* for this slot, when there are enough number of AcceptReplies
     with s = node[r].commitUpTo + 1,
-         cmd = node[r].insts[s].cmd,
-         val = node[r].kvalue,
+         c = node[r].insts[s].cmd,
+         v = node[r].kvalue,
          ars = {m \in msgs: /\ m.type = "AcceptReply"
                             /\ m.slot = s
                             /\ m.bal = node[r].balPrepared}
@@ -338,11 +344,33 @@ macro HandleAcceptReplies(r) begin
         \* marks this slot as committed and apply command
         node[r].insts[s].status := "Committed" ||
         node[r].commitUpTo := s ||
-        node[r].kvalue := IF cmd \in Writes THEN cmd ELSE @;
+        node[r].kvalue := IF c \in Writes THEN c ELSE @;
         \* TODO: change this
-        Observe(<<AckEvent(cmd, val)>>);
+        Observe(<<AckEvent(c, v)>>);
         \* broadcast CommitNotice to followers
         Send({CommitNoticeMsg(s)});
+    end with;
+end macro;
+
+\* Replica receives new commit notification.
+macro HandleCommitNotice(r) begin
+    \* if I'm a follower waiting on CommitNotice
+    await /\ node[r].leader # r
+          /\ node[r].commitUpTo < NumCommands
+          /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
+                \* only enabling the next slot after commitUpTo here to
+                \* make the body of this macro simpler
+    \* for this slot, when there's a CommitNotice message
+    with s = node[r].commitUpTo + 1,
+         c = node[r].insts[s].cmd,
+         m \in msgs
+    do
+        await /\ m.type = "CommitNotice"
+              /\ m.upto = s;
+        \* marks this slot as committed and apply command
+        node[r].insts[s].status := "Committed" ||
+        node[r].commitUpTo := s ||
+        node[r].kvalue := IF c \in Writes THEN c ELSE @;
     end with;
 end macro;
 
@@ -362,8 +390,8 @@ begin
             HandleAccept(self);
         or
             HandleAcceptReplies(self);
-        \* or
-        \*     HandleCommitNotice(self);
+        or
+            HandleCommitNotice(self);
         end either;
     end while;
 end process;
@@ -372,19 +400,19 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "6a27524b" /\ chksum(tla) = "de08f6a6")
+\* BEGIN TRANSLATION (chksum(pcal) = "3d6a918" /\ chksum(tla) = "ade6bb87")
 VARIABLES msgs, node, pending, observed, pc
 
 (* define statement *)
 Unobserved(e) == e \notin Range(observed)
 
-requestsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
+reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
 
-responsesGot == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
+acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
 
 terminated == /\ Len(pending) = 0
-              /\ Cardinality(requestsMade) = NumCommands
-              /\ Cardinality(responsesGot) = NumCommands
+              /\ Cardinality(reqsMade) = NumCommands
+              /\ Cardinality(acksRecv) = NumCommands
 
 
 vars == << msgs, node, pending, observed, pc >>
@@ -473,18 +501,30 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ node[self].commitUpTo < NumCommands
                                    /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
                                 /\ LET s == node[self].commitUpTo + 1 IN
-                                     LET cmd == node[self].insts[s].cmd IN
-                                       LET val == node[self].kvalue IN
+                                     LET c == node[self].insts[s].cmd IN
+                                       LET v == node[self].kvalue IN
                                          LET ars == {m \in msgs: /\ m.type = "AcceptReply"
                                                                  /\ m.slot = s
                                                                  /\ m.bal = node[self].balPrepared} IN
                                            /\ Cardinality(ars) >= MajorityNum
                                            /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
                                                                    ![self].commitUpTo = s,
-                                                                   ![self].kvalue = IF cmd \in Writes THEN cmd ELSE @]
-                                           /\ observed' = observed \o SelectSeq((<<AckEvent(cmd, val)>>), Unobserved)
+                                                                   ![self].kvalue = IF c \in Writes THEN c ELSE @]
+                                           /\ observed' = observed \o SelectSeq((<<AckEvent(c, v)>>), Unobserved)
                                            /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
                                 /\ UNCHANGED pending
+                             \/ /\ /\ node[self].leader # self
+                                   /\ node[self].commitUpTo < NumCommands
+                                   /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
+                                /\ LET s == node[self].commitUpTo + 1 IN
+                                     LET c == node[self].insts[s].cmd IN
+                                       \E m \in msgs:
+                                         /\ /\ m.type = "CommitNotice"
+                                            /\ m.upto = s
+                                         /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
+                                                                 ![self].commitUpTo = s,
+                                                                 ![self].kvalue = IF c \in Writes THEN c ELSE @]
+                                /\ UNCHANGED <<msgs, pending, observed>>
                           /\ pc' = [pc EXCEPT ![self] = "rloop"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                           /\ UNCHANGED << msgs, node, pending, observed >>
