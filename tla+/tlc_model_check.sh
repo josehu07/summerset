@@ -26,6 +26,7 @@ java -XX:+UseParallelGC \
      -jar ../../../tla2tools.jar \
      -cleanup \
      -noGenerateSpecTE \
+     -difftrace \
      -fpmem 0.95 \
      -workers auto \
      -metadir "/tmp/${SPEC_DIR}/states" \

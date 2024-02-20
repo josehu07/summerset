@@ -1,6 +1,7 @@
 (**********************************************************************************)
 (* MultiPaxos in state machine replication (SMR) style with write/read commands   *)
-(* on a single key.                                                               *)
+(* on a single key. Please refer to the detailed comments in PlusCal code to see  *)
+(* how this spec closely models a practical SMR log replication system.           *)
 (*                                                                                *)
 (* Network is modeled as a monotonic set of sent messages. This is a particularly *)
 (* efficient model for a practical non-Byzantine asynchronous network: messages   *)
@@ -9,9 +10,12 @@
 (* eventually gets received).                                                     *)
 (*                                                                                *)
 (* Linearizability is checked from global client's point of view on the sequence  *)
-(* of client observed events after termination.                                   *)
+(* of client observed request/acknowledgement events after termination.           *)
 (*                                                                                *)
-(* Liveness is checked by not having deadlocks before termination.                *)
+(* Liveness is checked by not having deadlocks till observation of all requests.  *)
+(*                                                                                *)
+(* Possible further extensions include node failure injection, leader lease and   *)
+(* local read mechanism, etc.                                                     *)
 (**********************************************************************************)
 
 ---- MODULE MultiPaxos ----
@@ -22,7 +26,7 @@ EXTENDS FiniteSets, Sequences, Integers, TLC
 (*******************************)
 CONSTANT Replicas,  \* symmetric set of server nodes
          Writes,    \* symmetric set of write commands (each w/ unique value)
-         Reads,     \* symmetric set of read commands following writes
+         Reads,     \* symmetric set of read commands
          MaxBallot  \* maximum ballot pickable for leader preemption
 
 ReplicasAssumption == /\ IsFiniteSet(Replicas)
@@ -31,8 +35,8 @@ ReplicasAssumption == /\ IsFiniteSet(Replicas)
 WritesAssumption == /\ IsFiniteSet(Writes)
                     /\ Cardinality(Writes) >= 1
                     /\ "nil" \notin Writes
-                         \* a write command model value serves as both the ID
-                         \* of the command and the value to be written
+                            \* a write command model value serves as both the
+                            \* ID of the command and the value to be written
 
 ReadsAssumption == /\ IsFiniteSet(Reads)
                    /\ Cardinality(Reads) >= 0
@@ -71,10 +75,10 @@ InitPending ==    (CHOOSE ws \in [1..Cardinality(Writes) -> Writes]
                         : Range(ws) = Writes)
                \o (CHOOSE rs \in [1..Cardinality(Reads) -> Reads]
                         : Range(rs) = Reads)
-                        \* choose any sequence contatenating writes commands
-                        \* and read commands as the sequence of requests;
-                        \* all other cases are all symmetric or less useful
-                        \* than this one
+                    \* W.L.O.G., choose any sequence contatenating writes
+                    \* commands and read commands as the sequence of reqs;
+                    \* all other cases are either symmetric or less useful
+                    \* than this one
 
 \* Server-side constants & states.
 MajorityNum == (Cardinality(Replicas) \div 2) + 1
@@ -84,9 +88,6 @@ Ballots == 1..MaxBallot
 Slots == 1..NumCommands
 
 Statuses == {"Preparing", "Accepting", "Committed"}
-
-InProgress(status) == \/ status = "Preparing"
-                      \/ status = "Accepting"
 
 InstStates == [status: {"Empty"} \cup Statuses,
                cmd: {"nil"} \cup Commands,
@@ -137,7 +138,7 @@ PrepareReplyMsg(r, b, iv) ==
                               bal |-> b,
                               votes |-> iv]
 
-HighestVotedCmd(prs, s) ==
+PeakVotedCmd(prs, s) ==
     IF \A pr \in prs: pr.votes[s].bal = 0
         THEN "nil"
         ELSE LET bc == CHOOSE bc \in (Ballots \X Commands):
@@ -187,7 +188,13 @@ variable msgs = {},                             \* messages in the network
          observed = <<>>;                       \* client observed events
 
 define
-    Unobserved(e) == e \notin Range(observed)
+    UnseenPending(insts) ==
+        LET filter(c) == c \notin {insts[s].cmd: s \in Slots}
+        IN  SelectSeq(pending, filter)
+    
+    RemovePending(cmd) ==
+        LET filter(c) == c # cmd
+        IN  SelectSeq(pending, filter)
 
     reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
     
@@ -198,14 +205,21 @@ define
                   /\ Cardinality(acksRecv) = NumCommands
 end define;
 
-\* Send messages helper.
+\* Send a set of messages helper.
 macro Send(set) begin
     msgs := msgs \cup set;
 end macro;
 
-\* Observe events helper.
-macro Observe(seq) begin
-    observed := observed \o SelectSeq(seq, Unobserved);
+\* Observe a client event helper.
+macro Observe(e) begin
+    if e \notin Range(observed) then
+        observed := Append(observed, e);
+    end if;
+end macro;
+
+\* Resolve a pending command helper.
+macro Resolve(c) begin
+    pending := RemovePending(c);
 end macro;
 
 \* Someone steps up as leader and sends Prepare message to followers.
@@ -216,17 +230,18 @@ macro BecomeLeader(r) begin
     with b \in Ballots do
         await /\ b > node[r].balMaxKnown
               /\ ~\E m \in msgs: (m.type = "Prepare") /\ (m.bal = b);
-                    \* using this clause to model that ballot numbers from
-                    \* different proposers be unique
+                    \* W.L.O.G., using this clause to model that ballot
+                    \* numbers from different proposers be unique
         \* update states and restart Prepare phase for in-progress instances
         node[r].leader := r ||
         node[r].balPrepared := 0 ||
         node[r].balMaxKnown := b ||
-        node[r].insts := [s \in Slots |->
-                            [node[r].insts[s]
-                                EXCEPT !.status = IF InProgress(@)
-                                                    THEN "Preparing"
-                                                    ELSE @]];
+        node[r].insts :=
+            [s \in Slots |->
+                [node[r].insts[s]
+                    EXCEPT !.status = IF @ = "Accepting"
+                                        THEN "Preparing"
+                                        ELSE @]];
         \* broadcast Prepare and reply to myself instantly
         Send({PrepareMsg(r, b),
               PrepareReplyMsg(r, b, VotesByNode(node[r]))});
@@ -242,11 +257,12 @@ macro HandlePrepare(r) begin
         \* update states and reset statuses
         node[r].leader := m.src ||
         node[r].balMaxKnown := m.bal ||
-        node[r].insts := [s \in Slots |->
-                            [node[r].insts[s]
-                                EXCEPT !.status = IF InProgress(@)
-                                                    THEN "Preparing"
-                                                    ELSE @]];
+        node[r].insts :=
+            [s \in Slots |->
+                [node[r].insts[s]
+                    EXCEPT !.status = IF @ = "Accepting"
+                                        THEN "Preparing"
+                                        ELSE @]];
         \* send back PrepareReply with my voted list
         Send({PrepareReplyMsg(r, m.bal, VotesByNode(node[r]))});
     end with;
@@ -266,15 +282,18 @@ macro HandlePrepareReplies(r) begin
         \* marks this ballot as prepared and saves highest voted command
         \* in each slot if any
         node[r].balPrepared := node[r].balMaxKnown ||
-        node[r].insts := [s \in Slots |->
-                            [node[r].insts[s]
-                                EXCEPT !.status = IF InProgress(@)
-                                                    THEN "Accepting"
-                                                    ELSE @,
-                                       !.cmd = HighestVotedCmd(prs, s)]];
+        node[r].insts :=
+            [s \in Slots |->
+                [node[r].insts[s]
+                    EXCEPT !.status = IF \/ @ = "Preparing"
+                                         \/ /\ @ = "Empty"
+                                            /\ PeakVotedCmd(prs, s) # "nil"
+                                        THEN "Accepting"
+                                        ELSE @,
+                           !.cmd = PeakVotedCmd(prs, s)]];
         \* send Accept messages for in-progress instances
         Send({AcceptMsg(r, node[r].balPrepared, s, node[r].insts[s].cmd):
-              s \in {s \in Slots: InProgress(node[r].insts[s].status)}});
+              s \in {s \in Slots: node[r].insts[s].status = "Accepting"}});
     end with;
 end macro;
 
@@ -284,10 +303,14 @@ macro TakeNewRequest(r) begin
     await /\ node[r].leader = r
           /\ node[r].balPrepared = node[r].balMaxKnown
           /\ \E s \in Slots: node[r].insts[s].status = "Empty"
-          /\ Len(pending) > 0;
+          /\ Len(UnseenPending(node[r].insts)) > 0;
     \* find the next empty slot and pick a pending request
     with s = FirstEmptySlot(node[r].insts),
-         c = Head(pending)
+         c = Head(UnseenPending(node[r].insts))
+                \* W.L.O.G., only pick a command not seen in current
+                \* prepared log to have smaller state space; in practice,
+                \* duplicated client requests should be treated by some
+                \* idempotency mechanism such as using request IDs
     do
         \* update slot status and voted
         node[r].insts[s].status := "Accepting" ||
@@ -297,9 +320,8 @@ macro TakeNewRequest(r) begin
         \* broadcast Accept and reply to myself instantly
         Send({AcceptMsg(r, node[r].balPrepared, s, c),
               AcceptReplyMsg(r, node[r].balPrepared, s)});
-        \* TODO: change this
-        Observe(<<ReqEvent(c)>>);
-        pending := Tail(pending);
+        \* append to observed events sequence if haven't yet
+        Observe(ReqEvent(c));
     end with;
 end macro;
 
@@ -309,7 +331,7 @@ macro HandleAccept(r) begin
     with m \in msgs do
         await /\ m.type = "Accept"
               /\ m.bal >= node[r].balMaxKnown
-              /\ node[r].insts[m.slot].voted.bal < m.bal;
+              /\ m.bal > node[r].insts[m.slot].voted.bal;
         \* update node states and corresponding instance's states
         node[r].leader := m.src ||
         node[r].balMaxKnown := m.bal ||
@@ -330,8 +352,8 @@ macro HandleAcceptReplies(r) begin
           /\ node[r].balPrepared = node[r].balMaxKnown
           /\ node[r].commitUpTo < NumCommands
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
-                \* only enabling the next slot after commitUpTo here to
-                \* make the body of this macro simpler
+                \* W.L.O.G., only enabling the next slot after commitUpTo
+                \* here to make the body of this macro simpler
     \* for this slot, when there are enough number of AcceptReplies
     with s = node[r].commitUpTo + 1,
          c = node[r].insts[s].cmd,
@@ -345,8 +367,10 @@ macro HandleAcceptReplies(r) begin
         node[r].insts[s].status := "Committed" ||
         node[r].commitUpTo := s ||
         node[r].kvalue := IF c \in Writes THEN c ELSE @;
-        \* TODO: change this
-        Observe(<<AckEvent(c, v)>>);
+        \* append to observed events sequence if haven't yet, and remove
+        \* the command from pending
+        Observe(AckEvent(c, v));
+        Resolve(c);
         \* broadcast CommitNotice to followers
         Send({CommitNoticeMsg(s)});
     end with;
@@ -358,8 +382,8 @@ macro HandleCommitNotice(r) begin
     await /\ node[r].leader # r
           /\ node[r].commitUpTo < NumCommands
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
-                \* only enabling the next slot after commitUpTo here to
-                \* make the body of this macro simpler
+                \* W.L.O.G., only enabling the next slot after commitUpTo
+                \* here to make the body of this macro simpler
     \* for this slot, when there's a CommitNotice message
     with s = node[r].commitUpTo + 1,
          c = node[r].insts[s].cmd,
@@ -374,7 +398,7 @@ macro HandleCommitNotice(r) begin
     end with;
 end macro;
 
-\* Replica server node logic.
+\* Replica server node main loop.
 process Replica \in Replicas
 begin
     rloop: while ~terminated do
@@ -400,11 +424,17 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "3d6a918" /\ chksum(tla) = "ade6bb87")
+\* BEGIN TRANSLATION (chksum(pcal) = "d7327cb9" /\ chksum(tla) = "bfbfd945")
 VARIABLES msgs, node, pending, observed, pc
 
 (* define statement *)
-Unobserved(e) == e \notin Range(observed)
+UnseenPending(insts) ==
+    LET filter(c) == c \notin {insts[s].cmd: s \in Slots}
+    IN  SelectSeq(pending, filter)
+
+RemovePending(cmd) ==
+    LET filter(c) == c # cmd
+    IN  SelectSeq(pending, filter)
 
 reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
 
@@ -436,10 +466,10 @@ rloop(self) == /\ pc[self] = "rloop"
                                                              ![self].balPrepared = 0,
                                                              ![self].balMaxKnown = b,
                                                              ![self].insts = [s \in Slots |->
-                                                                                [node[self].insts[s]
-                                                                                    EXCEPT !.status = IF InProgress(@)
-                                                                                                        THEN "Preparing"
-                                                                                                        ELSE @]]]
+                                                                                 [node[self].insts[s]
+                                                                                     EXCEPT !.status = IF @ = "Accepting"
+                                                                                                         THEN "Preparing"
+                                                                                                         ELSE @]]]
                                      /\ msgs' = (msgs \cup ({PrepareMsg(self, b),
                                                              PrepareReplyMsg(self, b, VotesByNode(node'[self]))}))
                                 /\ UNCHANGED <<pending, observed>>
@@ -449,10 +479,10 @@ rloop(self) == /\ pc[self] = "rloop"
                                      /\ node' = [node EXCEPT ![self].leader = m.src,
                                                              ![self].balMaxKnown = m.bal,
                                                              ![self].insts = [s \in Slots |->
-                                                                                [node[self].insts[s]
-                                                                                    EXCEPT !.status = IF InProgress(@)
-                                                                                                        THEN "Preparing"
-                                                                                                        ELSE @]]]
+                                                                                 [node[self].insts[s]
+                                                                                     EXCEPT !.status = IF @ = "Accepting"
+                                                                                                         THEN "Preparing"
+                                                                                                         ELSE @]]]
                                      /\ msgs' = (msgs \cup ({PrepareReplyMsg(self, m.bal, VotesByNode(node'[self]))}))
                                 /\ UNCHANGED <<pending, observed>>
                              \/ /\ /\ node[self].leader = self
@@ -462,32 +492,37 @@ rloop(self) == /\ pc[self] = "rloop"
                                      /\ Cardinality(prs) >= MajorityNum
                                      /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
                                                              ![self].insts = [s \in Slots |->
-                                                                                [node[self].insts[s]
-                                                                                    EXCEPT !.status = IF InProgress(@)
-                                                                                                        THEN "Accepting"
-                                                                                                        ELSE @,
-                                                                                           !.cmd = HighestVotedCmd(prs, s)]]]
+                                                                                 [node[self].insts[s]
+                                                                                     EXCEPT !.status = IF \/ @ = "Preparing"
+                                                                                                          \/ /\ @ = "Empty"
+                                                                                                             /\ PeakVotedCmd(prs, s) # "nil"
+                                                                                                         THEN "Accepting"
+                                                                                                         ELSE @,
+                                                                                            !.cmd = PeakVotedCmd(prs, s)]]]
                                      /\ msgs' = (msgs \cup ({AcceptMsg(self, node'[self].balPrepared, s, node'[self].insts[s].cmd):
-                                                             s \in {s \in Slots: InProgress(node'[self].insts[s].status)}}))
+                                                             s \in {s \in Slots: node'[self].insts[s].status = "Accepting"}}))
                                 /\ UNCHANGED <<pending, observed>>
                              \/ /\ /\ node[self].leader = self
                                    /\ node[self].balPrepared = node[self].balMaxKnown
                                    /\ \E s \in Slots: node[self].insts[s].status = "Empty"
-                                   /\ Len(pending) > 0
+                                   /\ Len(UnseenPending(node[self].insts)) > 0
                                 /\ LET s == FirstEmptySlot(node[self].insts) IN
-                                     LET c == Head(pending) IN
+                                     LET c == Head(UnseenPending(node[self].insts)) IN
                                        /\ node' = [node EXCEPT ![self].insts[s].status = "Accepting",
                                                                ![self].insts[s].cmd = c,
                                                                ![self].insts[s].voted.bal = node[self].balPrepared,
                                                                ![self].insts[s].voted.cmd = c]
                                        /\ msgs' = (msgs \cup ({AcceptMsg(self, node'[self].balPrepared, s, c),
                                                                AcceptReplyMsg(self, node'[self].balPrepared, s)}))
-                                       /\ observed' = observed \o SelectSeq((<<ReqEvent(c)>>), Unobserved)
-                                       /\ pending' = Tail(pending)
+                                       /\ IF (ReqEvent(c)) \notin Range(observed)
+                                             THEN /\ observed' = Append(observed, (ReqEvent(c)))
+                                             ELSE /\ TRUE
+                                                  /\ UNCHANGED observed
+                                /\ UNCHANGED pending
                              \/ /\ \E m \in msgs:
                                      /\ /\ m.type = "Accept"
                                         /\ m.bal >= node[self].balMaxKnown
-                                        /\ node[self].insts[m.slot].voted.bal < m.bal
+                                        /\ m.bal > node[self].insts[m.slot].voted.bal
                                      /\ node' = [node EXCEPT ![self].leader = m.src,
                                                              ![self].balMaxKnown = m.bal,
                                                              ![self].insts[m.slot].status = "Accepting",
@@ -510,9 +545,12 @@ rloop(self) == /\ pc[self] = "rloop"
                                            /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
                                                                    ![self].commitUpTo = s,
                                                                    ![self].kvalue = IF c \in Writes THEN c ELSE @]
-                                           /\ observed' = observed \o SelectSeq((<<AckEvent(c, v)>>), Unobserved)
+                                           /\ IF (AckEvent(c, v)) \notin Range(observed)
+                                                 THEN /\ observed' = Append(observed, (AckEvent(c, v)))
+                                                 ELSE /\ TRUE
+                                                      /\ UNCHANGED observed
+                                           /\ pending' = RemovePending(c)
                                            /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
-                                /\ UNCHANGED pending
                              \/ /\ /\ node[self].leader # self
                                    /\ node[self].commitUpTo < NumCommands
                                    /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
