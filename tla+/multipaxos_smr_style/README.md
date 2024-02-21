@@ -9,7 +9,7 @@ The files include:
 - `MultiPaxos.tla`: main protocol spec written in PlusCal and with translation attached
 - `MultiPaxos_MC.tla`: entrance of running model checking; contains the checked `TypeOK` and `Linearizability` constraints
 - `MultiPaxos_MC.cfg`: recommended model inputs and configurations (checks < 8 min on a 40-core machine)
-- `MultiPaxos_MC_small.cfg`: config with one fewer write request in input (checks < 10 seconds)
+- `MultiPaxos_MC_small.cfg`: config with one fewer write request and no `CommitNotice` messages (checks < 10 seconds)
 
 To play with the spec and fail the check, try for example:
 
@@ -32,6 +32,7 @@ This spec differs from traditional, general descriptions of Paxos/MultiPaxos in 
 - It is easy to extend this spec and add more interesting features, for example:
   - Node failure injection
   - Leader lease and local read
+  - Asymmetric write/read quorum sizes
 
 ---
 

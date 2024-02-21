@@ -15,7 +15,7 @@
 (* Liveness is checked by not having deadlocks till observation of all requests.  *)
 (*                                                                                *)
 (* Possible further extensions include node failure injection, leader lease and   *)
-(* local read mechanism, etc.                                                     *)
+(* local read mechanism, asymmetric write/read quorum sizes, etc.                 *)
 (**********************************************************************************)
 
 ---- MODULE MultiPaxos ----
@@ -24,10 +24,12 @@ EXTENDS FiniteSets, Sequences, Integers, TLC
 (*******************************)
 (* Model inputs & assumptions. *)
 (*******************************)
-CONSTANT Replicas,  \* symmetric set of server nodes
-         Writes,    \* symmetric set of write commands (each w/ unique value)
-         Reads,     \* symmetric set of read commands
-         MaxBallot  \* maximum ballot pickable for leader preemption
+CONSTANT Replicas,   \* symmetric set of server nodes
+         Writes,     \* symmetric set of write commands (each w/ unique value)
+         Reads,      \* symmetric set of read commands
+         MaxBallot,  \* maximum ballot pickable for leader preemption
+         CommitNoticeOn,  \* if true, turn on CommitNotice messages
+         NodeFailuresOn   \* if true, turn on node failures injection
 
 ReplicasAssumption == /\ IsFiniteSet(Replicas)
                       /\ Cardinality(Replicas) >= 1
@@ -45,10 +47,16 @@ ReadsAssumption == /\ IsFiniteSet(Reads)
 MaxBallotAssumption == /\ MaxBallot \in Nat
                        /\ MaxBallot >= 2
 
+CommitNoticeOnAssumption == CommitNoticeOn \in BOOLEAN
+
+NodeFailuresOnAssumption == NodeFailuresOn \in BOOLEAN
+
 ASSUME /\ ReplicasAssumption
        /\ WritesAssumption
        /\ ReadsAssumption
        /\ MaxBallotAssumption
+       /\ CommitNoticeOnAssumption
+       /\ NodeFailuresOnAssumption
 
 ----------
 
@@ -415,7 +423,9 @@ begin
         or
             HandleAcceptReplies(self);
         or
-            HandleCommitNotice(self);
+            if CommitNoticeOn then
+                HandleCommitNotice(self);
+            end if;
         end either;
     end while;
 end process;
@@ -424,7 +434,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "d7327cb9" /\ chksum(tla) = "bfbfd945")
+\* BEGIN TRANSLATION (chksum(pcal) = "dda61e65" /\ chksum(tla) = "b9809c44")
 VARIABLES msgs, node, pending, observed, pc
 
 (* define statement *)
@@ -551,17 +561,20 @@ rloop(self) == /\ pc[self] = "rloop"
                                                       /\ UNCHANGED observed
                                            /\ pending' = RemovePending(c)
                                            /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
-                             \/ /\ /\ node[self].leader # self
-                                   /\ node[self].commitUpTo < NumCommands
-                                   /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
-                                /\ LET s == node[self].commitUpTo + 1 IN
-                                     LET c == node[self].insts[s].cmd IN
-                                       \E m \in msgs:
-                                         /\ /\ m.type = "CommitNotice"
-                                            /\ m.upto = s
-                                         /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
-                                                                 ![self].commitUpTo = s,
-                                                                 ![self].kvalue = IF c \in Writes THEN c ELSE @]
+                             \/ /\ IF CommitNoticeOn
+                                      THEN /\ /\ node[self].leader # self
+                                              /\ node[self].commitUpTo < NumCommands
+                                              /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
+                                           /\ LET s == node[self].commitUpTo + 1 IN
+                                                LET c == node[self].insts[s].cmd IN
+                                                  \E m \in msgs:
+                                                    /\ /\ m.type = "CommitNotice"
+                                                       /\ m.upto = s
+                                                    /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
+                                                                            ![self].commitUpTo = s,
+                                                                            ![self].kvalue = IF c \in Writes THEN c ELSE @]
+                                      ELSE /\ TRUE
+                                           /\ node' = node
                                 /\ UNCHANGED <<msgs, pending, observed>>
                           /\ pc' = [pc EXCEPT ![self] = "rloop"]
                      ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
