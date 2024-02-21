@@ -25,14 +25,15 @@ This spec differs from traditional, general descriptions of Paxos/MultiPaxos in 
   - Numbers of client write/read commands are made model inputs
   - Explicit termination condition is defined, thus semi-liveness can be checked by not having deadlocks
   - Safety constraint is defined as a clean client-viewed linearizability property upon termination
+  - Replica node failure is injected to assure the protocol’s fault-tolerance level
   - See the comments in the source files for more details…
 - Optimizations are applied to the spec to reduce the state space W.L.O.G.
   - Model checking with recommended inputs completes in < 8 min on a 40-core server machine
   - Commenting out the `HandleCommitNotice` action (which is the least significant) reduces check time down to < 2 min
 - It is easy to extend this spec and add more interesting features, for example:
-  - Node failure injection
   - Leader lease and local read
   - Asymmetric write/read quorum sizes
+  - ...
 
 ---
 

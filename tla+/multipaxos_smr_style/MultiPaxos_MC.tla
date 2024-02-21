@@ -20,7 +20,7 @@ ConstMaxBallot == 2
 (* Type check invariant. *)
 (*************************)
 TypeOK == /\ \A m \in msgs: m \in Messages
-          /\ \A s \in Replicas: node[s] \in NodeStates
+          /\ \A r \in Replicas: node[r] \in NodeStates
           /\ Len(pending) =< NumCommands
           /\ Cardinality(Range(pending)) = Len(pending)
           /\ \A c \in Range(pending): c \in Commands
@@ -28,6 +28,7 @@ TypeOK == /\ \A m \in msgs: m \in Messages
           /\ Cardinality(Range(observed)) = Len(observed)
           /\ Cardinality(reqsMade) >= Cardinality(acksRecv)
           /\ \A e \in Range(observed): e \in ClientEvents
+          /\ \A r \in Replicas: crashed[r] \in BOOLEAN
 
 THEOREM Spec => []TypeOK
 
