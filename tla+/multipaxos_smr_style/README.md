@@ -8,8 +8,8 @@ The files include:
 
 - `MultiPaxos.tla`: main protocol spec written in PlusCal and with translation attached
 - `MultiPaxos_MC.tla`: entrance of running model checking; contains the checked `TypeOK` and `Linearizability` constraints
-- `MultiPaxos_MC.cfg`: recommended model inputs and configurations (checks < 8 min on a 40-core machine)
-- `MultiPaxos_MC_small.cfg`: config with one fewer write request and no `CommitNotice` messages (checks < 10 seconds)
+- `MultiPaxos_MC.cfg`: recommended model inputs and configurations (which should give 100% coverage of all interesting cases, checks < 22 min on a 40-core machine)
+- `MultiPaxos_MC_small.cfg`: config with one fewer write request and no `CommitNotice` messages (checks < 10 secs)
 
 To play with the spec and fail the check, try for example:
 
@@ -28,8 +28,8 @@ This spec differs from traditional, general descriptions of Paxos/MultiPaxos in 
   - Replica node failure is injected to assure the protocol’s fault-tolerance level
   - See the comments in the source files for more details…
 - Optimizations are applied to the spec to reduce the state space W.L.O.G.
-  - Model checking with recommended inputs completes in < 8 min on a 40-core server machine
-  - Commenting out the `HandleCommitNotice` action (which is the least significant) reduces check time down to < 2 min
+  - Model checking with recommend inputs (which should give 100% coverage of all interesting cases) completes in < 22 min on a 40-core server machine
+  - Commenting out the `HandleCommitNotice` action (which is the least significant) and having one fewer request reduces check time down to < 10 secs
 - It is easy to extend this spec and add more interesting features, for example:
   - Leader lease and local read
   - Asymmetric write/read quorum sizes

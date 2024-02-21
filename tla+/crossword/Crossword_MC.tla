@@ -1,89 +1,78 @@
 ---- MODULE Crossword_MC ----
 EXTENDS Crossword
 
-SymmetricPerms ==      Permutations(Replicas)
-                  \cup Permutations(Values)
-                  \cup Permutations(Slots)
-                  \cup Permutations(Shards)
+(****************************)
+(* TLC config-related defs. *)
+(****************************)
+ConditionalPerm(set) == IF Cardinality(set) > 1
+                          THEN Permutations(set)
+                          ELSE {}
 
-ConstBallots == 0..1
-ConstNumDataShards == 2
-ConstMaxFaults == 1
+SymmetricPerms ==      ConditionalPerm(Replicas)
+                  \cup ConditionalPerm(Writes)
+                  \cup ConditionalPerm(Reads)
+
+ConfigEmptySet == {}
+
+ConstMaxBallot == 2
 
 ----------
 
 (*************************)
 (* Type check invariant. *)
 (*************************)
-StatusSet == {"", "Preparing", "Accepting", "Learned"}
-
-SlotVotes == [Slots -> [bal: Ballots \cup {-1},
-                        val: Values \cup {0},
-                        shards: SUBSET Shards]]
-
-Messages ==      [type: {"Prepare"}, from: Replicas,
-                                     bal: Ballots]
-            \cup [type: {"PrepareReply"}, from: Replicas,
-                                          bal: Ballots,
-                                          voted: SlotVotes]
-            \cup [type: {"Accept"}, from: Replicas,
-                                    to: Replicas,
-                                    slot: Slots,
-                                    bal: Ballots,
-                                    val: Values,
-                                    shards: SUBSET Shards]
-            \cup [type: {"AcceptReply"}, from: Replicas,
-                                         slot: Slots,
-                                         bal: Ballots,
-                                         val: Values,
-                                         shards: SUBSET Shards]
-
-TypeOK == /\ msgs \in SUBSET Messages
-          /\ lBallot \in [Replicas -> Ballots \cup {-1}]
-          /\ lStatus \in [Replicas -> [Slots -> StatusSet]]
-          /\ rBallot \in [Replicas -> Ballots \cup {-1}]
-          /\ rVoted \in [Replicas -> SlotVotes]
-          /\ proposed \in [Slots -> SUBSET Values]
-          /\ learned \in [Slots -> SUBSET Values]
+TypeOK == /\ \A m \in msgs: m \in Messages
+          /\ \A r \in Replicas: node[r] \in NodeStates
+          /\ Len(pending) =< NumCommands
+          /\ Cardinality(Range(pending)) = Len(pending)
+          /\ \A c \in Range(pending): c \in Commands
+          /\ Len(observed) =< 2 * NumCommands
+          /\ Cardinality(Range(observed)) = Len(observed)
+          /\ Cardinality(reqsMade) >= Cardinality(acksRecv)
+          /\ \A e \in Range(observed): e \in ClientEvents
+          /\ \A r \in Replicas: crashed[r] \in BOOLEAN
 
 THEOREM Spec => []TypeOK
 
 ----------
 
-(*****************************************************************************)
-(* Check that it implements the ConsensusMulti spec. This transitively means *)
-(* that it satisfies the following three properties:                         *)
-(*   - Nontriviality                                                         *)
-(*   - Stability                                                             *)
-(*   - Consistency                                                           *)
-(*                                                                           *)
-(* Only check this property on very small model constants inputs, otherwise  *)
-(* it would take a prohibitively long time due to state bloating.            *)
-(*****************************************************************************)
-proposedSet == UNION {proposed[s]: s \in Slots}
+(*******************************)
+(* Linearizability constraint. *)
+(*******************************)
+ReqPosOfCmd(c) == CHOOSE i \in 1..Len(observed):
+                        /\ observed[i].type = "Req"
+                        /\ observed[i].cmd = c
 
-ConsensusModule == INSTANCE ConsensusMulti WITH proposed <- proposedSet,
-                                                chosen <- learned
-ConsensusSpec == ConsensusModule!Spec
+AckPosOfCmd(c) == CHOOSE i \in 1..Len(observed):
+                        /\ observed[i].type = "Ack"
+                        /\ observed[i].cmd = c
 
-THEOREM Spec => ConsensusSpec
+ResultOfCmd(c) == observed[AckPosOfCmd(c)].val
 
-----------
+OrderIdxOfCmd(order, c) == CHOOSE j \in 1..Len(order): order[j] = c
 
-(********************************************************************************)
-(* The non-triviality and consistency properties stated in invariant flavor.    *)
-(* The stability property cannot be stated as an invariant.                     *)
-(*                                                                              *)
-(* Checking invariants takes significantly less time than checking more complex *)
-(* temporal properties. Hence, first check these as invariants on larger        *)
-(* constants inputs, then check the ConsensusSpec property on small inputs.     *)
-(********************************************************************************)
-NontrivialityInv ==
-    \A s \in Slots: \A v \in learned[s]: v \in proposed[s]
+LastWriteBefore(order, j) ==
+    LET k == CHOOSE k \in 0..(j-1):
+                    /\ (k = 0 \/ order[k] \in Writes)
+                    /\ \A l \in (k+1)..(j-1): order[l] \in Reads
+    IN  IF k = 0 THEN "nil" ELSE order[k]
 
-ConsistencyInv ==
-    \A s \in Slots: Cardinality(learned[s]) =< 1
+IsLinearOrder(order) ==
+    /\ {order[j]: j \in 1..Len(order)} = Commands
+    /\ \A j \in 1..Len(order):
+            ResultOfCmd(order[j]) = LastWriteBefore(order, j)
 
-THEOREM Spec => [](NontrivialityInv /\ ConsistencyInv)
+ObeysRealTime(order) ==
+    \A c1, c2 \in Commands:
+        (AckPosOfCmd(c1) < ReqPosOfCmd(c2))
+            => (OrderIdxOfCmd(order, c1) < OrderIdxOfCmd(order, c2))
+
+Linearizability ==
+    terminated => 
+        \E order \in [1..NumCommands -> Commands]:
+            /\ IsLinearOrder(order)
+            /\ ObeysRealTime(order)
+
+THEOREM Spec => Linearizability
 
 ====
