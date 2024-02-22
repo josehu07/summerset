@@ -61,10 +61,7 @@ Range(func) == {func[i]: i \in DOMAIN func}
 
 MajorityNum == (Cardinality(Replicas) \div 2) + 1
 
-Shards == 1..Cardinality(Replicas)
-
-ReplicaIdx == CHOOSE map \in [Replicas -> Shards]:
-                    Cardinality(Range(map)) = Cardinality(Replicas)
+Shards == Replicas
 
 NumDataShards == MajorityNum
 
@@ -139,10 +136,16 @@ IsGoodCoverageSet(cs) ==
     \* we can reconstruct the original data?
     Cardinality(UNION cs) >= NumDataShards
 
+ShardToIdx == CHOOSE map \in [Shards -> 1..Cardinality(Shards)]:
+                    Cardinality(Range(map)) = Cardinality(Shards)
+
+IdxToShard == [i \in 1..Cardinality(Shards) |->
+                    CHOOSE r \in Shards: ShardToIdx[r] = i]
+
 ValidAssignments ==
     \* Set of all valid shard assignments.
-    {[r \in Replicas |-> {(i % Cardinality(Shards)) + 1:
-                          i \in (ReplicaIdx[r])..(ReplicaIdx[r]+na-1)}]:
+    {[r \in Replicas |-> {IdxToShard[((i-1) % Cardinality(Shards)) + 1]:
+                          i \in (ShardToIdx[r])..(ShardToIdx[r]+na-1)}]:
      na \in 1..MajorityNum}
 
 \* ASSUME Print(ValidAssignments, TRUE)
@@ -157,7 +160,7 @@ PrepareMsg(r, b) == [type |-> "Prepare", src |-> r,
 InstsVotes == [Slots -> [bal: {0} \cup Ballots,
                          cmd: {"nil"} \cup Commands,
                          shards: SUBSET Shards]]
-                             
+
 VotesByNode(n) == [s \in Slots |-> n.insts[s].voted]
 
 PrepareReplyMsgs == [type: {"PrepareReply"}, src: Replicas,
