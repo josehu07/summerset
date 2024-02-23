@@ -1,23 +1,20 @@
 (**********************************************************************************)
-(* Crossword protocol in state machine replication (SMR) style with write/read    *)
-(* commands on a single key. Payload of each write is allowed to be erasure-coded *)
-(* in a (N, M) scheme and follow balanced Round-Robin assignment policies.        *)
-(* Careful adjustments to the accpetance condition are made to retaining the same *)
-(* fault-tolerance level as classic MultiPaxos.                                   *)
-(*                                                                                *)
-(* See multipaxos_smr_style/MultiPaxos.tla for detailed description of base spec. *)
+(* This spec extends multipaxos_smr_style/MultiPaxos.tla with extra features:     *)
+(*   [ ] Only keep writes in the log (reads squeeze in between writes)            *)
+(*   [ ] Asymmetric write/read quorum size                                        *)
+(*   [ ] Stable leader lease and local read at leader                             *)
 (**********************************************************************************)
 
----- MODULE Crossword ----
+---- MODULE MultiPaxos ----
 EXTENDS FiniteSets, Sequences, Integers, TLC
 
 (*******************************)
 (* Model inputs & assumptions. *)
 (*******************************)
-CONSTANT Replicas,        \* symmetric set of server nodes
-         Writes,          \* symmetric set of write commands (each w/ unique value)
-         Reads,           \* symmetric set of read commands
-         MaxBallot,       \* maximum ballot pickable for leader preemption
+CONSTANT Replicas,   \* symmetric set of server nodes
+         Writes,     \* symmetric set of write commands (each w/ unique value)
+         Reads,      \* symmetric set of read commands
+         MaxBallot,  \* maximum ballot pickable for leader preemption
          CommitNoticeOn,  \* if true, turn on CommitNotice messages
          NodeFailuresOn   \* if true, turn on node failures injection
 
@@ -55,17 +52,13 @@ ASSUME /\ ReplicasAssumption
 (********************************)
 Commands == Writes \cup Reads
 
+NumWrites == Cardinality(Writes)
+
+NumReads == Cardinality(Reads)
+
 NumCommands == Cardinality(Commands)
 
-Population == Cardinality(Replicas)
-
-MajorityNum == (Population \div 2) + 1
-
-Shards == Replicas
-
-NumDataShards == MajorityNum
-
-Range(func) == {func[i]: i \in DOMAIN func}
+Range(seq) == {seq[i]: i \in 1..Len(seq)}
 
 \* Client observable events.
 ClientEvents ==      [type: {"Req"}, cmd: Commands]
@@ -87,27 +80,30 @@ InitPending ==    (CHOOSE ws \in [1..Cardinality(Writes) -> Writes]
                     \* than this one
 
 \* Server-side constants & states.
+Population == Cardinality(Replicas)
+
+MajorityNum == (Population \div 2) + 1
+
 Ballots == 1..MaxBallot
 
-Slots == 1..NumCommands
+Slots == 1..NumWrites
 
 Statuses == {"Preparing", "Accepting", "Committed"}
 
 InstStates == [status: {"Empty"} \cup Statuses,
-               cmd: {"nil"} \cup Commands,
-               shards: SUBSET Shards,
+               cmd: {"nil"} \cup Writes,
                voted: [bal: {0} \cup Ballots,
-                       cmd: {"nil"} \cup Commands,
-                       shards: SUBSET Shards]]
+                       cmd: {"nil"} \cup Writes]]
 
 NullInst == [status |-> "Empty",
              cmd |-> "nil",
-             shards |-> {},
-             voted |-> [bal |-> 0, cmd |-> "nil", shards |-> {}]]
+             voted |-> [bal |-> 0, cmd |-> "nil"]]
 
 NodeStates == [leader: {"none"} \cup Replicas,
                kvalue: {"nil"} \cup Writes,
                commitUpTo: {0} \cup Slots,
+               onflyReads: SUBSET Reads,
+               onflyReadValue: [Reads -> {"nil"} \cup Writes],
                balPrepared: {0} \cup Ballots,
                balMaxKnown: {0} \cup Ballots,
                insts: [Slots -> InstStates]]
@@ -115,6 +111,8 @@ NodeStates == [leader: {"none"} \cup Replicas,
 NullNode == [leader |-> "none",
              kvalue |-> "nil",
              commitUpTo |-> 0,
+             onflyReads |-> {},
+             onflyReadValue |-> [c \in Reads |-> "nil"],
              balPrepared |-> 0,
              balMaxKnown |-> 0,
              insts |-> [s \in Slots |-> NullInst]]
@@ -124,34 +122,6 @@ FirstEmptySlot(insts) ==
         /\ insts[s].status = "Empty"
         /\ \A t \in 1..(s-1): insts[t].status # "Empty"
 
-\* Erasure-coding related expressions.
-BigEnoughUnderFaults(g, u) == 
-    \* Is g a large enough subset of u under promised fault-tolerance?
-    Cardinality(g) >= (Cardinality(u) + MajorityNum - Population)
-
-SubsetsUnderFaults(u) ==
-    \* Set of subsets of u we consider under promised fault-tolerance.
-    {g \in SUBSET u: BigEnoughUnderFaults(g, u)}
-        
-IsGoodCoverageSet(cs) ==
-    \* Is cs a coverage set (i.e., a set of sets of shards) from which
-    \* we can reconstruct the original data?
-    Cardinality(UNION cs) >= NumDataShards
-
-ShardToIdx == CHOOSE map \in [Shards -> 1..Cardinality(Shards)]:
-                    Cardinality(Range(map)) = Cardinality(Shards)
-
-IdxToShard == [i \in 1..Cardinality(Shards) |->
-                    CHOOSE r \in Shards: ShardToIdx[r] = i]
-
-ValidAssignments ==
-    \* Set of all valid shard assignments.
-    {[r \in Replicas |-> {IdxToShard[((i-1) % Cardinality(Shards)) + 1]:
-                          i \in (ShardToIdx[r])..(ShardToIdx[r]+na-1)}]:
-     na \in 1..MajorityNum}
-
-\* ASSUME Print(ValidAssignments, TRUE)
-
 \* Service-internal messages.
 PrepareMsgs == [type: {"Prepare"}, src: Replicas,
                                    bal: Ballots]
@@ -160,8 +130,7 @@ PrepareMsg(r, b) == [type |-> "Prepare", src |-> r,
                                          bal |-> b]
 
 InstsVotes == [Slots -> [bal: {0} \cup Ballots,
-                         cmd: {"nil"} \cup Commands,
-                         shards: SUBSET Shards]]
+                         cmd: {"nil"} \cup Writes]]
 
 VotesByNode(n) == [s \in Slots |-> n.insts[s].voted]
 
@@ -174,70 +143,53 @@ PrepareReplyMsg(r, b, iv) ==
                               bal |-> b,
                               votes |-> iv]
 
-PreparedConditionAndCommand(prs, s) ==
-    \* examines a set of PrepareReplies and returns a tuple:
-    \* (if the given slot can be decided as prepared,
-    \*  the prepared command if forced,
-    \*  known shards of the command if forced)
-    LET ppr == CHOOSE ppr \in prs:
-                    \A pr \in prs: pr.votes[s].bal =< ppr.votes[s].bal
-    IN  IF      /\ BigEnoughUnderFaults(prs, Replicas)
-                /\ \A pr \in prs: pr.votes[s].bal = 0
-            THEN [prepared |-> TRUE, cmd |-> "nil", shards |-> {}]
-                    \* prepared, can choose any
-        ELSE IF /\ BigEnoughUnderFaults(prs, Replicas)
-                /\ IsGoodCoverageSet(
-                        {pr.votes[s].shards:
-                         pr \in {pr \in prs:
-                                 pr.votes[s].cmd = ppr.votes[s].cmd}})
-            THEN [prepared |-> TRUE,
-                  cmd |-> ppr.votes[s].cmd,
-                  shards |-> UNION
-                             {pr.votes[s].shards:
-                              pr \in {pr \in prs:
-                                      pr.votes[s].cmd = ppr.votes[s].cmd}}]
-                    \* prepared, command forced
-        ELSE IF /\ BigEnoughUnderFaults(prs, Replicas)
-                /\ ~IsGoodCoverageSet(
-                        {pr.votes[s].shards:
-                         pr \in {pr \in prs:
-                                 pr.votes[s].cmd = ppr.votes[s].cmd}})
-            THEN [prepared |-> TRUE, cmd |-> "nil", shards |-> {}]
-                    \* prepared, can choose any
-        ELSE [prepared |-> FALSE, cmd |-> "nil", shard |-> {}]
-                    \* not prepared
+PeakVotedCmd(prs, s) ==
+    IF \A pr \in prs: pr.votes[s].bal = 0
+        THEN "nil"
+        ELSE LET ppr ==
+                    CHOOSE ppr \in prs:
+                        \A pr \in prs: pr.votes[s].bal =< ppr.votes[s].bal
+             IN  ppr.votes[s].cmd
 
 AcceptMsgs == [type: {"Accept"}, src: Replicas,
-                                 dst: Replicas,
                                  bal: Ballots,
                                  slot: Slots,
-                                 cmd: Commands,
-                                 shards: SUBSET Shards]
+                                 cmd: Writes]
 
-AcceptMsg(r, d, b, s, c, sds) == [type |-> "Accept", src |-> r,
-                                                     dst |-> d,
-                                                     bal |-> b,
-                                                     slot |-> s,
-                                                     cmd |-> c,
-                                                     shards |-> sds]
+AcceptMsg(r, b, s, c) == [type |-> "Accept", src |-> r,
+                                             bal |-> b,
+                                             slot |-> s,
+                                             cmd |-> c]
 
 AcceptReplyMsgs == [type: {"AcceptReply"}, src: Replicas,
                                            bal: Ballots,
-                                           slot: Slots,
-                                           shards: SUBSET Shards]
+                                           slot: Slots]
 
-AcceptReplyMsg(r, b, s, sds) ==
-    [type |-> "AcceptReply", src |-> r,
-                             bal |-> b,
-                             slot |-> s,
-                             shards |-> sds]
+AcceptReplyMsg(r, b, s) == [type |-> "AcceptReply", src |-> r,
+                                                    bal |-> b,
+                                                    slot |-> s]
+                                \* no need to carry command ID in
+                                \* AcceptReply because ballot and slot
+                                \* uniquely identifies the write
 
-CommittedCondition(ars, s) ==
-    \* the condition which decides if a set of AcceptReplies makes an
-    \* instance committed
-    /\ BigEnoughUnderFaults(ars, Replicas)
-    /\ \A group \in SubsetsUnderFaults(ars):
-            IsGoodCoverageSet({ar.shards: ar \in group})
+DoReadMsgs == [type: {"DoRead"}, src: Replicas,
+                                 bal: Ballots,
+                                 slot: Slots \cup {NumWrites + 1},
+                                 cmd: Reads]
+
+DoReadMsg(r, b, s, c) == [type |-> "DoRead", src |-> r,
+                                             bal |-> b,
+                                             slot |-> s,
+                                             cmd |-> c]
+
+DoReadReplyMsgs == [type: {"DoReadReply"}, src: Replicas,
+                                           bal: Ballots,
+                                           cmd: Reads]
+
+DoReadReplyMsg(r, b, c) == [type |-> "DoReadReply", src |-> r,
+                                                    bal |-> b,
+                                                    cmd |-> c]
+                                \* cmd here is just a command ID
 
 CommitNoticeMsgs == [type: {"CommitNotice"}, upto: Slots]
 
@@ -247,6 +199,8 @@ Messages ==      PrepareMsgs
             \cup PrepareReplyMsgs
             \cup AcceptMsgs
             \cup AcceptReplyMsgs
+            \cup DoReadMsgs
+            \cup DoReadReplyMsgs
             \cup CommitNoticeMsgs
 
 ----------
@@ -254,7 +208,7 @@ Messages ==      PrepareMsgs
 (******************************)
 (* Main algorithm in PlusCal. *)
 (******************************)
-(*--algorithm Crossword
+(*--algorithm MultiPaxos
 
 variable msgs = {},                             \* messages in the network
          node = [r \in Replicas |-> NullNode],  \* replica node state
@@ -351,51 +305,40 @@ macro HandlePrepareReplies(r) begin
     \* if I'm waiting for PrepareReplies
     await /\ node[r].leader = r
           /\ node[r].balPrepared = 0;
-    \* when there are a set of PrepareReplies of desired ballot that satisfy
-    \* the prepared condition
+    \* when there are enough number of PrepareReplies of desired ballot
     with prs = {m \in msgs: /\ m.type = "PrepareReply"
-                            /\ m.bal = node[r].balMaxKnown},
-         exam = [s \in Slots |-> PreparedConditionAndCommand(prs, s)]
+                            /\ m.bal = node[r].balMaxKnown}
     do
-        await \A s \in Slots: exam[s].prepared;
+        await Cardinality(prs) >= MajorityNum;
         \* marks this ballot as prepared and saves highest voted command
         \* in each slot if any
         node[r].balPrepared := node[r].balMaxKnown ||
         node[r].insts :=
             [s \in Slots |->
                 [node[r].insts[s]
-                    EXCEPT !.status = IF /\ \/ @ = "Empty"
-                                            \/ @ = "Preparing"
-                                            \/ @ = "Accepting"
-                                         /\ exam[s].cmd # "nil"
+                    EXCEPT !.status = IF \/ @ = "Preparing"
+                                         \/ /\ @ = "Empty"
+                                            /\ PeakVotedCmd(prs, s) # "nil"
                                         THEN "Accepting"
-                                      ELSE IF @ = "Committed"
-                                        THEN "Committed"
-                                      ELSE "Empty",
-                           !.cmd    = exam[s].cmd,
-                           !.shards = exam[s].shards]];
-        \* pick a reasonable shard assignment and send Accept messages for
-        \* in-progress instances according to it
-        with assign \in ValidAssignments do
-            Send({AcceptMsg(r, d, node[r].balPrepared, s,
-                            node[r].insts[s].cmd, assign[d]):
-                  s \in {s \in Slots:
-                            node[r].insts[s].status = "Accepting"},
-                  d \in Replicas}
-            \cup {AcceptReplyMsg(r, node[r].balPrepared, s, assign[r]):
-                  s \in {s \in Slots:
-                            node[r].insts[s].status = "Accepting"}});
-        end with;
+                                        ELSE @,
+                           !.cmd = PeakVotedCmd(prs, s)]];
+        \* send Accept messages for in-progress instances and reply to
+        \* myself instantly
+        Send(UNION
+             {{AcceptMsg(r, node[r].balPrepared, s, node[r].insts[s].cmd),
+               AcceptReplyMsg(r, node[r].balPrepared, s)}:
+              s \in {s \in Slots: node[r].insts[s].status = "Accepting"}});
     end with;
 end macro;
 
-\* A prepared leader takes a new request to fill the next empty slot.
-macro TakeNewRequest(r) begin
-    \* if I'm a prepared leader and there's pending request
+\* A prepared leader takes a new write request into the next empty slot.
+macro TakeNewWriteRequest(r) begin
+    \* if I'm a prepared leader and there's pending write request
     await /\ node[r].leader = r
           /\ node[r].balPrepared = node[r].balMaxKnown
           /\ \E s \in Slots: node[r].insts[s].status = "Empty"
-          /\ Len(UnseenPending(node[r].insts)) > 0;
+          /\ Len(UnseenPending(node[r].insts)) > 0
+          /\ Head(UnseenPending(node[r].insts)) \in Writes;
     \* find the next empty slot and pick a pending request
     with s = FirstEmptySlot(node[r].insts),
          c = Head(UnseenPending(node[r].insts))
@@ -408,26 +351,48 @@ macro TakeNewRequest(r) begin
         node[r].insts[s].status := "Accepting" ||
         node[r].insts[s].cmd := c ||
         node[r].insts[s].voted.bal := node[r].balPrepared ||
-        node[r].insts[s].voted.cmd := c ||
-        node[r].insts[s].voted.shards := Shards;
-        \* pick a reasonable shard assignment, send Accept messages, and
-        \* reply to myself instantly
-        with assign \in ValidAssignments do
-            Send({AcceptMsg(r, d, node[r].balPrepared, s, c, assign[d]):
-                  d \in Replicas}
-            \cup {AcceptReplyMsg(r, node[r].balPrepared, s, assign[r])});
-        end with;
+        node[r].insts[s].voted.cmd := c;
+        \* broadcast Accept and reply to myself instantly
+        Send({AcceptMsg(r, node[r].balPrepared, s, c),
+              AcceptReplyMsg(r, node[r].balPrepared, s)});
         \* append to observed events sequence if haven't yet
         Observe(ReqEvent(c));
     end with;
 end macro;
 
+\* A prepared leader takes a new read request and try to place it after
+\* the current last committed slot.
+macro TakeNewReadRequest(r) begin
+    \* if I'm a prepared leader and there's pending read request
+    await /\ node[r].leader = r
+          /\ node[r].balPrepared = node[r].balMaxKnown
+          /\ Len(UnseenPending(node[r].insts)) > 0
+          /\ Head(UnseenPending(node[r].insts)) \in Reads;
+    \* pick a pending request and use the slot right after last committed
+    with s = node[r].commitUpTo + 1,
+         c = Head(UnseenPending(node[r].insts))
+                \* W.L.O.G., only pick a command not seen in current
+                \* prepared log to have smaller state space; in practice,
+                \* duplicated client requests should be treated by some
+                \* idempotency mechanism such as using request IDs
+    do
+        \* broadcast DoRead and reply to myself instantly
+        Send({DoReadMsg(r, node[r].balPrepared, s, c),
+              DoReadReplyMsg(r, node[r].balPrepared, c)});
+        \* add to the set of on-the-fly reads and save the latest value
+        \* up to it (in practice, could just save a slot number)
+        node[r].onflyReads := @ \cup {c} ||
+        node[r].onflyReadValue[c] := node[r].kvalue;
+        \* append to observed events sequence if haven't yet
+        Observe(ReqEvent(c));
+    end with;
+end macro;
+    
 \* Replica replies to an Accept message.
 macro HandleAccept(r) begin
     \* if receiving an unreplied Accept message with valid ballot
     with m \in msgs do
         await /\ m.type = "Accept"
-              /\ m.dst = r
               /\ m.bal >= node[r].balMaxKnown
               /\ m.bal > node[r].insts[m.slot].voted.bal;
         \* update node states and corresponding instance's states
@@ -435,12 +400,10 @@ macro HandleAccept(r) begin
         node[r].balMaxKnown := m.bal ||
         node[r].insts[m.slot].status := "Accepting" ||
         node[r].insts[m.slot].cmd := m.cmd ||
-        node[r].insts[m.slot].shards := m.shards ||
         node[r].insts[m.slot].voted.bal := m.bal ||
-        node[r].insts[m.slot].voted.cmd := m.cmd ||
-        node[r].insts[m.slot].voted.shards := m.shards;
+        node[r].insts[m.slot].voted.cmd := m.cmd;
         \* send back AcceptReply
-        Send({AcceptReplyMsg(r, m.bal, m.slot, m.shards)});
+        Send({AcceptReplyMsg(r, m.bal, m.slot)});
     end with;
 end macro;
 
@@ -450,12 +413,12 @@ macro HandleAcceptReplies(r) begin
     \* if I think I'm a current leader
     await /\ node[r].leader = r
           /\ node[r].balPrepared = node[r].balMaxKnown
-          /\ node[r].commitUpTo < NumCommands
+          /\ node[r].commitUpTo < NumWrites
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
                 \* W.L.O.G., only enabling the next slot after commitUpTo
-                \* here to make the body of this macro simpler
-    \* for this slot, when there is a set of AcceptReplies that satisfy the
-    \* committed condition
+                \* here to make the body of this macro simpler; in practice
+                \* there should be a separate "Executed" status
+    \* for this slot, when there are enough number of AcceptReplies
     with s = node[r].commitUpTo + 1,
          c = node[r].insts[s].cmd,
          v = node[r].kvalue,
@@ -463,11 +426,11 @@ macro HandleAcceptReplies(r) begin
                             /\ m.slot = s
                             /\ m.bal = node[r].balPrepared}
     do
-        await CommittedCondition(ars, s);
+        await Cardinality(ars) >= MajorityNum;
         \* marks this slot as committed and apply command
         node[r].insts[s].status := "Committed" ||
         node[r].commitUpTo := s ||
-        node[r].kvalue := IF c \in Writes THEN c ELSE @;
+        node[r].kvalue := c;
         \* append to observed events sequence if haven't yet, and remove
         \* the command from pending
         Observe(AckEvent(c, v));
@@ -477,11 +440,48 @@ macro HandleAcceptReplies(r) begin
     end with;
 end macro;
 
+\* Replica replies to a DoRead message.
+macro HandleDoRead(r) begin
+    \* if receiving an unreplied DoRead message with valid ballot
+    with m \in msgs do
+        await /\ m.type = "DoRead"
+              /\ m.bal >= node[r].balMaxKnown
+              /\ \/ m.slot > NumWrites
+                 \/ /\ m.slot =< NumWrites
+                    /\ m.bal >= node[r].insts[m.slot].voted.bal;
+        \* send back DoReadReply
+        Send({DoReadReplyMsg(r, m.bal, m.cmd)});
+    end with;
+end macro;
+
+\* Leader gathers DoReadReply messages for a read request until read quorum
+\* formed, then acknowledges the client.
+macro HandleDoReadReplies(r) begin
+    \* if I think I'm a current leader
+    await /\ node[r].leader = r
+          /\ node[r].balPrepared = node[r].balMaxKnown;
+    \* for an on-the-fly read, when there are enough DoReadReplies
+    with c \in node[r].onflyReads,
+         v = node[r].onflyReadValue[c],
+         drs = {m \in msgs: /\ m.type = "DoReadReply"
+                            /\ m.cmd = c
+                            /\ m.bal = node[r].balPrepared}
+    do
+        await Cardinality(drs) >= MajorityNum;
+        \* append to observed events sequence if haven't yet, and remove
+        \* the command from pending
+        Observe(AckEvent(c, v));
+        Resolve(c);
+        \* remove from the set of on-the-fly reads
+        node[r].onflyReads := @ \ {c};
+    end with;
+end macro;
+
 \* Replica receives new commit notification.
 macro HandleCommitNotice(r) begin
     \* if I'm a follower waiting on CommitNotice
     await /\ node[r].leader # r
-          /\ node[r].commitUpTo < NumCommands
+          /\ node[r].commitUpTo < NumWrites
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
                 \* W.L.O.G., only enabling the next slot after commitUpTo
                 \* here to make the body of this macro simpler
@@ -502,7 +502,7 @@ end macro;
 \* Replica node crashes itself under promised conditions.
 macro ReplicaCrashes(r) begin
     \* if less than (N - majority) number of replicas have failed
-    await /\ MajorityNum + numCrashed < Population
+    await /\ MajorityNum + numCrashed < Cardinality(Replicas)
           /\ ~crashed[r]
           /\ node[r].balMaxKnown < MaxBallot;
                 \* this clause is needed only because we have an upper
@@ -523,11 +523,17 @@ begin
         or
             HandlePrepareReplies(self);
         or
-            TakeNewRequest(self);
+            TakeNewWriteRequest(self);
+        or
+            TakeNewReadRequest(self);
         or
             HandleAccept(self);
         or
             HandleAcceptReplies(self);
+        or
+            HandleDoRead(self);
+        or
+            HandleDoReadReplies(self);
         or
             if CommitNoticeOn then
                 HandleCommitNotice(self);
@@ -544,7 +550,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "2c6ba958" /\ chksum(tla) = "3272c05f")
+\* BEGIN TRANSLATION (chksum(pcal) = "7c6f57c6" /\ chksum(tla) = "1a94ad63")
 VARIABLES msgs, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -612,46 +618,49 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ node[self].balPrepared = 0
                                 /\ LET prs == {m \in msgs: /\ m.type = "PrepareReply"
                                                            /\ m.bal = node[self].balMaxKnown} IN
-                                     LET exam == [s \in Slots |-> PreparedConditionAndCommand(prs, s)] IN
-                                       /\ \A s \in Slots: exam[s].prepared
-                                       /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
-                                                               ![self].insts = [s \in Slots |->
-                                                                                   [node[self].insts[s]
-                                                                                       EXCEPT !.status = IF /\ \/ @ = "Empty"
-                                                                                                               \/ @ = "Preparing"
-                                                                                                               \/ @ = "Accepting"
-                                                                                                            /\ exam[s].cmd # "nil"
-                                                                                                           THEN "Accepting"
-                                                                                                         ELSE IF @ = "Committed"
-                                                                                                           THEN "Committed"
-                                                                                                         ELSE "Empty",
-                                                                                              !.cmd    = exam[s].cmd,
-                                                                                              !.shards = exam[s].shards]]]
-                                       /\ \E assign \in ValidAssignments:
-                                            msgs' = (msgs \cup (     {AcceptMsg(self, d, node'[self].balPrepared, s,
-                                                                                node'[self].insts[s].cmd, assign[d]):
-                                                                      s \in {s \in Slots:
-                                                                                node'[self].insts[s].status = "Accepting"},
-                                                                      d \in Replicas}
-                                                     \cup {AcceptReplyMsg(self, node'[self].balPrepared, s, assign[self]):
-                                                           s \in {s \in Slots:
-                                                                     node'[self].insts[s].status = "Accepting"}}))
+                                     /\ Cardinality(prs) >= MajorityNum
+                                     /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
+                                                             ![self].insts = [s \in Slots |->
+                                                                                 [node[self].insts[s]
+                                                                                     EXCEPT !.status = IF \/ @ = "Preparing"
+                                                                                                          \/ /\ @ = "Empty"
+                                                                                                             /\ PeakVotedCmd(prs, s) # "nil"
+                                                                                                         THEN "Accepting"
+                                                                                                         ELSE @,
+                                                                                            !.cmd = PeakVotedCmd(prs, s)]]]
+                                     /\ msgs' = (msgs \cup (UNION
+                                                            {{AcceptMsg(self, node'[self].balPrepared, s, node'[self].insts[s].cmd),
+                                                              AcceptReplyMsg(self, node'[self].balPrepared, s)}:
+                                                             s \in {s \in Slots: node'[self].insts[s].status = "Accepting"}}))
                                 /\ UNCHANGED <<pending, observed, crashed>>
                              \/ /\ /\ node[self].leader = self
                                    /\ node[self].balPrepared = node[self].balMaxKnown
                                    /\ \E s \in Slots: node[self].insts[s].status = "Empty"
                                    /\ Len(UnseenPending(node[self].insts)) > 0
+                                   /\ Head(UnseenPending(node[self].insts)) \in Writes
                                 /\ LET s == FirstEmptySlot(node[self].insts) IN
                                      LET c == Head(UnseenPending(node[self].insts)) IN
                                        /\ node' = [node EXCEPT ![self].insts[s].status = "Accepting",
                                                                ![self].insts[s].cmd = c,
                                                                ![self].insts[s].voted.bal = node[self].balPrepared,
-                                                               ![self].insts[s].voted.cmd = c,
-                                                               ![self].insts[s].voted.shards = Shards]
-                                       /\ \E assign \in ValidAssignments:
-                                            msgs' = (msgs \cup (     {AcceptMsg(self, d, node'[self].balPrepared, s, c, assign[d]):
-                                                                      d \in Replicas}
-                                                     \cup {AcceptReplyMsg(self, node'[self].balPrepared, s, assign[self])}))
+                                                               ![self].insts[s].voted.cmd = c]
+                                       /\ msgs' = (msgs \cup ({AcceptMsg(self, node'[self].balPrepared, s, c),
+                                                               AcceptReplyMsg(self, node'[self].balPrepared, s)}))
+                                       /\ IF (ReqEvent(c)) \notin Range(observed)
+                                             THEN /\ observed' = Append(observed, (ReqEvent(c)))
+                                             ELSE /\ TRUE
+                                                  /\ UNCHANGED observed
+                                /\ UNCHANGED <<pending, crashed>>
+                             \/ /\ /\ node[self].leader = self
+                                   /\ node[self].balPrepared = node[self].balMaxKnown
+                                   /\ Len(UnseenPending(node[self].insts)) > 0
+                                   /\ Head(UnseenPending(node[self].insts)) \in Reads
+                                /\ LET s == node[self].commitUpTo + 1 IN
+                                     LET c == Head(UnseenPending(node[self].insts)) IN
+                                       /\ msgs' = (msgs \cup ({DoReadMsg(self, node[self].balPrepared, s, c),
+                                                               DoReadReplyMsg(self, node[self].balPrepared, c)}))
+                                       /\ node' = [node EXCEPT ![self].onflyReads = @ \cup {c},
+                                                               ![self].onflyReadValue[c] = node[self].kvalue]
                                        /\ IF (ReqEvent(c)) \notin Range(observed)
                                              THEN /\ observed' = Append(observed, (ReqEvent(c)))
                                              ELSE /\ TRUE
@@ -659,22 +668,19 @@ rloop(self) == /\ pc[self] = "rloop"
                                 /\ UNCHANGED <<pending, crashed>>
                              \/ /\ \E m \in msgs:
                                      /\ /\ m.type = "Accept"
-                                        /\ m.dst = self
                                         /\ m.bal >= node[self].balMaxKnown
                                         /\ m.bal > node[self].insts[m.slot].voted.bal
                                      /\ node' = [node EXCEPT ![self].leader = m.src,
                                                              ![self].balMaxKnown = m.bal,
                                                              ![self].insts[m.slot].status = "Accepting",
                                                              ![self].insts[m.slot].cmd = m.cmd,
-                                                             ![self].insts[m.slot].shards = m.shards,
                                                              ![self].insts[m.slot].voted.bal = m.bal,
-                                                             ![self].insts[m.slot].voted.cmd = m.cmd,
-                                                             ![self].insts[m.slot].voted.shards = m.shards]
-                                     /\ msgs' = (msgs \cup ({AcceptReplyMsg(self, m.bal, m.slot, m.shards)}))
+                                                             ![self].insts[m.slot].voted.cmd = m.cmd]
+                                     /\ msgs' = (msgs \cup ({AcceptReplyMsg(self, m.bal, m.slot)}))
                                 /\ UNCHANGED <<pending, observed, crashed>>
                              \/ /\ /\ node[self].leader = self
                                    /\ node[self].balPrepared = node[self].balMaxKnown
-                                   /\ node[self].commitUpTo < NumCommands
+                                   /\ node[self].commitUpTo < NumWrites
                                    /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
                                 /\ LET s == node[self].commitUpTo + 1 IN
                                      LET c == node[self].insts[s].cmd IN
@@ -682,10 +688,10 @@ rloop(self) == /\ pc[self] = "rloop"
                                          LET ars == {m \in msgs: /\ m.type = "AcceptReply"
                                                                  /\ m.slot = s
                                                                  /\ m.bal = node[self].balPrepared} IN
-                                           /\ CommittedCondition(ars, s)
+                                           /\ Cardinality(ars) >= MajorityNum
                                            /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
                                                                    ![self].commitUpTo = s,
-                                                                   ![self].kvalue = IF c \in Writes THEN c ELSE @]
+                                                                   ![self].kvalue = c]
                                            /\ IF (AckEvent(c, v)) \notin Range(observed)
                                                  THEN /\ observed' = Append(observed, (AckEvent(c, v)))
                                                  ELSE /\ TRUE
@@ -693,9 +699,32 @@ rloop(self) == /\ pc[self] = "rloop"
                                            /\ pending' = RemovePending(c)
                                            /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
                                 /\ UNCHANGED crashed
+                             \/ /\ \E m \in msgs:
+                                     /\ /\ m.type = "DoRead"
+                                        /\ m.bal >= node[self].balMaxKnown
+                                        /\ \/ m.slot > NumWrites
+                                           \/ /\ m.slot =< NumWrites
+                                              /\ m.bal >= node[self].insts[m.slot].voted.bal
+                                     /\ msgs' = (msgs \cup ({DoReadReplyMsg(self, m.bal, m.cmd)}))
+                                /\ UNCHANGED <<node, pending, observed, crashed>>
+                             \/ /\ /\ node[self].leader = self
+                                   /\ node[self].balPrepared = node[self].balMaxKnown
+                                /\ \E c \in node[self].onflyReads:
+                                     LET v == node[self].onflyReadValue[c] IN
+                                       LET drs == {m \in msgs: /\ m.type = "DoReadReply"
+                                                               /\ m.cmd = c
+                                                               /\ m.bal = node[self].balPrepared} IN
+                                         /\ Cardinality(drs) >= MajorityNum
+                                         /\ IF (AckEvent(c, v)) \notin Range(observed)
+                                               THEN /\ observed' = Append(observed, (AckEvent(c, v)))
+                                               ELSE /\ TRUE
+                                                    /\ UNCHANGED observed
+                                         /\ pending' = RemovePending(c)
+                                         /\ node' = [node EXCEPT ![self].onflyReads = @ \ {c}]
+                                /\ UNCHANGED <<msgs, crashed>>
                              \/ /\ IF CommitNoticeOn
                                       THEN /\ /\ node[self].leader # self
-                                              /\ node[self].commitUpTo < NumCommands
+                                              /\ node[self].commitUpTo < NumWrites
                                               /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
                                            /\ LET s == node[self].commitUpTo + 1 IN
                                                 LET c == node[self].insts[s].cmd IN
@@ -709,7 +738,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                            /\ node' = node
                                 /\ UNCHANGED <<msgs, pending, observed, crashed>>
                              \/ /\ IF NodeFailuresOn
-                                      THEN /\ /\ MajorityNum + numCrashed < Population
+                                      THEN /\ /\ MajorityNum + numCrashed < Cardinality(Replicas)
                                               /\ ~crashed[self]
                                               /\ node[self].balMaxKnown < MaxBallot
                                            /\ crashed' = [crashed EXCEPT ![self] = TRUE]
