@@ -14,6 +14,10 @@ SymmetricPerms ==      ConditionalPerm(Replicas)
 
 ConstMaxBallot == 2
 
+ConstReadQuorumSizeUsual == 2
+
+ConstReadQuorumSizeSmall == 1
+
 ----------
 
 (*************************)
