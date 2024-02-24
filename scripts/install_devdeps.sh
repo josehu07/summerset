@@ -22,6 +22,7 @@ sudo apt -y install tree
 sudo apt -y install cloc
 sudo apt -y install python3-pip
 sudo apt -y install iperf3
+sudo apt -y install screen
 
 
 echo

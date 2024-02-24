@@ -14,12 +14,17 @@ SymmetricPerms ==      ConditionalPerm(Replicas)
 
 ConstMaxBallot == 2
 
+ConstReadQuorumSizeUsual == 2
+
+ConstReadQuorumSizeSmall == 1
+
 ----------
 
 (*************************)
 (* Type check invariant. *)
 (*************************)
 TypeOK == /\ \A m \in msgs: m \in Messages
+          /\ \A g \in grants: g \in LeaseGrants
           /\ \A r \in Replicas: node[r] \in NodeStates
           /\ Len(pending) =< NumCommands
           /\ Cardinality(Range(pending)) = Len(pending)
