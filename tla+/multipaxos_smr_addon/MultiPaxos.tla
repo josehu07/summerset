@@ -113,20 +113,28 @@ NullInst == [status |-> "Empty",
 
 NodeStates == [leader: {"none"} \cup Replicas,
                commitUpTo: {0} \cup Slots,
+               commitPrev: {0} \cup Slots,
                balPrepared: {0} \cup Ballots,
                balMaxKnown: {0} \cup Ballots,
                insts: [Slots -> InstStates],
                reads: [Slots \cup {NumWrites+1} -> SUBSET Reads]]
-                    \* reads is the set of read commands "anchored" at
-                    \* each instance, i.e., reads that squeeze in between
-                    \* an instance and its predecessor
 
 NullNode == [leader |-> "none",
              commitUpTo |-> 0,
+             commitPrev |-> 0,
              balPrepared |-> 0,
              balMaxKnown |-> 0,
              insts |-> [s \in Slots |-> NullInst],
              reads |-> [s \in Slots \cup {NumWrites+1} |-> {}]]
+                \* commitPrev is the last slot which might have been
+                \* committed by an old leader; a newly prepared leader
+                \* can safely serve reads locally only after its log has
+                \* been committed up to this slot. The time before this
+                \* condition becomes satisfied may be considered the
+                \* "recovery" time
+                \* reads is the set of read commands "anchored" at
+                \* each instance, i.e., reads that squeeze in between
+                \* an instance and its predecessor
 
 FirstEmptySlot(insts) ==
     IF \A s \in Slots: insts[s].status # "Empty"
@@ -162,6 +170,13 @@ PeakVotedWrite(prs, s) ==
                     CHOOSE ppr \in prs:
                         \A pr \in prs: pr.votes[s].bal =< ppr.votes[s].bal
              IN  ppr.votes[s].write
+
+LastTouchedSlot(prs) ==
+    IF \A s \in Slots: PeakVotedWrite(prs, s) = "nil"
+        THEN 0
+        ELSE CHOOSE s \in Slots:
+                /\ PeakVotedWrite(prs, s) # "nil"
+                /\ \A t \in (s+1)..NumWrites: PeakVotedWrite(prs, t) = "nil"
 
 AcceptMsgs == [type: {"Accept"}, src: Replicas,
                                  bal: Ballots,
@@ -246,7 +261,7 @@ define
                         /\ node[r].balPrepared = node[r].balMaxKnown
                         /\ \/ ~StableLeaderOn
                            \/ Cardinality({g \in grants:
-                                           g.to = r}) >= WriteQuorumSize
+                                           g.to = r}) >= MajorityNum
 
     AppendObserved(seq) ==
         LET filter(e) == e \notin Range(observed)
@@ -361,7 +376,7 @@ macro HandlePrepareReplies(r) begin
     with prs = {m \in msgs: /\ m.type = "PrepareReply"
                             /\ m.bal = node[r].balMaxKnown}
     do
-        await Cardinality(prs) >= WriteQuorumSize;
+        await Cardinality(prs) >= MajorityNum;
         \* marks this ballot as prepared and saves highest voted command
         \* in each slot if any
         node[r].balPrepared := node[r].balMaxKnown ||
@@ -373,7 +388,8 @@ macro HandlePrepareReplies(r) begin
                                             /\ PeakVotedWrite(prs, s) # "nil"
                                         THEN "Accepting"
                                         ELSE @,
-                           !.write  = PeakVotedWrite(prs, s)]];
+                           !.write  = PeakVotedWrite(prs, s)]] ||
+        node[r].commitPrev := LastTouchedSlot(prs);
         \* send Accept messages for in-progress instances and reply to
         \* myself instantly
         Send(UNION
@@ -440,26 +456,23 @@ end macro;
 \* and serves it locally. In practice, a slow-path fallback to normal quorum
 \* read should be allowed; but here the `ThinkAmLeader` condition enforces
 \* client requests be taken only when the leader is stable, therefore DoRead
-\* messages will ever be sent.
+\* messages will never be sent.
 macro TakeNewReadRequestLocally(r) begin
-    \* if I'm a prepared leader and there's pending read request
+    \* if I'm a prepared leader that has committed all slots of old ballots
+    \* and there's pending read request
     await /\ ThinkAmLeader(r)
+          /\ node[r].commitUpTo >= node[r].commitPrev
           /\ Len(UnseenPending(r)) > 0
           /\ Head(UnseenPending(r)) \in Reads;
     \* find the next empty slot and pick a pending request
-    with s = FirstEmptySlot(node[r].insts),
-         ps = s - 1,
-         v = IF ps = 0 THEN "nil" ELSE node[r].insts[ps].write,
+    with s = node[r].commitUpTo,
+         v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
          c = Head(UnseenPending(r))
                 \* W.L.O.G., only pick a command not seen in current
                 \* prepared log to have smaller state space; in practice,
                 \* duplicated client requests should be treated by some
                 \* idempotency mechanism such as using request IDs
     do
-        \* require the predecessor slot to be committed
-        await \/ ps = 0
-              \/ /\ ps >= 1
-                 /\ node[r].insts[ps].status = "Committed";
         \* acknowledge client directly with the latest committed value, and
         \* remove the command from pending
         Observe(<<ReqEvent(c), AckEvent(c, v)>>);
@@ -642,7 +655,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "4ae56963" /\ chksum(tla) = "10c629ad")
+\* BEGIN TRANSLATION (chksum(pcal) = "e06ecd04" /\ chksum(tla) = "e0a329d0")
 VARIABLES msgs, grants, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -650,7 +663,7 @@ ThinkAmLeader(r) == /\ node[r].leader = r
                     /\ node[r].balPrepared = node[r].balMaxKnown
                     /\ \/ ~StableLeaderOn
                        \/ Cardinality({g \in grants:
-                                       g.to = r}) >= WriteQuorumSize
+                                       g.to = r}) >= MajorityNum
 
 AppendObserved(seq) ==
     LET filter(e) == e \notin Range(observed)
@@ -733,7 +746,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ node[self].balPrepared = 0
                                 /\ LET prs == {m \in msgs: /\ m.type = "PrepareReply"
                                                            /\ m.bal = node[self].balMaxKnown} IN
-                                     /\ Cardinality(prs) >= WriteQuorumSize
+                                     /\ Cardinality(prs) >= MajorityNum
                                      /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
                                                              ![self].insts = [s \in Slots |->
                                                                                  [node[self].insts[s]
@@ -742,7 +755,8 @@ rloop(self) == /\ pc[self] = "rloop"
                                                                                                              /\ PeakVotedWrite(prs, s) # "nil"
                                                                                                          THEN "Accepting"
                                                                                                          ELSE @,
-                                                                                            !.write  = PeakVotedWrite(prs, s)]]]
+                                                                                            !.write  = PeakVotedWrite(prs, s)]],
+                                                             ![self].commitPrev = LastTouchedSlot(prs)]
                                      /\ msgs' = (msgs \cup (UNION
                                                             {{AcceptMsg(self, node'[self].balPrepared, s, node'[self].insts[s].write),
                                                               AcceptReplyMsg(self, node'[self].balPrepared, s)}:
@@ -774,17 +788,14 @@ rloop(self) == /\ pc[self] = "rloop"
                                                   /\ observed' = AppendObserved((<<ReqEvent(c)>>))
                                            /\ UNCHANGED pending
                                       ELSE /\ /\ ThinkAmLeader(self)
+                                              /\ node[self].commitUpTo >= node[self].commitPrev
                                               /\ Len(UnseenPending(self)) > 0
                                               /\ Head(UnseenPending(self)) \in Reads
-                                           /\ LET s == FirstEmptySlot(node[self].insts) IN
-                                                LET ps == s - 1 IN
-                                                  LET v == IF ps = 0 THEN "nil" ELSE node[self].insts[ps].write IN
-                                                    LET c == Head(UnseenPending(self)) IN
-                                                      /\ \/ ps = 0
-                                                         \/ /\ ps >= 1
-                                                            /\ node[self].insts[ps].status = "Committed"
-                                                      /\ observed' = AppendObserved((<<ReqEvent(c), AckEvent(c, v)>>))
-                                                      /\ pending' = RemovePending(c)
+                                           /\ LET s == node[self].commitUpTo IN
+                                                LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                                  LET c == Head(UnseenPending(self)) IN
+                                                    /\ observed' = AppendObserved((<<ReqEvent(c), AckEvent(c, v)>>))
+                                                    /\ pending' = RemovePending(c)
                                            /\ UNCHANGED << msgs, node >>
                                 /\ UNCHANGED <<grants, crashed>>
                              \/ /\ \E m \in msgs:
