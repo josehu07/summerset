@@ -427,59 +427,6 @@ macro TakeNewWriteRequest(r) begin
     end with;
 end macro;
 
-\* A prepared leader takes a new read request and anchor it to the next
-\* empty slot.
-macro TakeNewReadRequest(r) begin
-    \* if I'm a prepared leader and there's pending read request
-    await /\ ThinkAmLeader(r)
-          /\ Len(UnseenPending(r)) > 0
-          /\ Head(UnseenPending(r)) \in Reads;
-    \* find the next empty slot and pick a pending request
-    with s = FirstEmptySlot(node[r].insts),
-         c = Head(UnseenPending(r))
-                \* W.L.O.G., only pick a command not seen in current
-                \* prepared log to have smaller state space; in practice,
-                \* duplicated client requests should be treated by some
-                \* idempotency mechanism such as using request IDs
-    do
-        \* broadcast DoRead and reply to myself instantly
-        Send({DoReadMsg(r, node[r].balPrepared, s, c),
-              DoReadReplyMsg(r, node[r].balPrepared, s, c)});
-        \* add to the set of on-the-fly reads anchored at this slot
-        node[r].reads[s] := @ \cup {c};
-        \* append to observed events sequence if haven't yet
-        Observe(<<ReqEvent(c)>>);
-    end with;
-end macro;
-
-\* Assuming using leader leases, a prepared leader takes a new read request
-\* and serves it locally. In practice, a slow-path fallback to normal quorum
-\* read should be allowed; but here the `ThinkAmLeader` condition enforces
-\* client requests be taken only when the leader is stable, therefore DoRead
-\* messages will never be sent.
-macro TakeNewReadRequestLocally(r) begin
-    \* if I'm a prepared leader that has committed all slots of old ballots
-    \* and there's pending read request
-    await /\ ThinkAmLeader(r)
-          /\ node[r].commitUpTo >= node[r].commitPrev
-          /\ Len(UnseenPending(r)) > 0
-          /\ Head(UnseenPending(r)) \in Reads;
-    \* find the next empty slot and pick a pending request
-    with s = node[r].commitUpTo,
-         v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
-         c = Head(UnseenPending(r))
-                \* W.L.O.G., only pick a command not seen in current
-                \* prepared log to have smaller state space; in practice,
-                \* duplicated client requests should be treated by some
-                \* idempotency mechanism such as using request IDs
-    do
-        \* acknowledge client directly with the latest committed value, and
-        \* remove the command from pending
-        Observe(<<ReqEvent(c), AckEvent(c, v)>>);
-        Resolve(c);
-    end with;
-end macro;
-
 \* Replica replies to an Accept message.
 macro HandleAccept(r) begin
     \* if receiving an unreplied Accept message with valid ballot
@@ -502,7 +449,7 @@ end macro;
 \* Leader gathers AcceptReply messages for a slot until condition met, then
 \* marks the slot as committed and acknowledges the client.
 macro HandleAcceptReplies(r) begin
-    \* if I think I'm a current leader
+    \* if I'm a prepared leader
     await /\ ThinkAmLeader(r)
           /\ node[r].commitUpTo < NumWrites
           /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
@@ -534,6 +481,80 @@ macro HandleAcceptReplies(r) begin
     end with;
 end macro;
 
+\* Replica receives new commit notification.
+macro HandleCommitNotice(r) begin
+    \* if I'm a follower waiting on CommitNotice
+    await /\ node[r].leader # r
+          /\ node[r].commitUpTo < NumWrites
+          /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
+                \* W.L.O.G., only enabling the next slot after commitUpTo
+                \* here to make the body of this macro simpler
+    \* for this slot, when there's a CommitNotice message
+    with s = node[r].commitUpTo+1,
+         c = node[r].insts[s].write,
+         m \in msgs
+    do
+        await /\ m.type = "CommitNotice"
+              /\ m.upto = s;
+        \* marks this slot as committed and apply command
+        node[r].insts[s].status := "Committed" ||
+        node[r].commitUpTo := s;
+    end with;
+end macro;
+
+\* A prepared leader takes a new read request and anchor it to the next
+\* empty slot.
+macro TakeNewReadRequest(r) begin
+    \* if I'm a prepared leader and there's pending read request
+    await /\ ThinkAmLeader(r)
+          /\ Len(UnseenPending(r)) > 0
+          /\ Head(UnseenPending(r)) \in Reads;
+    \* find the next empty slot and pick a pending request
+    with s = FirstEmptySlot(node[r].insts),
+         c = Head(UnseenPending(r))
+                \* W.L.O.G., only pick a command not seen in current
+                \* prepared log to have smaller state space; in practice,
+                \* duplicated client requests should be treated by some
+                \* idempotency mechanism such as using request IDs
+    do
+        \* broadcast DoRead and reply to myself instantly
+        Send({DoReadMsg(r, node[r].balPrepared, s, c),
+              DoReadReplyMsg(r, node[r].balPrepared, s, c)});
+        \* add to the set of on-the-fly reads anchored at this slot
+        node[r].reads[s] := @ \cup {c};
+        \* append to observed events sequence if haven't yet
+        Observe(<<ReqEvent(c)>>);
+    end with;
+end macro;
+
+\* Assuming using leader leases, a prepared leader takes a new read request
+\* and serves it locally. In practice, a slow-path fallback to normal quorum
+\* read should be allowed; but here the `ThinkAmLeader` condition enforces
+\* client requests be taken only when the leader is stable, therefore DoRead
+\* messages will never be sent.
+macro TakeNewReadRequestLocally(r) begin
+    \* if I'm a prepared and recovered leader that has committed all slots
+    \* of old ballots, and there's pending read request
+    await /\ ThinkAmLeader(r)
+          /\ node[r].commitUpTo >= node[r].commitPrev
+          /\ Len(UnseenPending(r)) > 0
+          /\ Head(UnseenPending(r)) \in Reads;
+    \* find the next empty slot and pick a pending request
+    with s = node[r].commitUpTo,
+         v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
+         c = Head(UnseenPending(r))
+                \* W.L.O.G., only pick a command not seen in current
+                \* prepared log to have smaller state space; in practice,
+                \* duplicated client requests should be treated by some
+                \* idempotency mechanism such as using request IDs
+    do
+        \* acknowledge client directly with the latest committed value, and
+        \* remove the command from pending
+        Observe(<<ReqEvent(c), AckEvent(c, v)>>);
+        Resolve(c);
+    end with;
+end macro;
+
 \* Replica replies to a DoRead message.
 macro HandleDoRead(r) begin
     \* if receiving an unreplied DoRead message with valid ballot
@@ -551,7 +572,7 @@ end macro;
 \* Leader gathers DoReadReply messages for a read request until read quorum
 \* formed, then acknowledges the client.
 macro HandleDoReadReplies(r) begin
-    \* if I think I'm a current leader
+    \* if I'm a prepared leader
     await ThinkAmLeader(r);
     \* for an on-the-fly read, when there are enough DoReadReplies and that
     \* the predecessor write has been committed
@@ -579,30 +600,9 @@ macro HandleDoReadReplies(r) begin
     end with;
 end macro;
 
-\* Replica receives new commit notification.
-macro HandleCommitNotice(r) begin
-    \* if I'm a follower waiting on CommitNotice
-    await /\ node[r].leader # r
-          /\ node[r].commitUpTo < NumWrites
-          /\ node[r].insts[node[r].commitUpTo+1].status = "Accepting";
-                \* W.L.O.G., only enabling the next slot after commitUpTo
-                \* here to make the body of this macro simpler
-    \* for this slot, when there's a CommitNotice message
-    with s = node[r].commitUpTo+1,
-         c = node[r].insts[s].write,
-         m \in msgs
-    do
-        await /\ m.type = "CommitNotice"
-              /\ m.upto = s;
-        \* marks this slot as committed and apply command
-        node[r].insts[s].status := "Committed" ||
-        node[r].commitUpTo := s;
-    end with;
-end macro;
-
 \* Replica node crashes itself under promised conditions.
 macro ReplicaCrashes(r) begin
-    \* if less than (N - majority) number of replicas have failed
+    \* if less than (N - WriteQuourmSize) number of replicas have failed
     await /\ WriteQuorumSize + numCrashed < Cardinality(Replicas)
           /\ ~crashed[r]
           /\ node[r].balMaxKnown < MaxBallot;
@@ -626,23 +626,23 @@ begin
         or
             TakeNewWriteRequest(self);
         or
+            HandleAccept(self);
+        or
+            HandleAcceptReplies(self);
+        or
+            if CommitNoticeOn then
+                HandleCommitNotice(self);
+            end if;
+        or
             if ~StableLeaderOn then
                 TakeNewReadRequest(self);
             else
                 TakeNewReadRequestLocally(self);
             end if;
         or
-            HandleAccept(self);
-        or
-            HandleAcceptReplies(self);
-        or
             HandleDoRead(self);
         or
             HandleDoReadReplies(self);
-        or
-            if CommitNoticeOn then
-                HandleCommitNotice(self);
-            end if;
         or
             if NodeFailuresOn then
                 ReplicaCrashes(self);
@@ -655,7 +655,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "e06ecd04" /\ chksum(tla) = "e0a329d0")
+\* BEGIN TRANSLATION (chksum(pcal) = "981f2206" /\ chksum(tla) = "dcc8e198")
 VARIABLES msgs, grants, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -776,28 +776,6 @@ rloop(self) == /\ pc[self] = "rloop"
                                                                AcceptReplyMsg(self, node'[self].balPrepared, s)}))
                                        /\ observed' = AppendObserved((<<ReqEvent(c)>>))
                                 /\ UNCHANGED <<grants, pending, crashed>>
-                             \/ /\ IF ~StableLeaderOn
-                                      THEN /\ /\ ThinkAmLeader(self)
-                                              /\ Len(UnseenPending(self)) > 0
-                                              /\ Head(UnseenPending(self)) \in Reads
-                                           /\ LET s == FirstEmptySlot(node[self].insts) IN
-                                                LET c == Head(UnseenPending(self)) IN
-                                                  /\ msgs' = (msgs \cup ({DoReadMsg(self, node[self].balPrepared, s, c),
-                                                                          DoReadReplyMsg(self, node[self].balPrepared, s, c)}))
-                                                  /\ node' = [node EXCEPT ![self].reads[s] = @ \cup {c}]
-                                                  /\ observed' = AppendObserved((<<ReqEvent(c)>>))
-                                           /\ UNCHANGED pending
-                                      ELSE /\ /\ ThinkAmLeader(self)
-                                              /\ node[self].commitUpTo >= node[self].commitPrev
-                                              /\ Len(UnseenPending(self)) > 0
-                                              /\ Head(UnseenPending(self)) \in Reads
-                                           /\ LET s == node[self].commitUpTo IN
-                                                LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
-                                                  LET c == Head(UnseenPending(self)) IN
-                                                    /\ observed' = AppendObserved((<<ReqEvent(c), AckEvent(c, v)>>))
-                                                    /\ pending' = RemovePending(c)
-                                           /\ UNCHANGED << msgs, node >>
-                                /\ UNCHANGED <<grants, crashed>>
                              \/ /\ \E m \in msgs:
                                      /\ /\ m.type = "Accept"
                                         /\ m.bal >= node[self].balMaxKnown
@@ -830,6 +808,42 @@ rloop(self) == /\ pc[self] = "rloop"
                                                    ELSE /\ TRUE
                                                         /\ msgs' = msgs
                                 /\ UNCHANGED <<grants, crashed>>
+                             \/ /\ IF CommitNoticeOn
+                                      THEN /\ /\ node[self].leader # self
+                                              /\ node[self].commitUpTo < NumWrites
+                                              /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
+                                           /\ LET s == node[self].commitUpTo+1 IN
+                                                LET c == node[self].insts[s].write IN
+                                                  \E m \in msgs:
+                                                    /\ /\ m.type = "CommitNotice"
+                                                       /\ m.upto = s
+                                                    /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
+                                                                            ![self].commitUpTo = s]
+                                      ELSE /\ TRUE
+                                           /\ node' = node
+                                /\ UNCHANGED <<msgs, grants, pending, observed, crashed>>
+                             \/ /\ IF ~StableLeaderOn
+                                      THEN /\ /\ ThinkAmLeader(self)
+                                              /\ Len(UnseenPending(self)) > 0
+                                              /\ Head(UnseenPending(self)) \in Reads
+                                           /\ LET s == FirstEmptySlot(node[self].insts) IN
+                                                LET c == Head(UnseenPending(self)) IN
+                                                  /\ msgs' = (msgs \cup ({DoReadMsg(self, node[self].balPrepared, s, c),
+                                                                          DoReadReplyMsg(self, node[self].balPrepared, s, c)}))
+                                                  /\ node' = [node EXCEPT ![self].reads[s] = @ \cup {c}]
+                                                  /\ observed' = AppendObserved((<<ReqEvent(c)>>))
+                                           /\ UNCHANGED pending
+                                      ELSE /\ /\ ThinkAmLeader(self)
+                                              /\ node[self].commitUpTo >= node[self].commitPrev
+                                              /\ Len(UnseenPending(self)) > 0
+                                              /\ Head(UnseenPending(self)) \in Reads
+                                           /\ LET s == node[self].commitUpTo IN
+                                                LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                                  LET c == Head(UnseenPending(self)) IN
+                                                    /\ observed' = AppendObserved((<<ReqEvent(c), AckEvent(c, v)>>))
+                                                    /\ pending' = RemovePending(c)
+                                           /\ UNCHANGED << msgs, node >>
+                                /\ UNCHANGED <<grants, crashed>>
                              \/ /\ \E m \in msgs:
                                      /\ /\ m.type = "DoRead"
                                         /\ m.bal >= node[self].balMaxKnown
@@ -853,20 +867,6 @@ rloop(self) == /\ pc[self] = "rloop"
                                              /\ pending' = RemovePending(c)
                                              /\ node' = [node EXCEPT ![self].reads[s] = @ \ {c}]
                                 /\ UNCHANGED <<msgs, grants, crashed>>
-                             \/ /\ IF CommitNoticeOn
-                                      THEN /\ /\ node[self].leader # self
-                                              /\ node[self].commitUpTo < NumWrites
-                                              /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
-                                           /\ LET s == node[self].commitUpTo+1 IN
-                                                LET c == node[self].insts[s].write IN
-                                                  \E m \in msgs:
-                                                    /\ /\ m.type = "CommitNotice"
-                                                       /\ m.upto = s
-                                                    /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
-                                                                            ![self].commitUpTo = s]
-                                      ELSE /\ TRUE
-                                           /\ node' = node
-                                /\ UNCHANGED <<msgs, grants, pending, observed, crashed>>
                              \/ /\ IF NodeFailuresOn
                                       THEN /\ /\ WriteQuorumSize + numCrashed < Cardinality(Replicas)
                                               /\ ~crashed[self]
