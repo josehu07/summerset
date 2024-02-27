@@ -647,7 +647,7 @@ macro HandleNearbyReadAsFollower(r) begin
 end macro;
 
 \* Follower gathers NearbyReadReply messages for a read request and finds
-\* that the leader's reply is among them.
+\* that the leader's reply is received.
 macro HandleNearbyReadReplyFromLeader(r) begin
     \* if I'm a caught-up follower
     await /\ ThinkAmFollower(r)

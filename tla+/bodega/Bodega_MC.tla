@@ -21,6 +21,7 @@ ConstMaxBallot == 2
 (*************************)
 TypeOK == /\ \A m \in msgs: m \in Messages
           /\ \A g \in grants: g \in LeaseGrants
+          /\ Cardinality({g.from: g \in grants}) = Cardinality(grants)
           /\ \A r \in Replicas: node[r] \in NodeStates
           /\ Len(pending) =< NumCommands
           /\ Cardinality(Range(pending)) = Len(pending)
