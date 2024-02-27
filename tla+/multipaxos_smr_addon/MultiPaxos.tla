@@ -22,6 +22,7 @@ CONSTANT Replicas,   \* symmetric set of server nodes
 
 ReplicasAssumption == /\ IsFiniteSet(Replicas)
                       /\ Cardinality(Replicas) >= 1
+                      /\ "none" \notin Replicas
 
 Population == Cardinality(Replicas)
 
@@ -458,7 +459,7 @@ macro HandleAcceptReplies(r) begin
                 \* messages are received proactively and there should be a
                 \* separate "Executed" status
     \* for this slot, when there are enough number of AcceptReplies
-    with s = node[r].commitUpTo+1,
+    with s = node[r].commitUpTo + 1,
          c = node[r].insts[s].write,
          ps = s - 1,
          v = IF ps = 0 THEN "nil" ELSE node[r].insts[ps].write,
@@ -490,7 +491,7 @@ macro HandleCommitNotice(r) begin
                 \* W.L.O.G., only enabling the next slot after commitUpTo
                 \* here to make the body of this macro simpler
     \* for this slot, when there's a CommitNotice message
-    with s = node[r].commitUpTo+1,
+    with s = node[r].commitUpTo + 1,
          c = node[r].insts[s].write,
          m \in msgs
     do
@@ -655,7 +656,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "981f2206" /\ chksum(tla) = "dcc8e198")
+\* BEGIN TRANSLATION (chksum(pcal) = "981f2206" /\ chksum(tla) = "354816e3")
 VARIABLES msgs, grants, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -791,7 +792,7 @@ rloop(self) == /\ pc[self] = "rloop"
                              \/ /\ /\ ThinkAmLeader(self)
                                    /\ node[self].commitUpTo < NumWrites
                                    /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
-                                /\ LET s == node[self].commitUpTo+1 IN
+                                /\ LET s == node[self].commitUpTo + 1 IN
                                      LET c == node[self].insts[s].write IN
                                        LET ps == s - 1 IN
                                          LET v == IF ps = 0 THEN "nil" ELSE node[self].insts[ps].write IN
@@ -812,7 +813,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                       THEN /\ /\ node[self].leader # self
                                               /\ node[self].commitUpTo < NumWrites
                                               /\ node[self].insts[node[self].commitUpTo+1].status = "Accepting"
-                                           /\ LET s == node[self].commitUpTo+1 IN
+                                           /\ LET s == node[self].commitUpTo + 1 IN
                                                 LET c == node[self].insts[s].write IN
                                                   \E m \in msgs:
                                                     /\ /\ m.type = "CommitNotice"

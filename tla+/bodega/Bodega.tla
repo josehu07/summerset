@@ -98,7 +98,7 @@ NullInst == [status |-> "Empty",
 
 NodeStates == [leader: {"none"} \cup Replicas,
                commitUpTo: {0} \cup Slots,
-               commitPrev: {0} \cup Slots,
+               commitPrev: {0} \cup Slots \cup {NumWrites+1},
                balPrepared: {0} \cup Ballots,
                balMaxKnown: {0} \cup Ballots,
                insts: [Slots -> InstStates],
@@ -128,6 +128,15 @@ FirstEmptySlot(insts) ==
         ELSE CHOOSE s \in Slots:
                 /\ insts[s].status = "Empty"
                 /\ \A t \in 1..(s-1): insts[t].status # "Empty"
+
+LastNonEmptySlot(insts) ==
+    IF \A s \in Slots: insts[s].status = "Empty"
+        THEN 0
+        ELSE CHOOSE s \in Slots:
+                /\ insts[s].status # "Empty"
+                /\ \A t \in (s+1)..NumWrites: insts[t].status = "Empty"
+                \* note that this is not the same as FirstEmptySlot - 1
+                \* due to possible existence of holes
 
 \* Service-internal messages.
 PrepareMsgs == [type: {"Prepare"}, src: Replicas,
@@ -207,18 +216,16 @@ NearbyReadReplyMsgs == [type: {"NearbyReadReply"}, src: Replicas,
                                                    bal: Ballots,
                                                    read: Reads,
                                                    is_leader: BOOLEAN,
-                                                   val: {"nil"} \cup Writes,
                                                    last_slot: {0} \cup Slots,
-                                                   committed: BOOLEAN]
+                                                   val: {"nil"} \cup Writes]
 
-NearbyReadReplyMsg(r, b, c, il, v, ls, cm) ==
+NearbyReadReplyMsg(r, b, c, il, ls, v) ==
     [type |-> "NearbyReadReply", src |-> r,
                                  bal |-> b,
                                  read |-> c,
                                  is_leader |-> il,
-                                 val |-> v,
                                  last_slot |-> ls,
-                                 committed |-> cm]
+                                 val |-> v]
         \* read here is just a command ID
 
 CommitNoticeMsgs == [type: {"CommitNotice"}, upto: Slots]
@@ -278,21 +285,24 @@ define
 
     ThinkAmLeader(r) == /\ node[r].leader = r
                         /\ node[r].balPrepared = node[r].balMaxKnown
-                        /\ \E g \in grants: g.from = r
                         /\ CurrentConfig.bal > 0
                         /\ CurrentConfig.bal = node[r].balMaxKnown
                         /\ CurrentConfig.leader = r
 
     ThinkAmFollower(r) == /\ node[r].leader # r
-                          /\ \E g \in grants: g.from = r
                           /\ CurrentConfig.bal > 0
                           /\ CurrentConfig.bal = node[r].balMaxKnown
                           /\ CurrentConfig.leader # r
 
     BallotTransfered(r) == node[r].commitUpTo >= node[r].commitPrev
 
+    reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
+    
+    acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
+
     AppendObserved(seq) ==
-        LET filter(e) == e \notin Range(observed)
+        LET filter(e) == IF e.type = "Req" THEN e.cmd \notin reqsMade
+                                           ELSE e.cmd \notin acksRecv
         IN  observed \o SelectSeq(seq, filter)
 
     UnseenPending(r) ==
@@ -304,10 +314,6 @@ define
     RemovePending(cmd) ==
         LET filter(c) == c # cmd
         IN  SelectSeq(pending, filter)
-
-    reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
-    
-    acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
 
     terminated == /\ Len(pending) = 0
                   /\ Cardinality(reqsMade) = NumCommands
@@ -346,7 +352,7 @@ macro BecomeLeader(r) begin
     await node[r].leader # r;
     \* pick a greater ballot number and a quorum size config
     with b \in Ballots,
-         rq \in 1..MajorityNum,
+         rq \in (1+numCrashed)..MajorityNum,
     do
         await /\ b > node[r].balMaxKnown
               /\ ~\E m \in msgs: (m.type = "Prepare") /\ (m.bal = b);
@@ -354,7 +360,7 @@ macro BecomeLeader(r) begin
                     \* numbers from different proposers be unique
         \* update states and restart Prepare phase for in-progress instances
         node[r].leader := r ||
-        node[r].commitPrev := NumWrites ||
+        node[r].commitPrev := NumWrites + 1 ||
         node[r].balPrepared := 0 ||
         node[r].balMaxKnown := b ||
         node[r].insts :=
@@ -380,14 +386,15 @@ macro HandlePrepare(r) begin
               /\ m.bal > node[r].balMaxKnown;
         \* update states and reset statuses
         node[r].leader := m.src ||
-        node[r].commitPrev := NumWrites ||
+        node[r].commitPrev := NumWrites + 1 ||
         node[r].balMaxKnown := m.bal ||
         node[r].insts :=
             [s \in Slots |->
                 [node[r].insts[s]
                     EXCEPT !.status = IF @ = "Accepting"
                                         THEN "Preparing"
-                                        ELSE @]];
+                                        ELSE @]] ||
+        node[r].reads := {};
         \* send back PrepareReply with my voted list
         Send({PrepareReplyMsg(r, m.bal, VotesByNode(node[r]))});
         \* expire my old lease grant if any and grant to new leader
@@ -407,7 +414,7 @@ macro HandlePrepareReplies(r) begin
     with prs = {m \in msgs: /\ m.type = "PrepareReply"
                             /\ m.bal = node[r].balMaxKnown}
     do
-        await Cardinality(prs) >= MajorityNum;
+        await Cardinality({pr.src: pr \in prs}) >= MajorityNum;
         \* marks this ballot as prepared and saves highest voted command
         \* in each slot if any
         node[r].balPrepared := node[r].balMaxKnown ||
@@ -422,13 +429,14 @@ macro HandlePrepareReplies(r) begin
                            !.write  = PeakVotedWrite(prs, s)]] ||
         node[r].commitPrev := LastTouchedSlot(prs);
         \* send AcceptWrite messages for in-progress instances and reply to
-        \* myself instantly
+        \* myself instantly; send PrepareNotice as well
         Send(UNION
              {{AcceptWriteMsg(r, node[r].balPrepared, s,
                               node[r].insts[s].write),
                AcceptWriteReplyMsg(r, node[r].balPrepared, s)}:
               s \in {s \in Slots: node[r].insts[s].status = "Accepting"}}
-        \cup {PrepareNoticeMsg(r, node[r].balPrepared, node[r].commitPrev)});
+        \cup {PrepareNoticeMsg(r, node[r].balPrepared,
+                               LastTouchedSlot(prs))});
     end with;
 end macro;
 
@@ -437,7 +445,7 @@ end macro;
 macro HandlePrepareNotice(r) begin
     \* if I'm a follower waiting on CommitNotice
     await /\ ThinkAmFollower(r)
-          /\ node[r].commitPrev < NumWrites;
+          /\ node[r].commitPrev = NumWrites + 1;
     \* when there's a PrepareNotice message in effect
     with m \in msgs do
         await /\ m.type = "PrepareNotice"
@@ -517,7 +525,7 @@ macro HandleAcceptWriteReplies(r) begin
                             /\ m.bal = node[r].balPrepared},
          wqSize = (Population + 1) - CurrentConfig.rqSize
     do
-        await Cardinality(ars) >= wqSize;
+        await Cardinality({ar.src: ar \in ars}) >= wqSize;
         \* marks this slot as committed and apply command
         node[r].insts[s].status := "Committed" ||
         node[r].commitUpTo := s;
@@ -584,10 +592,8 @@ macro TakeNewReadRequestAsFollower(r) begin
           /\ Head(UnseenPending(r)) \in Reads;
     \* pick a pending request; examine my log and find the last non-empty
     \* slot, check its status
-    with s = FirstEmptySlot(node[r].insts),
-         ls = s - 1,
-         v = IF ls = 0 THEN "nil" ELSE node[r].insts[ls].write,
-         cm = (ls = 0) \/ (node[r].insts[ls].status = "Committed"),
+    with s = LastNonEmptySlot(node[r].insts),
+         v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
          c = Head(UnseenPending(r))
                 \* W.L.O.G., only pick a command not seen in current
                 \* prepared log to have smaller state space; in practice,
@@ -596,8 +602,7 @@ macro TakeNewReadRequestAsFollower(r) begin
     do
         \* broadcast NearbyRead messages and instantly reply to myself
         Send({NearbyReadMsg(r, node[r].balMaxKnown, c),
-              NearbyReadReplyMsg(r, node[r].balMaxKnown, c,
-                                 FALSE, v, ls, cm)});
+              NearbyReadReplyMsg(r, node[r].balMaxKnown, c, FALSE, s, v)});
         \* add to the set of on-the-fly reads
         node[r].reads := @ \cup {c};
         \* append to observed events sequence if haven't yet
@@ -620,7 +625,7 @@ macro HandleNearbyReadAsLeader(r) begin
         await /\ m.type = "NearbyRead"
               /\ m.bal = node[r].balMaxKnown;
         \* send back NearbyReadReply
-        Send({NearbyReadReplyMsg(r, m.bal, m.read, TRUE, v, s, TRUE)});
+        Send({NearbyReadReplyMsg(r, m.bal, m.read, TRUE, s, v)});
     end with;
 end macro;
 
@@ -631,15 +636,13 @@ macro HandleNearbyReadAsFollower(r) begin
           /\ BallotTransfered(r);
     \* if receiving an unreplied NearbyRead message with valid ballot
     with m \in msgs,
-         s = FirstEmptySlot(node[r].insts),
-         ls = s - 1,
-         v = IF ls = 0 THEN "nil" ELSE node[r].insts[ls].write,
-         cm = (ls = 0) \/ (node[r].insts[ls].status = "Committed")
+         s = LastNonEmptySlot(node[r].insts),
+         v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write
     do
         await /\ m.type = "NearbyRead"
               /\ m.bal = node[r].balMaxKnown;
         \* send back NearbyReadReply
-        Send({NearbyReadReplyMsg(r, m.bal, m.read, FALSE, v, ls, cm)});
+        Send({NearbyReadReplyMsg(r, m.bal, m.read, FALSE, s, v)});
     end with;
 end macro;
 
@@ -672,23 +675,21 @@ macro HandleNearbyReadRepliesNoLeader(r) begin
     \* if I'm a caught-up follower
     await /\ ThinkAmFollower(r)
           /\ BallotTransfered(r);
-    \* for an on-the-fly read, when a good read quorum has been formed
-    \* where the value with the largest slot number is committed
+    \* for an on-the-fly read, when a good read quorum has been formed,
+    \* the value with the latest slot number can be safetly acked
     with c \in node[r].reads,
          nrs = {m \in msgs: /\ m.type = "NearbyReadReply"
                             /\ m.read = c
                             /\ m.bal = node[r].balMaxKnown
                             /\ ~m.is_leader},
+                    \* due to the design of this spec, there might be
+                    \* multiple NearbyReadReplies from the same replica for
+                    \* the same read command in the `msgs` set
          lnr = CHOOSE lnr \in nrs:
-                    /\ \A nr \in nrs: nr.last_slot =< lnr.last_slot
-                    /\ (~lnr.committed) =>
-                            \A nr \in {nr \in nrs:
-                                       nr.last_slot = lnr.last_slot}:
-                                ~nr.committed,
+                    \A nr \in nrs: nr.last_slot =< lnr.last_slot,
          rqSize = CurrentConfig.rqSize
     do
-        await /\ Cardinality(nrs) >= rqSize
-              /\ lnr.committed;
+        await Cardinality({nr.src: nr \in nrs}) >= rqSize;
         \* append to observed events sequence if haven't yet, and remove
         \* the command from pending
         Observe(<<AckEvent(c, lnr.val)>>);
@@ -722,6 +723,8 @@ begin
         or
             HandlePrepareReplies(self);
         or
+            HandlePrepareNotice(self);
+        or
             TakeNewWriteRequest(self);
         or
             HandleAcceptWrite(self); 
@@ -753,7 +756,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "58e17521" /\ chksum(tla) = "c76b0b0d")
+\* BEGIN TRANSLATION (chksum(pcal) = "84ac2c75" /\ chksum(tla) = "1a8c7c2d")
 VARIABLES msgs, grants, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -768,21 +771,24 @@ CurrentConfig ==
 
 ThinkAmLeader(r) == /\ node[r].leader = r
                     /\ node[r].balPrepared = node[r].balMaxKnown
-                    /\ \E g \in grants: g.from = r
                     /\ CurrentConfig.bal > 0
                     /\ CurrentConfig.bal = node[r].balMaxKnown
                     /\ CurrentConfig.leader = r
 
 ThinkAmFollower(r) == /\ node[r].leader # r
-                      /\ \E g \in grants: g.from = r
                       /\ CurrentConfig.bal > 0
                       /\ CurrentConfig.bal = node[r].balMaxKnown
                       /\ CurrentConfig.leader # r
 
 BallotTransfered(r) == node[r].commitUpTo >= node[r].commitPrev
 
+reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
+
+acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
+
 AppendObserved(seq) ==
-    LET filter(e) == e \notin Range(observed)
+    LET filter(e) == IF e.type = "Req" THEN e.cmd \notin reqsMade
+                                       ELSE e.cmd \notin acksRecv
     IN  observed \o SelectSeq(seq, filter)
 
 UnseenPending(r) ==
@@ -794,10 +800,6 @@ UnseenPending(r) ==
 RemovePending(cmd) ==
     LET filter(c) == c # cmd
     IN  SelectSeq(pending, filter)
-
-reqsMade == {e.cmd: e \in {e \in Range(observed): e.type = "Req"}}
-
-acksRecv == {e.cmd: e \in {e \in Range(observed): e.type = "Ack"}}
 
 terminated == /\ Len(pending) = 0
               /\ Cardinality(reqsMade) = NumCommands
@@ -823,11 +825,11 @@ rloop(self) == /\ pc[self] = "rloop"
                /\ IF (~terminated) /\ (~crashed[self])
                      THEN /\ \/ /\ node[self].leader # self
                                 /\ \E b \in Ballots:
-                                     \E rq \in 1..MajorityNum:
+                                     \E rq \in (1+numCrashed)..MajorityNum:
                                        /\ /\ b > node[self].balMaxKnown
                                           /\ ~\E m \in msgs: (m.type = "Prepare") /\ (m.bal = b)
                                        /\ node' = [node EXCEPT ![self].leader = self,
-                                                               ![self].commitPrev = NumWrites,
+                                                               ![self].commitPrev = NumWrites + 1,
                                                                ![self].balPrepared = 0,
                                                                ![self].balMaxKnown = b,
                                                                ![self].insts = [s \in Slots |->
@@ -844,13 +846,14 @@ rloop(self) == /\ pc[self] = "rloop"
                                      /\ /\ m.type = "Prepare"
                                         /\ m.bal > node[self].balMaxKnown
                                      /\ node' = [node EXCEPT ![self].leader = m.src,
-                                                             ![self].commitPrev = NumWrites,
+                                                             ![self].commitPrev = NumWrites + 1,
                                                              ![self].balMaxKnown = m.bal,
                                                              ![self].insts = [s \in Slots |->
                                                                                  [node[self].insts[s]
                                                                                      EXCEPT !.status = IF @ = "Accepting"
                                                                                                          THEN "Preparing"
-                                                                                                         ELSE @]]]
+                                                                                                         ELSE @]],
+                                                             ![self].reads = {}]
                                      /\ msgs' = (msgs \cup ({PrepareReplyMsg(self, m.bal, VotesByNode(node'[self]))}))
                                      /\ grants' = ({g \in grants: g.from # self} \cup {LeaseGrant(self, ((CHOOSE g \in grants: g.from = m.src).config))})
                                 /\ UNCHANGED <<pending, observed, crashed>>
@@ -858,7 +861,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ node[self].balPrepared = 0
                                 /\ LET prs == {m \in msgs: /\ m.type = "PrepareReply"
                                                            /\ m.bal = node[self].balMaxKnown} IN
-                                     /\ Cardinality(prs) >= MajorityNum
+                                     /\ Cardinality({pr.src: pr \in prs}) >= MajorityNum
                                      /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
                                                              ![self].insts = [s \in Slots |->
                                                                                  [node[self].insts[s]
@@ -874,8 +877,16 @@ rloop(self) == /\ pc[self] = "rloop"
                                                                                   node'[self].insts[s].write),
                                                                    AcceptWriteReplyMsg(self, node'[self].balPrepared, s)}:
                                                                   s \in {s \in Slots: node'[self].insts[s].status = "Accepting"}}
-                                                 \cup {PrepareNoticeMsg(self, node'[self].balPrepared, node'[self].commitPrev)}))
+                                                 \cup {PrepareNoticeMsg(self, node'[self].balPrepared,
+                                                                        LastTouchedSlot(prs))}))
                                 /\ UNCHANGED <<grants, pending, observed, crashed>>
+                             \/ /\ /\ ThinkAmFollower(self)
+                                   /\ node[self].commitPrev = NumWrites + 1
+                                /\ \E m \in msgs:
+                                     /\ /\ m.type = "PrepareNotice"
+                                        /\ m.bal = node[self].balMaxKnown
+                                     /\ node' = [node EXCEPT ![self].commitPrev = m.commit_prev]
+                                /\ UNCHANGED <<msgs, grants, pending, observed, crashed>>
                              \/ /\ /\ ThinkAmLeader(self)
                                    /\ \E s \in Slots: node[self].insts[s].status = "Empty"
                                    /\ Len(UnseenPending(self)) > 0
@@ -914,7 +925,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                                                    /\ m.slot = s
                                                                    /\ m.bal = node[self].balPrepared} IN
                                              LET wqSize == (Population + 1) - CurrentConfig.rqSize IN
-                                               /\ Cardinality(ars) >= wqSize
+                                               /\ Cardinality({ar.src: ar \in ars}) >= wqSize
                                                /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
                                                                        ![self].commitUpTo = s]
                                                /\ observed' = AppendObserved((<<AckEvent(c, v)>>))
@@ -946,16 +957,13 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ BallotTransfered(self)
                                    /\ Len(UnseenPending(self)) > 0
                                    /\ Head(UnseenPending(self)) \in Reads
-                                /\ LET s == FirstEmptySlot(node[self].insts) IN
-                                     LET ls == s - 1 IN
-                                       LET v == IF ls = 0 THEN "nil" ELSE node[self].insts[ls].write IN
-                                         LET cm == (ls = 0) \/ (node[self].insts[ls].status = "Committed") IN
-                                           LET c == Head(UnseenPending(self)) IN
-                                             /\ msgs' = (msgs \cup ({NearbyReadMsg(self, node[self].balMaxKnown, c),
-                                                                     NearbyReadReplyMsg(self, node[self].balMaxKnown, c,
-                                                                                        FALSE, v, ls, cm)}))
-                                             /\ node' = [node EXCEPT ![self].reads = @ \cup {c}]
-                                             /\ observed' = AppendObserved((<<ReqEvent(c)>>))
+                                /\ LET s == LastNonEmptySlot(node[self].insts) IN
+                                     LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                       LET c == Head(UnseenPending(self)) IN
+                                         /\ msgs' = (msgs \cup ({NearbyReadMsg(self, node[self].balMaxKnown, c),
+                                                                 NearbyReadReplyMsg(self, node[self].balMaxKnown, c, FALSE, s, v)}))
+                                         /\ node' = [node EXCEPT ![self].reads = @ \cup {c}]
+                                         /\ observed' = AppendObserved((<<ReqEvent(c)>>))
                                 /\ UNCHANGED <<grants, pending, crashed>>
                              \/ /\ /\ ThinkAmLeader(self)
                                    /\ BallotTransfered(self)
@@ -964,18 +972,16 @@ rloop(self) == /\ pc[self] = "rloop"
                                        LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
                                          /\ /\ m.type = "NearbyRead"
                                             /\ m.bal = node[self].balMaxKnown
-                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, TRUE, v, s, TRUE)}))
+                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, TRUE, s, v)}))
                                 /\ UNCHANGED <<grants, node, pending, observed, crashed>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ BallotTransfered(self)
                                 /\ \E m \in msgs:
-                                     LET s == FirstEmptySlot(node[self].insts) IN
-                                       LET ls == s - 1 IN
-                                         LET v == IF ls = 0 THEN "nil" ELSE node[self].insts[ls].write IN
-                                           LET cm == (ls = 0) \/ (node[self].insts[ls].status = "Committed") IN
-                                             /\ /\ m.type = "NearbyRead"
-                                                /\ m.bal = node[self].balMaxKnown
-                                             /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, FALSE, v, ls, cm)}))
+                                     LET s == LastNonEmptySlot(node[self].insts) IN
+                                       LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                         /\ /\ m.type = "NearbyRead"
+                                            /\ m.bal = node[self].balMaxKnown
+                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, FALSE, s, v)}))
                                 /\ UNCHANGED <<grants, node, pending, observed, crashed>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ BallotTransfered(self)
@@ -997,14 +1003,9 @@ rloop(self) == /\ pc[self] = "rloop"
                                                              /\ m.bal = node[self].balMaxKnown
                                                              /\ ~m.is_leader} IN
                                        LET lnr == CHOOSE lnr \in nrs:
-                                                       /\ \A nr \in nrs: nr.last_slot =< lnr.last_slot
-                                                       /\ (~lnr.committed) =>
-                                                               \A nr \in {nr \in nrs:
-                                                                          nr.last_slot = lnr.last_slot}:
-                                                                   ~nr.committed IN
+                                                       \A nr \in nrs: nr.last_slot =< lnr.last_slot IN
                                          LET rqSize == CurrentConfig.rqSize IN
-                                           /\ /\ Cardinality(nrs) >= rqSize
-                                              /\ lnr.committed
+                                           /\ Cardinality({nr.src: nr \in nrs}) >= rqSize
                                            /\ observed' = AppendObserved((<<AckEvent(c, lnr.val)>>))
                                            /\ pending' = RemovePending(c)
                                            /\ node' = [node EXCEPT ![self].reads = @ \ {c}]

@@ -33,6 +33,7 @@ CONSTANT Replicas,   \* symmetric set of server nodes
 
 ReplicasAssumption == /\ IsFiniteSet(Replicas)
                       /\ Cardinality(Replicas) >= 1
+                      /\ "none" \notin Replicas
 
 WritesAssumption == /\ IsFiniteSet(Writes)
                     /\ Cardinality(Writes) >= 1
