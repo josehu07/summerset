@@ -35,6 +35,6 @@ java -XX:+UseParallelGC \
      -difftrace \
      -fpmem 0.95 \
      -workers auto \
-     -metadir "/tmp/${SPEC_DIR}/states" \
+     -metadir "/tmp/tlc-${SPEC_DIR}/states" \
      -config "${SPEC_NAME}_MC${CFG_SUFFIX}.cfg" \
      "${SPEC_NAME}_MC.tla"
