@@ -157,13 +157,13 @@ Complete cluster management and benchmarking scripts are available in another re
   - [x] TLA+ spec
   - [ ] localize reads with leader lease
   - [ ] efficient snapshotting
-  - [ ] membership discovery & view changes
+  - [ ] membership discovery & view change
 - [x] implementation of RS-Paxos
 - [x] implementation of Raft
   - [ ] TLA+ spec
   - [ ] localize reads with leader lease
   - [ ] efficient snapshotting
-  - [ ] membership discovery & view changes
+  - [ ] membership discovery & view change
 - [x] implementation of CRaft
 - [x] implementation of Crossword prototype
   - [x] TLA+ spec
