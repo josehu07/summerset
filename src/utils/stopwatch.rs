@@ -34,7 +34,7 @@ impl Stopwatch {
         &mut self,
         id: RecordId,
         step: usize,
-        // if Some, uses this timestamp instead of fetching current timestamp
+        // if Some, uses this timestamp instead of querying current timestamp
         now: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if !self.records.contains_key(&id) && step != 0 {
@@ -73,7 +73,7 @@ impl Stopwatch {
         self.records.remove(&id);
     }
 
-    /// Removes all current records of given ID.
+    /// Removes all current records.
     #[inline]
     pub fn remove_all(&mut self) {
         self.records.clear();

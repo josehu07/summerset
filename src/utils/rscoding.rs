@@ -41,7 +41,7 @@ pub struct RSCodeword<T> {
     data_copy: Option<T>,
 
     /// Zero-sized phantom marker to make this struct act as if it owns a data
-    /// of type `T` (yet in the form of vec of bytes).
+    /// of type `T` (yet actually in the form of vec of bytes).
     phantom: PhantomData<T>,
 }
 
@@ -63,8 +63,9 @@ impl<T> RSCodeword<T>
 where
     T: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
-    /// Creates a new RSCodeword from original data or empty bytes.
-    fn new(
+    /// Internal method for creating a new RSCodeword from original data or
+    /// empty bytes.
+    fn internal_new(
         data_copy: Option<T>,
         data_bytes: Option<BytesMut>,
         data_len: usize,
@@ -137,7 +138,7 @@ where
         let mut data_writer = BytesMut::new().writer();
         encode_write(&mut data_writer, &data)?;
         let data_len = data_writer.get_ref().len();
-        Self::new(
+        Self::internal_new(
             Some(data),
             Some(data_writer.into_inner()),
             data_len,
@@ -151,7 +152,7 @@ where
         num_data_shards: u8,
         num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
-        Self::new(None, None, 0, num_data_shards, num_parity_shards)
+        Self::internal_new(None, None, 0, num_data_shards, num_parity_shards)
     }
 
     /// Creates an `RSCodeword` struct that owns a copy of a subset of the
@@ -391,7 +392,8 @@ where
         Ok(())
     }
 
-    /// Reconstructs all shards or data shards from currently available shards.
+    /// Internal method for reconstructing all shards or data shards from
+    /// currently available shards.
     fn reconstruct(
         &mut self,
         rs: Option<&ReedSolomon>,
@@ -403,13 +405,12 @@ where
         if self.num_parity_shards == 0 {
             if self.avail_data_shards() == self.num_data_shards {
                 return Ok(());
-            } else {
-                return Err(SummersetError(format!(
-                    "insufficient data shards: {}/ {}",
-                    self.avail_data_shards(),
-                    self.num_data_shards
-                )));
             }
+            return Err(SummersetError(format!(
+                "insufficient data shards: {}/ {}",
+                self.avail_data_shards(),
+                self.num_data_shards
+            )));
         }
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;

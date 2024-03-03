@@ -76,8 +76,7 @@ pub struct LinearRegressor {
 
 impl LinearRegressor {
     /// Creates a new linear regressor helper struct.
-    // NOTE: maximum effecitve bucket boundary is set to 10M for now; bucket
-    //       sizes are also hardcoded.
+    // NOTE: currently only using two buckets: size 0 and everything above.
     pub fn new() -> Self {
         let mut buckets = vec![];
         let mut rangemap = RangeMap::new();
@@ -85,41 +84,6 @@ impl LinearRegressor {
         rangemap.insert(0..1, 0);
         buckets.push(vec![]);
         rangemap.insert(1..usize::MAX, 1);
-        // buckets.push(vec![]);
-        // rangemap.insert(1..1024, 1);
-        // let mut idx = 2;
-        // for i in 1..4 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 1024)..((i + 1) * 1024), idx);
-        //     idx += 1;
-        // }
-        // for i in 1..4 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 4096)..((i + 1) * 4096), idx);
-        //     idx += 1;
-        // }
-        // for i in 1..4 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 16384)..((i + 1) * 16384), idx);
-        //     idx += 1;
-        // }
-        // for i in 1..4 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 65536)..((i + 1) * 65536), idx);
-        //     idx += 1;
-        // }
-        // for i in 1..4 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 262144)..((i + 1) * 262144), idx);
-        //     idx += 1;
-        // }
-        // for i in 1..10 {
-        //     buckets.push(vec![]);
-        //     rangemap.insert((i * 1048576)..((i + 1) * 1048576), idx);
-        //     idx += 1;
-        // }
-        // buckets.push(vec![]);
-        // rangemap.insert((10 * 1048576)..usize::MAX, idx);
 
         LinearRegressor {
             buckets,
@@ -264,7 +228,6 @@ impl LinearRegressor {
             //     }
             // }
             // let (mut slope, mut delay) = linear_regression_of(&xys)?;
-            // slope *= (1024 * 1024) as f64;
 
             slope *= (1024 * 1024) as f64;
             let model = PerfModel::new(slope, delay, jitter);

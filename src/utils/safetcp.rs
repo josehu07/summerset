@@ -23,10 +23,10 @@ use tokio::time::{self, Duration};
 ///
 /// CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()` here
 /// because this function is intended to be used as a `tokio::select!` branch
-/// and that those two methods are not cancellation-safe. In the case of being
-/// cancelled midway before receiving the entire object (note that such
-/// cancellation can only happen at `.await` points), bytes already read are
-/// stored in the read buffer and will continue to be appended by future
+/// and that those two methods are not cancellation-safe. Instead, in the case
+/// of being cancelled midway before receiving the entire object (note that
+/// such cancellation can only happen at `.await` points), bytes already read
+/// are stored in the read buffer and will continue to be appended by future
 /// invocations until successful returning.
 pub async fn safe_tcp_read<T, Conn>(
     read_buf: &mut BytesMut,
@@ -174,7 +174,6 @@ pub async fn tcp_connect_with_retry(
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
         socket.bind(bind_addr)?;
-        // pf_info!("X"; "{} {}", socket.send_buffer_size()?, socket.recv_buffer_size()?);
 
         match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),

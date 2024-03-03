@@ -1,4 +1,4 @@
-//! Helpers for running `tc qdisc` commands.
+//! Helpers for running `tc qdisc` commands (exper only).
 
 use std::fmt;
 use std::process::Command;

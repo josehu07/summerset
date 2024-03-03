@@ -2,7 +2,7 @@
 repo_name = "summerset-private"
 
 [hosts] # host DNS domain name
-host0 = "josehu@c220g2-010814.wisc.cloudlab.us"
+host0 = "josehu@c220g2-011128.wisc.cloudlab.us"
 host1 = "josehu@clnode030.clemson.cloudlab.us"
 host2 = "josehu@ms1037.utah.cloudlab.us"
 
