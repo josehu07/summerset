@@ -136,7 +136,7 @@ where
         let (peer_messenger_handles_write, peer_messenger_handles_read) =
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
-        // the connect & connack channel is used to notify the peer acceptor
+        // the connect & connack channels are used to notify the peer acceptor
         // thread to proactively connect to some peer
         let (tx_connect, rx_connect) = mpsc::unbounded_channel();
         let (tx_connack, rx_connack) = mpsc::unbounded_channel();
@@ -610,7 +610,7 @@ where
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!(me; "error sending -> {}: {}", id, e);
-                            } else { // skips `WouldBlock` failure check here
+                            } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!(me; "sent leave notification -> {}", id);
                             }
                         },
@@ -646,6 +646,29 @@ where
                     }
                 },
 
+                // retrying last unsuccessful send
+                _ = conn_write.writable(), if retrying => {
+                    match Self::write_msg(
+                        &mut write_buf,
+                        &mut write_buf_cursor,
+                        &conn_write,
+                        None
+                    ) {
+                        Ok(true) => {
+                            pf_debug!(me; "finished retrying last msg send -> {}", id);
+                            retrying = false;
+                        }
+                        Ok(false) => {
+                            pf_debug!(me; "still should retry last msg send -> {}", id);
+                        }
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last msg send -> {}: {}", id, e);
+                        }
+                    }
+                },
+
                 // receives new message from peer
                 msg = Self::read_msg(&mut read_buf, &mut conn_read) => {
                     match msg {
@@ -661,7 +684,7 @@ where
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!(me; "error sending -> {}: {}", id, e);
-                            } else { // skips `WouldBlock` failure check here
+                            } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!(me; "peer {} has left", id);
                             }
                             break;
@@ -689,29 +712,6 @@ where
                             // during benchmarking
                             // pf_error!(me; "error receiving msg <- {}: {}", id, e);
                             break; // probably the peer exitted ungracefully
-                        }
-                    }
-                },
-
-                // retrying last unsuccessful message send
-                _ = conn_write.writable(), if retrying => {
-                    match Self::write_msg(
-                        &mut write_buf,
-                        &mut write_buf_cursor,
-                        &conn_write,
-                        None
-                    ) {
-                        Ok(true) => {
-                            pf_debug!(me; "finished retrying last msg send -> {}", id);
-                            retrying = false;
-                        }
-                        Ok(false) => {
-                            pf_debug!(me; "still should retry last msg send -> {}", id);
-                        }
-                        Err(_e) => {
-                            // NOTE: commented out to prevent console lags
-                            // during benchmarking
-                            // pf_error!(me; "error retrying last msg send -> {}: {}", id, e);
                         }
                     }
                 }

@@ -21,7 +21,7 @@ use summerset::{SmrProtocol, SummersetError, pf_error};
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("RepNothing"))]
+    #[arg(short, long)]
     protocol: String,
 
     /// Protocol-specific server configuration TOML string.
@@ -82,7 +82,7 @@ impl CliArgs {
     }
 }
 
-// Server replica executable main entrance.
+/// Actual main function of Summerset server executable.
 fn server_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let mut args = CliArgs::parse();
@@ -130,9 +130,9 @@ fn server_main() -> Result<(), SummersetError> {
         }
     })?;
 
+    // using a while loop here to allow software-simulated crash-restart
     let log_level = log::max_level();
     let shutdown = Arc::new(AtomicBool::new(false));
-
     while !shutdown.load(Ordering::SeqCst) {
         log::set_max_level(log_level);
         let shutdown_clone = shutdown.clone();
@@ -188,6 +188,7 @@ fn server_main() -> Result<(), SummersetError> {
     Ok(())
 }
 
+/// Main function of Summerset server executable.
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp_millis()

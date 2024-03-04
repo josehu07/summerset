@@ -92,11 +92,6 @@ impl ClientApiStub {
         // pf_trace!(self.id; "recv reply {:?}", reply);
         Ok(reply)
     }
-
-    /// Forgets about the write-half TCP connection, consuming `self`.
-    pub fn forget(self) {
-        self.conn_write.forget();
-    }
 }
 
 // Unit tests are done together with `server::external`.

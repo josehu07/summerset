@@ -92,16 +92,11 @@ impl ClientMess {
     /// Query the manager for current servers info.
     async fn get_servers_info(&mut self) -> Result<(), SummersetError> {
         if self.servers_info.is_none() {
-            let ctrl_stub = self.driver.ctrl_stub();
+            self.driver
+                .ctrl_stub()
+                .send_req_insist(&CtrlRequest::QueryInfo)?;
 
-            // send QueryInfo request to manager
-            let mut sent = ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-            while !sent {
-                sent = ctrl_stub.send_req(None)?;
-            }
-
-            // wait for reply from manager
-            let reply = ctrl_stub.recv_reply().await?;
+            let reply = self.driver.ctrl_stub().recv_reply().await?;
             match reply {
                 CtrlReply::QueryInfo {
                     population,
@@ -111,10 +106,12 @@ impl ClientMess {
                     self.servers_info = Some(servers_info);
                 }
                 _ => {
-                    return logged_err!(self.driver.id; "unexpected control reply type")
+                    return logged_err!(self.driver.id;
+                                       "unexpected control reply type")
                 }
             }
         }
+
         Ok(())
     }
 
@@ -123,17 +120,10 @@ impl ClientMess {
         &mut self,
         servers: HashSet<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        let ctrl_stub = self.driver.ctrl_stub();
-
-        // send PauseServers request to manager
         let req = CtrlRequest::PauseServers { servers };
-        let mut sent = ctrl_stub.send_req(Some(&req))?;
-        while !sent {
-            sent = ctrl_stub.send_req(None)?;
-        }
+        self.driver.ctrl_stub().send_req_insist(&req)?;
 
-        // wait for reply from manager
-        let reply = ctrl_stub.recv_reply().await?;
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::PauseServers { .. } => Ok(()),
             _ => logged_err!(self.driver.id; "unexpected control reply type"),
@@ -145,17 +135,10 @@ impl ClientMess {
         &mut self,
         servers: HashSet<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        let ctrl_stub = self.driver.ctrl_stub();
-
-        // send ResumeServers request to manager
         let req = CtrlRequest::ResumeServers { servers };
-        let mut sent = ctrl_stub.send_req(Some(&req))?;
-        while !sent {
-            sent = ctrl_stub.send_req(None)?;
-        }
+        self.driver.ctrl_stub().send_req_insist(&req)?;
 
-        // wait for reply from manager
-        let reply = ctrl_stub.recv_reply().await?;
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::ResumeServers { .. } => Ok(()),
             _ => logged_err!(self.driver.id; "unexpected control reply type"),

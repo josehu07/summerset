@@ -250,10 +250,7 @@ impl ClientRepl {
         &mut self,
         req: CtrlRequest,
     ) -> Result<CtrlReply, SummersetError> {
-        let mut sent = self.driver.ctrl_stub().send_req(Some(&req))?;
-        while !sent {
-            sent = self.driver.ctrl_stub().send_req(None)?;
-        }
+        self.driver.ctrl_stub().send_req_insist(&req)?;
         self.driver.ctrl_stub().recv_reply().await
     }
 

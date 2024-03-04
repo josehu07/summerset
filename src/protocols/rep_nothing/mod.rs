@@ -406,7 +406,6 @@ impl GenericEndpoint for RepNothingClient {
 
             while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!(self.id; "left current server connection");
-            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager

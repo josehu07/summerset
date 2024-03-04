@@ -152,26 +152,7 @@ impl ControlHub {
                     }
                 },
 
-                // receives control message from manager
-                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
-                    match msg {
-                        Ok(msg) => {
-                            // pf_trace!(me; "recv ctrl {:?}", msg);
-                            if let Err(e) = tx_recv.send(msg) {
-                                pf_error!(me; "error sending to tx_recv: {}", e);
-                            }
-                        },
-
-                        Err(_e) => {
-                            // NOTE: commented out to prevent console lags
-                            // during benchmarking
-                            // pf_error!(me; "error reading ctrl: {}", e);
-                            break; // probably the manager exitted ungracefully
-                        }
-                    }
-                },
-
-                // retrying last unsuccessful reply send
+                // retrying last unsuccessful send
                 _ = conn_write.writable(), if retrying => {
                     match Self::write_ctrl(
                         &mut write_buf,
@@ -190,6 +171,25 @@ impl ControlHub {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!(me; "error retrying last ctrl send: {}", e);
+                        }
+                    }
+                },
+
+                // receives control message from manager
+                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
+                    match msg {
+                        Ok(msg) => {
+                            // pf_trace!(me; "recv ctrl {:?}", msg);
+                            if let Err(e) = tx_recv.send(msg) {
+                                pf_error!(me; "error sending to tx_recv: {}", e);
+                            }
+                        },
+
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading ctrl: {}", e);
+                            break; // probably the manager exitted ungracefully
                         }
                     }
                 }

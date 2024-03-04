@@ -45,7 +45,7 @@ pub enum LogAction<Ent> {
     Truncate { offset: usize },
 
     /// Discard the log before given offset, keeping the tail part (and
-    /// optionally a head part).
+    /// optionally a fixed head part).
     Discard { offset: usize, keep: usize },
 }
 
@@ -339,7 +339,7 @@ where
     }
 
     /// Discard the file before given index, keeping the tail part (and
-    /// optionally a head part).
+    /// optionally a fixed head part).
     async fn discard_log(
         me: ReplicaId,
         backer: &mut File,

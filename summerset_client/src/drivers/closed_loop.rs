@@ -53,8 +53,10 @@ impl DriverClosedLoop {
         self.endpoint.leave(permanent).await
     }
 
-    /// Attempt to send a request, retrying if received `WouldBlock` failure.
-    fn send_req_retry_on_block(
+    /// Attempt to send a request, retrying immediately if receiving
+    /// `WouldBlock` failure. This shortcut is used here because TCP write
+    /// blocking is not expected with a closed-loop client.
+    fn send_req_insist(
         &mut self,
         req: &ApiRequest,
     ) -> Result<(), SummersetError> {
@@ -62,12 +64,13 @@ impl DriverClosedLoop {
         while !success {
             success = self.endpoint.send_req(None)?;
         }
+
         Ok(())
     }
 
     /// Wait on a reply from the service with timeout. Returns `Ok(None)` if
     /// timed-out.
-    async fn recv_reply_with_timeout(
+    async fn recv_reply_timed(
         &mut self,
     ) -> Result<Option<ApiReply>, SummersetError> {
         self.timer.kickoff(self.timeout)?;
@@ -93,14 +96,14 @@ impl DriverClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.send_req_retry_on_block(&ApiRequest::Req {
+        self.send_req_insist(&ApiRequest::Req {
             id: req_id,
             cmd: Command::Get { key: key.into() },
         })?;
         let issue_ts = Instant::now();
 
         loop {
-            let reply = self.recv_reply_with_timeout().await?;
+            let reply = self.recv_reply_timed().await?;
             match reply {
                 Some(ApiReply::Reply {
                     id: reply_id,
@@ -108,8 +111,9 @@ impl DriverClosedLoop {
                     redirect,
                 }) => {
                     if reply_id != req_id {
-                        // logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
-                        //                      req_id, reply_id)
+                        // logged_err!(self.id;
+                        //             "request ID mismatch: expected {}, replied {}",
+                        //             req_id, reply_id)
                         continue;
                     } else {
                         match cmd_result {
@@ -134,7 +138,10 @@ impl DriverClosedLoop {
                             }
 
                             _ => {
-                                return logged_err!(self.id; "command type mismatch: expected Get");
+                                return logged_err!(
+                                    self.id;
+                                    "command type mismatch: expected Get"
+                                );
                             }
                         }
                     }
@@ -160,7 +167,7 @@ impl DriverClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.send_req_retry_on_block(&ApiRequest::Req {
+        self.send_req_insist(&ApiRequest::Req {
             id: req_id,
             cmd: Command::Put {
                 key: key.into(),
@@ -170,7 +177,7 @@ impl DriverClosedLoop {
         let issue_ts = Instant::now();
 
         loop {
-            let reply = self.recv_reply_with_timeout().await?;
+            let reply = self.recv_reply_timed().await?;
             match reply {
                 Some(ApiReply::Reply {
                     id: reply_id,
@@ -178,8 +185,9 @@ impl DriverClosedLoop {
                     redirect,
                 }) => {
                     if reply_id != req_id {
-                        // logged_err!(self.id; "request ID mismatch: expected {}, replied {}",
-                        //                      req_id, reply_id)
+                        // logged_err!(self.id;
+                        //             "request ID mismatch: expected {}, replied {}",
+                        //             req_id, reply_id)
                         continue;
                     } else {
                         match cmd_result {
@@ -206,7 +214,10 @@ impl DriverClosedLoop {
                             }
 
                             _ => {
-                                return logged_err!(self.id; "command type mismatch: expected Put");
+                                return logged_err!(
+                                    self.id;
+                                    "command type mismatch: expected Put"
+                                );
                             }
                         }
                     }

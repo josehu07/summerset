@@ -83,6 +83,21 @@ impl ClientCtrlStub {
         Ok(no_retry)
     }
 
+    /// Sends a request to established manager connection, retrying immediately
+    /// on `WouldBlock` failure. This shortcut should only be used in places
+    /// where TCP write blocking is not expected.
+    pub fn send_req_insist(
+        &mut self,
+        req: &CtrlRequest,
+    ) -> Result<(), SummersetError> {
+        let mut success = self.send_req(Some(req))?;
+        while !success {
+            success = self.send_req(None)?;
+        }
+
+        Ok(())
+    }
+
     /// Receives a reply from established manager connection.
     pub async fn recv_reply(&mut self) -> Result<CtrlReply, SummersetError> {
         let reply =
@@ -90,11 +105,6 @@ impl ClientCtrlStub {
 
         // pf_trace!(self.id; "recv reply {:?}", reply);
         Ok(reply)
-    }
-
-    /// Forgets about the write-half TCP connection, consuming `self`.
-    pub fn forget(self) {
-        self.conn_write.forget();
     }
 }
 

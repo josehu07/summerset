@@ -24,7 +24,7 @@ use crate::clients::{
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("RepNothing"))]
+    #[arg(short, long)]
     protocol: String,
 
     /// Protocol-specific client configuration TOML string.
@@ -88,7 +88,7 @@ impl CliArgs {
     }
 }
 
-// Client side executable main entrance.
+/// Actual main function of Summerset client executable.
 fn client_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let mut args = CliArgs::parse();
@@ -175,6 +175,7 @@ fn client_main() -> Result<(), SummersetError> {
     })
 }
 
+/// Main function of Summerset client executable.
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .format_timestamp_millis()

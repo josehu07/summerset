@@ -392,6 +392,29 @@ impl ServerReigner {
                     }
                 },
 
+                // retrying last unsuccessful reply send
+                _ = conn_write.writable(), if retrying => {
+                    match Self::write_ctrl(
+                        &mut write_buf,
+                        &mut write_buf_cursor,
+                        &conn_write,
+                        None
+                    ) {
+                        Ok(true) => {
+                            pf_debug!("m"; "finished retrying last ctrl send -> {}", id);
+                            retrying = false;
+                        }
+                        Ok(false) => {
+                            pf_debug!("m"; "still should retry last ctrl send -> {}", id);
+                        }
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
+                        }
+                    }
+                },
+
                 // receives control message from server
                 msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
                     match msg {
@@ -407,7 +430,7 @@ impl ServerReigner {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!("m"; "error replying -> {}: {}", id, e);
-                            } else { // skips `WouldBlock` failure check here
+                            } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("m"; "server {} has left", id);
                             }
                             break;
@@ -429,17 +452,26 @@ impl ServerReigner {
                             api_addr.set_ip(conn_ip);
                             p2p_addr.set_ip(conn_ip);
 
-                            let msg = CtrlMsg::NewServerJoin {id, protocol, api_addr, p2p_addr};
+                            let msg = CtrlMsg::NewServerJoin {
+                                id,
+                                protocol,
+                                api_addr,
+                                p2p_addr
+                            };
                             // pf_trace!("m"; "recv <- {} ctrl {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)) {
-                                pf_error!("m"; "error sending to tx_recv for {}: {}", id, e);
+                                pf_error!("m";
+                                          "error sending to tx_recv for {}: {}",
+                                          id, e);
                             }
                         },
 
                         Ok(msg) => {
                             // pf_trace!("m"; "recv <- {} ctrl {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)) {
-                                pf_error!("m"; "error sending to tx_recv for {}: {}", id, e);
+                                pf_error!("m";
+                                          "error sending to tx_recv for {}: {}",
+                                          id, e);
                             }
                         },
 
@@ -448,29 +480,6 @@ impl ServerReigner {
                             // during benchmarking
                             // pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exitted ungracefully
-                        }
-                    }
-                },
-
-                // retrying last unsuccessful reply send
-                _ = conn_write.writable(), if retrying => {
-                    match Self::write_ctrl(
-                        &mut write_buf,
-                        &mut write_buf_cursor,
-                        &conn_write,
-                        None
-                    ) {
-                        Ok(true) => {
-                            pf_debug!("m"; "finished retrying last ctrl send -> {}", id);
-                            retrying = false;
-                        }
-                        Ok(false) => {
-                            pf_debug!("m"; "still should retry last ctrl send -> {}", id);
-                        }
-                        Err(_e) => {
-                            // NOTE: commented out to prevent console lags
-                            // during benchmarking
-                            // pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
                 }

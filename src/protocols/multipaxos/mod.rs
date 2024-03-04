@@ -927,7 +927,6 @@ impl GenericEndpoint for MultiPaxosClient {
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!(self.id; "left server connection {}", id);
-            api_stub.forget();
         }
 
         // if permanently leaving, send leave notification to the manager

@@ -49,23 +49,23 @@ pub struct ClusterManager {
     /// Total number of server replicas in cluster.
     population: u8,
 
-    /// ServerReigner module.
-    server_reigner: ServerReigner,
-
     /// Receiver side of the server ID assignment channel.
     rx_id_assign: mpsc::UnboundedReceiver<()>,
 
     /// Sender side of the server ID assignment result channel.
     tx_id_result: mpsc::UnboundedSender<(ReplicaId, u8)>,
 
-    /// ClientReactor module.
-    client_reactor: ClientReactor,
-
     /// Information of current active servers.
     servers_info: HashMap<ReplicaId, ServerInfo>,
 
     /// Currently assigned server IDs.
     assigned_ids: HashSet<ReplicaId>,
+
+    /// ServerReigner module.
+    server_reigner: ServerReigner,
+
+    /// ClientReactor module.
+    client_reactor: ClientReactor,
 }
 
 impl ClusterManager {
@@ -94,12 +94,12 @@ impl ClusterManager {
             _srv_addr: srv_addr,
             _cli_addr: cli_addr,
             population,
-            server_reigner,
             rx_id_assign,
             tx_id_result,
-            client_reactor,
             servers_info: HashMap::new(),
             assigned_ids: HashSet::new(),
+            server_reigner,
+            client_reactor,
         })
     }
 
@@ -272,7 +272,6 @@ impl ClusterManager {
         server: ReplicaId,
         msg: CtrlMsg,
     ) -> Result<(), SummersetError> {
-        #[allow(clippy::single_match)]
         match msg {
             CtrlMsg::NewServerJoin {
                 id,
@@ -519,7 +518,6 @@ impl ClusterManager {
         client: ClientId,
         req: CtrlRequest,
     ) -> Result<(), SummersetError> {
-        #[allow(clippy::single_match)]
         match req {
             CtrlRequest::QueryInfo => {
                 self.handle_client_query_info(client)?;

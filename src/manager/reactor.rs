@@ -395,43 +395,6 @@ impl ClientReactor {
                     }
                 },
 
-                // receives control request from client
-                req = Self::read_req(&mut req_buf, &mut conn_read) => {
-                    match req {
-                        Ok(CtrlRequest::Leave) => {
-                            // client leaving, send dummy reply and break
-                            let reply = CtrlReply::Leave;
-                            if let Err(_e) = Self::write_reply(
-                                &mut reply_buf,
-                                &mut reply_buf_cursor,
-                                &conn_write,
-                                Some(&reply)
-                            ) {
-                                // NOTE: commented out to prevent console lags
-                                // during benchmarking
-                                // pf_error!("m"; "error replying -> {}: {}", id, e);
-                            } else { // skips `WouldBlock` failure check here
-                                pf_debug!("m"; "client {} has left", id);
-                            }
-                            break;
-                        },
-
-                        Ok(req) => {
-                            // pf_trace!("m"; "recv <- {} req {:?}", id, req);
-                            if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!("m"; "error sending to tx_req for {}: {}", id, e);
-                            }
-                        },
-
-                        Err(_e) => {
-                            // NOTE: commented out to prevent console lags
-                            // during benchmarking
-                            // pf_error!("m"; "error reading req <- {}: {}", id, e);
-                            break; // probably the client exitted without `leave()`
-                        }
-                    }
-                },
-
                 // retrying last unsuccessful reply send
                 _ = conn_write.writable(), if retrying => {
                     match Self::write_reply(
@@ -451,6 +414,43 @@ impl ClientReactor {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
+                        }
+                    }
+                },
+
+                // receives control request from client
+                req = Self::read_req(&mut req_buf, &mut conn_read) => {
+                    match req {
+                        Ok(CtrlRequest::Leave) => {
+                            // client leaving, send dummy reply and break
+                            let reply = CtrlReply::Leave;
+                            if let Err(_e) = Self::write_reply(
+                                &mut reply_buf,
+                                &mut reply_buf_cursor,
+                                &conn_write,
+                                Some(&reply)
+                            ) {
+                                // NOTE: commented out to prevent console lags
+                                // during benchmarking
+                                // pf_error!("m"; "error replying -> {}: {}", id, e);
+                            } else { // NOTE: skips `WouldBlock` error check here
+                                pf_debug!("m"; "client {} has left", id);
+                            }
+                            break;
+                        },
+
+                        Ok(req) => {
+                            // pf_trace!("m"; "recv <- {} req {:?}", id, req);
+                            if let Err(e) = tx_req.send((id, req)) {
+                                pf_error!("m"; "error sending to tx_req for {}: {}", id, e);
+                            }
+                        },
+
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!("m"; "error reading req <- {}: {}", id, e);
+                            break; // probably the client exitted without `leave()`
                         }
                     }
                 }
@@ -565,84 +565,88 @@ mod reactor_tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // client-side
-            barrier2.wait().await;
-            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
-                "127.0.0.1:41710".parse()?,
-                "127.0.0.1:54601".parse()?,
-            )
-            .await?;
-            // send request to manager
-            ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-            // recv reply from manager
-            assert_eq!(
-                ctrl_stub.recv_reply().await?,
-                CtrlReply::QueryInfo {
-                    population: 2,
-                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
-                        (
-                            0,
-                            ServerInfo {
-                                api_addr: "127.0.0.1:53700".parse()?,
-                                p2p_addr: "127.0.0.1:53800".parse()?,
-                                is_leader: true,
-                                is_paused: false,
-                                start_slot: 0,
-                            }
-                        ),
-                        (
-                            1,
-                            ServerInfo {
-                                api_addr: "127.0.0.1:53701".parse()?,
-                                p2p_addr: "127.0.0.1:53801".parse()?,
-                                is_leader: false,
-                                is_paused: false,
-                                start_slot: 0,
-                            }
-                        ),
-                    ]),
-                }
-            );
-            // leave and come back as new client
-            ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            assert_eq!(ctrl_stub.recv_reply().await?, CtrlReply::Leave);
-            ctrl_stub.forget();
-            time::sleep(Duration::from_millis(100)).await;
-            let mut ctrl_stub = ClientCtrlStub::new_by_connect(
-                "127.0.0.1:41710".parse()?,
-                "127.0.0.1:54601".parse()?,
-            )
-            .await?;
-            // send request to manager
-            ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-            // recv reply from manager
-            assert_eq!(
-                ctrl_stub.recv_reply().await?,
-                CtrlReply::QueryInfo {
-                    population: 2,
-                    servers_info: HashMap::<ReplicaId, ServerInfo>::from([
-                        (
-                            0,
-                            ServerInfo {
-                                api_addr: "127.0.0.1:53700".parse()?,
-                                p2p_addr: "127.0.0.1:53800".parse()?,
-                                is_leader: true,
-                                is_paused: false,
-                                start_slot: 0,
-                            }
-                        ),
-                        (
-                            1,
-                            ServerInfo {
-                                api_addr: "127.0.0.1:53701".parse()?,
-                                p2p_addr: "127.0.0.1:53801".parse()?,
-                                is_leader: false,
-                                is_paused: false,
-                                start_slot: 0,
-                            }
-                        ),
-                    ]),
-                }
-            );
+            {
+                barrier2.wait().await;
+                let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                    "127.0.0.1:41710".parse()?,
+                    "127.0.0.1:54601".parse()?,
+                )
+                .await?;
+                // send request to manager
+                ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+                // recv reply from manager
+                assert_eq!(
+                    ctrl_stub.recv_reply().await?,
+                    CtrlReply::QueryInfo {
+                        population: 2,
+                        servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                            (
+                                0,
+                                ServerInfo {
+                                    api_addr: "127.0.0.1:53700".parse()?,
+                                    p2p_addr: "127.0.0.1:53800".parse()?,
+                                    is_leader: true,
+                                    is_paused: false,
+                                    start_slot: 0,
+                                }
+                            ),
+                            (
+                                1,
+                                ServerInfo {
+                                    api_addr: "127.0.0.1:53701".parse()?,
+                                    p2p_addr: "127.0.0.1:53801".parse()?,
+                                    is_leader: false,
+                                    is_paused: false,
+                                    start_slot: 0,
+                                }
+                            ),
+                        ]),
+                    }
+                );
+                // leave
+                ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+                assert_eq!(ctrl_stub.recv_reply().await?, CtrlReply::Leave);
+                time::sleep(Duration::from_millis(100)).await;
+            }
+            {
+                // come back as new client
+                let mut ctrl_stub = ClientCtrlStub::new_by_connect(
+                    "127.0.0.1:41710".parse()?,
+                    "127.0.0.1:54601".parse()?,
+                )
+                .await?;
+                // send request to manager
+                ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+                // recv reply from manager
+                assert_eq!(
+                    ctrl_stub.recv_reply().await?,
+                    CtrlReply::QueryInfo {
+                        population: 2,
+                        servers_info: HashMap::<ReplicaId, ServerInfo>::from([
+                            (
+                                0,
+                                ServerInfo {
+                                    api_addr: "127.0.0.1:53700".parse()?,
+                                    p2p_addr: "127.0.0.1:53800".parse()?,
+                                    is_leader: true,
+                                    is_paused: false,
+                                    start_slot: 0,
+                                }
+                            ),
+                            (
+                                1,
+                                ServerInfo {
+                                    api_addr: "127.0.0.1:53701".parse()?,
+                                    p2p_addr: "127.0.0.1:53801".parse()?,
+                                    is_leader: false,
+                                    is_paused: false,
+                                    start_slot: 0,
+                                }
+                            ),
+                        ]),
+                    }
+                );
+            }
             Ok::<(), SummersetError>(())
         });
         // manager-side
