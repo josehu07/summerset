@@ -217,14 +217,16 @@ NearbyReadReplyMsgs == [type: {"NearbyReadReply"}, src: Replicas,
                                                    read: Reads,
                                                    is_leader: BOOLEAN,
                                                    last_slot: {0} \cup Slots,
+                                                   committed: BOOLEAN,
                                                    val: {"nil"} \cup Writes]
 
-NearbyReadReplyMsg(r, b, c, il, ls, v) ==
+NearbyReadReplyMsg(r, b, c, il, ls, cm, v) ==
     [type |-> "NearbyReadReply", src |-> r,
                                  bal |-> b,
                                  read |-> c,
                                  is_leader |-> il,
                                  last_slot |-> ls,
+                                 committed |-> cm,
                                  val |-> v]
         \* read here is just a command ID
 
@@ -593,6 +595,7 @@ macro TakeNewReadRequestAsFollower(r) begin
     \* pick a pending request; examine my log and find the last non-empty
     \* slot, check its status
     with s = LastNonEmptySlot(node[r].insts),
+         cm = IF s = 0 THEN TRUE ELSE node[r].insts[s].status = "Committed",
          v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
          c = Head(UnseenPending(r))
                 \* W.L.O.G., only pick a command not seen in current
@@ -602,7 +605,7 @@ macro TakeNewReadRequestAsFollower(r) begin
     do
         \* broadcast NearbyRead messages and instantly reply to myself
         Send({NearbyReadMsg(r, node[r].balMaxKnown, c),
-              NearbyReadReplyMsg(r, node[r].balMaxKnown, c, FALSE, s, v)});
+              NearbyReadReplyMsg(r, node[r].balMaxKnown, c, FALSE, s, cm, v)});
         \* add to the set of on-the-fly reads
         node[r].reads := @ \cup {c};
         \* append to observed events sequence if haven't yet
@@ -625,7 +628,7 @@ macro HandleNearbyReadAsLeader(r) begin
         await /\ m.type = "NearbyRead"
               /\ m.bal = node[r].balMaxKnown;
         \* send back NearbyReadReply
-        Send({NearbyReadReplyMsg(r, m.bal, m.read, TRUE, s, v)});
+        Send({NearbyReadReplyMsg(r, m.bal, m.read, TRUE, s, TRUE, v)});
     end with;
 end macro;
 
@@ -637,12 +640,13 @@ macro HandleNearbyReadAsFollower(r) begin
     \* if receiving an unreplied NearbyRead message with valid ballot
     with m \in msgs,
          s = LastNonEmptySlot(node[r].insts),
+         cm = IF s = 0 THEN TRUE ELSE node[r].insts[s].status = "Committed",
          v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write
     do
         await /\ m.type = "NearbyRead"
               /\ m.bal = node[r].balMaxKnown;
         \* send back NearbyReadReply
-        Send({NearbyReadReplyMsg(r, m.bal, m.read, FALSE, s, v)});
+        Send({NearbyReadReplyMsg(r, m.bal, m.read, FALSE, s, cm, v)});
     end with;
 end macro;
 
@@ -686,10 +690,24 @@ macro HandleNearbyReadRepliesNoLeader(r) begin
                     \* multiple NearbyReadReplies from the same replica for
                     \* the same read command in the `msgs` set
          lnr = CHOOSE lnr \in nrs:
-                    \A nr \in nrs: nr.last_slot =< lnr.last_slot,
+                    /\ \A nr \in nrs: nr.last_slot =< lnr.last_slot
+                    /\ (~lnr.committed) => \A nr \in nrs:
+                                                \/ nr.last_slot < lnr.last_slot
+                                                \/ ~nr.committed,
          rqSize = CurrentConfig.rqSize
     do
-        await Cardinality({nr.src: nr \in nrs}) >= rqSize;
+        await /\ Cardinality({nr.src: nr \in nrs}) >= rqSize
+              /\ lnr.committed;
+                    \* the "committed" condition check on the lastest version
+                    \* is necessary when write requests are not assumed to
+                    \* last forever until acknowledged (they usually don't in
+                    \* practice; but in this spec, user requests are modeled
+                    \* as a sequence of pending requests and a write request,
+                    \* once taken, lasts until it's acknowledged)
+                    \*   to get a counter-example to this condition, we would
+                    \* need >= 5 replicas and a modeling where a different
+                    \* write request could be issued by a new leader and take
+                    \* the position of an old uncommitted write
         \* append to observed events sequence if haven't yet, and remove
         \* the command from pending
         Observe(<<AckEvent(c, lnr.val)>>);
@@ -756,7 +774,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "84ac2c75" /\ chksum(tla) = "1a8c7c2d")
+\* BEGIN TRANSLATION (chksum(pcal) = "67acf5e1" /\ chksum(tla) = "74396425")
 VARIABLES msgs, grants, node, pending, observed, crashed, pc
 
 (* define statement *)
@@ -958,12 +976,13 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ Len(UnseenPending(self)) > 0
                                    /\ Head(UnseenPending(self)) \in Reads
                                 /\ LET s == LastNonEmptySlot(node[self].insts) IN
-                                     LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
-                                       LET c == Head(UnseenPending(self)) IN
-                                         /\ msgs' = (msgs \cup ({NearbyReadMsg(self, node[self].balMaxKnown, c),
-                                                                 NearbyReadReplyMsg(self, node[self].balMaxKnown, c, FALSE, s, v)}))
-                                         /\ node' = [node EXCEPT ![self].reads = @ \cup {c}]
-                                         /\ observed' = AppendObserved((<<ReqEvent(c)>>))
+                                     LET cm == IF s = 0 THEN TRUE ELSE node[self].insts[s].status = "Committed" IN
+                                       LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                         LET c == Head(UnseenPending(self)) IN
+                                           /\ msgs' = (msgs \cup ({NearbyReadMsg(self, node[self].balMaxKnown, c),
+                                                                   NearbyReadReplyMsg(self, node[self].balMaxKnown, c, FALSE, s, cm, v)}))
+                                           /\ node' = [node EXCEPT ![self].reads = @ \cup {c}]
+                                           /\ observed' = AppendObserved((<<ReqEvent(c)>>))
                                 /\ UNCHANGED <<grants, pending, crashed>>
                              \/ /\ /\ ThinkAmLeader(self)
                                    /\ BallotTransfered(self)
@@ -972,16 +991,17 @@ rloop(self) == /\ pc[self] = "rloop"
                                        LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
                                          /\ /\ m.type = "NearbyRead"
                                             /\ m.bal = node[self].balMaxKnown
-                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, TRUE, s, v)}))
+                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, TRUE, s, TRUE, v)}))
                                 /\ UNCHANGED <<grants, node, pending, observed, crashed>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ BallotTransfered(self)
                                 /\ \E m \in msgs:
                                      LET s == LastNonEmptySlot(node[self].insts) IN
-                                       LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
-                                         /\ /\ m.type = "NearbyRead"
-                                            /\ m.bal = node[self].balMaxKnown
-                                         /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, FALSE, s, v)}))
+                                       LET cm == IF s = 0 THEN TRUE ELSE node[self].insts[s].status = "Committed" IN
+                                         LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
+                                           /\ /\ m.type = "NearbyRead"
+                                              /\ m.bal = node[self].balMaxKnown
+                                           /\ msgs' = (msgs \cup ({NearbyReadReplyMsg(self, m.bal, m.read, FALSE, s, cm, v)}))
                                 /\ UNCHANGED <<grants, node, pending, observed, crashed>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ BallotTransfered(self)
@@ -1003,9 +1023,13 @@ rloop(self) == /\ pc[self] = "rloop"
                                                              /\ m.bal = node[self].balMaxKnown
                                                              /\ ~m.is_leader} IN
                                        LET lnr == CHOOSE lnr \in nrs:
-                                                       \A nr \in nrs: nr.last_slot =< lnr.last_slot IN
+                                                       /\ \A nr \in nrs: nr.last_slot =< lnr.last_slot
+                                                       /\ (~lnr.committed) => \A nr \in nrs:
+                                                                                   \/ nr.last_slot < lnr.last_slot
+                                                                                   \/ ~nr.committed IN
                                          LET rqSize == CurrentConfig.rqSize IN
-                                           /\ Cardinality({nr.src: nr \in nrs}) >= rqSize
+                                           /\ /\ Cardinality({nr.src: nr \in nrs}) >= rqSize
+                                              /\ lnr.committed
                                            /\ observed' = AppendObserved((<<AckEvent(c, lnr.val)>>))
                                            /\ pending' = RemovePending(c)
                                            /\ node' = [node EXCEPT ![self].reads = @ \ {c}]
