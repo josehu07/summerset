@@ -31,7 +31,7 @@ UTILITY_PARAM_NAMES = {
         "put_ratio",
         "ycsb_trace",
         "length_s",
-        "normal_stdev_ratio",
+        "norm_stdev_ratio",
         "unif_interval_ms",
         "unif_upper_bound",
     ],
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
     parser_bench.add_argument(
-        "--normal_stdev_ratio", type=float, help="normal dist stdev ratio"
+        "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
     )
     parser_bench.add_argument(
         "--unif_interval_ms", type=int, help="uniform dist usage interval"

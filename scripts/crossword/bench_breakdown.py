@@ -117,7 +117,7 @@ def run_bench_clients(protocol):
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        "--normal_stdev_ratio",
+        "--norm_stdev_ratio",
         str(0.1),
         "--file_prefix",
         f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",

@@ -140,7 +140,7 @@ def run_bench_clients(protocol):
         str(PUT_RATIO),
         "-l",
         str(LENGTH_SECS),
-        # "--normal_stdev_ratio",
+        # "--norm_stdev_ratio",
         # str(0.1),
         # "--unif_interval_ms",
         # str(500),

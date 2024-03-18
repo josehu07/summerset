@@ -25,11 +25,17 @@ use summerset::{
     parsed_config,
 };
 
+/// Number of distinct keys.
+const NUM_KEYS: usize = 5;
+
+/// Max length in bytes of value.
+const MAX_VAL_LEN: usize = 10 * 1024 * 1024;
+
 lazy_static! {
     /// Pool of keys to choose from.
     static ref KEYS_POOL: Vec<String> = {
         let mut pool = vec![];
-        for _ in 0..5 {
+        for _ in 0..NUM_KEYS {
             let key = rand::thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(8)
@@ -43,7 +49,7 @@ lazy_static! {
     /// A very long pre-generated value string to get values from.
     static ref MOM_VALUE: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
-        .take(10 * 1024 * 1024)
+        .take(MAX_VAL_LEN)
         .map(char::from)
         .collect();
 
@@ -76,7 +82,7 @@ pub struct ModeParamsBench {
 
     /// If non-zero, use a normal distribution of this standard deviation
     /// ratio for every write command.
-    pub normal_stdev_ratio: f32,
+    pub norm_stdev_ratio: f32,
 
     /// Do a uniformly distributed value size write for every some interval.
     /// Set to 0 to turn off. Set to 1 to let every request size go through a
@@ -96,7 +102,7 @@ impl Default for ModeParamsBench {
             put_ratio: 50,
             ycsb_trace: "".into(),
             value_size: "1024".into(),
-            normal_stdev_ratio: 0.0,
+            norm_stdev_ratio: 0.0,
             unif_interval_ms: 0,
             unif_upper_bound: 128 * 1024,
         }
@@ -124,7 +130,7 @@ pub struct ClientBench {
     value_size: RangeMap<u64, usize>,
 
     /// Map from value size mean -> normal distribution generator.
-    normal_dist: Option<HashMap<usize, Normal<f32>>>,
+    norm_dist: Option<HashMap<usize, Normal<f32>>>,
 
     /// Fixed uniform distribution.
     unif_dist: Option<Uniform<usize>>,
@@ -173,7 +179,7 @@ impl ClientBench {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     freq_target, length_s,
                                     put_ratio, ycsb_trace,
-                                    value_size, normal_stdev_ratio,
+                                    value_size, norm_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
@@ -187,16 +193,16 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
                                     params.put_ratio);
         }
-        if params.normal_stdev_ratio < 0.0 {
-            return logged_err!("c"; "invalid params.normal_stdev_ratio '{}'",
-                                    params.normal_stdev_ratio);
+        if params.norm_stdev_ratio < 0.0 {
+            return logged_err!("c"; "invalid params.norm_stdev_ratio '{}'",
+                                    params.norm_stdev_ratio);
         }
         if params.unif_interval_ms > 1 && params.unif_interval_ms < 100 {
             return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
                                     params.unif_interval_ms);
         }
         if params.unif_upper_bound < 1024
-            || params.unif_upper_bound > MOM_VALUE.len()
+            || params.unif_upper_bound > MAX_VAL_LEN
         {
             return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
                                     params.unif_upper_bound);
@@ -210,7 +216,7 @@ impl ClientBench {
 
         let value_size =
             Self::parse_value_sizes(params.length_s, &params.value_size)?;
-        let normal_dist = if params.normal_stdev_ratio > 0.0 {
+        let norm_dist = if params.norm_stdev_ratio > 0.0 {
             Some(
                 value_size
                     .iter()
@@ -219,7 +225,7 @@ impl ClientBench {
                             vs,
                             Normal::new(
                                 vs as f32,
-                                vs as f32 * params.normal_stdev_ratio,
+                                vs as f32 * params.norm_stdev_ratio,
                             )
                             .unwrap(),
                         )
@@ -242,7 +248,7 @@ impl ClientBench {
             trace_idx: 0,
             rng: rand::thread_rng(),
             value_size,
-            normal_dist,
+            norm_dist,
             unif_dist,
             total_cnt: 0,
             reply_cnt: 0,
@@ -345,55 +351,50 @@ impl ClientBench {
 
     /// Pick a value of given size. If `using_dist` is on, uses that as mean
     /// size and goes through a normal distribution to sample a size.
-    #[inline]
     fn gen_value_at_now(&mut self) -> Result<&'static str, SummersetError> {
         let curr_sec = self.now.duration_since(self.start).as_secs();
         let mut size = *self.value_size.get(&curr_sec).unwrap();
-        if size > MOM_VALUE.len() {
-            return logged_err!(self.driver.id; "value size {} too big", size);
-        }
 
         // go through a probability distribution?
-        if self.unif_dist.is_some() && self.params.unif_interval_ms == 1 {
-            // go through a uniform distribution, ignoring all other settings
-            size = self
-                .unif_dist
-                .as_ref()
-                .unwrap()
-                .sample(&mut rand::thread_rng());
-        } else if let Some(normal_dist) = self.normal_dist.as_ref() {
-            // go through a normal distribution with current size as mean
-            loop {
-                let f32_size =
-                    normal_dist[&size].sample(&mut rand::thread_rng());
-                size = f32_size.round() as usize;
-                if size > 0 && size <= MOM_VALUE.len() {
-                    break;
-                }
-            }
-        }
-
-        // force this request as an injected uniform distribution req?
         if self.unif_dist.is_some()
             && self.params.unif_interval_ms > 1
             && self.now.duration_since(self.last_unif).as_millis()
                 >= self.params.unif_interval_ms as u128
         {
+            // an injected uniform distribution sample
             size = self
                 .unif_dist
                 .as_ref()
                 .unwrap()
                 .sample(&mut rand::thread_rng());
             self.last_unif = self.now;
+        } else if self.unif_dist.is_some() && self.params.unif_interval_ms == 1
+        {
+            // forcing a uniform distribution, ignoring all other settings
+            size = self
+                .unif_dist
+                .as_ref()
+                .unwrap()
+                .sample(&mut rand::thread_rng());
+        } else if let Some(norm_dist) = self.norm_dist.as_ref() {
+            // a normal distribution with current size as mean
+            loop {
+                let f32_size = norm_dist[&size].sample(&mut rand::thread_rng());
+                size = f32_size.round() as usize;
+                if size > 0 && size <= MAX_VAL_LEN {
+                    break;
+                }
+            }
         }
 
+        debug_assert!(size <= MAX_VAL_LEN);
         Ok(&MOM_VALUE[..size])
     }
 
     /// Issues a random request.
     fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
         // randomly choose a key from key pool; key does not matter too much
-        let key = KEYS_POOL[self.rng.gen_range(0..KEYS_POOL.len())].clone();
+        let key = KEYS_POOL[self.rng.gen_range(0..NUM_KEYS)].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
@@ -530,8 +531,6 @@ impl ClientBench {
     fn reset_ticker(&mut self) {
         if self.curr_freq == 0 {
             self.curr_freq = 1; // avoid division-by-zero
-        } else if self.curr_freq > 1000000 {
-            self.curr_freq = 1000000; // avoid going too high
         }
 
         let period = Duration::from_nanos(1000000000 / self.curr_freq);
@@ -606,6 +605,7 @@ impl ClientBench {
                 self.chunk_cnt = 0;
                 self.chunk_lats.clear();
 
+                // THE FOLLOWING IS EXPERIMENTAL:
                 // adaptively adjust issuing frequency according to number of
                 // pending requests; we try to maintain two ranges:
                 //   - curr_freq in (1 ~ 1.25) * tpt
