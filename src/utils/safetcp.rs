@@ -60,6 +60,7 @@ where
     // if reached this point, no further cancellation to this call is
     // possible (because there are no more awaits ahead); discard bytes
     // used in this call
+    // TODO: may want to use a ring buffer to avoid potential memmove
     if read_buf.len() > obj_end {
         let buf_tail = Bytes::copy_from_slice(&read_buf[obj_end..]);
         read_buf.clear();

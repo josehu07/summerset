@@ -155,21 +155,24 @@ Complete cluster management and benchmarking scripts are available in another re
 - [x] async event-loop foundation
 - [x] implementation of MultiPaxos
   - [x] TLA+ spec
-  - [ ] localize reads with leader lease
-  - [ ] efficient snapshotting
-  - [ ] membership discovery & view change
 - [x] implementation of RS-Paxos
 - [x] implementation of Raft
   - [ ] TLA+ spec
-  - [ ] localize reads with leader lease
-  - [ ] efficient snapshotting
-  - [ ] membership discovery & view change
 - [x] implementation of CRaft
 - [x] implementation of Crossword prototype
   - [x] TLA+ spec
-  - [ ] allow dynamic RS scheme over time
-- [x] client-side utilities
-  - [ ] linearizability fuzz checker
+- [ ] long-term planned improvements
+  - [ ] use a sophisticated storage backend
+  - [ ] efficient state-transfer snapshotting
+  - [ ] more robust TCP msg infrastructure
+  - [ ] membership discovery & view change
+  - [ ] multi-versioning & stale reads
+  - [ ] partitioned groups service structure
+- [ ] client-side utilities
+  - [x] interactive REPL
+  - [x] benchmarking client
+  - [x] unit tester
+  - [ ] linearizability fuzzer
 - [ ] better README & documentation
 
 ---
