@@ -118,12 +118,6 @@ pub struct ReplicaConfigCrossword {
     /// Knob that controls choosing the best config with perf model values.
     pub b_to_d_threshold: f64,
 
-    // Performance simulation params (all zeros means no perf simulation):
-    pub perf_storage_a: u64,
-    pub perf_storage_b: u64,
-    pub perf_network_a: u64,
-    pub perf_network_b: u64,
-
     /// Recording performance breakdown statistics?
     pub record_breakdown: bool,
 
@@ -162,10 +156,6 @@ impl Default for ReplicaConfigCrossword {
             linreg_init_b: 10.0,
             linreg_outlier_ratio: 0.5,
             b_to_d_threshold: 0.0,
-            perf_storage_a: 0,
-            perf_storage_b: 0,
-            perf_network_a: 0,
-            perf_network_b: 0,
             record_breakdown: false,
             sim_read_lease: false,
         }
@@ -643,8 +633,6 @@ impl GenericReplica for CrosswordReplica {
                                     linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
                                     b_to_d_threshold,
-                                    perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b,
                                     record_breakdown, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
@@ -714,29 +702,13 @@ impl GenericReplica for CrosswordReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.backer_path),
-            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
-                None
-            } else {
-                Some((config.perf_storage_a, config.perf_storage_b))
-            },
-        )
-        .await?;
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            if config.perf_network_a == 0 && config.perf_network_b == 0 {
-                None
-            } else {
-                Some((config.perf_network_a, config.perf_network_b))
-            },
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -858,12 +830,9 @@ impl GenericReplica for CrosswordReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.snapshot_path),
-            None,
-        )
-        .await?;
+        let snapshot_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
+                .await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(

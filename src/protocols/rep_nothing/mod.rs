@@ -44,10 +44,6 @@ pub struct ReplicaConfigRepNothing {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
-
-    // Performance simulation params (all zeros means no perf simulation):
-    pub perf_storage_a: u64,
-    pub perf_storage_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -58,8 +54,6 @@ impl Default for ReplicaConfigRepNothing {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,
-            perf_storage_a: 0,
-            perf_storage_b: 0,
         }
     }
 }
@@ -148,8 +142,7 @@ impl GenericReplica for RepNothingReplica {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
                                     batch_interval_ms, max_batch_size,
-                                    backer_path, logger_sync,
-                                    perf_storage_a, perf_storage_b)?;
+                                    backer_path, logger_sync)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -162,16 +155,9 @@ impl GenericReplica for RepNothingReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.backer_path),
-            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
-                None
-            } else {
-                Some((config.perf_storage_a, config.perf_storage_b))
-            },
-        )
-        .await?;
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
 
         // TransportHub is not needed in RepNothing
 

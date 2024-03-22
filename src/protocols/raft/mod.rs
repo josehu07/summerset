@@ -72,12 +72,6 @@ pub struct ReplicaConfigRaft {
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
-    // Performance simulation params (all zeros means no perf simulation):
-    pub perf_storage_a: u64,
-    pub perf_storage_b: u64,
-    pub perf_network_a: u64,
-    pub perf_network_b: u64,
-
     /// Simulate local read lease implementation?
     // TODO: actual read lease impl later? (won't affect anything about
     // evalutaion results though)
@@ -99,10 +93,6 @@ impl Default for ReplicaConfigRaft {
             snapshot_path: "/tmp/summerset.raft.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
-            perf_storage_a: 0,
-            perf_storage_b: 0,
-            perf_network_a: 0,
-            perf_network_b: 0,
             sim_read_lease: false,
         }
     }
@@ -395,10 +385,7 @@ impl GenericReplica for RaftReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
-                                    msg_chunk_size,
-                                    perf_storage_a, perf_storage_b,
-                                    perf_network_a, perf_network_b,
-                                    sim_read_lease)?;
+                                    msg_chunk_size, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -439,29 +426,13 @@ impl GenericReplica for RaftReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.backer_path),
-            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
-                None
-            } else {
-                Some((config.perf_storage_a, config.perf_storage_b))
-            },
-        )
-        .await?;
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            if config.perf_network_a == 0 && config.perf_network_b == 0 {
-                None
-            } else {
-                Some((config.perf_network_a, config.perf_network_b))
-            },
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -494,12 +465,9 @@ impl GenericReplica for RaftReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.snapshot_path),
-            None,
-        )
-        .await?;
+        let snapshot_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
+                .await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(

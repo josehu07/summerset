@@ -531,29 +531,13 @@ impl GenericReplica for RSPaxosReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.backer_path),
-            if config.perf_storage_a == 0 && config.perf_storage_b == 0 {
-                None
-            } else {
-                Some((config.perf_storage_a, config.perf_storage_b))
-            },
-        )
-        .await?;
+        let storage_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
+                .await?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            if config.perf_network_a == 0 && config.perf_network_b == 0 {
-                None
-            } else {
-                Some((config.perf_network_a, config.perf_network_b))
-            },
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -598,12 +582,9 @@ impl GenericReplica for RSPaxosReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub = StorageHub::new_and_setup(
-            id,
-            Path::new(&config.snapshot_path),
-            None,
-        )
-        .await?;
+        let snapshot_hub =
+            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
+                .await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
