@@ -22,15 +22,17 @@ struct CliArgs {
     #[arg(short, long)]
     protocol: String,
 
-    /// IP to use for binding the listening sockets.
+    /// Local IP to use for binding the listening sockets.
     #[arg(short, long)]
     bind_ip: Ipv4Addr,
 
     /// Server-facing API port.
+    /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52600)]
     srv_port: u16,
 
     /// Client-facing API port.
+    /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52601)]
     cli_port: u16,
 

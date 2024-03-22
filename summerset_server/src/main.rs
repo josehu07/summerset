@@ -30,14 +30,18 @@ struct CliArgs {
     config: String,
 
     /// Key-value API port open to clients.
+    /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52700)]
     api_port: u16,
 
     /// Internal peer-peer communication API port.
+    /// This port must be available at process launch.
     #[arg(short = 'i', long, default_value_t = 52800)]
     p2p_port: u16,
 
-    /// Base address to use in bind addresses.
+    /// Base address 'localip:port' to use in bind addresses for sockets
+    /// that communicate with peers.
+    /// Ports [port, port + N) must be available at process launch.
     #[arg(short, long)]
     bind_base: SocketAddr,
 

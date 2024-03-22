@@ -41,7 +41,9 @@ struct CliArgs {
     #[arg(long, default_value_t = String::from(""))]
     params: String,
 
-    /// Base address to use in bind addresses.
+    /// Base address 'localip:port' to use in bind addresses for sockets
+    /// that communicate with server nodes.
+    /// Ports [port, port + N) must be available at process launch.
     #[arg(short, long)]
     bind_base: SocketAddr,
 
