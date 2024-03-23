@@ -83,6 +83,23 @@ impl ControlHub {
             .map_err(|e| SummersetError(e.to_string()))?;
         Ok(())
     }
+
+    /// Sends a control message to the cluster manager and waits for an
+    /// expected reply blockingly.
+    pub async fn do_sync_ctrl(
+        &mut self,
+        msg: CtrlMsg,
+        expect: fn(&CtrlMsg) -> bool,
+    ) -> Result<CtrlMsg, SummersetError> {
+        self.send_ctrl(msg)?;
+        loop {
+            let reply = self.recv_ctrl().await?;
+            if expect(&reply) {
+                return Ok(reply);
+            }
+            // else simply discard
+        }
+    }
 }
 
 // ControlHub control_messenger thread implementation

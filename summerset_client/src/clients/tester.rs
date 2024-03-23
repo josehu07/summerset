@@ -34,9 +34,7 @@ lazy_static! {
         ("non_leader_pause", false),
         ("leader_node_pause", false),
         ("node_pause_resume", false),
-        // NOTE: although the current snapshotting implementation should be
-        //       working for all protocols, skipping this test for now
-        // ("snapshot_reset", false),
+        ("snapshot_reset", false),
     ];
 }
 

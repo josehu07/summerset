@@ -102,33 +102,29 @@ impl RaftReplica {
             } else if self.log[slot - self.start_slot].term != new_entry.term {
                 let cut_offset = self.log[slot - self.start_slot].log_offset;
                 // do this truncation in-place for simplicity
-                self.storage_hub.submit_action(
-                    0,
-                    LogAction::Truncate { offset: cut_offset },
-                )?;
-                loop {
-                    let (action_id, log_result) =
-                        self.storage_hub.get_result().await?;
-                    if action_id != 0 {
-                        // normal log action previously in queue; process it
-                        self.handle_log_result(action_id, log_result)?;
-                        self.heard_heartbeat(leader, term)?;
-                    } else {
-                        if let LogResult::Truncate {
-                            offset_ok: true,
-                            now_size,
-                        } = log_result
-                        {
-                            debug_assert_eq!(now_size, cut_offset);
-                            self.log_offset = cut_offset;
-                        } else {
-                            return logged_err!(
-                                self.id;
-                                "unexpected log result type or failed truncate"
-                            );
-                        }
-                        break;
-                    }
+                let (old_results, result) = self
+                    .storage_hub
+                    .do_sync_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Truncate { offset: cut_offset },
+                    )
+                    .await?;
+                for (old_id, old_result) in old_results {
+                    self.handle_log_result(old_id, old_result)?;
+                    self.heard_heartbeat(leader, term)?;
+                }
+                if let LogResult::Truncate {
+                    offset_ok: true,
+                    now_size,
+                } = result
+                {
+                    debug_assert_eq!(now_size, cut_offset);
+                    self.log_offset = cut_offset;
+                } else {
+                    return logged_err!(
+                        self.id;
+                        "unexpected log result type or failed truncate"
+                    );
                 }
                 // truncate in-mem log as well
                 self.log.truncate(slot - self.start_slot);
@@ -419,34 +415,30 @@ impl RaftReplica {
 
                 // update voted_for and make the field durable, synchronously
                 self.voted_for = Some(candidate);
-                self.storage_hub.submit_action(
-                    0,
-                    LogAction::Write {
-                        entry: DurEntry::Metadata {
-                            curr_term: self.curr_term,
-                            voted_for: self.voted_for,
+                let (old_results, result) = self
+                    .storage_hub
+                    .do_sync_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Write {
+                            entry: DurEntry::Metadata {
+                                curr_term: self.curr_term,
+                                voted_for: self.voted_for,
+                            },
+                            offset: 0,
+                            sync: self.config.logger_sync,
                         },
-                        offset: 0,
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                loop {
-                    let (action_id, log_result) =
-                        self.storage_hub.get_result().await?;
-                    if action_id != 0 {
-                        // normal log action previously in queue; process it
-                        self.handle_log_result(action_id, log_result)?;
-                        self.heard_heartbeat(candidate, term)?;
-                    } else {
-                        if let LogResult::Write {
-                            offset_ok: true, ..
-                        } = log_result
-                        {
-                        } else {
-                            return logged_err!(self.id; "unexpected log result type or failed write");
-                        }
-                        break;
-                    }
+                    )
+                    .await?;
+                for (old_id, old_result) in old_results {
+                    self.handle_log_result(old_id, old_result)?;
+                    self.heard_heartbeat(candidate, term)?;
+                }
+                if let LogResult::Write {
+                    offset_ok: true, ..
+                } = result
+                {
+                } else {
+                    return logged_err!(self.id; "unexpected log result type or failed write");
                 }
             }
         }

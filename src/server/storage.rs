@@ -164,6 +164,30 @@ where
             Err(e) => Err(SummersetError(e.to_string())),
         }
     }
+
+    /// Submits an action and waits for its result blockingly.
+    /// Returns a tuple where the first element is a vec containing any old
+    /// results of previously submitted actions received in the middle and
+    /// the second element is the result of this sync action.
+    pub async fn do_sync_action(
+        &mut self,
+        id: LogActionId,
+        action: LogAction<Ent>,
+    ) -> Result<
+        (Vec<(LogActionId, LogResult<Ent>)>, LogResult<Ent>),
+        SummersetError,
+    > {
+        self.submit_action(id, action)?;
+        let mut old_results = vec![];
+        loop {
+            let (this_id, result) = self.get_result().await?;
+            if this_id == id {
+                return Ok((old_results, result));
+            } else {
+                old_results.push((this_id, result));
+            }
+        }
+    }
 }
 
 // StorageHub logger thread implementation
@@ -748,6 +772,42 @@ mod storage_tests {
             hub.get_result().await?,
             (
                 2,
+                LogResult::Truncate {
+                    offset_ok: true,
+                    now_size: 0
+                }
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_do_sync() -> Result<(), SummersetError> {
+        let path = Path::new("/tmp/test-backer-7.log");
+        let mut hub = StorageHub::new_and_setup(0, path).await?;
+        let entry = TestEntry("abcdefgh".into());
+        let entry_bytes = encode_to_vec(&entry)?;
+        hub.submit_action(0, LogAction::Append { entry, sync: true })?;
+        hub.submit_action(1, LogAction::Read { offset: 0 })?;
+        assert_eq!(
+            hub.do_sync_action(2, LogAction::Truncate { offset: 0 },)
+                .await?,
+            (
+                vec![
+                    (
+                        0,
+                        LogResult::Append {
+                            now_size: 8 + entry_bytes.len()
+                        }
+                    ),
+                    (
+                        1,
+                        LogResult::Read {
+                            entry: Some(TestEntry("abcdefgh".into())),
+                            end_offset: 8 + entry_bytes.len(),
+                        }
+                    )
+                ],
                 LogResult::Truncate {
                     offset_ok: true,
                     now_size: 0

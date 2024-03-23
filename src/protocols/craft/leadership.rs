@@ -35,34 +35,30 @@ impl CRaftReplica {
             self.heard_heartbeat(peer, term)?;
 
             // also make the two critical fields durable, synchronously
-            self.storage_hub.submit_action(
-                0,
-                LogAction::Write {
-                    entry: DurEntry::Metadata {
-                        curr_term: self.curr_term,
-                        voted_for: self.voted_for,
+            let (old_results, result) = self
+                .storage_hub
+                .do_sync_action(
+                    0, // using 0 as dummy log action ID
+                    LogAction::Write {
+                        entry: DurEntry::Metadata {
+                            curr_term: self.curr_term,
+                            voted_for: self.voted_for,
+                        },
+                        offset: 0,
+                        sync: self.config.logger_sync,
                     },
-                    offset: 0,
-                    sync: self.config.logger_sync,
-                },
-            )?;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id != 0 {
-                    // normal log action previously in queue; process it
-                    self.handle_log_result(action_id, log_result)?;
-                    self.heard_heartbeat(peer, term)?;
-                } else {
-                    if let LogResult::Write {
-                        offset_ok: true, ..
-                    } = log_result
-                    {
-                    } else {
-                        return logged_err!(self.id; "unexpected log result type or failed write");
-                    }
-                    break;
-                }
+                )
+                .await?;
+            for (old_id, old_result) in old_results {
+                self.handle_log_result(old_id, old_result)?;
+                self.heard_heartbeat(peer, term)?;
+            }
+            if let LogResult::Write {
+                offset_ok: true, ..
+            } = result
+            {
+            } else {
+                return logged_err!(self.id; "unexpected log result type or failed write");
             }
 
             if self.role != Role::Follower {
@@ -174,33 +170,30 @@ impl CRaftReplica {
                            self.curr_term, last_slot, last_term);
 
         // also make the two critical fields durable, synchronously
-        self.storage_hub.submit_action(
-            0,
-            LogAction::Write {
-                entry: DurEntry::Metadata {
-                    curr_term: self.curr_term,
-                    voted_for: self.voted_for,
+        let (old_results, result) = self
+            .storage_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Write {
+                    entry: DurEntry::Metadata {
+                        curr_term: self.curr_term,
+                        voted_for: self.voted_for,
+                    },
+                    offset: 0,
+                    sync: self.config.logger_sync,
                 },
-                offset: 0,
-                sync: self.config.logger_sync,
-            },
-        )?;
-        loop {
-            let (action_id, log_result) = self.storage_hub.get_result().await?;
-            if action_id != 0 {
-                // normal log action previously in queue; process it
-                self.handle_log_result(action_id, log_result)?;
-                self.heard_heartbeat(self.id, self.curr_term)?;
-            } else {
-                if let LogResult::Write {
-                    offset_ok: true, ..
-                } = log_result
-                {
-                } else {
-                    return logged_err!(self.id; "unexpected log result type or failed write");
-                }
-                break;
-            }
+            )
+            .await?;
+        for (old_id, old_result) in old_results {
+            self.handle_log_result(old_id, old_result)?;
+            self.heard_heartbeat(self.id, self.curr_term)?;
+        }
+        if let LogResult::Write {
+            offset_ok: true, ..
+        } = result
+        {
+        } else {
+            return logged_err!(self.id; "unexpected log result type or failed write");
         }
 
         Ok(())

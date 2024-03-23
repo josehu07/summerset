@@ -13,9 +13,13 @@ impl RaftReplica {
 
         // first, try to read the first several bytes, which should record
         // necessary durable metadata
-        self.storage_hub
-            .submit_action(0, LogAction::Read { offset: 0 })?;
-        let (_, log_result) = self.storage_hub.get_result().await?;
+        let (_, log_result) = self
+            .storage_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Read { offset: 0 },
+            )
+            .await?;
 
         match log_result {
             LogResult::Read {
@@ -35,14 +39,15 @@ impl RaftReplica {
 
                 // read out and push all log entries into memory log
                 loop {
-                    // using 0 as a special log action ID
-                    self.storage_hub.submit_action(
-                        0,
-                        LogAction::Read {
-                            offset: self.log_offset,
-                        },
-                    )?;
-                    let (_, log_result) = self.storage_hub.get_result().await?;
+                    let (_, log_result) = self
+                        .storage_hub
+                        .do_sync_action(
+                            0, // using 0 as dummy log action ID
+                            LogAction::Read {
+                                offset: self.log_offset,
+                            },
+                        )
+                        .await?;
 
                     match log_result {
                         LogResult::Read {
@@ -67,18 +72,20 @@ impl RaftReplica {
 
             LogResult::Read { entry: None, .. } => {
                 // log file is empty, write initial metadata
-                self.storage_hub.submit_action(
-                    0,
-                    LogAction::Write {
-                        entry: DurEntry::Metadata {
-                            curr_term: 0,
-                            voted_for: None,
+                let (_, log_result) = self
+                    .storage_hub
+                    .do_sync_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Write {
+                            entry: DurEntry::Metadata {
+                                curr_term: 0,
+                                voted_for: None,
+                            },
+                            offset: 0,
+                            sync: self.config.logger_sync,
                         },
-                        offset: 0,
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                let (_, log_result) = self.storage_hub.get_result().await?;
+                    )
+                    .await?;
                 if let LogResult::Write {
                     offset_ok: true,
                     now_size,
@@ -98,15 +105,17 @@ impl RaftReplica {
                 };
                 self.log.push(null_entry.clone());
                 // ... and write the 0-th dummy entry durably
-                self.storage_hub.submit_action(
-                    0,
-                    LogAction::Write {
-                        entry: DurEntry::LogEntry { entry: null_entry },
-                        offset: self.log_offset,
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                let (_, log_result) = self.storage_hub.get_result().await?;
+                let (_, log_result) = self
+                    .storage_hub
+                    .do_sync_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Write {
+                            entry: DurEntry::LogEntry { entry: null_entry },
+                            offset: self.log_offset,
+                            sync: self.config.logger_sync,
+                        },
+                    )
+                    .await?;
                 if let LogResult::Write {
                     offset_ok: true,
                     now_size,
@@ -124,13 +133,15 @@ impl RaftReplica {
 
         // do an extra Truncate to remove paritial entry at the end if any
         debug_assert!(self.log_offset >= self.log_meta_end);
-        self.storage_hub.submit_action(
-            0,
-            LogAction::Truncate {
-                offset: self.log_offset,
-            },
-        )?;
-        let (_, log_result) = self.storage_hub.get_result().await?;
+        let (_, log_result) = self
+            .storage_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Truncate {
+                    offset: self.log_offset,
+                },
+            )
+            .await?;
         if let LogResult::Truncate {
             offset_ok: true, ..
         } = log_result

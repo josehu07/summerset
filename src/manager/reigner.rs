@@ -620,11 +620,13 @@ mod reigner_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn api_server_leave() -> Result<(), SummersetError> {
+    async fn api_do_sync() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
+        let term_bar = Arc::new(Barrier::new(2));
+        let term_bar2 = term_bar.clone();
         tokio::spawn(async move {
-            // replica 0
+            // replica
             barrier2.wait().await;
             let mut hub = ControlHub::new_and_setup(
                 "127.0.0.1:40010".parse()?,
@@ -632,46 +634,20 @@ mod reigner_tests {
             )
             .await?;
             assert_eq!(hub.me, 0);
-            // send a message to manager
+            // send a message to manager without waiting for its reply
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
                 api_addr: "127.0.0.1:54700".parse()?,
                 p2p_addr: "127.0.0.1:54800".parse()?,
             })?;
-            // recv a message from manager
+            // send a message to manager and wait for reply blockingly
             assert_eq!(
-                hub.recv_ctrl().await?,
-                CtrlMsg::ConnectToPeers {
-                    population: 1,
-                    to_peers: HashMap::new(),
-                }
+                hub.do_sync_ctrl(CtrlMsg::Leave, |m| m == &CtrlMsg::LeaveReply)
+                    .await?,
+                CtrlMsg::LeaveReply
             );
-            // leave and re-join as 0
-            hub.send_ctrl(CtrlMsg::Leave)?;
-            assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
-            time::sleep(Duration::from_millis(100)).await;
-            let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:40110".parse()?,
-                "127.0.0.1:54600".parse()?,
-            )
-            .await?;
-            assert_eq!(hub.me, 0);
-            // send a message to manager
-            hub.send_ctrl(CtrlMsg::NewServerJoin {
-                id: hub.me,
-                protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:54700".parse()?,
-                p2p_addr: "127.0.0.1:54800".parse()?,
-            })?;
-            // recv a message from manager
-            assert_eq!(
-                hub.recv_ctrl().await?,
-                CtrlMsg::ConnectToPeers {
-                    population: 1,
-                    to_peers: HashMap::new(),
-                }
-            );
+            term_bar.wait().await;
             Ok::<(), SummersetError>(())
         });
         // manager
@@ -684,7 +660,7 @@ mod reigner_tests {
         )
         .await?;
         barrier.wait().await;
-        // recv message from server 0
+        // recv first message from server
         rx_id_assign.recv().await;
         tx_id_result.send((0, 1))?;
         let (id, msg) = reigner.recv_ctrl().await?;
@@ -706,6 +682,99 @@ mod reigner_tests {
             },
             id,
         )?;
+        // recv second message (which is a Leave) from server; reply is sent
+        // directly from the controller thread's event loop
+        term_bar2.wait().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_server_leave() -> Result<(), SummersetError> {
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier2 = barrier.clone();
+        tokio::spawn(async move {
+            // replica 0
+            barrier2.wait().await;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:50010".parse()?,
+                "127.0.0.1:55600".parse()?,
+            )
+            .await?;
+            assert_eq!(hub.me, 0);
+            // send a message to manager
+            hub.send_ctrl(CtrlMsg::NewServerJoin {
+                id: hub.me,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:55700".parse()?,
+                p2p_addr: "127.0.0.1:55800".parse()?,
+            })?;
+            // recv a message from manager
+            assert_eq!(
+                hub.recv_ctrl().await?,
+                CtrlMsg::ConnectToPeers {
+                    population: 1,
+                    to_peers: HashMap::new(),
+                }
+            );
+            // leave and re-join as 0
+            hub.send_ctrl(CtrlMsg::Leave)?;
+            assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
+            time::sleep(Duration::from_millis(100)).await;
+            let mut hub = ControlHub::new_and_setup(
+                "127.0.0.1:50110".parse()?,
+                "127.0.0.1:55600".parse()?,
+            )
+            .await?;
+            assert_eq!(hub.me, 0);
+            // send a message to manager
+            hub.send_ctrl(CtrlMsg::NewServerJoin {
+                id: hub.me,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:55700".parse()?,
+                p2p_addr: "127.0.0.1:55800".parse()?,
+            })?;
+            // recv a message from manager
+            assert_eq!(
+                hub.recv_ctrl().await?,
+                CtrlMsg::ConnectToPeers {
+                    population: 1,
+                    to_peers: HashMap::new(),
+                }
+            );
+            Ok::<(), SummersetError>(())
+        });
+        // manager
+        let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
+        let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
+        let mut reigner = ServerReigner::new_and_setup(
+            "127.0.0.1:55600".parse()?,
+            tx_id_assign,
+            rx_id_result,
+        )
+        .await?;
+        barrier.wait().await;
+        // recv message from server 0
+        rx_id_assign.recv().await;
+        tx_id_result.send((0, 1))?;
+        let (id, msg) = reigner.recv_ctrl().await?;
+        assert_eq!(id, 0);
+        assert_eq!(
+            msg,
+            CtrlMsg::NewServerJoin {
+                id: 0,
+                protocol: SmrProtocol::SimplePush,
+                api_addr: "127.0.0.1:55700".parse()?,
+                p2p_addr: "127.0.0.1:55800".parse()?
+            }
+        );
+        // send reply to server 0
+        reigner.send_ctrl(
+            CtrlMsg::ConnectToPeers {
+                population: 1,
+                to_peers: HashMap::new(),
+            },
+            id,
+        )?;
         rx_id_assign.recv().await;
         tx_id_result.send((0, 1))?;
         // recv message from server 0
@@ -716,8 +785,8 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 0,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:54700".parse()?,
-                p2p_addr: "127.0.0.1:54800".parse()?
+                api_addr: "127.0.0.1:55700".parse()?,
+                p2p_addr: "127.0.0.1:55800".parse()?
             }
         );
         // send reply to server 0

@@ -62,38 +62,31 @@ impl RSPaxosReplica {
 
         // discard the log before cut_offset
         if cut_offset > 0 {
-            self.storage_hub.submit_action(
-                0,
-                LogAction::Discard {
-                    offset: cut_offset,
-                    keep: 0,
-                },
-            )?;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id != 0 {
-                    // normal log action previously in queue; process it
-                    self.handle_log_result(action_id, log_result)?;
-                } else {
-                    if let LogResult::Discard {
-                        offset_ok: true,
-                        now_size,
-                    } = log_result
-                    {
-                        debug_assert_eq!(
-                            self.wal_offset - cut_offset,
-                            now_size
-                        );
-                        self.wal_offset = now_size;
-                    } else {
-                        return logged_err!(
-                            self.id;
-                            "unexpected log result type or failed discard"
-                        );
-                    }
-                    break;
-                }
+            let (old_results, result) = self
+                .storage_hub
+                .do_sync_action(
+                    0, // using 0 as dummy log action ID
+                    LogAction::Discard {
+                        offset: cut_offset,
+                        keep: 0,
+                    },
+                )
+                .await?;
+            for (old_id, old_result) in old_results {
+                self.handle_log_result(old_id, old_result)?;
+            }
+            if let LogResult::Discard {
+                offset_ok: true,
+                now_size,
+            } = result
+            {
+                debug_assert_eq!(self.wal_offset - cut_offset, now_size);
+                self.wal_offset = now_size;
+            } else {
+                return logged_err!(
+                    self.id;
+                    "unexpected log result type or failed discard"
+                );
             }
         }
 
@@ -219,11 +212,12 @@ impl RSPaxosReplica {
                         } => {
                             // execute Put commands on state machine
                             for (key, value) in pairs {
-                                self.state_machine.submit_cmd(
-                                    0,
-                                    Command::Put { key, value },
-                                )?;
-                                let _ = self.state_machine.get_result().await?;
+                                self.state_machine
+                                    .do_sync_cmd(
+                                        0, // using 0 as dummy command ID
+                                        Command::Put { key, value },
+                                    )
+                                    .await?;
                             }
                             // update snapshot file offset
                             self.snap_offset = end_offset;

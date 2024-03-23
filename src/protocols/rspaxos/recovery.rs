@@ -99,9 +99,12 @@ impl RSPaxosReplica {
                         // synchronously
                         for (_, req) in inst.reqs_cw.get_data()?.clone() {
                             if let ApiRequest::Req { cmd, .. } = req {
-                                // using 0 as a special command ID
-                                self.state_machine.submit_cmd(0, cmd)?;
-                                let _ = self.state_machine.get_result().await?;
+                                self.state_machine
+                                    .do_sync_cmd(
+                                        0, // using 0 as dummy command ID
+                                        cmd,
+                                    )
+                                    .await?;
                             }
                         }
                         // update instance status, commit_bar, and exec_bar
@@ -120,14 +123,15 @@ impl RSPaxosReplica {
     pub async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
-            // using 0 as a special log action ID
-            self.storage_hub.submit_action(
-                0,
-                LogAction::Read {
-                    offset: self.wal_offset,
-                },
-            )?;
-            let (_, log_result) = self.storage_hub.get_result().await?;
+            let (_, log_result) = self
+                .storage_hub
+                .do_sync_action(
+                    0, // using 0 as dummy log action ID
+                    LogAction::Read {
+                        offset: self.wal_offset,
+                    },
+                )
+                .await?;
 
             match log_result {
                 LogResult::Read {
@@ -149,13 +153,15 @@ impl RSPaxosReplica {
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
-        self.storage_hub.submit_action(
-            0,
-            LogAction::Truncate {
-                offset: self.wal_offset,
-            },
-        )?;
-        let (_, log_result) = self.storage_hub.get_result().await?;
+        let (_, log_result) = self
+            .storage_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Truncate {
+                    offset: self.wal_offset,
+                },
+            )
+            .await?;
         if let LogResult::Truncate {
             offset_ok: true, ..
         } = log_result

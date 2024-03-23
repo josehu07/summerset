@@ -19,30 +19,26 @@ impl RSPaxosReplica {
         self.transport_hub.leave().await?;
 
         // send leave notification to manager and wait for its reply
-        self.control_hub.send_ctrl(CtrlMsg::Leave)?;
-        while self.control_hub.recv_ctrl().await? != CtrlMsg::LeaveReply {}
+        self.control_hub
+            .do_sync_ctrl(CtrlMsg::Leave, |m| m == &CtrlMsg::LeaveReply)
+            .await?;
 
         // if `durable` is false, truncate backer file
-        if !durable {
-            // use 0 as a special log action ID here
-            self.storage_hub
-                .submit_action(0, LogAction::Truncate { offset: 0 })?;
-            loop {
-                let (action_id, log_result) =
-                    self.storage_hub.get_result().await?;
-                if action_id == 0 {
-                    if log_result
-                        != (LogResult::Truncate {
-                            offset_ok: true,
-                            now_size: 0,
-                        })
-                    {
-                        return logged_err!(self.id; "failed to truncate log to 0");
-                    } else {
-                        return Ok(());
-                    }
-                }
-            }
+        if !durable
+            && self
+                .storage_hub
+                .do_sync_action(
+                    0, // using 0 as dummy log action ID
+                    LogAction::Truncate { offset: 0 },
+                )
+                .await?
+                .1
+                != (LogResult::Truncate {
+                    offset_ok: true,
+                    now_size: 0,
+                })
+        {
+            return logged_err!(self.id; "failed to truncate log to 0");
         }
 
         Ok(())
