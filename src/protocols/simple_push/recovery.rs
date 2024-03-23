@@ -11,7 +11,7 @@ impl SimplePushReplica {
     pub async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
-            let (_, log_result) = self
+            match self
                 .storage_hub
                 .do_sync_action(
                     0, // using 0 as dummy log action ID
@@ -19,9 +19,9 @@ impl SimplePushReplica {
                         offset: self.wal_offset,
                     },
                 )
-                .await?;
-
-            match log_result {
+                .await?
+                .1
+            {
                 LogResult::Read {
                     entry: Some(entry),
                     end_offset,
@@ -68,7 +68,9 @@ impl SimplePushReplica {
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
-        let (_, log_result) = self
+        if let LogResult::Truncate {
+            offset_ok: true, ..
+        } = self
             .storage_hub
             .do_sync_action(
                 0, // using 0 as dummy log action ID
@@ -76,10 +78,8 @@ impl SimplePushReplica {
                     offset: self.wal_offset,
                 },
             )
-            .await?;
-        if let LogResult::Truncate {
-            offset_ok: true, ..
-        } = log_result
+            .await?
+            .1
         {
             Ok(())
         } else {

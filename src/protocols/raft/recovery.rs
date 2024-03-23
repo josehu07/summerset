@@ -13,15 +13,15 @@ impl RaftReplica {
 
         // first, try to read the first several bytes, which should record
         // necessary durable metadata
-        let (_, log_result) = self
+        match self
             .storage_hub
             .do_sync_action(
                 0, // using 0 as dummy log action ID
                 LogAction::Read { offset: 0 },
             )
-            .await?;
-
-        match log_result {
+            .await?
+            .1
+        {
             LogResult::Read {
                 entry:
                     Some(DurEntry::Metadata {
@@ -39,7 +39,7 @@ impl RaftReplica {
 
                 // read out and push all log entries into memory log
                 loop {
-                    let (_, log_result) = self
+                    match self
                         .storage_hub
                         .do_sync_action(
                             0, // using 0 as dummy log action ID
@@ -47,9 +47,9 @@ impl RaftReplica {
                                 offset: self.log_offset,
                             },
                         )
-                        .await?;
-
-                    match log_result {
+                        .await?
+                        .1
+                    {
                         LogResult::Read {
                             entry: Some(DurEntry::LogEntry { mut entry }),
                             end_offset,
@@ -72,7 +72,10 @@ impl RaftReplica {
 
             LogResult::Read { entry: None, .. } => {
                 // log file is empty, write initial metadata
-                let (_, log_result) = self
+                if let LogResult::Write {
+                    offset_ok: true,
+                    now_size,
+                } = self
                     .storage_hub
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
@@ -85,11 +88,8 @@ impl RaftReplica {
                             sync: self.config.logger_sync,
                         },
                     )
-                    .await?;
-                if let LogResult::Write {
-                    offset_ok: true,
-                    now_size,
-                } = log_result
+                    .await?
+                    .1
                 {
                     self.log_offset = now_size;
                     self.log_meta_end = now_size;
@@ -105,7 +105,10 @@ impl RaftReplica {
                 };
                 self.log.push(null_entry.clone());
                 // ... and write the 0-th dummy entry durably
-                let (_, log_result) = self
+                if let LogResult::Write {
+                    offset_ok: true,
+                    now_size,
+                } = self
                     .storage_hub
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
@@ -115,11 +118,8 @@ impl RaftReplica {
                             sync: self.config.logger_sync,
                         },
                     )
-                    .await?;
-                if let LogResult::Write {
-                    offset_ok: true,
-                    now_size,
-                } = log_result
+                    .await?
+                    .1
                 {
                     self.log[0].log_offset = self.log_offset;
                     self.log_offset = now_size;
@@ -133,7 +133,9 @@ impl RaftReplica {
 
         // do an extra Truncate to remove paritial entry at the end if any
         debug_assert!(self.log_offset >= self.log_meta_end);
-        let (_, log_result) = self
+        if let LogResult::Truncate {
+            offset_ok: true, ..
+        } = self
             .storage_hub
             .do_sync_action(
                 0, // using 0 as dummy log action ID
@@ -141,10 +143,8 @@ impl RaftReplica {
                     offset: self.log_offset,
                 },
             )
-            .await?;
-        if let LogResult::Truncate {
-            offset_ok: true, ..
-        } = log_result
+            .await?
+            .1
         {
             if self.log_offset > self.log_meta_end {
                 pf_info!(self.id; "recovered from wal log: term {} voted {:?} |log| {}",

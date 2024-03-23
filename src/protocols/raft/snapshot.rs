@@ -32,15 +32,18 @@ impl RaftReplica {
         }
 
         // write the collection to snapshot file
-        self.snapshot_hub.submit_action(
-            0, // using 0 as dummy log action ID
-            LogAction::Append {
-                entry: SnapEntry::KVPairSet { pairs },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        let (_, log_result) = self.snapshot_hub.get_result().await?;
-        if let LogResult::Append { now_size } = log_result {
+        if let LogResult::Append { now_size } = self
+            .snapshot_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Append {
+                    entry: SnapEntry::KVPairSet { pairs },
+                    sync: self.config.logger_sync,
+                },
+            )
+            .await?
+            .1
+        {
             self.snap_offset = now_size;
             Ok(())
         } else {
@@ -53,20 +56,29 @@ impl RaftReplica {
 
     /// Discard everything lower than start_slot in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
-        // drain things currently in storage_hub's recv chan if head of log's
-        // durable file offset has not been set yet
+        // do a dummy sync read to force all previously submitted log actions
+        // to be processed
         debug_assert!(!self.log.is_empty());
-        while self.log[0].log_offset == 0 {
-            let (action_id, log_result) = self.storage_hub.get_result().await?;
-            self.handle_log_result(action_id, log_result)?;
+        let (old_results, _) = self
+            .storage_hub
+            .do_sync_action(0, LogAction::Read { offset: 0 })
+            .await?;
+        for (old_id, old_result) in old_results {
+            self.handle_log_result(old_id, old_result)?;
         }
+
+        // cut at the first entry's log_offset
+        debug_assert_ne!(self.log[0].log_offset, 0);
         let cut_offset = self.log[0].log_offset;
 
         // discard the log after meta_end and before cut_offset
         if cut_offset > 0 {
             debug_assert!(self.log_meta_end > 0);
             debug_assert!(self.log_meta_end <= cut_offset);
-            let (old_results, result) = self
+            if let LogResult::Discard {
+                offset_ok: true,
+                now_size,
+            } = self
                 .storage_hub
                 .do_sync_action(
                     0,
@@ -75,14 +87,8 @@ impl RaftReplica {
                         keep: self.log_meta_end,
                     },
                 )
-                .await?;
-            for (old_id, old_result) in old_results {
-                self.handle_log_result(old_id, old_result)?;
-            }
-            if let LogResult::Discard {
-                offset_ok: true,
-                now_size,
-            } = result
+                .await?
+                .1
             {
                 debug_assert_eq!(
                     self.log_offset - cut_offset + self.log_meta_end,
@@ -140,18 +146,21 @@ impl RaftReplica {
         self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
         // write new slot info entry to the head of snapshot
-        self.snapshot_hub.submit_action(
-            0,
-            LogAction::Write {
-                entry: SnapEntry::SlotInfo {
-                    start_slot: new_start_slot,
+        match self
+            .snapshot_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Write {
+                    entry: SnapEntry::SlotInfo {
+                        start_slot: new_start_slot,
+                    },
+                    offset: 0,
+                    sync: self.config.logger_sync,
                 },
-                offset: 0,
-                sync: self.config.logger_sync,
-            },
-        )?;
-        let (_, log_result) = self.snapshot_hub.get_result().await?;
-        match log_result {
+            )
+            .await?
+            .1
+        {
             LogResult::Write {
                 offset_ok: true, ..
             } => {}
@@ -187,11 +196,15 @@ impl RaftReplica {
 
         // first, try to read the first several bytes, which should record the
         // start_slot index
-        self.snapshot_hub
-            .submit_action(0, LogAction::Read { offset: 0 })?;
-        let (_, log_result) = self.snapshot_hub.get_result().await?;
-
-        match log_result {
+        match self
+            .snapshot_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Read { offset: 0 },
+            )
+            .await?
+            .1
+        {
             LogResult::Read {
                 entry: Some(SnapEntry::SlotInfo { start_slot }),
                 end_offset,
@@ -208,16 +221,17 @@ impl RaftReplica {
 
                 // repeatedly apply key-value pairs
                 loop {
-                    self.snapshot_hub.submit_action(
-                        0,
-                        LogAction::Read {
-                            offset: self.snap_offset,
-                        },
-                    )?;
-                    let (_, log_result) =
-                        self.snapshot_hub.get_result().await?;
-
-                    match log_result {
+                    match self
+                        .snapshot_hub
+                        .do_sync_action(
+                            0, // using 0 as dummy log action ID
+                            LogAction::Read {
+                                offset: self.snap_offset,
+                            },
+                        )
+                        .await?
+                        .1
+                    {
                         LogResult::Read {
                             entry: Some(SnapEntry::KVPairSet { pairs }),
                             end_offset,
@@ -258,19 +272,21 @@ impl RaftReplica {
 
             LogResult::Read { entry: None, .. } => {
                 // snapshot file is empty. Write a 0 as start_slot and return
-                self.snapshot_hub.submit_action(
-                    0,
-                    LogAction::Write {
-                        entry: SnapEntry::SlotInfo { start_slot: 0 },
-                        offset: 0,
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                let (_, log_result) = self.snapshot_hub.get_result().await?;
                 if let LogResult::Write {
                     offset_ok: true,
                     now_size,
-                } = log_result
+                } = self
+                    .snapshot_hub
+                    .do_sync_action(
+                        0, // using 0 as dummy log action ID
+                        LogAction::Write {
+                            entry: SnapEntry::SlotInfo { start_slot: 0 },
+                            offset: 0,
+                            sync: self.config.logger_sync,
+                        },
+                    )
+                    .await?
+                    .1
                 {
                     self.snap_offset = now_size;
                     Ok(())
