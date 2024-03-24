@@ -127,7 +127,14 @@ pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 pub struct LeaderBookkeeping {
+    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    trigger_slot: usize,
+
+    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    endprep_slot: usize,
+
     /// Replicas from which I have received Prepare confirmations.
+    /// This field is only tracked on the trigger_slot entry of the log.
     prepare_acks: Bitmap,
 
     /// Max ballot among received Prepare replies.
@@ -140,8 +147,14 @@ pub struct LeaderBookkeeping {
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
 pub struct ReplicaBookkeeping {
-    /// Source leader replica ID for replyiing to Prepares and Accepts.
+    /// Source leader replica ID for replying to Prepares and Accepts.
     source: ReplicaId,
+
+    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    trigger_slot: usize,
+
+    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    endprep_slot: usize,
 }
 
 /// In-memory instance containing a commands batch.
@@ -215,13 +228,25 @@ pub enum PeerMsg {
         /// Slot index in Prepare message is the triggering slot of this
         /// Prepare. Once prepared, it means that all slots in the range
         /// [slot, +infinity) are prepared under this ballot number.
-        slot: usize,
+        trigger_slot: usize,
         ballot: Ballot,
     },
 
     /// Prepare reply from replica to leader.
     PrepareReply {
+        /// In our implementation, we choose to break the PrepareReply into
+        /// slot-wise messages for simplicity.
         slot: usize,
+        /// Also carry the trigger_slot information to make it easier for the
+        /// leader to track reply progress.
+        trigger_slot: usize,
+        /// Due to the slot-wise design choice, we need a way to let leader
+        /// know when have all PrepareReplies been received. We use the
+        /// endprep_slot field to convey this: when all slots' PrepareReplies
+        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// can be considered received.
+        // NOTE: this currently assumes the "ordering" property of TCP.
+        endprep_slot: usize,
         ballot: Ballot,
         /// Map from slot index -> the accepted ballot number for that
         /// instance and the corresponding request batch value.
