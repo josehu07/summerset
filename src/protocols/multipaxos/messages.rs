@@ -1,6 +1,6 @@
 //! MultiPaxos -- peer-peer messaging.
 
-use std::cmp::max;
+use std::cmp;
 
 use super::*;
 
@@ -35,7 +35,7 @@ impl MultiPaxosReplica {
 
             // find the last non-null slot and use as endprep_slot; if none
             // found, use trigger_slot as a dummy entry
-            let endprep_slot = max(
+            let endprep_slot = cmp::max(
                 self.start_slot
                     + self
                         .insts

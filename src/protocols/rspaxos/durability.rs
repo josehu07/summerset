@@ -28,21 +28,44 @@ impl RSPaxosReplica {
             // on leader, finishing the logging of a PrepareBal entry
             // is equivalent to receiving a Prepare reply from myself
             // (as an acceptor role)
-            self.handle_msg_prepare_reply(self.id, slot, inst.bal, voted)?;
+            if let Some(LeaderBookkeeping {
+                trigger_slot,
+                endprep_slot,
+                ..
+            }) = inst.leader_bk
+            {
+                if slot <= endprep_slot {
+                    self.handle_msg_prepare_reply(
+                        self.id,
+                        slot,
+                        trigger_slot,
+                        endprep_slot,
+                        inst.bal,
+                        voted,
+                    )?;
+                }
+            }
         } else {
             // on follower replica, finishing the logging of a
             // PrepareBal entry leads to sending back a Prepare reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping {
+                source,
+                trigger_slot,
+                endprep_slot,
+            }) = inst.replica_bk
+            {
                 self.transport_hub.send_msg(
                     PeerMsg::PrepareReply {
                         slot,
+                        trigger_slot,
+                        endprep_slot,
                         ballot: inst.bal,
                         voted,
                     },
                     source,
                 )?;
-                pf_trace!(self.id; "sent PrepareReply -> {} for slot {} bal {}",
-                                   source, slot, inst.bal);
+                pf_trace!(self.id; "sent PrepareReply -> {} for slot {} / {} bal {}",
+                                   source, slot, endprep_slot, inst.bal);
             }
         }
 
@@ -69,7 +92,7 @@ impl RSPaxosReplica {
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
-            if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,

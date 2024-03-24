@@ -75,12 +75,6 @@ where
         if num_data_shards == 0 {
             return Err(SummersetError("num_data_shards is zero".into()));
         }
-        if data_len != 0 && data_len < num_data_shards as usize {
-            return Err(SummersetError(format!(
-                "data length too small: {}",
-                data_len
-            )));
-        }
 
         let num_total_shards = num_data_shards + num_parity_shards;
         let shard_len = if data_len % num_data_shards as usize == 0 {

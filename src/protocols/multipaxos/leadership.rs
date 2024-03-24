@@ -96,36 +96,37 @@ impl MultiPaxosReplica {
             .map(|(s, i)| (self.start_slot + s, i))
             .skip(self.exec_bar - self.start_slot)
         {
-            if inst.status < Status::Executed {
-                inst.external = true; // so replies to clients can be triggered
-                if inst.status == Status::Committed {
-                    continue;
-                }
-
-                inst.bal = self.bal_prep_sent;
-                inst.status = Status::Preparing;
-                inst.leader_bk = Some(LeaderBookkeeping {
-                    trigger_slot,
-                    endprep_slot,
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                });
-
-                // record update to largest prepare ballot
-                self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Preparing),
-                    LogAction::Append {
-                        entry: WalEntry::PrepareBal {
-                            slot,
-                            ballot: self.bal_prep_sent,
-                        },
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   slot, inst.bal);
+            if inst.status == Status::Executed {
+                continue;
             }
+            inst.external = true; // so replies to clients can be triggered
+            if inst.status == Status::Committed {
+                continue;
+            }
+
+            inst.bal = self.bal_prep_sent;
+            inst.status = Status::Preparing;
+            inst.leader_bk = Some(LeaderBookkeeping {
+                trigger_slot,
+                endprep_slot,
+                prepare_acks: Bitmap::new(self.population, false),
+                prepare_max_bal: 0,
+                accept_acks: Bitmap::new(self.population, false),
+            });
+
+            // record update to largest prepare ballot
+            self.storage_hub.submit_action(
+                Self::make_log_action_id(slot, Status::Preparing),
+                LogAction::Append {
+                    entry: WalEntry::PrepareBal {
+                        slot,
+                        ballot: self.bal_prep_sent,
+                    },
+                    sync: self.config.logger_sync,
+                },
+            )?;
+            pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
+                               slot, inst.bal);
         }
 
         // send Prepare message to all peers

@@ -67,7 +67,28 @@ impl RSPaxosReplica {
         self.bal_prep_sent = self.make_greater_ballot(self.bal_max_seen);
         self.bal_max_seen = self.bal_prep_sent;
 
-        let mut chunk_cnt = 0;
+        // find the first and last slot index for which to redo Prepare phase
+        let trigger_slot = self.start_slot
+            + self
+                .insts
+                .iter()
+                .position(|i| i.status < Status::Committed)
+                .unwrap_or(self.insts.len());
+        let endprep_slot = self.start_slot
+            + self
+                .insts
+                .iter()
+                .rposition(|i| i.status < Status::Committed)
+                .unwrap_or(self.insts.len());
+        debug_assert!(trigger_slot <= endprep_slot);
+        if trigger_slot == self.start_slot + self.insts.len() {
+            // append a null instance to act as the trigger_slot
+            self.insts.push(self.null_instance()?);
+        }
+        pf_debug!(self.id; "enter Prepare phase trigger_slot {} bal {}",
+                           trigger_slot, self.bal_prep_sent);
+
+        // redo Prepare phase for all in-progress instances
         let mut recon_slots = Vec::new();
         for (slot, inst) in self
             .insts
@@ -76,18 +97,17 @@ impl RSPaxosReplica {
             .map(|(s, i)| (self.start_slot + s, i))
             .skip(self.exec_bar - self.start_slot)
         {
-            if inst.status == Status::Null {
+            if inst.status == Status::Executed {
                 continue;
             }
-            if inst.status < Status::Executed {
-                inst.external = true; // so replies to clients can be triggered
-            }
+            inst.external = true; // so replies to clients can be triggered
 
-            // redo Prepare phase for all in-progress instances
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
                 inst.leader_bk = Some(LeaderBookkeeping {
+                    trigger_slot,
+                    endprep_slot,
                     prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
                     accept_acks: Bitmap::new(self.population, false),
@@ -108,32 +128,6 @@ impl RSPaxosReplica {
                 )?;
                 pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
                                    slot, inst.bal);
-
-                // send Prepare messages to all peers
-                self.transport_hub.bcast_msg(
-                    PeerMsg::Prepare {
-                        slot,
-                        ballot: self.bal_prep_sent,
-                    },
-                    None,
-                )?;
-                pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
-                                   slot, inst.bal);
-                chunk_cnt += 1;
-
-                // inject heartbeats in the middle to keep peers happy
-                if chunk_cnt >= self.config.msg_chunk_size {
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Heartbeat {
-                            ballot: self.bal_max_seen,
-                            commit_bar: self.commit_bar,
-                            exec_bar: self.exec_bar,
-                            snap_bar: self.snap_bar,
-                        },
-                        None,
-                    )?;
-                    chunk_cnt = 0;
-                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -144,6 +138,17 @@ impl RSPaxosReplica {
                 recon_slots.push(slot);
             }
         }
+
+        // send Prepare message to all peers
+        self.transport_hub.bcast_msg(
+            PeerMsg::Prepare {
+                trigger_slot,
+                ballot: self.bal_prep_sent,
+            },
+            None,
+        )?;
+        pf_trace!(self.id; "broadcast Prepare messages trigger_slot {} bal {}",
+                           trigger_slot, self.bal_prep_sent);
 
         // send reconstruction read messages in chunks
         for chunk in recon_slots.chunks(self.config.msg_chunk_size) {

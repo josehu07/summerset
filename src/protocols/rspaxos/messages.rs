@@ -1,5 +1,6 @@
 //! RS-Paxos -- peer-peer messaging.
 
+use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
@@ -13,14 +14,14 @@ impl RSPaxosReplica {
     fn handle_msg_prepare(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
+        trigger_slot: usize,
         ballot: Ballot,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        if trigger_slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Prepare <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(self.id; "received Prepare <- {} trigger_slot {} bal {}",
+                           peer, trigger_slot, ballot);
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
@@ -29,26 +30,46 @@ impl RSPaxosReplica {
             self.kickoff_hb_hear_timer()?;
 
             // locate instance in memory, filling in null instances if needed
-            while self.start_slot + self.insts.len() <= slot {
+            while self.start_slot + self.insts.len() <= trigger_slot {
                 self.insts.push(self.null_instance()?);
             }
-            let inst = &mut self.insts[slot - self.start_slot];
-            debug_assert!(inst.bal <= ballot);
 
-            inst.bal = ballot;
-            inst.status = Status::Preparing;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            // find the last non-null slot and use as endprep_slot; if none
+            // found, use trigger_slot as a dummy entry
+            let endprep_slot = cmp::max(
+                self.start_slot
+                    + self
+                        .insts
+                        .iter()
+                        .rposition(|i| i.status > Status::Null)
+                        .unwrap_or(0),
+                trigger_slot,
+            );
 
-            // record update to largest prepare ballot
-            self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Preparing),
-                LogAction::Append {
-                    entry: WalEntry::PrepareBal { slot, ballot },
-                    sync: self.config.logger_sync,
-                },
-            )?;
-            pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                               slot, ballot);
+            // react to this Prepare for all slots >= trigger_slot
+            for slot in trigger_slot..=endprep_slot {
+                let inst = &mut self.insts[slot - self.start_slot];
+                debug_assert!(inst.bal <= ballot);
+
+                inst.bal = ballot;
+                inst.status = Status::Preparing;
+                inst.replica_bk = Some(ReplicaBookkeeping {
+                    source: peer,
+                    trigger_slot,
+                    endprep_slot,
+                });
+
+                // record update to largest prepare ballot
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogAction::Append {
+                        entry: WalEntry::PrepareBal { slot, ballot },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
+                                   slot, ballot);
+            }
         }
 
         Ok(())
@@ -59,121 +80,216 @@ impl RSPaxosReplica {
         &mut self,
         peer: ReplicaId,
         slot: usize,
+        trigger_slot: usize,
+        endprep_slot: usize,
         ballot: Ballot,
         voted: Option<(Ballot, RSCodeword<ReqBatch>)>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received PrepareReply <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot,
-                           voted.as_ref().map(|(_, cw)| cw.avail_shards_map()));
+        pf_trace!(
+            self.id;
+            "received PrepareReply <- {} for slot {} / {} bal {} shards {:?}",
+            peer, slot, endprep_slot, ballot,
+            voted.as_ref().map(|(_, cw)| cw.avail_shards_map())
+        );
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
-            debug_assert!(slot < self.start_slot + self.insts.len());
-            let is_leader = self.is_leader();
-            let inst = &mut self.insts[slot - self.start_slot];
-
             // ignore spurious duplications and outdated replies
-            if !is_leader
-                || (inst.status != Status::Preparing)
-                || (ballot < inst.bal)
+            if !self.is_leader() {
+                return Ok(());
+            }
+            debug_assert!(slot >= trigger_slot && slot <= endprep_slot);
+            debug_assert!(
+                trigger_slot >= self.start_slot
+                    && trigger_slot < self.start_slot + self.insts.len()
+            );
+            if self.insts[trigger_slot - self.start_slot]
+                .leader_bk
+                .is_none()
             {
                 return Ok(());
             }
-            debug_assert_eq!(inst.bal, ballot);
-            debug_assert!(self.bal_max_seen >= ballot);
-            debug_assert!(inst.leader_bk.is_some());
-            let leader_bk = inst.leader_bk.as_mut().unwrap();
-            if leader_bk.prepare_acks.get(peer)? {
-                return Ok(());
-            }
 
-            // bookkeep this Prepare reply
-            leader_bk.prepare_acks.set(peer, true)?;
-            if let Some((bal, val)) = voted {
-                #[allow(clippy::comparison_chain)]
-                if bal > leader_bk.prepare_max_bal {
-                    // is of ballot > current maximum, so discard the current
-                    // codeword and take the replied codeword
-                    leader_bk.prepare_max_bal = bal;
-                    inst.reqs_cw = val;
-                } else if bal == leader_bk.prepare_max_bal {
-                    // is of ballot == the one currently taken, so merge the
-                    // replied codeword into the current one
-                    inst.reqs_cw.absorb_other(val)?;
-                }
-            }
+            // locate instance in memory, filling in null instance if needed
+            // if slot is outside the tail of my current log, this means I did
+            // not know at `become_leader()` that this slot existed on peers
+            let my_endprep_slot = self.insts[trigger_slot - self.start_slot]
+                .leader_bk
+                .as_ref()
+                .unwrap()
+                .endprep_slot;
+            while self.start_slot + self.insts.len() <= slot {
+                let this_slot = self.start_slot + self.insts.len();
+                self.insts.push(self.null_instance()?);
+                let inst = &mut self.insts[this_slot - self.start_slot];
 
-            // if quorum size reached AND enough shards are known to
-            // reconstruct the original data, enter Accept phase for this
-            // instance using the request batch value constructed using shards
-            // with the highest ballot number in quorum
-            //
-            // NOTE: missing a "choose anything" case here and might add later:
-            //       when |Q| >= majority but #shards of the highest ballot is
-            //       not enough, we are free to choose any value
-            if leader_bk.prepare_acks.count() >= self.majority
-                && inst.reqs_cw.avail_shards() >= self.majority
-            {
-                if inst.reqs_cw.avail_data_shards() < self.majority {
-                    // have enough shards but need reconstruction
-                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                }
+                // since this slot was not known at `become_leader()`, need to
+                // fill necessary information here and make durable
+                inst.external = true;
+                inst.bal = self.bal_prep_sent;
+                inst.status = Status::Preparing;
+                inst.leader_bk = Some(LeaderBookkeeping {
+                    trigger_slot,
+                    endprep_slot: my_endprep_slot,
+                    prepare_acks: Bitmap::new(self.population, false),
+                    prepare_max_bal: 0,
+                    accept_acks: Bitmap::new(self.population, false),
+                });
 
-                inst.status = Status::Accepting;
-                pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                   slot, inst.bal);
-
-                // update bal_prepared
-                debug_assert!(self.bal_prepared <= ballot);
-                self.bal_prepared = ballot;
-
-                // if parity shards not computed yet, compute them now
-                if inst.reqs_cw.avail_shards() < self.population {
-                    inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
-                }
-
-                // record update to largest accepted ballot and corresponding data
-                let subset_copy = inst.reqs_cw.subset_copy(
-                    &Bitmap::from(self.population, vec![self.id]),
-                    false,
-                )?;
-                inst.voted = (ballot, subset_copy.clone());
+                // record update to largest prepare ballot
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Accepting),
+                    Self::make_log_action_id(this_slot, Status::Preparing),
                     LogAction::Append {
-                        entry: WalEntry::AcceptData {
-                            slot,
-                            ballot,
-                            reqs_cw: subset_copy,
+                        entry: WalEntry::PrepareBal {
+                            slot: this_slot,
+                            ballot: self.bal_prep_sent,
                         },
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                                   slot, ballot);
+                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
+                                   this_slot, inst.bal);
+            }
 
-                // send Accept messages to all peers
-                for peer in 0..self.population {
-                    if peer == self.id {
-                        continue;
-                    }
-                    self.transport_hub.send_msg(
-                        PeerMsg::Accept {
-                            slot,
-                            ballot,
-                            reqs_cw: inst.reqs_cw.subset_copy(
-                                &Bitmap::from(self.population, vec![peer]),
-                                false,
-                            )?,
-                        },
-                        peer,
-                    )?;
+            {
+                let inst = &mut self.insts[slot - self.start_slot];
+
+                // ignore spurious duplications and outdated replies
+                if (inst.status != Status::Preparing) || (ballot < inst.bal) {
+                    return Ok(());
                 }
-                pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                   slot, ballot);
+                debug_assert_eq!(inst.bal, ballot);
+                debug_assert!(self.bal_max_seen >= ballot);
+
+                // bookkeep this Prepare reply
+                if let Some((bal, val)) = voted {
+                    debug_assert!(inst.leader_bk.is_some());
+                    let leader_bk = inst.leader_bk.as_mut().unwrap();
+                    #[allow(clippy::comparison_chain)]
+                    if bal > leader_bk.prepare_max_bal {
+                        // is of ballot > current maximum, so discard the
+                        // current codeword and take the replied codeword
+                        leader_bk.prepare_max_bal = bal;
+                        inst.reqs_cw = val;
+                    } else if bal == leader_bk.prepare_max_bal {
+                        // is of ballot == the one currently taken, so merge
+                        // the replied codeword into the current one
+                        inst.reqs_cw.absorb_other(val)?;
+                    }
+                }
+            }
+
+            // if all PrepareReplies up to endprep_slot have been received,
+            // include the sender peer into the quorum (by updating the
+            // prepare_acks field in the trigger_slot entry)
+            if slot == endprep_slot {
+                let trigger_inst =
+                    &mut self.insts[trigger_slot - self.start_slot];
+                debug_assert!(trigger_inst.leader_bk.is_some());
+                let trigger_leader_bk =
+                    trigger_inst.leader_bk.as_mut().unwrap();
+                trigger_leader_bk.prepare_acks.set(peer, true)?;
+
+                // if quorum size reached, enter Accept phase for all instances
+                // at and after trigger_slot; for each entry, use the request
+                // batch value with the highest ballot number in quorum
+                if trigger_leader_bk.prepare_acks.count() >= self.majority {
+                    // update bal_prepared
+                    debug_assert!(self.bal_prepared <= ballot);
+                    self.bal_prepared = ballot;
+
+                    for (this_slot, inst) in self
+                        .insts
+                        .iter_mut()
+                        .enumerate()
+                        .map(|(s, i)| (self.start_slot + s, i))
+                        .skip(trigger_slot - self.start_slot)
+                        .filter(|(_, i)| i.status == Status::Preparing)
+                    {
+                        inst.status = Status::Accepting;
+                        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
+                                           this_slot, inst.bal);
+
+                        // if enough shards are known to reconstruct the
+                        // original data, use the request batch constructed
+                        // using shards with the highest ballot in quorum;
+                        // otherwise, can use any value
+                        if inst.reqs_cw.avail_shards() >= self.majority {
+                            // can reconstruct
+                            if inst.reqs_cw.avail_data_shards() < self.majority
+                            {
+                                // have enough shards but need reconstruction
+                                inst.reqs_cw
+                                    .reconstruct_data(Some(&self.rs_coder))?;
+                            }
+                            if inst.reqs_cw.avail_shards() < self.population {
+                                // parity shards not computed yet, compute them now
+                                inst.reqs_cw
+                                    .compute_parity(Some(&self.rs_coder))?;
+                            }
+                        } else {
+                            // can use any; use a null vec
+                            inst.reqs_cw = RSCodeword::from_data(
+                                ReqBatch::new(),
+                                self.majority,
+                                self.population - self.majority,
+                            )?;
+                        }
+
+                        // record update to largest accepted ballot and its
+                        // corresponding data
+                        let subset_copy = inst.reqs_cw.subset_copy(
+                            &Bitmap::from(self.population, vec![self.id]),
+                            false,
+                        )?;
+                        inst.voted = (ballot, subset_copy.clone());
+                        self.storage_hub.submit_action(
+                            Self::make_log_action_id(
+                                this_slot,
+                                Status::Accepting,
+                            ),
+                            LogAction::Append {
+                                entry: WalEntry::AcceptData {
+                                    slot: this_slot,
+                                    ballot,
+                                    reqs_cw: subset_copy,
+                                },
+                                sync: self.config.logger_sync,
+                            },
+                        )?;
+                        pf_trace!(
+                            self.id;
+                            "submitted AcceptData log action for slot {} bal {}",
+                            this_slot, ballot
+                        );
+
+                        // send Accept messages to all peers
+                        for peer in 0..self.population {
+                            if peer == self.id {
+                                continue;
+                            }
+                            self.transport_hub.send_msg(
+                                PeerMsg::Accept {
+                                    slot,
+                                    ballot,
+                                    reqs_cw: inst.reqs_cw.subset_copy(
+                                        &Bitmap::from(
+                                            self.population,
+                                            vec![peer],
+                                        ),
+                                        false,
+                                    )?,
+                                },
+                                peer,
+                            )?;
+                        }
+                        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
+                                           this_slot, ballot);
+                    }
+                }
             }
         }
 
@@ -210,7 +326,11 @@ impl RSPaxosReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            inst.replica_bk = Some(ReplicaBookkeeping {
+                source: peer,
+                trigger_slot: 0,
+                endprep_slot: 0,
+            });
 
             // record update to largest prepare ballot
             inst.voted = (ballot, inst.reqs_cw.clone());
@@ -420,14 +540,24 @@ impl RSPaxosReplica {
         msg: PeerMsg,
     ) -> Result<(), SummersetError> {
         match msg {
-            PeerMsg::Prepare { slot, ballot } => {
-                self.handle_msg_prepare(peer, slot, ballot)
-            }
+            PeerMsg::Prepare {
+                trigger_slot,
+                ballot,
+            } => self.handle_msg_prepare(peer, trigger_slot, ballot),
             PeerMsg::PrepareReply {
                 slot,
+                trigger_slot,
+                endprep_slot,
                 ballot,
                 voted,
-            } => self.handle_msg_prepare_reply(peer, slot, ballot, voted),
+            } => self.handle_msg_prepare_reply(
+                peer,
+                slot,
+                trigger_slot,
+                endprep_slot,
+                ballot,
+                voted,
+            ),
             PeerMsg::Accept {
                 slot,
                 ballot,
