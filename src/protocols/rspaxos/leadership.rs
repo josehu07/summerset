@@ -112,8 +112,6 @@ impl RSPaxosReplica {
                     prepare_max_bal: 0,
                     accept_acks: Bitmap::new(self.population, false),
                 });
-                pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
-                                   slot, inst.bal);
 
                 // record update to largest prepare ballot
                 self.storage_hub.submit_action(
