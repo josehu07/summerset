@@ -109,14 +109,16 @@ impl MultiPaxosReplica {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self
-            .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Read {
-                    offset: self.wal_offset,
-                },
-            )
-            .await?.1 {
+                .storage_hub
+                .do_sync_action(
+                    0, // using 0 as dummy log action ID
+                    LogAction::Read {
+                        offset: self.wal_offset,
+                    },
+                )
+                .await?
+                .1
+            {
                 LogResult::Read {
                     entry: Some(entry),
                     end_offset,
@@ -139,14 +141,15 @@ impl MultiPaxosReplica {
         if let LogResult::Truncate {
             offset_ok: true, ..
         } = self
-        .storage_hub
-        .do_sync_action(
-            0, // using 0 as dummy log action ID
-            LogAction::Truncate {
-                offset: self.wal_offset,
-            },
-        )
-        .await?.1
+            .storage_hub
+            .do_sync_action(
+                0, // using 0 as dummy log action ID
+                LogAction::Truncate {
+                    offset: self.wal_offset,
+                },
+            )
+            .await?
+            .1
         {
             if self.wal_offset > 0 {
                 pf_info!(self.id; "recovered from wal log: commit {} exec {}",
