@@ -282,7 +282,7 @@ impl RSPaxosReplica {
                             }
                             self.transport_hub.send_msg(
                                 PeerMsg::Accept {
-                                    slot,
+                                    slot: this_slot,
                                     ballot,
                                     reqs_cw: inst.reqs_cw.subset_copy(
                                         &Bitmap::from(

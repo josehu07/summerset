@@ -183,6 +183,12 @@ pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 pub struct LeaderBookkeeping {
+    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    trigger_slot: usize,
+
+    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    endprep_slot: usize,
+
     /// Replicas from which I have received Prepare confirmations.
     prepare_acks: Bitmap,
 
@@ -199,6 +205,12 @@ pub struct LeaderBookkeeping {
 pub struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
+
+    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    trigger_slot: usize,
+
+    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    endprep_slot: usize,
 }
 
 /// In-memory instance containing a (possibly partial) commands batch.
@@ -236,13 +248,7 @@ pub struct Instance {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
-    PrepareBal {
-        /// Slot index in Prepare message is the triggering slot of this
-        /// Prepare. Once prepared, it means that all slots in the range
-        /// [slot, +infinity) are prepared under this ballot number.
-        slot: usize,
-        ballot: Ballot,
-    },
+    PrepareBal { slot: usize, ballot: Ballot },
 
     /// Records a newly accepted request batch data shards at slot index.
     AcceptData {
@@ -281,11 +287,29 @@ pub type HeartbeatId = u64;
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
 pub enum PeerMsg {
     /// Prepare message from leader to replicas.
-    Prepare { slot: usize, ballot: Ballot },
+    Prepare {
+        /// Slot index in Prepare message is the triggering slot of this
+        /// Prepare. Once prepared, it means that all slots in the range
+        /// [slot, +infinity) are prepared under this ballot number.
+        trigger_slot: usize,
+        ballot: Ballot,
+    },
 
     /// Prepare reply from replica to leader.
     PrepareReply {
+        /// In our implementation, we choose to break the PrepareReply into
+        /// slot-wise messages for simplicity.
         slot: usize,
+        /// Also carry the trigger_slot information to make it easier for the
+        /// leader to track reply progress.
+        trigger_slot: usize,
+        /// Due to the slot-wise design choice, we need a way to let leader
+        /// know when have all PrepareReplies been received. We use the
+        /// endprep_slot field to convey this: when all slots' PrepareReplies
+        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// can be considered received.
+        // NOTE: this currently assumes the "ordering" property of TCP.
+        endprep_slot: usize,
         ballot: Ballot,
         /// The accepted ballot number for that instance and the corresponding
         /// request batch value shards known by replica.
@@ -297,6 +321,7 @@ pub enum PeerMsg {
         slot: usize,
         ballot: Ballot,
         reqs_cw: RSCodeword<ReqBatch>,
+        /// Shard-to-node assignment used for this instance.
         assignment: Vec<Bitmap>,
     },
 

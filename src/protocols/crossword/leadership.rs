@@ -1,7 +1,6 @@
 //! Crossword -- leader election.
 
 use std::collections::{HashMap, VecDeque};
-use std::mem;
 
 use super::*;
 
@@ -79,7 +78,28 @@ impl CrosswordReplica {
         }
         let now_us = self.startup_time.elapsed().as_micros();
 
-        let mut chunk_cnt = 0;
+        // find the first and last slot index for which to redo Prepare phase
+        let trigger_slot = self.start_slot
+            + self
+                .insts
+                .iter()
+                .position(|i| i.status < Status::Committed)
+                .unwrap_or(self.insts.len());
+        let endprep_slot = self.start_slot
+            + self
+                .insts
+                .iter()
+                .rposition(|i| i.status < Status::Committed)
+                .unwrap_or(self.insts.len());
+        debug_assert!(trigger_slot <= endprep_slot);
+        if trigger_slot == self.start_slot + self.insts.len() {
+            // append a null instance to act as the trigger_slot
+            self.insts.push(self.null_instance()?);
+        }
+        pf_debug!(self.id; "enter Prepare phase trigger_slot {} bal {}",
+                           trigger_slot, self.bal_prep_sent);
+
+        // redo Prepare phase for all in-progress instances
         let mut recon_slots: Vec<(usize, Bitmap)> = vec![];
         for (slot, inst) in self
             .insts
@@ -88,24 +108,21 @@ impl CrosswordReplica {
             .map(|(s, i)| (self.start_slot + s, i))
             .skip(self.exec_bar - self.start_slot)
         {
-            if inst.status == Status::Null {
+            if inst.status == Status::Executed {
                 continue;
             }
-            if inst.status < Status::Executed {
-                inst.external = true; // so replies to clients can be triggered
-            }
+            inst.external = true; // so replies to clients can be triggered
 
-            // redo Prepare phase for all in-progress instances
             if inst.status < Status::Committed {
                 inst.bal = self.bal_prep_sent;
                 inst.status = Status::Preparing;
                 inst.leader_bk = Some(LeaderBookkeeping {
+                    trigger_slot,
+                    endprep_slot,
                     prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
                     accept_acks: HashMap::new(),
                 });
-                pf_debug!(self.id; "enter Prepare phase for slot {} bal {}",
-                                   slot, inst.bal);
 
                 // record update to largest prepare ballot
                 self.storage_hub.submit_action(
@@ -120,38 +137,6 @@ impl CrosswordReplica {
                 )?;
                 pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
                                    slot, inst.bal);
-
-                // send Prepare messages to all peers
-                self.transport_hub.bcast_msg(
-                    PeerMsg::Prepare {
-                        slot,
-                        ballot: self.bal_prep_sent,
-                    },
-                    None,
-                )?;
-                pf_trace!(self.id; "broadcast Prepare messages for slot {} bal {}",
-                                   slot, inst.bal);
-                chunk_cnt += 1;
-
-                // inject heartbeats in the middle to keep peers happy
-                if chunk_cnt >= self.config.msg_chunk_size {
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Heartbeat {
-                            id: self.next_hb_id,
-                            ballot: self.bal_max_seen,
-                            commit_bar: self.commit_bar,
-                            exec_bar: self.exec_bar,
-                            snap_bar: self.snap_bar,
-                        },
-                        None,
-                    )?;
-                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
-                        if self.peer_alive.get(peer)? {
-                            pending.push_back((now_us, self.next_hb_id));
-                        }
-                    }
-                    self.next_hb_id += 1;
-                }
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -162,51 +147,46 @@ impl CrosswordReplica {
                 && inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards()
             {
                 recon_slots.push((slot, inst.reqs_cw.avail_shards_map()));
-
-                // send reconstruction read messages in chunks
-                if recon_slots.len() == self.config.msg_chunk_size {
-                    // pf_warn!(self.id; "recons {:?}", recon_slots);
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Reconstruct {
-                            slots_excl: mem::take(&mut recon_slots),
-                        },
-                        None,
-                    )?;
-                    pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
-                                       self.config.msg_chunk_size);
-
-                    // inject a heartbeat after every chunk to keep peers happy
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Heartbeat {
-                            id: self.next_hb_id,
-                            ballot: self.bal_max_seen,
-                            commit_bar: self.commit_bar,
-                            exec_bar: self.exec_bar,
-                            snap_bar: self.snap_bar,
-                        },
-                        None,
-                    )?;
-                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
-                        if self.peer_alive.get(peer)? {
-                            pending.push_back((now_us, self.next_hb_id));
-                        }
-                    }
-                    self.next_hb_id += 1;
-                }
             }
         }
 
-        // send reconstruction read message for remaining slots
-        if !recon_slots.is_empty() {
-            // pf_warn!(self.id; "recons {:?}", recon_slots);
-            let num_slots = recon_slots.len();
+        // send Prepare message to all peers
+        self.transport_hub.bcast_msg(
+            PeerMsg::Prepare {
+                trigger_slot,
+                ballot: self.bal_prep_sent,
+            },
+            None,
+        )?;
+        pf_trace!(self.id; "broadcast Prepare messages trigger_slot {} bal {}",
+                           trigger_slot, self.bal_prep_sent);
+
+        // send reconstruction read messages in chunks
+        for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
+            let slots = chunk.to_vec();
+            let num_slots = slots.len();
+            // pf_warn!(self.id; "recons {:?}", slots);
+            self.transport_hub
+                .bcast_msg(PeerMsg::Reconstruct { slots_excl: slots }, None)?;
+            pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+
+            // inject a heartbeat after every chunk to keep peers happy
             self.transport_hub.bcast_msg(
-                PeerMsg::Reconstruct {
-                    slots_excl: recon_slots,
+                PeerMsg::Heartbeat {
+                    id: self.next_hb_id,
+                    ballot: self.bal_max_seen,
+                    commit_bar: self.commit_bar,
+                    exec_bar: self.exec_bar,
+                    snap_bar: self.snap_bar,
                 },
                 None,
             )?;
-            pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+            for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+                if self.peer_alive.get(peer)? {
+                    pending.push_back((now_us, self.next_hb_id));
+                }
+            }
+            self.next_hb_id += 1;
         }
 
         self.update_qdisc_info()?;

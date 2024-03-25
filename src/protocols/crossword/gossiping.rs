@@ -44,7 +44,7 @@ impl CrosswordReplica {
         peer_alive: &Bitmap,
     ) -> HashMap<ReplicaId, Bitmap> {
         let mut src_peer = me;
-        if let Some(ReplicaBookkeeping { source }) = replica_bk {
+        if let Some(ReplicaBookkeeping { source, .. }) = replica_bk {
             src_peer = *source;
         }
 
