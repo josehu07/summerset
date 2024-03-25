@@ -192,11 +192,12 @@ impl RSPaxosReplica {
                 let trigger_leader_bk =
                     trigger_inst.leader_bk.as_mut().unwrap();
                 trigger_leader_bk.prepare_acks.set(peer, true)?;
+                let prepare_acks_cnt = trigger_leader_bk.prepare_acks.count();
 
                 // if quorum size reached, enter Accept phase for all instances
                 // at and after trigger_slot; for each entry, use the request
                 // batch value with the highest ballot number in quorum
-                if trigger_leader_bk.prepare_acks.count() >= self.majority {
+                if prepare_acks_cnt >= self.majority {
                     // update bal_prepared
                     debug_assert!(self.bal_prepared <= ballot);
                     self.bal_prepared = ballot;
@@ -209,35 +210,43 @@ impl RSPaxosReplica {
                         .skip(trigger_slot - self.start_slot)
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
-                        inst.status = Status::Accepting;
-                        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                           this_slot, inst.bal);
-
-                        // if enough shards are known to reconstruct the
-                        // original data, use the request batch constructed
-                        // using shards with the highest ballot in quorum;
-                        // otherwise, can use any value
                         if inst.reqs_cw.avail_shards() >= self.majority {
-                            // can reconstruct
+                            // if quorum size >= majority and enough shards
+                            // with the highest ballot in quorum are gathered
+                            // to reconstruct the original data, use the
+                            // reconstructed request batch
                             if inst.reqs_cw.avail_data_shards() < self.majority
                             {
                                 // have enough shards but need reconstruction
                                 inst.reqs_cw
                                     .reconstruct_data(Some(&self.rs_coder))?;
                             }
-                            if inst.reqs_cw.avail_shards() < self.population {
-                                // parity shards not computed yet, compute them now
-                                inst.reqs_cw
-                                    .compute_parity(Some(&self.rs_coder))?;
-                            }
-                        } else {
-                            // can use any; use a null vec
+                        } else if prepare_acks_cnt
+                            >= (self.population - self.config.fault_tolerance)
+                        {
+                            // else, if quorum size >= (N - f) and shards with
+                            // the highest ballot are not enough to reconstruct
+                            // the original data, can choose any value; we just
+                            // fill this instance with a null request batch
                             inst.reqs_cw = RSCodeword::from_data(
                                 ReqBatch::new(),
                                 self.majority,
                                 self.population - self.majority,
                             )?;
+                        } else {
+                            // not yet for this instance
+                            continue;
                         }
+
+                        // if parity shards not computed yet, compute them now
+                        if inst.reqs_cw.avail_shards() < self.population {
+                            inst.reqs_cw
+                                .compute_parity(Some(&self.rs_coder))?;
+                        }
+
+                        inst.status = Status::Accepting;
+                        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
+                                           this_slot, inst.bal);
 
                         // record update to largest accepted ballot and its
                         // corresponding data
@@ -426,11 +435,12 @@ impl RSPaxosReplica {
 
         for slot in slots {
             if slot < self.start_slot {
-                // NOTE: this has one caveat: a new leader trying to do
+                // TODO: this has one caveat: a new leader trying to do
                 // reconstruction reads might find that all other peers have
                 // snapshotted that slot. Proper InstallSnapshot-style messages
                 // will be needed to deal with this; but since this scenario is
-                // just too rare, it is not implemented yet
+                // just too rare, it will be implemented after a rework of the
+                // storage backend module
                 continue;
             }
 
