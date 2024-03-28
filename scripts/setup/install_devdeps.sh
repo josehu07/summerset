@@ -24,7 +24,6 @@ sudo apt -y install python3-pip
 sudo apt -y install iperf3
 sudo apt -y install iptables-persistent
 sudo apt -y install screen
-sudo apt -y install cloud-guest-utils
 
 
 echo
@@ -42,3 +41,17 @@ echo "Installing necessary pip packages..."
 sudo -H pip3 install numpy
 sudo -H pip3 install matplotlib
 sudo -H pip3 install toml
+
+
+echo
+echo "Adding login commands to /etc/profile..."
+sudo tee -a /etc/profile <<EOF
+
+# for global installation of rust
+export RUSTUP_HOME=/usr/local/rustup
+export CARGO_HOME=/usr/local/cargo
+export PATH=/usr/local/cargo/bin:$PATH
+
+# cd into /mnt/eval/summerset on login
+cd /eval/summerset
+EOF

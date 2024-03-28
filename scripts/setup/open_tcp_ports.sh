@@ -22,7 +22,6 @@ sudo iptables -D INPUT -p tcp --match multiport --dports "40000:$((40000+100*${N
 sudo iptables -D INPUT -p tcp --dport "37777" -j ACCEPT
 
 
-
 echo
 echo "Allowing required server-side TCP ports..."
 sudo iptables -A INPUT -p tcp --match multiport --dports "52700:$((52700+${NUM_SERVERS}-1))" -j ACCEPT
