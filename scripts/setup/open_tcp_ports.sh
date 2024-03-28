@@ -8,8 +8,8 @@ then
 fi
 
 
-NUM_SERVERS=5
-NUM_CLIENTS=16
+NUM_SERVERS=9
+NUM_CLIENTS=32
 
 
 echo

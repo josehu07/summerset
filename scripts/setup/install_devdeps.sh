@@ -27,13 +27,17 @@ sudo apt -y install screen
 
 
 echo
-echo "Installing Rust toolchain..."
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-source "$HOME/.cargo/env"
+echo "Installing Rust toolchain (please ignore euid error)..."
+export RUSTUP_HOME=/usr/local/rustup
+export CARGO_HOME=/usr/local/cargo
+export PATH=/usr/local/cargo/bin:$PATH
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sudo sh -s -- -y
+sudo chown -R ${USER} /usr/local/rustup
+sudo chown -R ${USER} /usr/local/cargo
 
 
 echo
 echo "Installing necessary pip packages..."
-pip3 install numpy
-pip3 install matplotlib
-pip3 install toml
+sudo -H pip3 install numpy
+sudo -H pip3 install matplotlib
+sudo -H pip3 install toml

@@ -36,9 +36,9 @@ def mirror_folder(remotes, src_path, dst_path, repo_name):
         raise ValueError(f"source path '{src_path}' is not an existing directory")
     src_path = os.path.realpath(src_path)
     src_seg = utils.path_get_last_segment(src_path)
-    if src_seg != repo_name:
+    if not repo_name in src_seg:
         raise ValueError(
-            f"source folder '{src_seg}' does not match project name '{repo_name}'"
+            f"source folder '{src_seg}' does not contain project name '{repo_name}'"
         )
     if not src_path.endswith("/"):
         src_path += "/"

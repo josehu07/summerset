@@ -1,5 +1,5 @@
 # repo root folder project name
-repo_name = "summerset-private"
+repo_name = "summerset"
 
 [hosts] # host DNS domain name
 host0 = "josehu@c220g5-110510.wisc.cloudlab.us"
