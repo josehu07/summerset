@@ -20,17 +20,17 @@ For a shell command, `$` indicates running it on the local development machine, 
     4. On `host0`, you will find the mirrored repo at `/mnt/eval/summerset`
     5. Update Linux kernel version to v.6.1.64, the one used for evaluations presented in the paper
         1. `% cd /mnt/eval/summerset`
-        2. `% ./scripts/install_kernel.sh`
+        2. `% ./scripts/setup/install_kernel.sh`
         3. `% sudo reboot`
     6. After rebooting, double check the kernel version
         1. `% uname -a`
         3. `% cd /mnt/eval/summerset`
     7. Install necessary dependencies
-        1. `% ./scripts/install_devdeps.sh`
+        1. `% ./scripts/setup/install_devdeps.sh`
     8. Set up TCP buffer sizes
-        1. `% ./scripts/setup_tcp_bufs.sh`
+        1. `% ./scripts/setup/setup_tcp_bufs.sh`
     9. (`host0` only) Set up network namespaces and virtual devices
-        1. `% ./scripts/setup_net_devs.sh`
+        1. `% ./scripts/setup/setup_net_devs.sh`
     10. (`host0` only) Generate an internal key-pair use by `host0` to ssh to other hosts
         1. `% ssh-keygen -t rsa`
         2. `% cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys`

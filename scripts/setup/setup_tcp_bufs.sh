@@ -31,4 +31,3 @@ echo
 echo "Default value of network socket:"
 echo "  1073741824" | sudo tee /proc/sys/net/core/rmem_default
 echo "  1073741824" | sudo tee /proc/sys/net/core/wmem_default
-echo

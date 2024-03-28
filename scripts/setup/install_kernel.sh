@@ -27,4 +27,3 @@ sudo ubuntu-mainline-kernel.sh -i "6.1.64"
 
 echo
 echo "Be sure to reboot after successful installation!"
-echo

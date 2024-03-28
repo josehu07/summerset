@@ -8,7 +8,7 @@ then
 fi
 
 
-NUM_SERVERS=3
+NUM_SERVERS=5
 NUM_CLIENTS=16
 
 
@@ -44,4 +44,8 @@ sudo iptables -A INPUT -p tcp --dport "37777" -j ACCEPT
 echo
 echo "Listing current iptables rules:"
 sudo iptables -L
+
+
 echo
+echo "Making iptables rules persistent:"
+sudo iptables-save | sudo tee /etc/iptables/rules.v4
