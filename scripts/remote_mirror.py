@@ -8,8 +8,6 @@ import common_utils as utils
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
-BASE_PATH = "/mnt/eval"
-
 EXCLUDE_NAMES = [
     "results/",
     "backups/",
@@ -80,6 +78,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     hosts_config = utils.read_toml_file(TOML_FILENAME)
+    base = hosts_config["base_path"]
     repo = hosts_config["repo_name"]
     hosts = hosts_config["hosts"]
 
@@ -91,6 +90,6 @@ if __name__ == "__main__":
         remotes.append(hosts[target])
 
     SRC_PATH = "./"
-    DST_PATH = f"{BASE_PATH}/{repo}"
+    DST_PATH = f"{base}/{repo}"
 
     mirror_folder(remotes, SRC_PATH, DST_PATH, repo)

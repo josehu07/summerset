@@ -290,7 +290,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--base_dir",
         type=str,
-        default="/mnt/eval",
+        default="/eval",
         help="base cd dir after ssh",
     )
     parser.add_argument(

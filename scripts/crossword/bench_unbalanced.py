@@ -14,7 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # type: ignore
 
 
-BASE_PATH = "/mnt/eval"
+BASE_PATH = "/eval"
 SERVER_STATES_FOLDER = "states"
 CLIENT_OUTPUT_FOLDER = "output"
 RUNTIME_LOGS_FOLDER = "runlog"

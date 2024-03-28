@@ -8,15 +8,13 @@ import common_utils as utils
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
-BASE_PATH = "/mnt/eval"
 
-
-def ssh_to_remote(remote, auto_cd, repo):
+def ssh_to_remote(remote, auto_cd, base, repo):
     ssh_args = ["ssh"]
     if not auto_cd:
         ssh_args.append(remote)
     else:
-        ssh_args += ["-t", remote, f"cd {BASE_PATH}/{repo}; bash --login"]
+        ssh_args += ["-t", remote, f"cd {base}/{repo}; bash --login"]
 
     os.execvp("ssh", ssh_args)
 
@@ -41,9 +39,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     hosts_config = utils.read_toml_file(TOML_FILENAME)
+    base = hosts_config["base_path"]
     hosts = hosts_config["hosts"]
     repo = hosts_config["repo_name"]
 
     if args.target not in hosts:
         raise ValueError(f"nickname '{args.target}' not found in toml file")
-    ssh_to_remote(hosts[args.target], args.auto_cd, repo)
+    ssh_to_remote(hosts[args.target], args.auto_cd, base, repo)

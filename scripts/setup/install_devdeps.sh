@@ -24,6 +24,7 @@ sudo apt -y install python3-pip
 sudo apt -y install iperf3
 sudo apt -y install iptables-persistent
 sudo apt -y install screen
+sudo apt -y install cloud-guest-utils
 
 
 echo

@@ -1,4 +1,5 @@
-# repo root folder project name
+# remote repo base path and project folder name
+base_path = "/eval"
 repo_name = "summerset"
 
 [hosts] # host DNS domain name
