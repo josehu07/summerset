@@ -9,11 +9,3 @@ host1 = "josehu@c220g2-011124.wisc.cloudlab.us"
 host2 = "josehu@c220g2-010805.wisc.cloudlab.us"
 host3 = "josehu@c220g2-010828.wisc.cloudlab.us"
 host4 = "josehu@c220g2-011123.wisc.cloudlab.us"
-
-# (SET PROPERLY) main Ethernet interface name on each host
-[intfs]
-host0 = "enp1s0f0"
-host1 = "enp1s0f0"
-host2 = "enp1s0f0"
-host3 = "enp1s0f0"
-host4 = "enp1s0f0"

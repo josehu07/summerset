@@ -8,6 +8,13 @@ import geni.portal as portal  # type: ignore
 DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:summerset.dev"
 
 # List of node types (chosen from different sites) to use.
+NODE_TYPES_POOL = [
+    "c220g5",  # Wisc
+    "xl170",  # Utah
+    "c6320",  # Clemson
+    "rs620",  # Mass
+    "r320",  # Apt
+]
 
 # Create a portal context, needed to defined parameters.
 pc = portal.Context()
@@ -30,32 +37,18 @@ params = pc.bindParameters()
 if params.nodeCount < 1 or params.nodeCount > 9:
     pc.reportError(portal.ParameterError("#nodes must be >= 1 and <= 9", ["nodeCount"]))
 
-if params.nodeType.strip() == "":
-    pc.reportError(portal.ParameterError("Physical node type is empty", ["nodeType"]))
-tokens = params.nodeType.split(",")
-if len(tokens) != 1:
-    pc.reportError(portal.ParameterError("Only a single type is allowed", ["nodeType"]))
-
 pc.verifyParameters()
 
-# Create link/lan.
-if params.nodeCount > 1:
-    if params.nodeCount == 2:
-        lan = request.Link()
-    else:
-        lan = request.LAN()
-
-# Process nodes, adding to link or lan.
+# Process nodes in semi round-robin assignment of sites.
 for i in range(params.nodeCount):
+    j = i
+    if i >= len(NODE_TYPES_POOL):
+        j = ((i - len(NODE_TYPES_POOL)) % (NODE_TYPES_POOL - 1)) + 1
     # Create a node and add it to the request
     name = "node" + str(i)
     node = request.RawPC(name)
-    node.hardware_type = params.nodeType
+    node.hardware_type = NODE_TYPES_POOL[j]
     node.disk_image = DISK_IMAGE
-    # Add to lan
-    if params.nodeCount > 1:
-        iface = node.addInterface("eth1")
-        lan.addInterface(iface)
 
 # Print the RSpec to the enclosing page.
 pc.printRequestRSpec(request)
