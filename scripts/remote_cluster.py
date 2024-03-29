@@ -361,7 +361,7 @@ if __name__ == "__main__":
 
     # build everything
     print("Building everything...")
-    cargo_cmd = ["source", "$HOME/.cargo/env;", "cargo", "build", "--workspace"]
+    cargo_cmd = ["cargo", "build", "--workspace"]
     if args.release:
         cargo_cmd.append("-r")
     for host, remote in remotes.items():

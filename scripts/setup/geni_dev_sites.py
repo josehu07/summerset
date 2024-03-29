@@ -13,7 +13,6 @@ NODE_TYPES_POOL = [
     "xl170",  # Utah
     "c6320",  # Clemson
     "rs620",  # Mass
-    "r320",  # Apt
 ]
 
 # Create a portal context, needed to defined parameters.
@@ -43,7 +42,7 @@ pc.verifyParameters()
 for i in range(params.nodeCount):
     j = i
     if i >= len(NODE_TYPES_POOL):
-        j = ((i - len(NODE_TYPES_POOL)) % (NODE_TYPES_POOL - 1)) + 1
+        j = ((i - len(NODE_TYPES_POOL)) % (len(NODE_TYPES_POOL) - 1)) + 1
     # Create a node and add it to the request
     name = "node" + str(i)
     node = request.RawPC(name)
