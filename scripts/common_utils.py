@@ -150,9 +150,9 @@ def run_process_over_ssh(
             cmd[i] = new_seg
 
     if cd_dir is None or len(cd_dir) == 0:
-        cmd = ["ssh", remote] + cmd
+        cmd = ["ssh", remote, f". /etc/profile; {' '.join(cmd)}"]
     else:
-        cmd = ["ssh", remote, f"cd {cd_dir}; {' '.join(cmd)}"]
+        cmd = ["ssh", remote, f". /etc/profile; cd {cd_dir}; {' '.join(cmd)}"]
 
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc

@@ -1,15 +1,17 @@
-# remote repo base path and project folder name
+# (DON'T CHANGE) remote base path and project repo folder name
 base_path = "/eval"
 repo_name = "summerset"
 
-[hosts] # host DNS domain name
+# (SET PROPERLY) host DNS domain name
+[hosts]
 host0 = "josehu@c220g2-011122.wisc.cloudlab.us"
 host1 = "josehu@c220g2-011124.wisc.cloudlab.us"
 host2 = "josehu@c220g2-010805.wisc.cloudlab.us"
 host3 = "josehu@c220g2-010828.wisc.cloudlab.us"
 host4 = "josehu@c220g2-011123.wisc.cloudlab.us"
 
-[intfs] # main Ethernet interface name on each host
+# (SET PROPERLY) main Ethernet interface name on each host
+[intfs]
 host0 = "enp1s0f0"
 host1 = "enp1s0f0"
 host2 = "enp1s0f0"

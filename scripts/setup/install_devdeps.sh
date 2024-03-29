@@ -50,8 +50,8 @@ sudo tee -a /etc/profile <<EOF
 # for global installation of rust
 export RUSTUP_HOME=/usr/local/rustup
 export CARGO_HOME=/usr/local/cargo
-export PATH=/usr/local/cargo/bin:$PATH
+export PATH=/usr/local/cargo/bin:\$PATH
 
-# cd into /mnt/eval/summerset on login
+# cd into /eval/summerset on login
 cd /eval/summerset
 EOF

@@ -27,7 +27,7 @@ def compose_rsync_cmd(src_path, dst_path, remote):
     return rsync_cmd
 
 
-def mirror_folder(remotes, src_path, dst_path, repo_name):
+def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     """WARNING: this deletes all unmatched files on remote!"""
     # source path must exist, end with the correct folder name, followed by a trailing '/'
     if not os.path.isdir(src_path):
@@ -53,15 +53,70 @@ def mirror_folder(remotes, src_path, dst_path, repo_name):
     if not dst_path.endswith("/"):
         dst_path += "/"
 
-    # compose rsync commands and execute
+    # compose rsync commands
     cmds = []
     for remote in remotes:
         cmd = compose_rsync_cmd(src_path, dst_path, remote)
         cmds.append(cmd)
 
-    for cmd in cmds:
-        proc = utils.run_process(cmd)
-        proc.wait()
+    # execute
+    if sequential:
+        for cmd in cmds:
+            proc = utils.run_process(cmd)
+            proc.wait()
+    else:
+        print("Running rsync commands in parallel...")
+        procs = []
+        for cmd in cmds:
+            procs.append(
+                utils.run_process(cmd, capture_stdout=True, capture_stderr=True)
+            )
+        print("Waiting for command results...")
+        for i, proc in enumerate(procs):
+            rc = proc.wait()
+            if rc == 0:
+                print(f"  proc {i}: OK")
+            else:
+                print(f"  proc {i}: ERROR")
+                print(proc.stdout)
+                print(proc.stderr)
+
+
+def compose_build_cmd(release):
+    cmd = ["cargo", "build", "--workspace"]
+    if release:
+        cmd.append("-r")
+    return cmd
+
+
+def build_on_targets(remotes, dst_path, release, sequential):
+    # compose build command over SSH
+    cmd = compose_build_cmd(release)
+
+    # execute
+    # execute
+    if sequential:
+        for remote in remotes:
+            proc = utils.run_process_over_ssh(remote, cmd, dst_path)
+            proc.wait()
+    else:
+        print("Running build commands in parallel...")
+        procs = []
+        for remote in remotes:
+            procs.append(
+                utils.run_process_over_ssh(
+                    remote, cmd, dst_path, capture_stdout=True, capture_stderr=True
+                )
+            )
+        print("Waiting for command results...")
+        for i, proc in enumerate(procs):
+            rc = proc.wait()
+            if rc == 0:
+                print(f"  proc {i}: OK")
+            else:
+                print(f"  proc {i}: ERROR")
+                print(proc.stdout)
+                print(proc.stderr)
 
 
 if __name__ == "__main__":
@@ -74,6 +129,21 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="comma-separated remote hosts' nicknames, or 'all'",
+    )
+    parser.add_argument(
+        "-b",
+        "--build",
+        action="store_true",
+        help="if set, run cargo build on all nodes",
+    )
+    parser.add_argument(
+        "-r", "--release", action="store_true", help="if set, build in release mode"
+    )
+    parser.add_argument(
+        "-s",
+        "--sequential",
+        action="store_true",
+        help="if set, run for hosts sequentially",
     )
     args = parser.parse_args()
 
@@ -97,4 +167,7 @@ if __name__ == "__main__":
     SRC_PATH = "./"
     DST_PATH = f"{base}/{repo}"
 
-    mirror_folder(remotes, SRC_PATH, DST_PATH, repo)
+    mirror_folder(remotes, SRC_PATH, DST_PATH, repo, args.sequential)
+
+    if args.build:
+        build_on_targets(remotes, DST_PATH, args.release, args.sequential)
