@@ -89,20 +89,20 @@ def compose_build_cmd(release):
     return cmd
 
 
-def build_on_targets(remotes, dst_path, release, sequential):
+def build_on_targets(destinations, dst_path, release, sequential):
     # compose build command over SSH
     cmd = compose_build_cmd(release)
 
     # execute
     # execute
     if sequential:
-        for remote in remotes:
+        for remote in destinations:
             proc = utils.run_process_over_ssh(remote, cmd, dst_path)
             proc.wait()
     else:
         print("Running build commands in parallel...")
         procs = []
-        for remote in remotes:
+        for remote in destinations:
             procs.append(
                 utils.run_process_over_ssh(
                     remote, cmd, dst_path, capture_stdout=True, capture_stderr=True
@@ -124,10 +124,13 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
+        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+    )
+    parser.add_argument(
         "-t",
         "--targets",
         type=str,
-        required=True,
+        default="all",
         help="comma-separated remote hosts' nicknames, or 'all'",
     )
     parser.add_argument(
@@ -150,24 +153,27 @@ if __name__ == "__main__":
     hosts_config = utils.read_toml_file(TOML_FILENAME)
     base = hosts_config["base_path"]
     repo = hosts_config["repo_name"]
-    hosts = hosts_config["hosts"]
+    if args.group not in hosts_config:
+        print(f"ERROR: invalid hosts group name '{args.group}'")
+        sys.exit(1)
+    remotes = hosts_config[args.group]
 
     targets = utils.parse_comma_separated(args.targets)
-    remotes = []
+    destinations = []
     if args.targets == "all":
-        remotes = list(hosts.values())
+        destinations = list(remotes.values())
     else:
         for target in targets:
-            if target not in hosts:
+            if target not in remotes:
                 raise ValueError(f"nickname '{target}' not found in toml file")
-            remotes.append(hosts[target])
-    if len(remotes) == 0:
+            destinations.append(remotes[target])
+    if len(destinations) == 0:
         raise ValueError(f"targets list is empty")
 
     SRC_PATH = "./"
     DST_PATH = f"{base}/{repo}"
 
-    mirror_folder(remotes, SRC_PATH, DST_PATH, repo, args.sequential)
+    mirror_folder(destinations, SRC_PATH, DST_PATH, repo, args.sequential)
 
     if args.build:
-        build_on_targets(remotes, DST_PATH, args.release, args.sequential)
+        build_on_targets(destinations, DST_PATH, args.release, args.sequential)

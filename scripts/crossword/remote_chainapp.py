@@ -160,6 +160,9 @@ if __name__ == "__main__":
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"
     )
     parser.add_argument(
+        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+    )
+    parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
     )
     parser.add_argument(
@@ -190,7 +193,10 @@ if __name__ == "__main__":
 
     # parse hosts config file
     hosts_config = utils.read_toml_file(TOML_FILENAME)
-    remotes = hosts_config["hosts"]
+    if args.group not in hosts_config:
+        print(f"ERROR: invalid hosts group name '{args.group}'")
+        sys.exit(1)
+    remotes = hosts_config[args.group]
     hosts = sorted(list(remotes.keys()))
     domains = {
         name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()

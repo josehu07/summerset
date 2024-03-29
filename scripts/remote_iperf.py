@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import argparse
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import common_utils as utils
@@ -67,8 +68,17 @@ def ping_test(remotes, domains, na, nb):
 if __name__ == "__main__":
     utils.check_proper_cwd()
 
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument(
+        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+    )
+    args = parser.parse_args()
+
     hosts_config = utils.read_toml_file(TOML_FILENAME)
-    remotes = hosts_config["hosts"]
+    if args.group not in hosts_config:
+        print(f"ERROR: invalid hosts group name '{args.group}'")
+        sys.exit(1)
+    remotes = hosts_config[args.group]
     hosts = sorted(list(remotes.keys()))
     domains = {
         name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()

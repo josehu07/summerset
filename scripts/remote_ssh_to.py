@@ -24,6 +24,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
+        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+    )
+    parser.add_argument(
         "-t",
         "--target",
         type=str,
@@ -40,9 +43,12 @@ if __name__ == "__main__":
 
     hosts_config = utils.read_toml_file(TOML_FILENAME)
     base = hosts_config["base_path"]
-    hosts = hosts_config["hosts"]
     repo = hosts_config["repo_name"]
+    if args.group not in hosts_config:
+        print(f"ERROR: invalid hosts group name '{args.group}'")
+        sys.exit(1)
+    remotes = hosts_config[args.group]
 
-    if args.target not in hosts:
+    if args.target not in remotes:
         raise ValueError(f"nickname '{args.target}' not found in toml file")
-    ssh_to_remote(hosts[args.target], args.auto_cd, base, repo)
+    ssh_to_remote(remotes[args.target], args.auto_cd, base, repo)
