@@ -73,7 +73,7 @@ if __name__ == "__main__":
         "--targets",
         type=str,
         required=True,
-        help="comma-separated remote hosts' nicknames",
+        help="comma-separated remote hosts' nicknames, or 'all'",
     )
     args = parser.parse_args()
 
@@ -84,10 +84,15 @@ if __name__ == "__main__":
 
     targets = utils.parse_comma_separated(args.targets)
     remotes = []
-    for target in targets:
-        if target not in hosts:
-            raise ValueError(f"nickname '{target}' not found in toml file")
-        remotes.append(hosts[target])
+    if args.targets == "all":
+        remotes = list(hosts.values())
+    else:
+        for target in targets:
+            if target not in hosts:
+                raise ValueError(f"nickname '{target}' not found in toml file")
+            remotes.append(hosts[target])
+    if len(remotes) == 0:
+        raise ValueError(f"targets list is empty")
 
     SRC_PATH = "./"
     DST_PATH = f"{base}/{repo}"
