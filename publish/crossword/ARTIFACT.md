@@ -24,6 +24,7 @@ For a shell command, `$` indicates running it on the local development machine, 
         2. `% cd /eval/summerset`
     8. Install necessary dependencies
         1. `% ./scripts/setup/install_devdeps.sh`
+        2. `% ./scripts/crossword/install_devdeps.sh`
     9. Set up TCP buffer sizes
         1. `% ./scripts/setup/setup_tcp_bufs.sh`
     10. Record the SSH key pair for mutual login between remote nodes

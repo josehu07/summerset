@@ -318,6 +318,9 @@ if __name__ == "__main__":
     # check that number of replicas is valid
     if args.num_replicas > len(remotes):
         raise ValueError("#replicas exceeds #hosts in the config file")
+    hosts = hosts[: args.num_replicas]
+    remotes = {h: remotes[h] for h in hosts}
+    ipaddrs = {h: ipaddrs[h] for h in hosts}
 
     # check protocol name
     if args.protocol not in PROTOCOL_MAY_SNAPSHOT:

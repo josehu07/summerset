@@ -5,9 +5,8 @@ import subprocess
 import multiprocessing
 import math
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
@@ -48,7 +47,7 @@ def run_process_pinned(
             core_start = math.floor(core_end - cores + 1)
             assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
-    return utils.run_process(
+    return utils.proc.run_process(
         cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
     )
 
@@ -123,17 +122,23 @@ def run_clients(
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument(
+        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+    )
+    parser.add_argument(
         "-g", "--group", type=str, default="1dc", help="hosts group to run on"
     )
     parser.add_argument(
-        "-n",
+        "--me", type=str, default="host0", help="main script runner's host nickname"
+    )
+    parser.add_argument(
+        "-t",
         "--num_threads",
         type=int,
         required=True,
@@ -152,12 +157,6 @@ if __name__ == "__main__":
         "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
     )
     parser.add_argument(
-        "--base_dir",
-        type=str,
-        default="/eval",
-        help="base cd dir after ssh",
-    )
-    parser.add_argument(
         "--file_prefix",
         type=str,
         default="",
@@ -172,18 +171,20 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
-    hosts = sorted(list(remotes.keys()))
-    domains = {
-        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
-    ipaddrs = {name: utils.lookup_dns_to_ip(domain) for name, domain in domains.items()}
+    base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
+    cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
-    cd_dir_chain = f"{args.base_dir}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
+    # check that number of replicas is valid
+    if args.num_replicas > len(ipaddrs):
+        raise ValueError("#replicas exceeds #hosts in the config file")
+    hosts = hosts[: args.num_replicas]
+    remotes = {h: remotes[h] for h in hosts}
+    ipaddrs = {h: ipaddrs[h] for h in hosts}
+
+    # check that I am indeed the "me" host
+    utils.config.check_remote_is_me(remotes[args.me])
 
     # check that the prefix folder path exists, or create it if not
     if len(args.file_prefix) > 0 and not os.path.isdir(args.file_prefix):

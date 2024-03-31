@@ -2,7 +2,7 @@ import sys
 import os
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from proc import run_process
+from proc import run_process, run_process_over_ssh
 
 
 def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto"):
@@ -69,6 +69,32 @@ def lookup_dns_to_ip(domain):
     out = out.decode().strip()
     if len(out) == 0:
         raise RuntimeError(f"dns lookup for {domain} failed")
+
     ip = out.split("\n")[0]
     assert ip.count(".") == 3
     return ip
+
+
+def get_interface_name(ip, remote=None):
+    proc = None
+    if remote is None:
+        proc = run_process(
+            ["ip", "-f", "inet", "a"], capture_stdout=True, print_cmd=False
+        )
+    else:
+        proc = run_process_over_ssh(
+            remote, ["ip", "-f", "inet", "a"], capture_stdout=True, print_cmd=False
+        )
+    out, _ = proc.communicate()
+    out = out.decode().strip()
+
+    interface = None
+    for line in out.split("\n"):
+        segs = line.strip().split()
+        if len(segs) > 1 and segs[0].endswith(":"):
+            interface = segs[1][:-1]
+        elif interface is not None:
+            if segs[0] == "inet" and segs[1].startswith(ip):
+                return interface
+
+    return None

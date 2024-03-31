@@ -112,6 +112,7 @@ def compose_client_cmd(
 def run_clients(
     ipaddrs,
     me,
+    man,
     protocol,
     utility,
     num_clients,
@@ -127,7 +128,7 @@ def run_clients(
         raise ValueError(f"invalid num_clients: {num_clients}")
 
     # assuming I am the machine to run manager
-    manager_pub_ip = ipaddrs[me]
+    manager_pub_ip = ipaddrs[man]
 
     client_procs = []
     for i in range(num_clients):
@@ -170,6 +171,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
+    )
+    parser.add_argument(
+        "--man", type=str, default="host0", help="manager oracle's host nickname"
     )
     parser.add_argument(
         "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
@@ -253,7 +257,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    _, _, _, _, _, ipaddrs = utils.config.parse_toml_file(TOML_FILENAME, args.group)
+    _, _, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
+
+    # check that I am indeed the "me" host
+    utils.config.check_remote_is_me(remotes[args.me])
+
+    # check that the manager host is valid
+    if args.man not in remotes:
+        raise ValueError(f"invalid manager oracle's host {args.man}")
 
     # check that number of replicas does not exceed 99
     if args.utility == "bench" and args.num_clients > 99:
@@ -279,6 +292,7 @@ if __name__ == "__main__":
     client_procs = run_clients(
         ipaddrs,
         args.me,
+        args.man,
         args.protocol,
         args.utility,
         num_clients,

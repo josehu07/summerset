@@ -4,9 +4,8 @@ import signal
 import argparse
 import multiprocessing
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
@@ -42,11 +41,11 @@ def run_process_pinned(
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
-        return utils.run_process(
+        return utils.proc.run_process(
             cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
         )
     else:
-        return utils.run_process_over_ssh(
+        return utils.proc.run_process_over_ssh(
             remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
         )
 
@@ -64,7 +63,7 @@ def compose_server_cmd(
 ):
     backer_file = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
     if fresh_files:
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             ["rm", "-f", backer_file],
             print_cmd=False,
@@ -150,7 +149,7 @@ def launch_servers(
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -164,12 +163,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
-    )
-    parser.add_argument(
-        "--base_dir",
-        type=str,
-        default="/eval",
-        help="base cd dir after ssh",
     )
     parser.add_argument(
         "--file_prefix",
@@ -192,42 +185,33 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
-    hosts = sorted(list(remotes.keys()))
-    domains = {
-        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
-    ipaddrs = {name: utils.lookup_dns_to_ip(domain) for name, domain in domains.items()}
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
+    cd_dir_summerset = f"{base}/{repo}"
+    cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
-    repo = hosts_config["repo_name"]
-    cd_dir_summerset = f"{args.base_dir}/{repo}"
-    cd_dir_chain = f"{args.base_dir}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
-
-    interfaces = hosts_config["intfs"]
-
-    # check that number of replicas equals 3
-    if args.num_replicas != len(remotes):
-        print("ERROR: #replicas does not match #hosts in config file")
-        sys.exit(1)
+    # check that number of replicas is valid
+    if args.num_replicas > len(remotes):
+        raise ValueError("#replicas exceeds #hosts in the config file")
+    hosts = hosts[: args.num_replicas]
+    remotes = {h: remotes[h] for h in hosts}
+    ipaddrs = {h: ipaddrs[h] for h in hosts}
 
     # check protocol name
     if args.protocol not in PROTOCOLS:
-        print(f"ERROR: unrecognized protocol name '{args.protocol}'")
+        raise ValueError(f"unrecognized protocol name '{args.protocol}'")
 
     # check that I am indeed the "me" host
-    utils.check_remote_is_me(remotes[args.me])
+    utils.config.check_remote_is_me(remotes[args.me])
 
     # kill all existing server and manager processes
     print("Killing related processes...")
     for host, remote in remotes.items():
         print(f"  {host}")
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
-            ["./scripts/kill_chain_procs.sh"],
+            ["./scripts/crossword/kill_chain_procs.sh"],
             cd_dir=cd_dir_summerset,
             print_cmd=False,
         ).wait()
@@ -236,12 +220,23 @@ if __name__ == "__main__":
     print("Preparing states folder...")
     for host, remote in remotes.items():
         print(f"  {host}")
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             ["mkdir", "-p", args.file_prefix],
             cd_dir=cd_dir_chain,
             print_cmd=False,
         ).wait()
+
+    # get the main Ethernet interface name on each host
+    print("Getting main interface name...")
+    interfaces = dict()
+    for host in hosts:
+        print(f"  {host} ", end="")
+        interface = utils.net.get_interface_name(
+            ipaddrs[host], remote=None if host == args.me else remotes[host]
+        )
+        print(interface)
+        interfaces[host] = interface
 
     # then launch server replicas
     server_procs = launch_servers(
@@ -264,9 +259,9 @@ if __name__ == "__main__":
         print("Killing related processes...")
         for host, remote in remotes.items():
             print(f"  {host}")
-            utils.run_process_over_ssh(
+            utils.proc.run_process_over_ssh(
                 remote,
-                ["./scripts/kill_chain_procs.sh"],
+                ["./scripts/crossword/kill_chain_procs.sh"],
                 cd_dir=cd_dir_summerset,
                 print_cmd=False,
             ).wait()

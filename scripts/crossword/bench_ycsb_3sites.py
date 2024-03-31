@@ -85,8 +85,6 @@ def launch_cluster_summerset(protocol, config=None):
         "-r",
         "--me",
         MAIN_HOST_NICKNAME,
-        "--base_dir",
-        BASE_PATH,
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
@@ -211,8 +209,6 @@ def launch_cluster_chain(protocol):
         str(NUM_REPLICAS),
         "--me",
         MAIN_HOST_NICKNAME,
-        "--base_dir",
-        BASE_PATH,
         "--file_prefix",
         f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
         "--pin_cores",
@@ -265,8 +261,6 @@ def run_bench_clients_chain(protocol):
 
 def bench_round_chain(protocol):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
-    utils.kill_all_chain_procs()
-    time.sleep(5)
 
     # launch service cluster
     proc_cluster = launch_cluster_chain(protocol)
@@ -283,7 +277,7 @@ def bench_round_chain(protocol):
 
     # terminate the cluster
     proc_cluster.terminate()
-    utils.kill_all_chain_procs()
+    os.system("./scripts/crossword/kill_chain_procs.sh")
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)

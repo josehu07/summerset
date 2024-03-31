@@ -21,13 +21,7 @@ def kill_all_matching(name):
 
 def kill_all_local_procs():
     # print("Killing all local procs...")
-    cmd = "sudo ./scripts/kill_local_procs.sh"
-    os.system(cmd)
-
-
-def kill_all_chain_procs():
-    # print("Killing all chain procs...")
-    cmd = "sudo ./scripts/crossword/kill_chain_procs.sh"
+    cmd = "./scripts/kill_local_procs.sh"
     os.system(cmd)
 
 
