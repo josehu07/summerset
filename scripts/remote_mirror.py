@@ -3,7 +3,7 @@ import os
 import argparse
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
@@ -33,7 +33,7 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     if not os.path.isdir(src_path):
         raise ValueError(f"source path '{src_path}' is not an existing directory")
     src_path = os.path.realpath(src_path)
-    src_seg = utils.path_get_last_segment(src_path)
+    src_seg = utils.file.path_get_last_segment(src_path)
     if not repo_name in src_seg:
         raise ValueError(
             f"source folder '{src_seg}' does not contain project name '{repo_name}'"
@@ -45,7 +45,7 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     # followed by a trailing '/'
     if not os.path.isabs(dst_path):
         raise ValueError(f"target path '{dst_path}' is not an absolute path")
-    dst_seg = utils.path_get_last_segment(dst_path)
+    dst_seg = utils.file.path_get_last_segment(dst_path)
     if dst_seg != repo_name:
         raise ValueError(
             f"target folder '{dst_seg}' does not match project name '{repo_name}'"
@@ -62,14 +62,14 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     # execute
     if sequential:
         for cmd in cmds:
-            proc = utils.run_process(cmd)
+            proc = utils.proc.run_process(cmd)
             proc.wait()
     else:
         print("Running rsync commands in parallel...")
         procs = []
         for cmd in cmds:
             procs.append(
-                utils.run_process(cmd, capture_stdout=True, capture_stderr=True)
+                utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True)
             )
         print("Waiting for command results...")
         for i, proc in enumerate(procs):
@@ -97,14 +97,14 @@ def build_on_targets(destinations, dst_path, release, sequential):
     # execute
     if sequential:
         for remote in destinations:
-            proc = utils.run_process_over_ssh(remote, cmd, dst_path)
+            proc = utils.proc.run_process_over_ssh(remote, cmd, dst_path)
             proc.wait()
     else:
         print("Running build commands in parallel...")
         procs = []
         for remote in destinations:
             procs.append(
-                utils.run_process_over_ssh(
+                utils.proc.run_process_over_ssh(
                     remote, cmd, dst_path, capture_stdout=True, capture_stderr=True
                 )
             )
@@ -120,7 +120,7 @@ def build_on_targets(destinations, dst_path, release, sequential):
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -150,15 +150,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    base = hosts_config["base_path"]
-    repo = hosts_config["repo_name"]
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
+    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
 
-    targets = utils.parse_comma_separated(args.targets)
+    targets = utils.config.parse_comma_separated(args.targets)
     destinations = []
     if args.targets == "all":
         destinations = list(remotes.values())

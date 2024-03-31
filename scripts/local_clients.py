@@ -6,8 +6,7 @@ import multiprocessing
 import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
 
 CLIENT_LOOP_IP = "127.0.0.1"
@@ -61,7 +60,7 @@ def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
             core_start = math.floor(core_end - cores_per_proc + 1)
             assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
-    return utils.run_process(cmd, capture_stdout=capture_stdout, cpu_list=cpu_list)
+    return utils.proc.run_process(cmd, capture_stdout=capture_stdout, cpu_list=cpu_list)
 
 
 def glue_params_str(cli_args, params_list):
@@ -155,7 +154,7 @@ def run_clients(
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -251,8 +250,7 @@ if __name__ == "__main__":
 
     # check that number of replicas does not exceed 99
     if args.utility == "bench" and args.num_clients > 99:
-        print("ERROR: #clients > 99 not supported yet (as some ports are hardcoded)")
-        sys.exit(1)
+        raise ValueError("#clients > 99 not supported yet (as ports are hardcoded)")
 
     # check that the prefix folder path exists, or create it if not
     if (
@@ -263,10 +261,9 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = utils.do_cargo_build(args.release)
+    rc = utils.file.do_cargo_build(args.release)
     if rc != 0:
-        print("ERROR: cargo build failed")
-        sys.exit(rc)
+        raise RuntimeError("cargo build failed")
 
     capture_stdout = args.utility == "bench" and len(args.file_prefix) > 0
     num_clients = args.num_clients if args.utility == "bench" else 1
@@ -310,8 +307,7 @@ if __name__ == "__main__":
                     fout.write(out.decode())
                 rcs.append(client_proc.returncode)
     except subprocess.TimeoutExpired:
-        print(f"ERROR: some client(s) timed-out {timeout} secs", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"some client(s) timed-out {timeout} secs", file=sys.stderr)
 
     if any(map(lambda rc: rc != 0, rcs)):
         sys.exit(1)

@@ -5,13 +5,13 @@ import time
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+from .. import utils
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
+# fmt: on
 
 
 BASE_PATH = "/eval"

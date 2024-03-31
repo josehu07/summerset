@@ -5,8 +5,7 @@ import argparse
 import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
 
 SERVER_LOOP_IP = "127.0.0.1"
@@ -54,7 +53,7 @@ def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
-    return utils.run_process(
+    return utils.proc.run_process(
         cmd, capture_stderr=capture_stderr, cpu_list=cpu_list, in_netns=in_netns
     )
 
@@ -239,7 +238,7 @@ def launch_servers(
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -282,13 +281,12 @@ if __name__ == "__main__":
 
     # kill all existing server and manager processes
     if args.pin_cores == 0:
-        utils.kill_all_matching("summerset_server")
-        utils.kill_all_matching("summerset_manager")
+        utils.proc.kill_all_matching("summerset_server")
+        utils.proc.kill_all_matching("summerset_manager")
 
     # check that number of replicas does not exceed 9
     if args.num_replicas > 9:
-        print("ERROR: #replicas > 9 not supported yet (as some ports are hardcoded)")
-        sys.exit(1)
+        raise ValueError("#replicas > 9 not supported yet (as ports are hardcoded)")
 
     # check protocol name
     if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
@@ -299,10 +297,9 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = utils.do_cargo_build(args.release)
+    rc = utils.file.do_cargo_build(args.release)
     if rc != 0:
-        print("ERROR: cargo build failed")
-        sys.exit(rc)
+        raise RuntimeError("cargo build failed")
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(
@@ -340,8 +337,8 @@ if __name__ == "__main__":
         for proc in server_procs:
             proc.wait()
         manager_proc.terminate()
-        # utils.kill_all_matching("summerset_server")
-        # utils.kill_all_matching("summerset_manager")
+        # utils.proc.kill_all_matching("summerset_server")
+        # utils.proc.kill_all_matching("summerset_manager")
 
     signal.signal(signal.SIGINT, kill_spawned_procs)
     signal.signal(signal.SIGTERM, kill_spawned_procs)

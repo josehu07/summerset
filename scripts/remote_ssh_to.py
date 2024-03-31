@@ -3,15 +3,15 @@ import os
 import argparse
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-def ssh_to_remote(remote, auto_cd, base, repo):
+def ssh_to_remote(remote, no_cd, base, repo):
     ssh_args = ["ssh"]
-    if not auto_cd:
+    if no_cd:
         ssh_args.append(remote)
     else:
         ssh_args += ["-t", remote, f"cd {base}/{repo}; bash --login"]
@@ -20,7 +20,7 @@ def ssh_to_remote(remote, auto_cd, base, repo):
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -35,20 +35,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-d",
-        "--auto_cd",
+        "--no_cd",
         action="store_true",
-        help="if set, automatically change into repo directory",
+        help="if set, don't try changing into repo directory",
     )
     args = parser.parse_args()
 
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    base = hosts_config["base_path"]
-    repo = hosts_config["repo_name"]
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
+    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
 
     if args.target not in remotes:
         raise ValueError(f"nickname '{args.target}' not found in toml file")
-    ssh_to_remote(remotes[args.target], args.auto_cd, base, repo)
+    ssh_to_remote(remotes[args.target], args.no_cd, base, repo)

@@ -4,7 +4,7 @@ import time
 import argparse
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
@@ -18,11 +18,11 @@ PING_SECS = 5
 
 def iperf_test(remotes, domains, na, nb):
     kill_cmd = ["sudo", "pkill", "-9", "iperf3"]
-    utils.run_process_over_ssh(remotes[na], kill_cmd).wait()
-    utils.run_process_over_ssh(remotes[nb], kill_cmd).wait()
+    utils.proc.run_process_over_ssh(remotes[na], kill_cmd).wait()
+    utils.proc.run_process_over_ssh(remotes[nb], kill_cmd).wait()
 
     iperf_s_cmd = ["iperf3", "-s", "-p", f"{IPERF_PORT}", "-1"]
-    proc_s = utils.run_process_over_ssh(remotes[nb], iperf_s_cmd)
+    proc_s = utils.proc.run_process_over_ssh(remotes[nb], iperf_s_cmd)
     time.sleep(3)
 
     iperf_c_cmd = [
@@ -38,12 +38,12 @@ def iperf_test(remotes, domains, na, nb):
         "-O",
         f"{1}",
     ]
-    proc_c = utils.run_process_over_ssh(
+    proc_c = utils.proc.run_process_over_ssh(
         remotes[na], iperf_c_cmd, capture_stdout=True, capture_stderr=True
     )
     out, err = proc_c.communicate()
 
-    utils.run_process_over_ssh(remotes[nb], kill_cmd).wait()
+    utils.proc.run_process_over_ssh(remotes[nb], kill_cmd).wait()
     proc_s.wait()
 
     print(f"\nResult of iperf {na} -> {nb}:")
@@ -54,7 +54,7 @@ def iperf_test(remotes, domains, na, nb):
 
 def ping_test(remotes, domains, na, nb):
     ping_cmd = ["ping", domains[nb], "-w", f"{PING_SECS}"]
-    proc_p = utils.run_process_over_ssh(
+    proc_p = utils.proc.run_process_over_ssh(
         remotes[na], ping_cmd, capture_stdout=True, capture_stderr=True
     )
     out, err = proc_p.communicate()
@@ -66,7 +66,7 @@ def ping_test(remotes, domains, na, nb):
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -74,15 +74,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
-    hosts = sorted(list(remotes.keys()))
-    domains = {
-        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
+    _, _, hosts, remotes, domains, _ = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
 
     for ia in range(len(hosts)):
         for ib in range(ia + 1, len(hosts)):

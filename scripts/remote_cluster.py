@@ -5,8 +5,7 @@ import argparse
 import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
@@ -58,11 +57,11 @@ def run_process_pinned(
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
-        return utils.run_process(
+        return utils.proc.run_process(
             cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
         )
     else:
-        return utils.run_process_over_ssh(
+        return utils.proc.run_process_over_ssh(
             remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
         )
 
@@ -92,7 +91,7 @@ def config_with_defaults(
     backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files:
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             ["rm", "-f", backer_path],
             print_cmd=False,
@@ -104,7 +103,7 @@ def config_with_defaults(
         )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files:
-            utils.run_process_over_ssh(
+            utils.proc.run_process_over_ssh(
                 remote,
                 ["rm", "-f", snapshot_path],
                 print_cmd=False,
@@ -269,7 +268,7 @@ def launch_servers(
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -289,12 +288,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
-    )
-    parser.add_argument(
-        "--base_dir",
-        type=str,
-        default="/eval",
-        help="base cd dir after ssh",
     )
     parser.add_argument(
         "--file_prefix",
@@ -317,37 +310,27 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    hosts_config = utils.read_toml_file(TOML_FILENAME)
-    if args.group not in hosts_config:
-        print(f"ERROR: invalid hosts group name '{args.group}'")
-        sys.exit(1)
-    remotes = hosts_config[args.group]
-    hosts = sorted(list(remotes.keys()))
-    domains = {
-        name: utils.split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
-    ipaddrs = {name: utils.lookup_dns_to_ip(domain) for name, domain in domains.items()}
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        TOML_FILENAME, args.group
+    )
+    cd_dir = f"{base}/{repo}"
 
-    repo = hosts_config["repo_name"]
-    cd_dir = f"{args.base_dir}/{repo}"
-
-    # check that number of replicas equals 3
-    if args.num_replicas != len(remotes):
-        print("ERROR: #replicas does not match #hosts in config file")
-        sys.exit(1)
+    # check that number of replicas is valid
+    if args.num_replicas > len(remotes):
+        raise ValueError("#replicas exceeds #hosts in the config file")
 
     # check protocol name
     if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
-        print(f"ERROR: unrecognized protocol name '{args.protocol}'")
+        raise ValueError(f"unrecognized protocol name '{args.protocol}'")
 
     # check that I am indeed the "me" host
-    utils.check_remote_is_me(remotes[args.me])
+    utils.config.check_remote_is_me(remotes[args.me])
 
     # kill all existing server and manager processes
     print("Killing related processes...")
     for host, remote in remotes.items():
         print(f"  {host}")
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             ["./scripts/kill_local_procs.sh"],
             cd_dir=cd_dir,
@@ -358,7 +341,7 @@ if __name__ == "__main__":
     print("Preparing states folder...")
     for host, remote in remotes.items():
         print(f"  {host}")
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             ["mkdir", "-p", args.file_prefix],
             cd_dir=cd_dir,
@@ -372,7 +355,7 @@ if __name__ == "__main__":
         cargo_cmd.append("-r")
     for host, remote in remotes.items():
         print(f"  {host}")
-        utils.run_process_over_ssh(
+        utils.proc.run_process_over_ssh(
             remote,
             cargo_cmd,
             cd_dir=cd_dir,
@@ -416,7 +399,7 @@ if __name__ == "__main__":
         print("Killing related processes...")
         for host, remote in remotes.items():
             print(f"  {host}")
-            utils.run_process_over_ssh(
+            utils.proc.run_process_over_ssh(
                 remote,
                 ["./scripts/kill_local_procs.sh"],
                 cd_dir=cd_dir,
