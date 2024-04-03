@@ -262,12 +262,13 @@ impl CrosswordReplica {
                         .skip(trigger_slot - self.start_slot)
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
-                        if inst.reqs_cw.avail_shards() >= self.majority {
+                        if inst.reqs_cw.avail_shards() >= self.rs_data_shards {
                             // if quorum size >= majority and enough shards
                             // with the highest ballot in quorum are gathered
                             // to reconstruct the original data, use the
                             // reconstructed request batch
-                            if inst.reqs_cw.avail_data_shards() < self.majority
+                            if inst.reqs_cw.avail_data_shards()
+                                < self.rs_data_shards
                             {
                                 // have enough shards but need reconstruction
                                 inst.reqs_cw
@@ -282,8 +283,8 @@ impl CrosswordReplica {
                             // fill this instance with a null request batch
                             inst.reqs_cw = RSCodeword::from_data(
                                 ReqBatch::new(),
-                                self.majority,
-                                self.population - self.majority,
+                                self.rs_data_shards,
+                                self.rs_total_shards - self.rs_data_shards,
                             )?;
                         } else {
                             // not yet for this instance

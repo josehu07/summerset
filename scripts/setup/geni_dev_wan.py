@@ -10,8 +10,8 @@ DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:summers
 # List of node types (chosen from different sites) to use.
 NODE_TYPES_POOL = [
     "c220g5",  # Wisc
-    "xl170",  # Utah
     "c6320",  # Clemson
+    "xl170",  # Utah
     "rs620",  # Mass
 ]
 
@@ -24,7 +24,7 @@ request = pc.makeRequestRSpec()
 # Variable number of nodes.
 pc.defineParameter(
     "nodeCount",
-    "Number of sites",
+    "Number of nodes (sites assigned round-robinly)",
     portal.ParameterType.INTEGER,
     5,
 )

@@ -4,56 +4,31 @@ import argparse
 import time
 import math
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
+# fmt: on
 
 
-BASE_PATH = "/eval"
-SERVER_STATES_FOLDER = "states"
-CLIENT_OUTPUT_FOLDER = "output"
-RUNTIME_LOGS_FOLDER = "runlog"
+TOML_FILENAME = "scripts/remote_hosts.toml"
 
 EXPER_NAME = "critical"
-
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
+MIN_HOST0_CPUS = 40
+SERVER_PIN_CORES = 16
+CLIENT_PIN_CORES = 2
 
-# requires a minimum of 40 CPUs to make everyone strictly isolated
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = lambda n: 1 if n <= 5 else 0.5 if n <= 7 else -0.25
-
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
-
-
-NUM_CLIENTS = 16
-
-FORCE_LEADER = 0
-
+NUM_CLIENTS = 12
 BATCH_INTERVAL = 1
 
-
-LENGTH_SECS = 60
-
+LENGTH_SECS = 30
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 58
-
-
-class EnvSetting:
-    def __init__(self, name, delay, jitter, rate):
-        self.name = name
-
-        self.delay = delay
-        self.jitter = jitter
-        self.rate = rate
+RESULT_SECS_END = 28
 
 
 class RoundParams:
@@ -62,18 +37,15 @@ class RoundParams:
         num_replicas,
         value_size,
         put_ratio,
-        env_setting,
+        env_group,
         paxos_only,
         tags,
         read_lease=True,
     ):
         self.num_replicas = num_replicas
-
         self.value_size = value_size
         self.put_ratio = put_ratio
-
-        self.env_setting = env_setting
-
+        self.env_group = env_group
         self.paxos_only = paxos_only
         self.tags = tags
         self.read_lease = read_lease
@@ -81,15 +53,12 @@ class RoundParams:
     def __str__(self):
         return (
             f".{self.num_replicas}.{'mixed' if isinstance(self.value_size, str) else self.value_size}."
-            + f"{self.put_ratio}{'rl' if self.read_lease else ''}.{self.env_setting.name}"
+            + f"{self.put_ratio}{'rl' if self.read_lease else ''}.{self.env_group}"
         )
 
 
 # fmt: off
-ENV_DC  = EnvSetting("dc",  lambda r: 1, lambda r : r if r < 3 else 12, lambda _: 100)
-ENV_WAN = EnvSetting("wan", lambda r: 5, lambda r : r if r < 3 else 3,  lambda _: 0.5)
-
-SIZE_S = 100
+SIZE_S = 8
 SIZE_L = 256 * 1024
 SIZE_MIXED = [
     (0, SIZE_L),
@@ -102,81 +71,79 @@ SIZE_MIXED = [
 SIZE_MIXED = '/'.join([f"{t}:{v}" for t, v in SIZE_MIXED])
 
 ROUNDS_PARAMS = [
-    RoundParams(5,   SIZE_S,       50,    ENV_DC,    False, ["single"]),
-    RoundParams(5,   SIZE_L,       50,    ENV_DC,    False, ["single"]),
-    RoundParams(5,   SIZE_MIXED,   50,    ENV_DC,    False, ["single"]),
-    RoundParams(5,   SIZE_S,       50,    ENV_WAN,   False, ["single"]),
-    RoundParams(5,   SIZE_L,       50,    ENV_WAN,   False, ["single"]),
-    RoundParams(5,   SIZE_MIXED,   50,    ENV_WAN,   False, ["single", "cluster-5", "ratio-50"]),
-    RoundParams(3,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-3"]),
-    RoundParams(7,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-7"]),
-    RoundParams(9,   SIZE_MIXED,   50,    ENV_WAN,   True,  ["cluster-9"]),
-    RoundParams(5,   SIZE_MIXED,   10,    ENV_WAN,   True,  ["ratio-10"]),
-    RoundParams(5,   SIZE_MIXED,   100,   ENV_WAN,   True,  ["ratio-100"]),
+    RoundParams(5, SIZE_S,     50,  "1dc", False, ["single"]),
+    RoundParams(5, SIZE_L,     50,  "1dc", False, ["single"]),
+    RoundParams(5, SIZE_MIXED, 50,  "1dc", False, ["single", "cluster-5", "ratio-50"]),
+    RoundParams(5, SIZE_S,     50,  "wan", False, ["single"]),
+    RoundParams(5, SIZE_L,     50,  "wan", False, ["single"]),
+    RoundParams(5, SIZE_MIXED, 50,  "wan", False, ["single"]),
+    RoundParams(3, SIZE_MIXED, 50,  "1dc", True,  ["cluster-3"]),
+    RoundParams(7, SIZE_MIXED, 50,  "1dc", True,  ["cluster-7"]),
+    RoundParams(9, SIZE_MIXED, 50,  "1dc", True,  ["cluster-9"]),
+    RoundParams(5, SIZE_MIXED, 10,  "1dc", True,  ["ratio-10"]),
+    RoundParams(5, SIZE_MIXED, 100, "1dc", True,  ["ratio-100"]),
 ]
 # fmt: on
 
 
-def launch_cluster(protocol, round_params, config=None):
+def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
         str(round_params.num_replicas),
         "-r",
         "--force_leader",
-        str(FORCE_LEADER),
+        "0",
+        "-g",
+        round_params.env_group,
+        "--me",
+        "host0",
         "--file_prefix",
-        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
         str(round_params),
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
+        "--skip_build",
     ]
     if config is not None and len(config) > 0:
-        cmd += ["-c", config]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+        cmd += ["--config", config]
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def wait_cluster_setup(proc, round_params, fserr=None):
+def wait_cluster_setup():
     # print("Waiting for cluster setup...")
-    accepting_clients = [False for _ in range(round_params.num_replicas)]
-
-    for line in iter(proc.stderr.readline, b""):
-        if fserr is not None:
-            fserr.write(line)
-        l = line.decode()
-        # print(l, end="", file=sys.stderr)
-
-        if "accepting clients" in l:
-            replica = l[l.find("(") + 1 : l.find(")")]
-            if replica == "m":
-                continue
-            replica = int(replica)
-            assert not accepting_clients[replica]
-            accepting_clients[replica] = True
-
-        if accepting_clients.count(True) == round_params.num_replicas:
-            break
+    # wait for 20 seconds to safely allow all nodes up
+    # not relying on SSH-piped outputs here
+    time.sleep(20)
 
 
-def run_bench_clients(protocol, round_params):
+def run_bench_clients(remote0, base, repo, protocol, round_params):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        round_params.env_group,
+        "--me",
+        "host0",
         "--pin_cores",
-        str(CLIENT_PIN_CORES(round_params.num_replicas)),
-        "--use_veth",
+        str(CLIENT_PIN_CORES),
         "--base_idx",
         str(0),
+        "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
@@ -191,35 +158,40 @@ def run_bench_clients(protocol, round_params):
         "--norm_stdev_ratio",
         str(0.1),
         "--file_prefix",
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        f"{base}/output/{EXPER_NAME}",
         "--file_midfix",
         str(round_params),
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def bench_round(protocol, round_params):
+def bench_round(remote0, base, repo, protocol, round_params):
     midfix_str = str(round_params)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
-    utils.kill_all_local_procs()
-    time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if round_params.read_lease:
         config += f"+sim_read_lease=true"
     if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.25 if round_params.env_setting.name == 'dc' else 0.05}"
+        # TODO: tune this
+        # config += f"+b_to_d_threshold={0.25 if round_params.env_setting.name == 'dc' else 0.05}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(protocol, round_params, config=config)
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
-        wait_cluster_setup(proc_cluster, round_params, fserr=fserr)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, protocol, round_params, config=config
+    )
+    wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol, round_params)
+    proc_clients = run_bench_clients(remote0, base, repo, protocol, round_params)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -228,7 +200,7 @@ def bench_round(protocol, round_params):
 
     # terminate the cluster
     proc_cluster.terminate()
-    utils.kill_all_local_procs()
+    utils.proc.kill_all_distr_procs(round_params.env_group)
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
         fserr.write(serr)
@@ -240,7 +212,7 @@ def bench_round(protocol, round_params):
         print("    Done!")
 
 
-def collect_outputs(odir):
+def collect_outputs(output_dir):
     results = dict()
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
@@ -248,10 +220,10 @@ def collect_outputs(odir):
             if round_params.paxos_only and "Raft" in protocol:
                 continue
 
-            result = utils.gather_outputs(
+            result = utils.output.gather_outputs(
                 f"{protocol}{midfix_str}",
                 NUM_CLIENTS,
-                odir,
+                output_dir,
                 RESULT_SECS_BEGIN,
                 RESULT_SECS_END,
                 0.1,
@@ -267,9 +239,13 @@ def collect_outputs(odir):
                     # setting sm here to compensate for mixed value unstabilities
                     # as well as printing models to console
                     sm = 1 + (round_params.put_ratio / 100) * 0.7
-            tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+            tput_mean_list = utils.output.list_smoothing(
+                result["tput_sum"], sd, sp, sj, sm
+            )
             tput_stdev_list = result["tput_stdev"]
-            lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
+            lat_mean_list = utils.output.list_smoothing(
+                result["lat_avg"], sd, sp, sj, 1 / sm
+            )
             lat_stdev_list = result["lat_stdev"]
 
             results[f"{protocol}{midfix_str}"] = {
@@ -290,11 +266,13 @@ def collect_outputs(odir):
             if f"{pa}{midfix_str}" in results and f"{pb}{midfix_str}" in results:
                 for metric in ("tput", "lat"):
                     for stat in ("mean", "stdev"):
-                        results[f"{pa}{midfix_str}"][metric][stat] = utils.list_capping(
-                            results[f"{pa}{midfix_str}"][metric][stat],
-                            results[f"{pb}{midfix_str}"][metric][stat],
-                            5,
-                            down=down if metric == "tput" else not down,
+                        results[f"{pa}{midfix_str}"][metric][stat] = (
+                            utils.output.list_capping(
+                                results[f"{pa}{midfix_str}"][metric][stat],
+                                results[f"{pb}{midfix_str}"][metric][stat],
+                                5,
+                                down=down if metric == "tput" else not down,
+                            )
                         )
 
         # list capping to remove unexpected performance spikes/dips due to
@@ -347,7 +325,7 @@ def print_results(results):
         )
 
 
-def plot_single_case_results(results, round_params, odir, ymax=None):
+def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.6, 2.2),
@@ -460,7 +438,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
         + f"{'small' if round_params.value_size == SIZE_S else 'large' if round_params.value_size == SIZE_L else 'mixed'}."
         + f"{round_params.put_ratio}.{round_params.env_setting.name}"
     )
-    pdf_name = f"{odir}/exper-{EXPER_NAME}-{pdf_midfix}.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}-{pdf_midfix}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -468,7 +446,7 @@ def plot_single_case_results(results, round_params, odir, ymax=None):
     return ax1.get_legend_handles_labels()
 
 
-def plot_single_rounds_results(results, rounds_params, odir):
+def plot_single_rounds_results(results, rounds_params, plots_dir):
     env_ymax = dict()
     for round_params in rounds_params:
         env_name = round_params.env_setting.name
@@ -492,17 +470,17 @@ def plot_single_rounds_results(results, rounds_params, odir):
             handles, labels = plot_single_case_results(
                 results,
                 round_params,
-                odir,
+                plots_dir,
                 None,
                 # env_ymax[round_params.env_setting.name],
             )
             if not common_plotted:
-                plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], odir)
-                plot_major_legend(handles, labels, odir)
+                plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], plots_dir)
+                plot_major_legend(handles, labels, plots_dir)
                 common_plotted = True
 
 
-def plot_cluster_size_results(results, rounds_params, odir):
+def plot_cluster_size_results(results, rounds_params, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (3.5, 2),
@@ -561,7 +539,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}-cluster_size.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}-cluster_size.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -569,7 +547,7 @@ def plot_cluster_size_results(results, rounds_params, odir):
     return ax.get_legend_handles_labels()
 
 
-def plot_write_ratio_results(results, rounds_params, odir):
+def plot_write_ratio_results(results, rounds_params, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.8, 2),
@@ -628,13 +606,13 @@ def plot_write_ratio_results(results, rounds_params, odir):
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}-write_ratio.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}-write_ratio.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
-def plot_major_ylabels(ylabels, odir):
+def plot_major_ylabels(ylabels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (1.5, 2.2),
@@ -661,13 +639,13 @@ def plot_major_ylabels(ylabels, odir):
 
     fig.align_labels()
 
-    pdf_name = f"{odir}/ylabels-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/ylabels-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
-def plot_major_legend(handles, labels, odir):
+def plot_major_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (5.6, 0.5),
@@ -697,13 +675,13 @@ def plot_major_legend(handles, labels, odir):
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
-def plot_minor_legend(handles, labels, odir):
+def plot_minor_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4, 0.5),
@@ -733,84 +711,98 @@ def plot_minor_legend(handles, labels, odir):
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    pdf_name = f"{odir}/legend-{EXPER_NAME}-minor.pdf"
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}-minor.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
-    )
     parser.add_argument(
         "-o",
         "--odir",
         type=str,
-        default=f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-        help=".out files directory",
+        default=f"./results",
+        help="directory to hold outputs and logs",
+    )
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     args = parser.parse_args()
 
+    if not os.path.isdir(args.odir):
+        raise RuntimeError(f"results directory {args.odir} does not exist")
+
     if not args.plot:
-        utils.check_enough_cpus()
+        print("Doing preparation work...")
+        base, repo, _, remotes_1dc, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, "1dc"
+        )
+        _, _, _, remotes_wan, _, _ = utils.config.parse_toml_file(TOML_FILENAME, "wan")
+        remotes = {"1dc": remotes_1dc, "wan": remotes_wan}
+        for group in ("1dc", "wan"):
+            utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes[group]["host0"])
+            utils.proc.kill_all_distr_procs(group)
+            utils.file.do_cargo_build(True, remotes=remotes)
+            utils.file.clear_fs_caches(remotes=remotes[group])
 
-        runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
-        if not os.path.isdir(runlog_path):
-            os.system(f"mkdir -p {runlog_path}")
-
-        utils.do_cargo_build(release=True)
+        runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
+        output_path = f"{args.odir}/output/{EXPER_NAME}"
+        for path in (runlog_path, output_path):
+            if not os.path.isdir(path):
+                os.system(f"mkdir -p {path}")
 
         for round_params in ROUNDS_PARAMS:
-            print("Setting tc netem qdiscs...")
-            utils.clear_fs_cache()
-            utils.set_all_tc_qdisc_netems(
-                round_params.num_replicas,
-                SERVER_NETNS,
-                SERVER_DEV,
-                SERVER_IFB,
-                round_params.env_setting.delay,
-                round_params.env_setting.jitter,
-                round_params.env_setting.rate,
-                involve_ifb=True,
-            )
-
-            print("Running experiments...")
+            print(f"Running experiments {round_params}...")
             for protocol in PROTOCOLS:
                 if round_params.paxos_only and "Raft" in protocol:
                     continue
-                bench_round(protocol, round_params)
+                bench_round(
+                    remotes[round_params.env_group]["host0"],
+                    base,
+                    repo,
+                    protocol,
+                    round_params,
+                )
+                utils.proc.kill_all_distr_procs(round_params.env_group)
+                utils.file.remove_files_in_dir(  # to free up storage space
+                    f"{base}/states/{EXPER_NAME}",
+                    remotes=remotes[round_params.env_group],
+                )
+                utils.file.clear_fs_caches(remotes=remotes[round_params.env_group])
 
-            print("Clearing tc netem qdiscs...")
-            utils.kill_all_local_procs()
-            utils.clear_all_tc_qdisc_netems(
-                round_params.num_replicas, SERVER_NETNS, SERVER_DEV, SERVER_IFB
+        print("Fetching client output logs...")
+        for group in ("1dc", "wan"):
+            utils.file.fetch_files_of_dir(
+                remotes[group]["host0"], f"{base}/output/{EXPER_NAME}", output_path
             )
 
-            state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
-            utils.remove_files_in_dir(state_path)
-
     else:
-        results = collect_outputs(args.odir)
+        output_dir = f"{args.odir}/output/{EXPER_NAME}"
+        plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
+        if not os.path.isdir(plots_dir):
+            os.system(f"mkdir -p {plots_dir}")
+
+        results = collect_outputs(output_dir)
         print_results(results)
 
         single_rounds = [
             rp for rp in ROUNDS_PARAMS if any(map(lambda t: "single" in t, rp.tags))
         ]
-        plot_single_rounds_results(results, single_rounds, args.odir)
+        plot_single_rounds_results(results, single_rounds, plots_dir)
 
         cluster_rounds = [
             rp for rp in ROUNDS_PARAMS if any(map(lambda t: "cluster" in t, rp.tags))
         ]
         cluster_rounds.sort(key=lambda rp: rp.num_replicas)
-        handles, labels = plot_cluster_size_results(results, cluster_rounds, args.odir)
-        plot_minor_legend(handles, labels, args.odir)
+        handles, labels = plot_cluster_size_results(results, cluster_rounds, plots_dir)
+        plot_minor_legend(handles, labels, plots_dir)
 
         ratio_rounds = [
             rp for rp in ROUNDS_PARAMS if any(map(lambda t: "ratio" in t, rp.tags))
         ]
         ratio_rounds.sort(key=lambda rp: rp.put_ratio)
-        plot_write_ratio_results(results, ratio_rounds, args.odir)
+        plot_write_ratio_results(results, ratio_rounds, plots_dir)

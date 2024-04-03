@@ -1,13 +1,6 @@
 #! /bin/bash
 
 
-if [ $(id -u) -eq 0 ];
-then
-    echo "Please run this script as normal user!"
-    exit 1
-fi
-
-
 MAX_SERVERS=9
 MAX_CLIENTS=21
 
@@ -116,3 +109,18 @@ do
     echo "Listing devices in namespace ns$s:"
     sudo ip netns exec ns$s ip link show
 done
+
+
+if [ $(id -u) -ne 0 ];
+then
+    echo
+    echo "Adding start-up changes to /etc/crontab..."
+    sudo cp scripts/setup/setup_net_devs.sh /etc/
+    sudo chmod +x /etc/setup_net_devs.sh
+    sudo tee -a /etc/crontab <<EOF
+
+# For summerset benchmarking...
+@reboot root /etc/setup_net_devs.sh
+EOF
+    sudo systemctl enable cron.service
+fi

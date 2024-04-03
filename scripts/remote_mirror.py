@@ -72,14 +72,7 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
                 utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True)
             )
         print("Waiting for command results...")
-        for i, proc in enumerate(procs):
-            rc = proc.wait()
-            if rc == 0:
-                print(f"  proc {i}: OK")
-            else:
-                print(f"  proc {i}: ERROR")
-                print(proc.stdout)
-                print(proc.stderr)
+        utils.proc.wait_parallel_procs(procs)
 
 
 def compose_build_cmd(release):
@@ -94,10 +87,9 @@ def build_on_targets(destinations, dst_path, release, sequential):
     cmd = compose_build_cmd(release)
 
     # execute
-    # execute
     if sequential:
         for remote in destinations:
-            proc = utils.proc.run_process_over_ssh(remote, cmd, dst_path)
+            proc = utils.proc.run_process_over_ssh(remote, cmd, cd_dir=dst_path)
             proc.wait()
     else:
         print("Running build commands in parallel...")
@@ -105,18 +97,15 @@ def build_on_targets(destinations, dst_path, release, sequential):
         for remote in destinations:
             procs.append(
                 utils.proc.run_process_over_ssh(
-                    remote, cmd, dst_path, capture_stdout=True, capture_stderr=True
+                    remote,
+                    cmd,
+                    cd_dir=dst_path,
+                    capture_stdout=True,
+                    capture_stderr=True,
                 )
             )
         print("Waiting for command results...")
-        for i, proc in enumerate(procs):
-            rc = proc.wait()
-            if rc == 0:
-                print(f"  proc {i}: OK")
-            else:
-                print(f"  proc {i}: ERROR")
-                print(proc.stdout)
-                print(proc.stderr)
+        utils.proc.wait_parallel_procs(procs)
 
 
 if __name__ == "__main__":

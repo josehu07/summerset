@@ -88,7 +88,7 @@ if __name__ == "__main__":
 
     do_cargo_build()
 
-    kill_all_matching("local_client.py", force=True)
+    kill_all_matching("local_clients.py", force=True)
     kill_all_matching("local_cluster.py", force=True)
     kill_all_matching("summerset_client", force=True)
     kill_all_matching("summerset_server", force=True)

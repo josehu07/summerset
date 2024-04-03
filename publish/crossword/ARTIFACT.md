@@ -27,7 +27,9 @@ For a shell command, `$` indicates running it on the local development machine, 
         2. `% ./scripts/crossword/install_devdeps.sh`
     9. Set up TCP buffer sizes
         1. `% ./scripts/setup/setup_tcp_bufs.sh`
-    10. Record the SSH key pair for mutual login between remote nodes
+    10. Set up network devices (for netem experiments)
+        1. `% ./scripts/setup/setup_net_devs.sh`
+    11. Record the SSH key pair for mutual login between remote nodes
         1. `% ./scripts/setup/sshkey_record.sh`
-    11. Build Summerset in release mode:
+    12. Build Summerset in release mode:
         1. `% cargo build -r --workspace`

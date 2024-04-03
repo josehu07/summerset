@@ -3,15 +3,6 @@ import subprocess
 import multiprocessing
 
 
-def check_enough_cpus():
-    EXPECTED_CPUS = 40
-    cpus = multiprocessing.cpu_count()
-    if cpus < EXPECTED_CPUS:
-        print(
-            f"WARN: benchmarking scripts expect >= {EXPECTED_CPUS} CPUs, found {cpus}"
-        )
-
-
 def kill_all_matching(name):
     print("Kill all:", name)
     assert name.count(" ") == 0
@@ -21,8 +12,21 @@ def kill_all_matching(name):
 
 def kill_all_local_procs():
     # print("Killing all local procs...")
-    cmd = "./scripts/kill_local_procs.sh"
+    cmd = "./scripts/kill_all_procs.sh"
     os.system(cmd)
+
+
+def kill_all_distr_procs(group, targets="all"):
+    # print(f"Killing all procs on {group} {targets}...")
+    cmd = [
+        "python3",
+        "scripts/remote_killall.py",
+        "-g",
+        group,
+        "-t",
+        targets,
+    ]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
 
 
 def run_process(
@@ -86,6 +90,7 @@ def run_process_over_ssh(
         elif config_seg:
             new_seg = "\\'".join(seg.split("'"))
             cmd[i] = new_seg
+            config_seg = False
 
     if cd_dir is None or len(cd_dir) == 0:
         cmd = ["ssh", remote, f". /etc/profile; {' '.join(cmd)}"]
@@ -94,3 +99,35 @@ def run_process_over_ssh(
 
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc
+
+
+def wait_parallel_procs(procs, names=None, check_rc=True):
+    for i, proc in enumerate(procs):
+        name = f"proc {i}" if names is None else names[i]
+        rc = proc.wait()
+        if check_rc:
+            if rc == 0:
+                print(f"  {name}: OK")
+            else:
+                print(f"  {name}: ERROR")
+                print(proc.stdout)
+                print(proc.stderr)
+
+
+def check_enough_cpus(expected, remote=None):
+    cpus = multiprocessing.cpu_count()
+    if remote is not None:
+        cpus = int(
+            run_process_over_ssh(
+                remote,
+                ["sudo", "nproc"],
+                capture_stdout=True,
+                capture_stderr=True,
+                print_cmd=False,
+            )
+            .communicate()[0]
+            .decode()
+            .strip()
+        )
+    if cpus < expected:
+        print(f"WARN: expect >= {expected} CPUs, found {cpus} on {remote}")

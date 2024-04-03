@@ -207,31 +207,37 @@ if __name__ == "__main__":
 
     # kill all existing server and manager processes
     print("Killing related processes...")
-    for host, remote in remotes.items():
-        print(f"  {host}")
-        utils.proc.run_process_over_ssh(
-            remote,
-            ["./scripts/crossword/kill_chain_procs.sh"],
-            cd_dir=cd_dir_summerset,
-            print_cmd=False,
-        ).wait()
+    kill_procs = []
+    for host in hosts:
+        kill_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["./scripts/crossword/kill_chain_procs.sh"],
+                cd_dir=cd_dir_summerset,
+                print_cmd=False,
+            )
+        )
+    utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
     print("Preparing states folder...")
-    for host, remote in remotes.items():
-        print(f"  {host}")
-        utils.proc.run_process_over_ssh(
-            remote,
-            ["mkdir", "-p", args.file_prefix],
-            cd_dir=cd_dir_chain,
-            print_cmd=False,
-        ).wait()
+    prepare_procs = []
+    for host in hosts:
+        prepare_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["mkdir", "-p", args.file_prefix],
+                cd_dir=cd_dir_chain,
+                print_cmd=False,
+            )
+        )
+    utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # get the main Ethernet interface name on each host
     print("Getting main interface name...")
     interfaces = dict()
     for host in hosts:
-        print(f"  {host} ", end="")
+        print(f"  {host}: ", end="")
         interface = utils.net.get_interface_name(
             ipaddrs[host], remote=None if host == args.me else remotes[host]
         )
@@ -257,14 +263,17 @@ if __name__ == "__main__":
     # register termination signals handler
     def kill_spawned_procs(*args):
         print("Killing related processes...")
-        for host, remote in remotes.items():
-            print(f"  {host}")
-            utils.proc.run_process_over_ssh(
-                remote,
-                ["./scripts/crossword/kill_chain_procs.sh"],
-                cd_dir=cd_dir_summerset,
-                print_cmd=False,
-            ).wait()
+        kill_procs = []
+        for host in hosts:
+            kill_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["./scripts/crossword/kill_chain_procs.sh"],
+                    cd_dir=cd_dir_summerset,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
         for proc in server_procs:
             proc.terminate()

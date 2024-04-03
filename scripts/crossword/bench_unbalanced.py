@@ -3,24 +3,20 @@ import os
 import argparse
 import time
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
+# fmt: on
 
 
-BASE_PATH = "/eval"
-SERVER_STATES_FOLDER = "states"
-CLIENT_OUTPUT_FOLDER = "output"
-RUNTIME_LOGS_FOLDER = "runlog"
+TOML_FILENAME = "scripts/remote_hosts.toml"
+PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "unbalanced"
-
 PROTOCOL_FT_ASSIGNS = [
     ("MultiPaxos", 2, None),
     ("RSPaxos", 2, None),
@@ -32,7 +28,7 @@ PROTOCOL_FT_ASSIGNS = [
     ("Crossword", 2, "3"),
 ]
 
-
+MIN_HOST0_CPUS = 40
 SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
@@ -42,28 +38,20 @@ SERVER_IFB = lambda r: f"ifb{r}"
 
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
-
-FORCE_LEADER = 0
-
-
 BATCH_INTERVAL = 1
-
 VALUE_SIZE = 256 * 1024
 PUT_RATIO = 100
 
+LENGTH_SECS = 20
+RESULT_SECS_BEGIN = 5
+RESULT_SECS_END = 18
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
 NETEM_JITTER = lambda _: 0
-NETEM_RATE = lambda r: 2 if r < 3 else 1 if r < 4 else 0.2
+NETEM_RATE = lambda r: 1 if r < 3 else 0.4 if r < 4 else 0.1
 
 RS_TOTAL_SHARDS = 15
 RS_DATA_SHARDS = 9
-
-
-LENGTH_SECS = 20
-
-RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 18
 
 
 def round_midfix_str(fault_tolerance, init_assignment):
@@ -73,7 +61,7 @@ def round_midfix_str(fault_tolerance, init_assignment):
     )
 
 
-def launch_cluster(protocol, midfix_str, config=None):
+def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     cmd = [
         "python3",
         "./scripts/local_cluster.py",
@@ -83,45 +71,36 @@ def launch_cluster(protocol, midfix_str, config=None):
         str(NUM_REPLICAS),
         "-r",
         "--force_leader",
-        str(FORCE_LEADER),
+        "0",
         "--file_prefix",
-        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
         midfix_str,
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--use_veth",
+        "--skip_build",
     ]
     if config is not None and len(config) > 0:
-        cmd += ["-c", config]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+        cmd += ["--config", config]
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def wait_cluster_setup(proc, fserr=None):
+def wait_cluster_setup():
     # print("Waiting for cluster setup...")
-    accepting_clients = [False for _ in range(NUM_REPLICAS)]
-
-    for line in iter(proc.stderr.readline, b""):
-        if fserr is not None:
-            fserr.write(line)
-        l = line.decode()
-        # print(l, end="", file=sys.stderr)
-
-        if "accepting clients" in l:
-            replica = l[l.find("(") + 1 : l.find(")")]
-            if replica == "m":
-                continue
-            replica = int(replica)
-            assert not accepting_clients[replica]
-            accepting_clients[replica] = True
-
-        if accepting_clients.count(True) == NUM_REPLICAS:
-            break
+    # wait for 20 seconds to safely allow all nodes up
+    # not relying on SSH-piped outputs here
+    time.sleep(20)
 
 
-def run_bench_clients(protocol, midfix_str):
+def run_bench_clients(remote0, base, repo, protocol, midfix_str):
     cmd = [
         "python3",
         "./scripts/local_clients.py",
@@ -133,6 +112,7 @@ def run_bench_clients(protocol, midfix_str):
         "--use_veth",
         "--base_idx",
         str(0),
+        "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
@@ -147,20 +127,23 @@ def run_bench_clients(protocol, midfix_str):
         "--norm_stdev_ratio",
         str(0.1),
         "--file_prefix",
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        f"{base}/output/{EXPER_NAME}",
         "--file_midfix",
         midfix_str,
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def bench_round(protocol, fault_tolerance, init_assignment):
+def bench_round(remote0, base, repo, protocol, fault_tolerance, init_assignment):
     midfix_str = round_midfix_str(fault_tolerance, init_assignment)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
-    utils.kill_all_local_procs()
-    time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "RSPaxos" or protocol == "CRaft":
@@ -172,12 +155,13 @@ def bench_round(protocol, fault_tolerance, init_assignment):
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(protocol, midfix_str, config=config)
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
-        wait_cluster_setup(proc_cluster, fserr=fserr)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, protocol, midfix_str, config=config
+    )
+    wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol, midfix_str)
+    proc_clients = run_bench_clients(remote0, base, repo, protocol, midfix_str)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -186,7 +170,7 @@ def bench_round(protocol, fault_tolerance, init_assignment):
 
     # terminate the cluster
     proc_cluster.terminate()
-    utils.kill_all_local_procs()
+    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
         fserr.write(serr)
@@ -198,21 +182,21 @@ def bench_round(protocol, fault_tolerance, init_assignment):
         print("    Done!")
 
 
-def collect_outputs(odir):
+def collect_outputs(output_dir):
     results = dict()
     for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
         midfix_str = round_midfix_str(fault_tolerance, init_assignment)
-        result = utils.gather_outputs(
+        result = utils.output.gather_outputs(
             f"{protocol}{midfix_str}",
             NUM_CLIENTS,
-            odir,
+            output_dir,
             RESULT_SECS_BEGIN,
             RESULT_SECS_END,
             0.1,
         )
 
         sd, sp, sj, sm = 20, 0, 0, 1
-        tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
 
         results[f"{protocol}{midfix_str}"] = {
@@ -230,7 +214,7 @@ def print_results(results):
         print(f"  mean {result['mean']:7.2f}  stdev {result['stdev']:7.2f}")
 
 
-def plot_results(results, odir):
+def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (3.6, 2.5),
@@ -301,7 +285,7 @@ def plot_results(results, odir):
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -309,7 +293,7 @@ def plot_results(results, odir):
     return ax.get_legend_handles_labels()
 
 
-def plot_legend(handles, labels, odir):
+def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.4, 2.2),
@@ -336,40 +320,49 @@ def plot_legend(handles, labels, odir):
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
 
-    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
-    )
     parser.add_argument(
         "-o",
         "--odir",
         type=str,
-        default=f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-        help=".out files directory",
+        default=f"./results",
+        help="directory to hold outputs and logs",
+    )
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     args = parser.parse_args()
 
+    if not os.path.isdir(args.odir):
+        raise RuntimeError(f"results directory {args.odir} does not exist")
+
     if not args.plot:
-        utils.check_enough_cpus()
+        print("Doing preparation work...")
+        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, PHYS_ENV_GROUP
+        )
+        utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+        utils.file.do_cargo_build(True, remotes=remotes)
+        utils.file.clear_fs_caches(remotes=remotes)
 
-        runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
-        if not os.path.isdir(runlog_path):
-            os.system(f"mkdir -p {runlog_path}")
-
-        utils.do_cargo_build(release=True)
+        runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
+        output_path = f"{args.odir}/output/{EXPER_NAME}"
+        for path in (runlog_path, output_path):
+            if not os.path.isdir(path):
+                os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.clear_fs_cache()
-        utils.set_all_tc_qdisc_netems(
+        utils.net.set_all_tc_qdisc_netems(
             NUM_REPLICAS,
             SERVER_NETNS,
             SERVER_DEV,
@@ -378,23 +371,39 @@ if __name__ == "__main__":
             NETEM_JITTER,
             NETEM_RATE,
             involve_ifb=True,
+            remote=remotes["host0"],
         )
 
         print("Running experiments...")
         for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
-            bench_round(protocol, fault_tolerance, init_assignment)
+            bench_round(
+                remotes["host0"], base, repo, protocol, fault_tolerance, init_assignment
+            )
+            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+            utils.file.remove_files_in_dir(  # to free up storage space
+                f"{base}/states/{EXPER_NAME}",
+                remotes=remotes,
+            )
+            utils.file.clear_fs_caches(remotes=remotes)
 
         print("Clearing tc netem qdiscs...")
-        utils.kill_all_local_procs()
-        utils.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
+        utils.net.clear_all_tc_qdisc_netems(
+            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
         )
 
-        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
-        utils.remove_files_in_dir(state_path)
+        print("Fetching client output logs...")
+        utils.file.fetch_files_of_dir(
+            remotes["host0"], f"{base}/output/{EXPER_NAME}", output_path
+        )
 
     else:
-        results = collect_outputs(args.odir)
+        output_dir = f"{args.odir}/output/{EXPER_NAME}"
+        plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
+        if not os.path.isdir(plots_dir):
+            os.system(f"mkdir -p {plots_dir}")
+
+        results = collect_outputs(output_dir)
         print_results(results)
-        handles, labels = plot_results(results, args.odir)
-        plot_legend(handles, labels, args.odir)
+
+        handles, labels = plot_results(results, plots_dir)
+        plot_legend(handles, labels, plots_dir)

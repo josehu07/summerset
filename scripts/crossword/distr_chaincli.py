@@ -218,7 +218,6 @@ if __name__ == "__main__":
             ) as fout:
                 fout.write(out.decode())
     except subprocess.TimeoutExpired:
-        print(f"ERROR: client timed-out {timeout} secs", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"client timed-out {timeout} secs")
 
     sys.exit(client_proc.returncode)

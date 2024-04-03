@@ -1,15 +1,17 @@
+import os
 import argparse
 import subprocess
 import multiprocessing
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
 import numpy as np  # type: ignore
+# fmt: on
 
 
+EXPER_NAME = "rs_coding"
 BENCH_GROUP_NAME = "rse_bench"
 
 
@@ -70,7 +72,7 @@ def print_bench_results(results):
         print(f"  {r[0]:7d} ({r[1][0]:2d},{r[1][1]:2d})  {ms:6.3f} ms")
 
 
-def plot_bench_results(results, output_dir):
+def plot_bench_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4, 1.5),
@@ -148,7 +150,7 @@ def plot_bench_results(results, output_dir):
 
     plt.tight_layout()
 
-    pdf_name = f"{output_dir}/rs_coding.pdf"
+    pdf_name = f"{plots_dir}/rs_coding.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -157,17 +159,34 @@ def plot_bench_results(results, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-o",
+        "--odir",
+        type=str,
+        default=f"./results",
+        help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-o", "--output_dir", type=str, default="./results", help="output folder"
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     args = parser.parse_args()
 
+    if not os.path.isdir(args.odir):
+        raise RuntimeError(f"results directory {args.odir} does not exist")
+
     if not args.plot:
-        run_criterion_group(args.output_dir)
+        output_path = f"{args.odir}/output/{EXPER_NAME}"
+        if not os.path.isdir(output_path):
+            os.system(f"mkdir -p {output_path}")
+
+        run_criterion_group(output_path)
 
     else:
-        results = parse_bench_results(args.output_dir)
+        output_dir = f"{args.odir}/output/{EXPER_NAME}"
+        plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
+        if not os.path.isdir(plots_dir):
+            os.system(f"mkdir -p {plots_dir}")
+
+        results = parse_bench_results(output_dir)
         print_bench_results(results)
-        plot_bench_results(results, args.output_dir)
+
+        plot_bench_results(results, plots_dir)

@@ -77,7 +77,7 @@ def gen_ycsb_a_trace():
 def launch_cluster_summerset(protocol, config=None):
     cmd = [
         "python3",
-        "./scripts/remote_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
@@ -91,7 +91,7 @@ def launch_cluster_summerset(protocol, config=None):
         str(SERVER_PIN_CORES),
     ]
     if config is not None and len(config) > 0:
-        cmd += ["-c", config]
+        cmd += ["--config", config]
     return utils.run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
@@ -126,7 +126,7 @@ def wait_cluster_setup_summerset(proc, fserr=None):
 def run_bench_clients_summerset(protocol):
     cmd = [
         "python3",
-        "./scripts/remote_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
@@ -202,7 +202,7 @@ def bench_round_summerset(protocol):
 def launch_cluster_chain(protocol):
     cmd = [
         "python3",
-        "./scripts/crossword/remote_chainapp.py",
+        "./scripts/crossword/distr_chainapp.py",
         "-p",
         protocol,
         "-n",
@@ -238,7 +238,7 @@ def wait_cluster_setup_chain(proc, fserr=None):
 def run_bench_clients_chain(protocol):
     cmd = [
         "python3",
-        "./scripts/crossword/remote_chaincli.py",
+        "./scripts/crossword/distr_chaincli.py",
         "-p",
         protocol,
         "--pin_cores",

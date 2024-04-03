@@ -5,17 +5,42 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 from proc import run_process, run_process_over_ssh
 
 
-def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto"):
+def set_tc_qdisc_netem(
+    netns, dev, mean, jitter, rate, distribution="pareto", remote=None
+):
     QLEN_LIMIT = 500000000
     delay_args = f"delay {mean}ms" if mean > 0 else ""
     jitter_args = (
         f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
     )
     rate_args = f"rate {rate}gibit" if rate > 0 else ""
-    os.system(
-        f"sudo ip netns exec {netns} tc qdisc replace dev {dev} root netem"
-        f" limit {QLEN_LIMIT} {delay_args} {jitter_args} {rate_args}"
-    )
+    cmd = [
+        "sudo",
+        "ip",
+        "netns",
+        "exec",
+        netns,
+        "tc",
+        "qdisc",
+        "replace",
+        "dev",
+        dev,
+        "root",
+        "netem",
+        "limit",
+        str(QLEN_LIMIT),
+        delay_args,
+        jitter_args,
+        rate_args,
+    ]
+    if remote is None:
+        run_process(cmd).wait()
+    else:
+        run_process_over_ssh(
+            remote,
+            cmd,
+            print_cmd=False,
+        ).wait()
 
 
 def set_all_tc_qdisc_netems(
@@ -28,6 +53,7 @@ def set_all_tc_qdisc_netems(
     rate,
     distribution="pareto",
     involve_ifb=False,
+    remote=None,
 ):
     for replica in range(num_replicas):
         set_tc_qdisc_netem(
@@ -37,6 +63,7 @@ def set_all_tc_qdisc_netems(
             jitter(replica),
             rate(replica) * 2 if involve_ifb else rate(replica),
             distribution=distribution,
+            remote=remote,
         )
         set_tc_qdisc_netem(
             netns(replica),
@@ -44,22 +71,45 @@ def set_all_tc_qdisc_netems(
             0,
             0,
             rate(replica) * 2 if involve_ifb else 0,
+            remote=remote,
         )
 
 
-def clear_tc_qdisc_netem(netns, dev):
-    os.system(f"sudo ip netns exec {netns} tc qdisc delete dev {dev} root")
+def clear_tc_qdisc_netem(netns, dev, remote=None):
+    cmd = [
+        "sudo",
+        "ip",
+        "netns",
+        "exec",
+        netns,
+        "tc",
+        "qdisc",
+        "delete",
+        "dev",
+        dev,
+        "root",
+    ]
+    if remote is None:
+        run_process(cmd).wait()
+    else:
+        run_process_over_ssh(
+            remote,
+            cmd,
+            print_cmd=False,
+        ).wait()
 
 
-def clear_all_tc_qdisc_netems(num_replicas, netns, dev, ifb):
+def clear_all_tc_qdisc_netems(num_replicas, netns, dev, ifb, remote=None):
     for replica in range(num_replicas):
         clear_tc_qdisc_netem(
             netns(replica),
             dev(replica),
+            remote=remote,
         )
         clear_tc_qdisc_netem(
             netns(replica),
             ifb(replica),
+            remote=remote,
         )
 
 

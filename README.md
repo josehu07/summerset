@@ -135,20 +135,23 @@ To run a client endpoint executable:
 cargo run [-r] -p summerset_client -- -h
 ```
 
-Currently supported client utility modes include: `repl` for an interactive CLI, `bench` for performance benchmarking, and `tester` for correctness testing (not yet complete).
+Currently supported client utility modes include: `repl` for an interactive CLI, `bench` for performance benchmarking, and `tester` for correctness testing.
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset locally or on distributed hosts are available in `scripts/`:
+Some helper scripts for running Summerset locally are available in `scripts/`:
 
 ```bash
 python3 scripts/local_cluster.py -h
 python3 scripts/local_clients.py -h
-python3 scripts/remote_cluster.py -h
-python3 scripts/remote_clients.py -h
 ```
 
-Complete cluster management and benchmarking scripts are available in another repo, [Wayrest](https://github.com/josehu07/wayrest) (not yet public), which is a Python module for managing replication protocol clusters and running distributed experiments.
+And for running on a set of distributed machines (requires correctly filled `scripts/remote_hosts.toml` file):
+
+```bash
+python3 scripts/distr_cluster.py -h
+python3 scripts/distr_clients.py -h
+```
 
 ## TODO List
 

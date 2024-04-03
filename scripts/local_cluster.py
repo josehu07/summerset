@@ -47,7 +47,7 @@ PROTOCOL_EXTRA_DEFAULTS = {
 def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
     cpu_list = None
     if cores_per_proc > 0:
-        # pin servers from CPU 0 up
+        # pin servers from CPU 0 up; not pinning manager
         num_cpus = multiprocessing.cpu_count()
         core_start = i * cores_per_proc
         core_end = core_start + cores_per_proc - 1
@@ -127,7 +127,7 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release, pin_cores, use_veth):
+def launch_manager(protocol, num_replicas, release, use_veth):
     bind_ip = MANAGER_LOOP_IP
     if use_veth:
         bind_ip = MANAGER_VETH_IP
@@ -140,7 +140,7 @@ def launch_manager(protocol, num_replicas, release, pin_cores, use_veth):
         num_replicas,
         release,
     )
-    return run_process_pinned(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
+    return run_process_pinned(-1, cmd, capture_stderr=True)
 
 
 def wait_manager_setup(proc):
@@ -225,7 +225,7 @@ def launch_servers(
             release,
         )
         proc = run_process_pinned(
-            replica + 1,
+            replica,
             cmd,
             capture_stderr=False,
             cores_per_proc=pin_cores,
@@ -277,6 +277,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_veth", action="store_true", help="if set, use netns and veth setting"
     )
+    parser.add_argument(
+        "--skip_build", action="store_true", help="if set, skip cargo build"
+    )
     args = parser.parse_args()
 
     # kill all existing server and manager processes
@@ -297,13 +300,13 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = utils.file.do_cargo_build(args.release)
-    if rc != 0:
-        raise RuntimeError("cargo build failed")
+    if not args.skip_build:
+        print("Building everything...")
+        utils.file.do_cargo_build(args.release)
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(
-        args.protocol, args.num_replicas, args.release, args.pin_cores, args.use_veth
+        args.protocol, args.num_replicas, args.release, args.use_veth
     )
     wait_manager_setup(manager_proc)
 

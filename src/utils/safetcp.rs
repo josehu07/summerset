@@ -148,7 +148,14 @@ pub async fn tcp_bind_with_retry(
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
     loop {
-        match TcpListener::bind(bind_addr).await {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_linger(None)?;
+        socket.set_reuseaddr(true)?;
+        socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
+        socket.bind(bind_addr)?;
+
+        match socket.listen(1024) {
             Ok(listener) => return Ok(listener),
             Err(e) => {
                 if retries == 0 {

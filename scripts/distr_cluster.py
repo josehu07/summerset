@@ -46,13 +46,13 @@ PROTOCOL_EXTRA_DEFAULTS = {
 
 
 def run_process_pinned(
-    i, cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
+    cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
 ):
     cpu_list = None
     if cores_per_proc > 0:
-        # pin servers from CPU 0 up
+        # pin servers at CPUs [0, cores_per_proc); not pinning manager
         num_cpus = multiprocessing.cpu_count()
-        core_start = i * cores_per_proc
+        core_start = 0
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
@@ -142,7 +142,7 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release, pin_cores):
+def launch_manager(protocol, num_replicas, release):
     bind_ip = MANAGER_LOOP_IP
 
     cmd = compose_manager_cmd(
@@ -153,7 +153,7 @@ def launch_manager(protocol, num_replicas, release, pin_cores):
         num_replicas,
         release,
     )
-    return run_process_pinned(0, cmd, capture_stderr=True, cores_per_proc=pin_cores)
+    return run_process_pinned(cmd, capture_stderr=True)
 
 
 def wait_manager_setup(proc):
@@ -206,6 +206,7 @@ def launch_servers(
     num_replicas,
     release,
     config,
+    force_leader,
     file_prefix,
     file_midfix,
     fresh_files,
@@ -236,7 +237,7 @@ def launch_servers(
                 num_replicas,
                 replica,
                 remotes[host],
-                host != me,
+                force_leader >= 0 and force_leader != replica,
                 file_prefix,
                 file_midfix,
                 fresh_files,
@@ -246,7 +247,6 @@ def launch_servers(
         if host == me:
             # run my responsible server locally
             proc = run_process_pinned(
-                replica + 1,
                 cmd,
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
@@ -254,7 +254,6 @@ def launch_servers(
         else:
             # spawn server process on remote server through ssh
             proc = run_process_pinned(
-                replica + 1,
                 cmd,
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
@@ -290,6 +289,9 @@ if __name__ == "__main__":
         "--me", type=str, default="host0", help="main script runner's host nickname"
     )
     parser.add_argument(
+        "--force_leader", type=int, default=-1, help="force this server to be leader"
+    )
+    parser.add_argument(
         "--file_prefix",
         type=str,
         default="/tmp/summerset",
@@ -306,6 +308,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--skip_build", action="store_true", help="if set, skip cargo build"
     )
     args = parser.parse_args()
 
@@ -331,44 +336,52 @@ if __name__ == "__main__":
 
     # kill all existing server and manager processes
     print("Killing related processes...")
-    for host, remote in remotes.items():
-        print(f"  {host}")
-        utils.proc.run_process_over_ssh(
-            remote,
-            ["./scripts/kill_local_procs.sh"],
-            cd_dir=cd_dir,
-            print_cmd=False,
-        ).wait()
+    kill_procs = []
+    for host in hosts:
+        kill_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["./scripts/kill_all_procs.sh"],
+                cd_dir=cd_dir,
+                print_cmd=False,
+            )
+        )
+    utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
     print("Preparing states folder...")
-    for host, remote in remotes.items():
-        print(f"  {host}")
-        utils.proc.run_process_over_ssh(
-            remote,
-            ["mkdir", "-p", args.file_prefix],
-            cd_dir=cd_dir,
-            print_cmd=False,
-        ).wait()
+    prepare_procs = []
+    for host in hosts:
+        prepare_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["mkdir", "-p", args.file_prefix],
+                cd_dir=cd_dir,
+                print_cmd=False,
+            )
+        )
+    utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # build everything
-    print("Building everything...")
-    cargo_cmd = ["cargo", "build", "--workspace"]
-    if args.release:
-        cargo_cmd.append("-r")
-    for host, remote in remotes.items():
-        print(f"  {host}")
-        utils.proc.run_process_over_ssh(
-            remote,
-            cargo_cmd,
-            cd_dir=cd_dir,
-            print_cmd=False,
-        ).wait()
+    if not args.skip_build:
+        print("Building everything...")
+        cargo_cmd = ["cargo", "build", "--workspace"]
+        if args.release:
+            cargo_cmd.append("-r")
+        build_procs = []
+        for host in hosts:
+            build_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    cargo_cmd,
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(build_procs, names=hosts)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(
-        args.protocol, args.num_replicas, args.release, args.pin_cores
-    )
+    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
     wait_manager_setup(manager_proc)
 
     # create a thread that prints out captured manager outputs
@@ -391,6 +404,7 @@ if __name__ == "__main__":
         args.num_replicas,
         args.release,
         args.config,
+        args.force_leader,
         args.file_prefix,
         args.file_midfix,
         not args.keep_files,
@@ -400,14 +414,17 @@ if __name__ == "__main__":
     # register termination signals handler
     def kill_spawned_procs(*args):
         print("Killing related processes...")
-        for host, remote in remotes.items():
-            print(f"  {host}")
-            utils.proc.run_process_over_ssh(
-                remote,
-                ["./scripts/kill_local_procs.sh"],
-                cd_dir=cd_dir,
-                print_cmd=False,
-            ).wait()
+        kill_procs = []
+        for host in hosts:
+            kill_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["./scripts/kill_all_procs.sh"],
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
         for proc in server_procs:
             proc.terminate()

@@ -1,13 +1,6 @@
 #! /bin/bash
 
 
-if [ $(id -u) -eq 0 ];
-then
-    echo "Please run this script as normal user!"
-    exit 1
-fi
-
-
 kill_all_matching () {
     for pid in $(pgrep -f $1)
     do
@@ -17,3 +10,10 @@ kill_all_matching () {
 
 
 kill_all_matching java
+
+
+if [ $# -ge 1 ] && [ "$1" = "incl_distr" ];
+then
+    kill_all_matching distr_chainapp.py
+    kill_all_matching distr_chaincli.py
+fi

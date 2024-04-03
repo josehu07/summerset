@@ -179,6 +179,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--timeout_ms", type=int, default=5000, help="client-side request timeout"
     )
+    parser.add_argument(
+        "--skip_build", action="store_true", help="if set, skip cargo build"
+    )
 
     subparsers = parser.add_subparsers(
         required=True,
@@ -205,6 +208,11 @@ if __name__ == "__main__":
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
     parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser_bench.add_argument(
+        "--expect_halt",
+        action="store_true",
+        help="if set, expect there'll be a service halt",
+    )
     parser_bench.add_argument(
         "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
     )
@@ -261,9 +269,9 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    rc = utils.file.do_cargo_build(args.release)
-    if rc != 0:
-        raise RuntimeError("cargo build failed")
+    if not args.skip_build:
+        print("Building everything...")
+        utils.file.do_cargo_build(args.release)
 
     capture_stdout = args.utility == "bench" and len(args.file_prefix) > 0
     num_clients = args.num_clients if args.utility == "bench" else 1
@@ -307,7 +315,10 @@ if __name__ == "__main__":
                     fout.write(out.decode())
                 rcs.append(client_proc.returncode)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f"some client(s) timed-out {timeout} secs", file=sys.stderr)
+        if args.expect_halt:  # mainly for failover experiments
+            print("WARN: getting expected halt, exitting...")
+            sys.exit(0)
+        raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 
     if any(map(lambda rc: rc != 0, rcs)):
         sys.exit(1)

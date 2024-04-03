@@ -3,27 +3,23 @@ import os
 import argparse
 import time
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
+# fmt: on
 
 
-BASE_PATH = "/eval"
-SERVER_STATES_FOLDER = "states"
-CLIENT_OUTPUT_FOLDER = "output"
-RUNTIME_LOGS_FOLDER = "runlog"
+TOML_FILENAME = "scripts/remote_hosts.toml"
+PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "breakdown"
-
 PROTOCOLS = ["MultiPaxos", "Crossword"]
 
-
+MIN_HOST0_CPUS = 40
 SERVER_PIN_CORES = 4
 CLIENT_PIN_CORES = 1
 
@@ -33,24 +29,18 @@ SERVER_IFB = lambda r: f"ifb{r}"
 
 NUM_REPLICAS = 5
 NUM_CLIENTS = 16
-
-
 BATCH_INTERVAL = 1
-
 VALUE_SIZE = 128 * 1024
-
 PUT_RATIO = 100
 
+LENGTH_SECS = 30
 
 NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
 NETEM_JITTER = lambda _: 1
 NETEM_RATE = lambda _: 1
 
 
-LENGTH_SECS = 30
-
-
-def launch_cluster(protocol, config=None):
+def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
         "python3",
         "./scripts/local_cluster.py",
@@ -60,41 +50,32 @@ def launch_cluster(protocol, config=None):
         str(NUM_REPLICAS),
         "-r",
         "--file_prefix",
-        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
+        f"{base}/states/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--use_veth",
+        "--skip_build",
     ]
     if config is not None and len(config) > 0:
-        cmd += ["-c", config]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+        cmd += ["--config", config]
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def wait_cluster_setup(proc, fserr=None):
+def wait_cluster_setup():
     # print("Waiting for cluster setup...")
-    accepting_clients = [False for _ in range(NUM_REPLICAS)]
-
-    for line in iter(proc.stderr.readline, b""):
-        if fserr is not None:
-            fserr.write(line)
-        l = line.decode()
-        # print(l, end="", file=sys.stderr)
-
-        if "accepting clients" in l:
-            replica = l[l.find("(") + 1 : l.find(")")]
-            if replica == "m":
-                continue
-            replica = int(replica)
-            assert not accepting_clients[replica]
-            accepting_clients[replica] = True
-
-        if accepting_clients.count(True) == NUM_REPLICAS:
-            break
+    # wait for 20 seconds to safely allow all nodes up
+    # not relying on SSH-piped outputs here
+    time.sleep(20)
 
 
-def run_bench_clients(protocol):
+def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
         "python3",
         "./scripts/local_clients.py",
@@ -106,6 +87,7 @@ def run_bench_clients(protocol):
         "--use_veth",
         "--base_idx",
         str(0),
+        "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
@@ -120,17 +102,20 @@ def run_bench_clients(protocol):
         "--norm_stdev_ratio",
         str(0.1),
         "--file_prefix",
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        f"{base}/output/{EXPER_NAME}",
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def bench_round(protocol):
+def bench_round(remote0, base, repo, protocol):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
-    utils.kill_all_local_procs()
-    time.sleep(1)
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
@@ -139,12 +124,11 @@ def bench_round(protocol):
         config += f"+init_assignment='1'"
 
     # launch service cluster
-    proc_cluster = launch_cluster(protocol, config=config)
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
-        wait_cluster_setup(proc_cluster, fserr=fserr)
+    proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
+    wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(protocol)
+    proc_clients = run_bench_clients(remote0, base, repo, protocol)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -153,7 +137,7 @@ def bench_round(protocol):
 
     # terminate the cluster
     proc_cluster.terminate()
-    utils.kill_all_local_procs()
+    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
         fserr.write(serr)
@@ -165,13 +149,13 @@ def bench_round(protocol):
         print("    Done!")
 
 
-def collect_bd_stats(ldir):
+def collect_bd_stats(runlog_dir):
     raw_stats = dict()
     for protocol in PROTOCOLS:
         raw_stats[protocol] = dict()
         total_cnt = 0
 
-        with open(f"{ldir}/{protocol}.s.err", "r") as flog:
+        with open(f"{runlog_dir}/{protocol}.s.err", "r") as flog:
             for line in flog:
                 if "bd cnt" in line:
                     line = line.strip()
@@ -235,7 +219,7 @@ def print_results(bd_stats, space_usage=None):
             print(f"  usage {space_usage[protocol]:7.2f} MB")
 
 
-def plot_breakdown(bd_stats, ldir):
+def plot_breakdown(bd_stats, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (3, 2),
@@ -331,7 +315,7 @@ def plot_breakdown(bd_stats, ldir):
     )
 
     plt.text(
-        xmax * 0.82,
+        xmax * 0.75,
         1,
         "due to\nmore replies\nto wait for",
         verticalalignment="center",
@@ -340,10 +324,10 @@ def plot_breakdown(bd_stats, ldir):
     )
     plt.plot(
         [
-            xmax * 0.78,
-            xmax * 0.83,
+            xmax * 0.64,
+            xmax * 0.75,
         ],
-        [2.42, 1.9],
+        [2.25, 1.85],
         color="dimgray",
         linestyle="-",
         linewidth=1,
@@ -362,7 +346,7 @@ def plot_breakdown(bd_stats, ldir):
 
     plt.tight_layout()
 
-    pdf_name = f"{ldir}/exper-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -370,7 +354,7 @@ def plot_breakdown(bd_stats, ldir):
     return ax.get_legend_handles_labels()
 
 
-def plot_legend(handles, labels, ldir):
+def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.6, 1.4),
@@ -391,14 +375,14 @@ def plot_legend(handles, labels, ldir):
         bbox_to_anchor=(0.5, 0.5),
     )
 
-    pdf_name = f"{ldir}/legend-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
 
-def save_space_usage(space_usage, ldir):
-    txt_name = f"{ldir}/exper-wal-space.txt"
+def save_space_usage(space_usage, plots_dir):
+    txt_name = f"{plots_dir}/exper-wal-space.txt"
     with open(txt_name, "w") as ftxt:
         for protocol, size_mb in space_usage.items():
             ftxt.write(f"{protocol}  {size_mb:.2f} MB\n")
@@ -406,40 +390,40 @@ def save_space_usage(space_usage, ldir):
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
+        "-o",
+        "--odir",
+        type=str,
+        default=f"./results",
+        help="directory to hold outputs and logs",
+    )
+    parser.add_argument(
         "-p", "--plot", action="store_true", help="if set, do the plotting phase"
-    )
-    parser.add_argument(
-        "-l",
-        "--ldir",
-        type=str,
-        default=f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}",
-        help=".err files directory",
-    )
-    parser.add_argument(
-        "-s",
-        "--sdir",
-        type=str,
-        default=f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
-        help=".wal files directory",
     )
     args = parser.parse_args()
 
-    if not args.plot:
-        utils.check_enough_cpus()
+    if not os.path.isdir(args.odir):
+        raise RuntimeError(f"results directory {args.odir} does not exist")
 
-        runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
+    if not args.plot:
+        print("Doing preparation work...")
+        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, PHYS_ENV_GROUP
+        )
+        utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+        utils.file.do_cargo_build(True, remotes=remotes)
+        utils.file.clear_fs_caches(remotes=remotes)
+
+        runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
 
-        utils.do_cargo_build(release=True)
-
         print("Setting tc netem qdiscs...")
-        utils.clear_fs_cache()
-        utils.set_all_tc_qdisc_netems(
+        utils.net.set_all_tc_qdisc_netems(
             NUM_REPLICAS,
             SERVER_NETNS,
             SERVER_DEV,
@@ -448,26 +432,32 @@ if __name__ == "__main__":
             NETEM_JITTER,
             NETEM_RATE,
             involve_ifb=True,
+            remote=remotes["host0"],
         )
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            bench_round(protocol)
+            bench_round(remotes["host0"], base, repo, protocol)
+            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+            utils.file.clear_fs_caches(remotes=remotes)
 
         print("Clearing tc netem qdiscs...")
-        utils.kill_all_local_procs()
-        utils.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB
+        utils.net.clear_all_tc_qdisc_netems(
+            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
         )
 
-        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
-        utils.remove_files_in_dir(state_path)
-
     else:
-        bd_stats = collect_bd_stats(args.ldir)
-        # space_usage = collect_space_usage(args.sdir)
+        runlog_dir = f"{args.odir}/runlog/{EXPER_NAME}"
+        # states_dir = f"{args.odir}/states/{EXPER_NAME}"
+        plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
+        if not os.path.isdir(plots_dir):
+            os.system(f"mkdir -p {plots_dir}")
+
+        bd_stats = collect_bd_stats(runlog_dir)
+        # space_usage = collect_space_usage(states_dir)
         # print_results(bd_stats, space_usage)
         print_results(bd_stats)
-        handles, labels = plot_breakdown(bd_stats, args.ldir)
-        plot_legend(handles, labels, args.ldir)
-        # save_space_usage(space_usage, args.ldir)
+
+        handles, labels = plot_breakdown(bd_stats, plots_dir)
+        plot_legend(handles, labels, plots_dir)
+        # save_space_usage(space_usage, plots_dir)

@@ -1,13 +1,6 @@
 #! /bin/bash
 
 
-if [ $(id -u) -eq 0 ];
-then
-    echo "Please run this script as normal user!"
-    exit 1
-fi
-
-
 echo
 echo "Per-socket TCP send/receive buffer:"
 echo "  min       default   max"
@@ -31,3 +24,21 @@ echo
 echo "Default value of network socket:"
 echo "  1073741824" | sudo tee /proc/sys/net/core/rmem_default
 echo "  1073741824" | sudo tee /proc/sys/net/core/wmem_default
+
+
+if [ $(id -u) -ne 0 ];
+then
+    echo
+    echo "Adding start-up changes to /etc/sysctl.conf..."
+    sudo tee -a /etc/sysctl.conf <<EOF
+
+# For summerset benchmarking...
+net.ipv4.tcp_rmem = 536870912 1073741824 1073741824
+net.ipv4.tcp_wmem = 536870912 1073741824 1073741824
+net.ipv4.tcp_mem = 78643200 104857600 125829120
+net.core.rmem_max = 1073741824
+net.core.wmem_max = 1073741824
+net.core.rmem_default = 1073741824
+net.core.wmem_default = 1073741824
+EOF
+fi
