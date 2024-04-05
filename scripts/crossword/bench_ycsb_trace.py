@@ -30,11 +30,11 @@ SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
 
 
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
+SERVER_PIN_CORES = 20
+CLIENT_PIN_CORES = 2
 
-NUM_REPLICAS = 3
-NUM_CLIENTS = 16
+NUM_REPLICAS = 5
+NUM_CLIENTS = 15
 
 
 BATCH_INTERVAL = 1
@@ -159,7 +159,7 @@ def run_bench_clients_summerset(protocol):
     )
 
 
-def bench_round_summerset(protocol):
+def bench_round_summerset(protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
     utils.kill_all_local_procs()
     time.sleep(5)
@@ -189,7 +189,7 @@ def bench_round_summerset(protocol):
     proc_cluster.terminate()
     utils.kill_all_local_procs()
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -279,7 +279,7 @@ def bench_round_chain(protocol):
     proc_cluster.terminate()
     os.system("./scripts/crossword/kill_chain_procs.sh")
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -534,9 +534,11 @@ if __name__ == "__main__":
 
         print("Running experiments...")
         for protocol in SUMMERSET_PROTOCOLS:
-            bench_round_summerset(protocol)
+            time.sleep(5)
+            bench_round_summerset(protocol, runlog_path)
         for protocol in CHAIN_PROTOCOLS:
-            bench_round_chain(protocol)
+            time.sleep(5)
+            bench_round_chain(protocol, runlog_path)
 
         state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
         utils.remove_files_in_dir(state_path)

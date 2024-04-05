@@ -244,6 +244,8 @@ def launch_servers(
             ),
             release,
         )
+
+        proc = None
         if host == me:
             # run my responsible server locally
             proc = run_process_pinned(
@@ -260,7 +262,6 @@ def launch_servers(
                 remote=remotes[host],
                 cd_dir=cd_dir,
             )
-
         server_procs.append(proc)
 
     return server_procs

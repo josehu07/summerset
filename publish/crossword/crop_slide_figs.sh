@@ -1,4 +1,4 @@
-#! /usr/bin/bash
+#! /bin/bash
 
 # Requires:
 #   sudo apt install python3-pip python3-tk ghostscript poppler-utils

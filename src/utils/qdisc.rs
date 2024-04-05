@@ -5,14 +5,15 @@ use std::process::Command;
 
 use crate::utils::SummersetError;
 
-static DEV_PATTERN: &str = "veths";
-
 static DEFAULT_DELAY: f64 = 0.0;
 static DEFAULT_JITTER: f64 = 0.0;
 static DEFAULT_RATE: f64 = 100.0;
 
 /// Helper struct holding qdisc information.
 pub struct QdiscInfo {
+    /// Main Ethernet interface's name.
+    dev_name: String,
+
     /// Delay in ms.
     pub delay: f64,
 
@@ -34,32 +35,61 @@ impl fmt::Display for QdiscInfo {
 }
 
 impl QdiscInfo {
+    /// Get main Ethernet interface's name.
+    fn get_interface_name() -> Result<String, SummersetError> {
+        let output = String::from_utf8(
+            Command::new("ip")
+                .arg("-o")
+                .arg("-4")
+                .arg("route")
+                .arg("show")
+                .arg("to")
+                .arg("default")
+                .output()?
+                .stdout,
+        )?;
+        let line = output.trim().to_string();
+        for (idx, seg) in line.split_ascii_whitespace().enumerate() {
+            if idx == 4 {
+                return Ok(seg.into());
+            }
+        }
+        Err(SummersetError(
+            "error getting `ip route show` output line".into(),
+        ))
+    }
+
     /// Creates a new qdisc info struct.
-    pub fn new() -> Self {
-        QdiscInfo {
+    pub fn new() -> Result<Self, SummersetError> {
+        Ok(QdiscInfo {
+            dev_name: Self::get_interface_name()?,
             delay: DEFAULT_DELAY,
             jitter: DEFAULT_JITTER,
             rate: DEFAULT_RATE,
-        }
+        })
     }
 
     /// Query `tc qdisc` info by running the command. Returns the output line
     /// with expected device.
-    fn run_qdisc_show() -> Result<String, SummersetError> {
+    fn run_qdisc_show(&self) -> Result<String, SummersetError> {
         let output = String::from_utf8(
-            Command::new("tc").arg("qdisc").arg("show").output()?.stdout,
+            Command::new("tc")
+                .arg("qdisc")
+                .arg("show")
+                .arg("dev")
+                .arg(&self.dev_name)
+                .arg("root")
+                .output()?
+                .stdout,
         )?;
-        for line in output.lines() {
-            if line.contains("dev")
-                && line.contains(DEV_PATTERN)
-                && line.contains("root")
-            {
-                return Ok(line.trim().to_string());
-            }
+        let line = output.trim().to_string();
+        if !line.is_empty() {
+            Ok(line.trim().to_string())
+        } else {
+            Err(SummersetError(
+                "error getting `tc qdisc show` output line".into(),
+            ))
         }
-        Err(SummersetError(
-            "error getting `tc qdisc show` output line".into(),
-        ))
     }
 
     /// Parse time field into float ms.
@@ -173,7 +203,7 @@ impl QdiscInfo {
 
     /// Updates my fields with a new query.
     pub fn update(&mut self) -> Result<(), SummersetError> {
-        let line = Self::run_qdisc_show()?;
+        let line = self.run_qdisc_show()?;
         let (delay, jitter, rate) = Self::parse_output_line(&line)?;
         debug_assert!(delay >= 0.0);
         debug_assert!(jitter >= 0.0);

@@ -517,7 +517,7 @@ pub struct CrosswordReplica {
     linreg_model: HashMap<ReplicaId, PerfModel>,
 
     /// Queueing discipline information tracker.
-    qdisc_info: QdiscInfo,
+    qdisc_info: Option<QdiscInfo>,
 
     /// Performance breakdown stopwatch if doing recording.
     bd_stopwatch: Option<Stopwatch>,
@@ -985,7 +985,11 @@ impl GenericReplica for CrosswordReplica {
                     }
                 })
                 .collect(),
-            qdisc_info: QdiscInfo::new(),
+            qdisc_info: if config.b_to_d_threshold > 0.0 {
+                Some(QdiscInfo::new()?)
+            } else {
+                None
+            },
             bd_stopwatch,
             bd_print_interval,
         })

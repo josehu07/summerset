@@ -224,6 +224,7 @@ def launch_servers(
             ),
             release,
         )
+
         proc = run_process_pinned(
             replica,
             cmd,
@@ -231,7 +232,6 @@ def launch_servers(
             cores_per_proc=pin_cores,
             in_netns=f"ns{replica}" if use_veth else None,
         )
-
         server_procs.append(proc)
 
     return server_procs

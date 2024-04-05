@@ -37,8 +37,12 @@ def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap)
         for c in range(num_clients):
             while t + tb > outputs[c]["time"][cidxs[c]]:
                 cidxs[c] += 1
-            tputs.append(outputs[c]["tput"][cidxs[c]])
-            lats.append(outputs[c]["lat"][cidxs[c]])
+            if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
+                tputs.append(0.0)
+                lats.append(0.0)
+            else:
+                tputs.append(outputs[c]["tput"][cidxs[c]])
+                lats.append(outputs[c]["lat"][cidxs[c]])
         result["time"].append(t)
         result["tput_sum"].append(sum(tputs))
         result["tput_min"].append(min(tputs))

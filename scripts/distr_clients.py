@@ -39,7 +39,9 @@ UTILITY_PARAM_NAMES = {
 }
 
 
-def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
+def run_process_pinned(
+    i, cmd, capture_stdout=False, cores_per_proc=0, remote=None, cd_dir=None
+):
     cpu_list = None
     if cores_per_proc != 0:
         # parse cores_per_proc setting
@@ -60,7 +62,14 @@ def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
             core_start = math.floor(core_end - cores_per_proc + 1)
             assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
-    return utils.proc.run_process(cmd, capture_stdout=capture_stdout, cpu_list=cpu_list)
+    if remote is None or len(remote) == 0:
+        return utils.proc.run_process(
+            cmd, capture_stdout=capture_stdout, cpu_list=cpu_list
+        )
+    else:
+        return utils.proc.run_process_over_ssh(
+            remote, cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
+        )
 
 
 def glue_params_str(cli_args, params_list):
@@ -110,12 +119,15 @@ def compose_client_cmd(
 
 
 def run_clients(
+    remotes,
     ipaddrs,
     me,
     man,
+    cd_dir,
     protocol,
     utility,
     num_clients,
+    dist_machs,
     params,
     release,
     config,
@@ -129,6 +141,13 @@ def run_clients(
 
     # assuming I am the machine to run manager
     manager_pub_ip = ipaddrs[man]
+
+    # if dist_machs set, put clients round-robinly across this many machines
+    # starting from me
+    hosts = list(remotes.keys())
+    hosts = hosts[hosts.index(me) :] + hosts[: hosts.index(me)]
+    if dist_machs > 0:
+        hosts = hosts[:dist_machs]
 
     client_procs = []
     for i in range(num_clients):
@@ -146,10 +165,33 @@ def run_clients(
             params,
             release,
         )
-        proc = run_process_pinned(
-            i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
-        )
 
+        proc = None
+        if dist_machs <= 1:
+            proc = run_process_pinned(
+                i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
+            )
+        else:
+            host = hosts[i % len(hosts)]
+            local_i = i // len(hosts)
+            if host == me:
+                # run my responsible clients locally
+                proc = run_process_pinned(
+                    local_i,
+                    cmd,
+                    capture_stdout=capture_stdout,
+                    cores_per_proc=pin_cores,
+                )
+            else:
+                # spawn client process on remote machine through ssh
+                proc = run_process_pinned(
+                    local_i,
+                    cmd,
+                    capture_stdout=capture_stdout,
+                    cores_per_proc=pin_cores,
+                    remote=remotes[host],
+                    cd_dir=cd_dir,
+                )
         client_procs.append(proc)
 
     return client_procs
@@ -206,6 +248,13 @@ if __name__ == "__main__":
         type=int,
         required=True,
         help="number of client processes",
+    )
+    parser_bench.add_argument(
+        "-d",
+        "--dist_machs",
+        type=int,
+        default=0,
+        help="if > 0, put clients round-robinly on dist_machs machines",
     )
     parser_bench.add_argument(
         "-f", "--freq_target", type=int, help="frequency target reqs per sec"
@@ -265,9 +314,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    _, _, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+    base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
         TOML_FILENAME, args.group
     )
+    cd_dir = f"{base}/{repo}"
 
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
@@ -298,12 +348,15 @@ if __name__ == "__main__":
 
     # run client executable(s)
     client_procs = run_clients(
+        remotes,
         ipaddrs,
         args.me,
         args.man,
+        cd_dir,
         args.protocol,
         args.utility,
         num_clients,
+        0 if args.utility != "bench" else args.dist_machs,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
         args.config,

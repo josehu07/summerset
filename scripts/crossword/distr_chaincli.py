@@ -110,6 +110,7 @@ def run_clients(
         put_ratio,
         length_s,
     )
+
     client_proc = run_process_pinned(
         num_threads,
         cmd,
@@ -117,7 +118,6 @@ def run_clients(
         cores_per_proc=pin_cores,
         cd_dir=cd_dir,
     )
-
     return client_proc
 
 

@@ -144,10 +144,10 @@ def run_clients(
             params,
             release,
         )
+
         proc = run_process_pinned(
             i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
         )
-
         client_procs.append(proc)
 
     return client_procs

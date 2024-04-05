@@ -83,7 +83,7 @@ def run_process_over_ssh(
     config_seg = False
     for i, seg in enumerate(cmd):
         if seg.startswith("--"):
-            if seg.strip() == "--config":
+            if seg.strip() == "--config" or seg.strip() == "--params":
                 config_seg = True
             else:
                 config_seg = False

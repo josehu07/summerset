@@ -122,7 +122,7 @@ impl CrosswordReplica {
         data_size: usize,
         linreg_model: &HashMap<ReplicaId, PerfModel>,
         b_to_d_threshold: f64,
-        qdisc_info: &QdiscInfo,
+        qdisc_info: &Option<QdiscInfo>,
         peer_alive: &Bitmap,
     ) -> &'a Vec<Bitmap> {
         // if unbalanced assignment is used, don't enable adaptability and also
@@ -134,6 +134,8 @@ impl CrosswordReplica {
         let dj_spr = rs_data_shards / majority;
         let best_spr = if b_to_d_threshold > 0.0 {
             // NOTE: use obvious fixed assignments if having a b_to_d_threshold
+            debug_assert!(qdisc_info.is_some());
+            let qdisc_info = qdisc_info.as_ref().unwrap();
             if qdisc_info.rate <= 0.0 {
                 rs_data_shards
             } else if qdisc_info.delay + qdisc_info.jitter <= 0.0 {
@@ -304,6 +306,9 @@ impl CrosswordReplica {
 
     /// Updates `tc qdisc` netem information.
     pub fn update_qdisc_info(&mut self) -> Result<(), SummersetError> {
-        self.qdisc_info.update()
+        if let Some(qdisc_info) = self.qdisc_info.as_mut() {
+            qdisc_info.update()?;
+        }
+        Ok(())
     }
 }

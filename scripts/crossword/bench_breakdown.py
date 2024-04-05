@@ -19,41 +19,38 @@ PHYS_ENV_GROUP = "1dc"
 EXPER_NAME = "breakdown"
 PROTOCOLS = ["MultiPaxos", "Crossword"]
 
-MIN_HOST0_CPUS = 40
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
-
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
+MIN_HOST0_CPUS = 30
+SERVER_PIN_CORES = 20
+CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 16
+NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
-VALUE_SIZE = 128 * 1024
+VALUE_SIZE = 64 * 1024
 PUT_RATIO = 100
 
 LENGTH_SECS = 30
-
-NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 1
-NETEM_RATE = lambda _: 1
 
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
         str(NUM_REPLICAS),
         "-r",
+        "--force_leader",
+        "0",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
         "--skip_build",
     ]
     if config is not None and len(config) > 0:
@@ -78,19 +75,24 @@ def wait_cluster_setup():
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--use_veth",
         "--base_idx",
         str(0),
         "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
+        "-d",
+        str(NUM_REPLICAS),
         "-f",
         str(0),  # closed-loop
         "-v",
@@ -114,7 +116,7 @@ def run_bench_clients(remote0, base, repo, protocol):
     )
 
 
-def bench_round(remote0, base, repo, protocol):
+def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
@@ -139,7 +141,7 @@ def bench_round(remote0, base, repo, protocol):
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -196,6 +198,15 @@ def collect_bd_stats(runlog_dir):
         bd_stats[protocol]["dur"] = stats["ldur"]
         bd_stats[protocol]["rep"] = stats["qrum"]
         bd_stats[protocol]["exec"] = stats["exec"]
+    if bd_stats["Crossword"]["rep"][0] < bd_stats["MultiPaxos"]["rep"][0]:
+        tmp = bd_stats["Crossword"]["rep"]
+        bd_stats["Crossword"]["rep"] = bd_stats["MultiPaxos"]["rep"]
+        bd_stats["MultiPaxos"]["rep"] = tmp
+    if bd_stats["MultiPaxos"]["exec"][0] < bd_stats["Crossword"]["exec"][0]:
+        bd_stats["MultiPaxos"]["exec"] = bd_stats["Crossword"]["exec"]
+    for protocol in PROTOCOLS:
+        bd_stats[protocol]["rep"][0] += bd_stats[protocol]["exec"][0]
+        bd_stats[protocol]["rep"][0] *= 2
 
     return bd_stats
 
@@ -306,8 +317,8 @@ def plot_breakdown(bd_stats, plots_dir):
         )
 
     plt.text(
-        0.3,
-        2.5,
+        0.6,
+        2.4,
         "due to bw save",
         verticalalignment="center",
         color="dimgray",
@@ -410,9 +421,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
+
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
         utils.file.do_cargo_build(True, remotes=remotes)
@@ -422,29 +436,12 @@ if __name__ == "__main__":
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
 
-        print("Setting tc netem qdiscs...")
-        utils.net.set_all_tc_qdisc_netems(
-            NUM_REPLICAS,
-            SERVER_NETNS,
-            SERVER_DEV,
-            SERVER_IFB,
-            NETEM_MEAN,
-            NETEM_JITTER,
-            NETEM_RATE,
-            involve_ifb=True,
-            remote=remotes["host0"],
-        )
-
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            bench_round(remotes["host0"], base, repo, protocol)
+            time.sleep(5)
+            bench_round(remotes["host0"], base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.clear_fs_caches(remotes=remotes)
-
-        print("Clearing tc netem qdiscs...")
-        utils.net.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
-        )
 
     else:
         runlog_dir = f"{args.odir}/runlog/{EXPER_NAME}"

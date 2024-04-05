@@ -30,13 +30,13 @@ PROTOCOL_BACKER_PATH = (
 
 
 def run_process_pinned(
-    i, cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
+    cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
 ):
     cpu_list = None
     if cores_per_proc > 0:
-        # pin servers from CPU 0 up
+        # pin servers at CPUs [0, cores_per_proc)
         num_cpus = multiprocessing.cpu_count()
-        core_start = i * cores_per_proc
+        core_start = 0
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
         cpu_list = f"{core_start}-{core_end}"
@@ -123,10 +123,11 @@ def launch_servers(
             file_midfix,
             fresh_files,
         )
+
+        proc = None
         if host == me:
             # run my responsible server locally
             proc = run_process_pinned(
-                replica + 1,
                 cmd,
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
@@ -135,14 +136,12 @@ def launch_servers(
         else:
             # spawn server process on remote server through ssh
             proc = run_process_pinned(
-                replica + 1,
                 cmd,
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
                 remote=remotes[host],
                 cd_dir=cd_dir,
             )
-
         server_procs.append(proc)
 
     return server_procs
@@ -239,7 +238,7 @@ if __name__ == "__main__":
     for host in hosts:
         print(f"  {host}: ", end="")
         interface = utils.net.get_interface_name(
-            ipaddrs[host], remote=None if host == args.me else remotes[host]
+            remote=None if host == args.me else remotes[host]
         )
         print(interface)
         interfaces[host] = interface

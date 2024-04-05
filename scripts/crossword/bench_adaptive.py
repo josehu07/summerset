@@ -19,48 +19,44 @@ PHYS_ENV_GROUP = "1dc"
 EXPER_NAME = "adaptive"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
-MIN_HOST0_CPUS = 40
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
-
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
+MIN_HOST0_CPUS = 30
+SERVER_PIN_CORES = 20
+CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 16
+NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 PUT_RATIO = 100
 
-LENGTH_SECS = 75
-SIZE_CHANGE_SECS = 15
-ENV_CHANGE1_SECS = 30
-ENV_CHANGE2_SECS = 45
-ENV_CHANGE3_SECS = 60
+LENGTH_SECS = 120
+SIZE_CHANGE_SECS = 25
+ENV_CHANGE1_SECS = 45
+ENV_CHANGE2_SECS = 50
+ENV_CHANGE3_SECS = 55
 PLOT_SECS_BEGIN = 5
-PLOT_SECS_END = 70
+PLOT_SECS_END = 115
 
-VALUE_SIZES = [(0, 256 * 1024), (SIZE_CHANGE_SECS, 4096)]
+VALUE_SIZES = [(0, 64 * 1024), (SIZE_CHANGE_SECS, 4 * 1024)]
 VALUE_SIZES_PARAM = "/".join([f"{t}:{v}" for t, v in VALUE_SIZES])
 
-NETEM_MEAN_A = lambda _: 1  # will be exagerated by #clients
+NETEM_MEAN_A = lambda _: 1
 NETEM_MEAN_B = lambda _: 1
 NETEM_MEAN_C = lambda _: 1
-NETEM_MEAN_D = lambda r: 1 if r < 3 else 10
-NETEM_JITTER_A = lambda _: 1
-NETEM_JITTER_B = lambda _: 1
-NETEM_JITTER_C = lambda _: 1
-NETEM_JITTER_D = lambda r: 1 if r < 3 else 10
+NETEM_MEAN_D = lambda r: 1 if r < 3 else 50
+NETEM_JITTER_A = lambda _: 2
+NETEM_JITTER_B = lambda _: 2
+NETEM_JITTER_C = lambda _: 2
+NETEM_JITTER_D = lambda r: 2
 NETEM_RATE_A = lambda _: 1
-NETEM_RATE_B = lambda _: 0.1
+NETEM_RATE_B = lambda _: 0.08
 NETEM_RATE_C = lambda _: 1
-NETEM_RATE_D = lambda r: 1 if r < 3 else 0.1
+NETEM_RATE_D = lambda r: 10 if r < 3 else 0.1
 
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
@@ -68,11 +64,14 @@ def launch_cluster(remote0, base, repo, protocol, config=None):
         "-r",
         "--force_leader",
         "0",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
         "--skip_build",
     ]
     if config is not None and len(config) > 0:
@@ -97,19 +96,24 @@ def wait_cluster_setup():
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--use_veth",
         "--base_idx",
         str(0),
         "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
+        "-d",
+        str(NUM_REPLICAS),
         "-f",
         str(0),  # closed-loop
         "-v",
@@ -131,20 +135,22 @@ def run_bench_clients(remote0, base, repo, protocol):
     )
 
 
-def bench_round(remote0, base, repo, protocol):
+def bench_round(remotes, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.2}"
+    if protocol == "RSPaxos" or protocol == "CRaft":
+        config += f"+fault_tolerance={NUM_REPLICAS // 2}"
+    elif protocol == "Crossword":
+        config += f"+b_to_d_threshold={0.08}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
+    proc_cluster = launch_cluster(remotes["host0"], base, repo, protocol, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol)
+    proc_clients = run_bench_clients(remotes["host0"], base, repo, protocol)
 
     # at some timepoint, change mean value size (handled by the clients)
     time.sleep(SIZE_CHANGE_SECS)
@@ -153,46 +159,34 @@ def bench_round(remote0, base, repo, protocol):
     # at some timepoint, change env
     time.sleep(ENV_CHANGE1_SECS - SIZE_CHANGE_SECS)
     print("    Changing env perf params...")
-    utils.net.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
+    utils.net.set_tc_qdisc_netems_main(
         NETEM_MEAN_B,
         NETEM_JITTER_B,
         NETEM_RATE_B,
         involve_ifb=True,
-        remote=remote0,
+        remotes=remotes,
     )
 
     # at some timepoint, change env again
     time.sleep(ENV_CHANGE2_SECS - ENV_CHANGE1_SECS)
     print("    Changing env perf params...")
-    utils.net.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
+    utils.net.set_tc_qdisc_netems_main(
         NETEM_MEAN_C,
         NETEM_JITTER_C,
         NETEM_RATE_C,
         involve_ifb=True,
-        remote=remote0,
+        remotes=remotes,
     )
 
     # at some timepoint, change env again
     time.sleep(ENV_CHANGE3_SECS - ENV_CHANGE2_SECS)
     print("    Changing env perf params...")
-    utils.net.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
+    utils.net.set_tc_qdisc_netems_main(
         NETEM_MEAN_D,
         NETEM_JITTER_D,
         NETEM_RATE_D,
         involve_ifb=True,
-        remote=remote0,
+        remotes=remotes,
     )
 
     # wait for benchmarking clients to exit
@@ -204,20 +198,16 @@ def bench_round(remote0, base, repo, protocol):
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     # revert env params to initial
-    utils.net.set_all_tc_qdisc_netems(
-        NUM_REPLICAS,
-        SERVER_NETNS,
-        SERVER_DEV,
-        SERVER_IFB,
+    utils.net.set_tc_qdisc_netems_main(
         NETEM_MEAN_A,
         NETEM_JITTER_A,
         NETEM_RATE_A,
         involve_ifb=True,
-        remote=remote0,
+        remotes=remotes,
     )
 
     if proc_clients.returncode != 0:
@@ -240,33 +230,16 @@ def collect_outputs(output_dir):
         )
 
         sd, sp, sj, sm = 20, 0, 0, 1
-        if protocol == "Raft" or protocol == "CRaft":
-            # due to an implementation choice, Raft clients see a spike of
-            # "ghost" replies after env changes; removing it here
-            sp = 50
-        elif protocol == "Crossword":
-            # setting sd here which avoids the lines to completely overlap with
+        if protocol == "Crossword":
+            # setting sd here to avoid the lines to completely overlap with
             # each other
-            # setting sm here to compensate for printing models to console
-            sd, sm = 25, 1.1
+            sd = 20
         tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],
             "tput": tput_list,
         }
-
-    # do capping for other protocols to remove weird spikes/dips introduced by
-    # changing netem parameters at runtime
-    def result_cap(pa, pb, down):
-        results[pa]["tput"] = utils.output.list_capping(
-            results[pa]["tput"], results[pb]["tput"], 5, down=down
-        )
-
-    result_cap("CRaft", "RSPaxos", False)
-    result_cap("CRaft", "RSPaxos", True)
-    result_cap("MultiPaxos", "Raft", False)
-    result_cap("MultiPaxos", "Raft", True)
 
     return results
 
@@ -325,20 +298,20 @@ def plot_results(results, plots_dir):
     def draw_env_change_indicator(x, t, toffx):
         plt.arrow(
             x,
-            ymax + 150,
+            ymax + 42,
             0,
-            -140,
+            -40,
             color="darkred",
             width=0.2,
             length_includes_head=True,
-            head_width=1.2,
-            head_length=45,
+            head_width=1.0,
+            head_length=12,
             overhang=0.5,
             clip_on=False,
         )
         plt.annotate(
             t,
-            (x, ymax + 220),
+            (x, ymax + 60),
             xytext=(toffx, 0),
             ha="center",
             textcoords="offset points",
@@ -346,12 +319,10 @@ def plot_results(results, plots_dir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(
-        SIZE_CHANGE_SECS - PLOT_SECS_BEGIN - 2, "Data smaller", -7
-    )
-    draw_env_change_indicator(ENV_CHANGE1_SECS - PLOT_SECS_BEGIN - 2, "Bw drops", 8)
-    draw_env_change_indicator(ENV_CHANGE2_SECS - PLOT_SECS_BEGIN - 2, "Bw frees", 10)
-    draw_env_change_indicator(ENV_CHANGE3_SECS - PLOT_SECS_BEGIN - 2, "2 nodes lag", 20)
+    draw_env_change_indicator(17, "Data smaller", -13)
+    draw_env_change_indicator(38, "Bw drops", 8)
+    draw_env_change_indicator(59, "Bw frees", 16)
+    draw_env_change_indicator(84, "2 nodes lag", 24)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color):
@@ -365,12 +336,12 @@ def plot_results(results, plots_dir):
             fontsize=11,
         )
 
-    draw_config_indicator(62, 460, 1, 4, "red")
-    draw_config_indicator(32.5, 160, 3, 3, "forestgreen")
-    draw_config_indicator(3.5, 1280, 1, 5, "steelblue")
-    draw_config_indicator(16, 1630, 3, 3, "steelblue")
-    draw_config_indicator(32.5, 1100, 1, 5, "steelblue")
-    draw_config_indicator(62, 1350, 3, 3, "steelblue")
+    draw_config_indicator(103, 220, 1, 4, "red")
+    draw_config_indicator(103, 370, 3, 3, "forestgreen")
+    draw_config_indicator(8, 240, 1, 5, "steelblue")
+    draw_config_indicator(31, 480, 3, 3, "steelblue")
+    draw_config_indicator(52, 340, 1, 5, "steelblue")
+    draw_config_indicator(73, 480, 3, 3, "steelblue")
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -444,9 +415,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
+
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
         utils.file.do_cargo_build(True, remotes=remotes)
@@ -459,21 +433,18 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.set_all_tc_qdisc_netems(
-            NUM_REPLICAS,
-            SERVER_NETNS,
-            SERVER_DEV,
-            SERVER_IFB,
+        utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN_A,
             NETEM_JITTER_A,
             NETEM_RATE_A,
             involve_ifb=True,
-            remote=remotes["host0"],
+            remotes=remotes,
         )
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            bench_round(remotes["host0"], base, repo, protocol)
+            time.sleep(5)
+            bench_round(remotes, base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space
                 f"{base}/states/{EXPER_NAME}",
@@ -482,9 +453,7 @@ if __name__ == "__main__":
             utils.file.clear_fs_caches(remotes=remotes)
 
         print("Clearing tc netem qdiscs...")
-        utils.net.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
 
         print("Fetching client output logs...")
         utils.file.fetch_files_of_dir(

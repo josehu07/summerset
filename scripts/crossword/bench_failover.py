@@ -19,24 +19,16 @@ PHYS_ENV_GROUP = "1dc"
 EXPER_NAME = "failover"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
-MIN_HOST0_CPUS = 40
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
-
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
+MIN_HOST0_CPUS = 30
+SERVER_PIN_CORES = 20
+CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 16
+NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 CLIENT_TIMEOUT_SECS = 2
-VALUE_SIZE = 256 * 1024
+VALUE_SIZE = 64 * 1024
 PUT_RATIO = 100
-
-NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
-NETEM_JITTER = lambda _: 0
-NETEM_RATE = lambda _: 1
 
 LENGTH_SECS = 120
 FAIL1_SECS = 40
@@ -48,17 +40,20 @@ PLOT_SECS_END = 115
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
         str(NUM_REPLICAS),
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
         "--skip_build",
     ]
     if config is not None and len(config) > 0:
@@ -83,13 +78,16 @@ def wait_cluster_setup():
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--use_veth",
         "--base_idx",
         str(0),
         "--timeout_ms",
@@ -98,6 +96,8 @@ def run_bench_clients(remote0, base, repo, protocol):
         "bench",
         "-n",
         str(NUM_CLIENTS),
+        "-d",
+        str(NUM_REPLICAS),
         "-f",
         str(0),  # closed-loop
         "-v",
@@ -124,13 +124,17 @@ def run_bench_clients(remote0, base, repo, protocol):
 def run_mess_client(remote0, base, repo, protocol, pauses=None, resumes=None):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
-        "--use_veth",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--base_idx",
         str(NUM_CLIENTS),
+        "--skip_build",
         "mess",
     ]
     if pauses is not None and len(pauses) > 0:
@@ -147,7 +151,7 @@ def run_mess_client(remote0, base, repo, protocol, pauses=None, resumes=None):
     )
 
 
-def bench_round(remote0, base, repo, protocol):
+def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
@@ -180,7 +184,7 @@ def bench_round(remote0, base, repo, protocol):
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -203,17 +207,13 @@ def collect_outputs(output_dir):
         )
 
         sd, sp, sj, sm = 10, 0, 0, 1
-        # if protocol == "Raft" or protocol == "CRaft":
-        #     # due to an implementation choice, Raft clients see a spike of
-        #     # "ghost" replies after leader has failed; removing it here
-        #     sp = 50
-        # elif protocol == "Crossword":
-        #     # due to limited sampling granularity, Crossword gossiping makes
-        #     # throughput results look a bit more "jittering" than it actually
-        #     # is; smoothing a bit more here
-        #     # setting sd here also avoids the lines to completely overlap with
-        #     # each other
-        #     sd, sj = 15, 50
+        if protocol == "Crossword":
+            # due to limited sampling granularity, Crossword gossiping makes
+            # throughput results look a bit more "jittering" than it actually
+            # is after failover; smoothing a bit more here
+            # setting sd here also avoids the lines to completely overlap with
+            # each other
+            sd, sj = 15, 50
         tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
@@ -227,12 +227,12 @@ def collect_outputs(output_dir):
 def print_results(results):
     for protocol, result in results.items():
         print(protocol)
-        for i, t in enumerate(result["time"]):
-            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
-            if (i + 1) % 6 == 0:
-                print()
-        if len(result["time"]) % 6 != 0:
-            print()
+        # for i, t in enumerate(result["time"]):
+        #     print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
+        #     if (i + 1) % 6 == 0:
+        #         print()
+        # if len(result["time"]) % 6 != 0:
+        #     print()
 
 
 def plot_results(results, plots_dir):
@@ -276,21 +276,21 @@ def plot_results(results, plots_dir):
     # failure indicators
     def draw_failure_indicator(x, t, toffx):
         plt.arrow(
-            x,
-            ymax + 20,
+            x - 1,
+            ymax + 42,
             0,
-            -18,
+            -40,
             color="darkred",
             width=0.2,
             length_includes_head=True,
-            head_width=1.5,
-            head_length=5,
+            head_width=1.0,
+            head_length=12,
             overhang=0.5,
             clip_on=False,
         )
         plt.annotate(
             t,
-            (x, ymax + 30),
+            (x - 1, ymax + 60),
             xytext=(toffx, 0),
             ha="center",
             textcoords="offset points",
@@ -311,7 +311,7 @@ def plot_results(results, plots_dir):
             color="gray",
             width=0.1,
             length_includes_head=True,
-            head_width=3,
+            head_width=8,
             head_length=0.3,
             overhang=0.5,
         )
@@ -323,7 +323,7 @@ def plot_results(results, plots_dir):
             color="gray",
             width=0.1,
             length_includes_head=True,
-            head_width=3,
+            head_width=8,
             head_length=0.3,
             overhang=0.5,
         )
@@ -338,21 +338,21 @@ def plot_results(results, plots_dir):
                 fontsize=10,
             )
 
-    draw_recovery_indicator(19, 135, 3.6, "small\ngossip\ngap", 1, 11)
-    draw_recovery_indicator(59.2, 135, 3.6, "small\ngossip\ngap", 1, 11)
+    draw_recovery_indicator(18.8, 500, 3.6, "small\ngossip\ngap", 0.8, 30)
+    draw_recovery_indicator(58.5, 500, 3.6, "small\ngossip\ngap", 0.8, 30)
 
     plt.vlines(
-        63.5,
-        110,
-        140,
+        63,
+        400,
+        520,
         colors="gray",
         linestyles="solid",
         linewidth=0.8,
     )
 
-    draw_recovery_indicator(23, 50, 7, None, None, None)
-    draw_recovery_indicator(25.2, 62, 9.2, "state-send\nsnapshot int.", 4.6, -53)
-    draw_recovery_indicator(67.5, 56, 11.5, "state-send\nsnapshot int.", 2.9, -47)
+    # draw_recovery_indicator(23, 50, 7, None, None, None)
+    # draw_recovery_indicator(25.2, 62, 9.2, "state-send\nsnapshot int.", 4.6, -53)
+    # draw_recovery_indicator(67.5, 56, 11.5, "state-send\nsnapshot int.", 2.9, -47)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color, fb=False, unavail=False):
@@ -360,7 +360,7 @@ def plot_results(results, plots_dir):
         if fb:
             t += "\nfb=ok"
         if unavail:
-            t += "\nunavail."
+            t = "\nunavail."
         plt.annotate(
             t,
             (x, y),
@@ -371,20 +371,17 @@ def plot_results(results, plots_dir):
             fontsize=11,
         )
 
-    draw_config_indicator(4.8, 228, 1, 5, "steelblue")
-    draw_config_indicator(4.8, 198, 1, 4, "red")
-    draw_config_indicator(4.8, 175, 1, 4, "peru")
-    draw_config_indicator(4.8, 112, 3, 3, "forestgreen")
+    draw_config_indicator(4.6, 750, 1, 4, "red")
+    draw_config_indicator(4.6, 660, 1, 5, "steelblue")
+    draw_config_indicator(4.6, 570, 1, 4, "peru")
+    draw_config_indicator(4.6, 280, 3, 3, "forestgreen")
 
-    draw_config_indicator(44.8, 148, 2, 4, "steelblue")
-    draw_config_indicator(44.8, 198, 1, 4, "red")
-    draw_config_indicator(44.8, 58, 3, 3, "peru", fb=True)
-    draw_config_indicator(44.8, 112, 3, 3, "forestgreen")
+    draw_config_indicator(44.2, 750, 1, 4, "red")
+    draw_config_indicator(44.2, 425, 2, 4, "steelblue")
+    draw_config_indicator(45.5, 50, 3, 3, "peru", fb=True)
 
-    draw_config_indicator(89.5, 135, 3, 3, "steelblue")
-    draw_config_indicator(89.5, 9, 1, 4, "red", unavail=True)
-    draw_config_indicator(89.5, 78, 3, 3, "peru")
-    draw_config_indicator(89.5, 112, 3, 3, "forestgreen")
+    draw_config_indicator(88.5, 420, 3, 3, "steelblue")
+    draw_config_indicator(88.5, 25, 1, 4, "red", unavail=True)
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
@@ -459,9 +456,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
+
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
         utils.file.do_cargo_build(True, remotes=remotes)
@@ -473,32 +473,16 @@ if __name__ == "__main__":
             if not os.path.isdir(path):
                 os.system(f"mkdir -p {path}")
 
-        print("Setting tc netem qdiscs...")
-        utils.net.set_all_tc_qdisc_netems(
-            NUM_REPLICAS,
-            SERVER_NETNS,
-            SERVER_DEV,
-            SERVER_IFB,
-            NETEM_MEAN,
-            NETEM_JITTER,
-            NETEM_RATE,
-            remote=remotes["host0"],
-        )
-
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            bench_round(remotes["host0"], base, repo, protocol)
+            time.sleep(5)
+            bench_round(remotes["host0"], base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space
                 f"{base}/states/{EXPER_NAME}",
                 remotes=remotes,
             )
             utils.file.clear_fs_caches(remotes=remotes)
-
-        print("Clearing tc netem qdiscs...")
-        utils.net.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
-        )
 
         print("Fetching client output logs...")
         utils.file.fetch_files_of_dir(

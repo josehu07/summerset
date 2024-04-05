@@ -70,10 +70,10 @@ do
     sudo ip link set ifb$s mtu $MTU
     sudo ip link set ifb$s txqlen $QLEN
     sudo ip link set ifb$s netns ns$s
-    sudo ip netns exec ns$s tc qdisc add dev veths$s ingress
-    sudo ip netns exec ns$s tc filter add dev veths$s parent ffff: protocol all u32 match u32 0 0 flowid 1:1 action mirred egress redirect dev ifb$s
     sudo ip netns exec ns$s ip link set ifb$s up
     sudo ip netns exec ns$s tc qdisc replace dev ifb$s root noqueue
+    sudo ip netns exec ns$s tc qdisc add dev veths$s ingress
+    sudo ip netns exec ns$s tc filter add dev veths$s parent ffff: protocol all u32 match u32 0 0 flowid 1:1 action mirred egress redirect dev ifb$s
 done
 
 
@@ -91,6 +91,16 @@ do
     sudo ip addr add "10.0.2.$c/16" dev vethc$c
     sudo ip link set vethc$c up
 done
+
+
+echo
+echo "Creating ifb for the main interface as well..."
+MAIN_ETH=$(ip -o -4 route show to default | awk '{print $5}')
+sudo ip link add ifbe type ifb
+sudo ip link set ifbe up
+sudo tc qdisc replace dev ifbe root noqueue
+sudo tc qdisc add dev $MAIN_ETH ingress
+sudo tc filter add dev $MAIN_ETH parent ffff: protocol all u32 match u32 0 0 flowid 1:1 action mirred egress redirect dev ifbe
 
 
 echo

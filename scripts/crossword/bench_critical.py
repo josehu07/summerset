@@ -19,11 +19,11 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 EXPER_NAME = "critical"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 
-MIN_HOST0_CPUS = 40
-SERVER_PIN_CORES = 16
+MIN_HOST0_CPUS = 30
+SERVER_PIN_CORES = 20
 CLIENT_PIN_CORES = 2
 
-NUM_CLIENTS = 12
+NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 
 LENGTH_SECS = 30
@@ -147,6 +147,8 @@ def run_bench_clients(remote0, base, repo, protocol, round_params):
         "bench",
         "-n",
         str(NUM_CLIENTS),
+        "-d",
+        str(round_params.num_replicas),
         "-f",
         str(0),  # closed-loop
         "-v",
@@ -172,7 +174,7 @@ def run_bench_clients(remote0, base, repo, protocol, round_params):
     )
 
 
-def bench_round(remote0, base, repo, protocol, round_params):
+def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
     midfix_str = str(round_params)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
@@ -202,7 +204,7 @@ def bench_round(remote0, base, repo, protocol, round_params):
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(round_params.env_group)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -760,12 +762,14 @@ if __name__ == "__main__":
             for protocol in PROTOCOLS:
                 if round_params.paxos_only and "Raft" in protocol:
                     continue
+                time.sleep(5)
                 bench_round(
                     remotes[round_params.env_group]["host0"],
                     base,
                     repo,
                     protocol,
                     round_params,
+                    runlog_path,
                 )
                 utils.proc.kill_all_distr_procs(round_params.env_group)
                 utils.file.remove_files_in_dir(  # to free up storage space

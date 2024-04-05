@@ -28,30 +28,26 @@ PROTOCOL_FT_ASSIGNS = [
     ("Crossword", 2, "3"),
 ]
 
-MIN_HOST0_CPUS = 40
-SERVER_PIN_CORES = 4
-CLIENT_PIN_CORES = 1
+RS_TOTAL_SHARDS = 15
+RS_DATA_SHARDS = 9
 
-SERVER_NETNS = lambda r: f"ns{r}"
-SERVER_DEV = lambda r: f"veths{r}"
-SERVER_IFB = lambda r: f"ifb{r}"
+MIN_HOST0_CPUS = 30
+SERVER_PIN_CORES = 20
+CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 16
+NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
-VALUE_SIZE = 256 * 1024
+VALUE_SIZE = 64 * 1024
 PUT_RATIO = 100
 
 LENGTH_SECS = 20
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 18
+RESULT_SECS_END = 15
 
-NETEM_MEAN = lambda _: 1  # will be exagerated by #clients
+NETEM_MEAN = lambda _: 0
 NETEM_JITTER = lambda _: 0
 NETEM_RATE = lambda r: 1 if r < 3 else 0.4 if r < 4 else 0.1
-
-RS_TOTAL_SHARDS = 15
-RS_DATA_SHARDS = 9
 
 
 def round_midfix_str(fault_tolerance, init_assignment):
@@ -64,7 +60,7 @@ def round_midfix_str(fault_tolerance, init_assignment):
 def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     cmd = [
         "python3",
-        "./scripts/local_cluster.py",
+        "./scripts/distr_cluster.py",
         "-p",
         protocol,
         "-n",
@@ -72,13 +68,16 @@ def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
         "-r",
         "--force_leader",
         "0",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
         midfix_str,
         "--pin_cores",
         str(SERVER_PIN_CORES),
-        "--use_veth",
         "--skip_build",
     ]
     if config is not None and len(config) > 0:
@@ -103,19 +102,24 @@ def wait_cluster_setup():
 def run_bench_clients(remote0, base, repo, protocol, midfix_str):
     cmd = [
         "python3",
-        "./scripts/local_clients.py",
+        "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--use_veth",
         "--base_idx",
         str(0),
         "--skip_build",
         "bench",
         "-n",
         str(NUM_CLIENTS),
+        "-d",
+        str(NUM_REPLICAS),
         "-f",
         str(0),  # closed-loop
         "-v",
@@ -141,7 +145,9 @@ def run_bench_clients(remote0, base, repo, protocol, midfix_str):
     )
 
 
-def bench_round(remote0, base, repo, protocol, fault_tolerance, init_assignment):
+def bench_round(
+    remote0, base, repo, protocol, fault_tolerance, init_assignment, runlog_path
+):
     midfix_str = round_midfix_str(fault_tolerance, init_assignment)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
@@ -172,7 +178,7 @@ def bench_round(remote0, base, repo, protocol, fault_tolerance, init_assignment)
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "ab") as fserr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -195,7 +201,7 @@ def collect_outputs(output_dir):
             0.1,
         )
 
-        sd, sp, sj, sm = 20, 0, 0, 1
+        sd, sp, sj, sm = 10, 0, 0, 1
         tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
 
@@ -347,9 +353,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
+
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
         utils.file.do_cargo_build(True, remotes=remotes)
@@ -362,22 +371,25 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.set_all_tc_qdisc_netems(
-            NUM_REPLICAS,
-            SERVER_NETNS,
-            SERVER_DEV,
-            SERVER_IFB,
+        utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
             NETEM_RATE,
             involve_ifb=True,
-            remote=remotes["host0"],
+            remotes=remotes,
         )
 
         print("Running experiments...")
         for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
+            time.sleep(5)
             bench_round(
-                remotes["host0"], base, repo, protocol, fault_tolerance, init_assignment
+                remotes["host0"],
+                base,
+                repo,
+                protocol,
+                fault_tolerance,
+                init_assignment,
+                runlog_path,
             )
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space
@@ -387,9 +399,7 @@ if __name__ == "__main__":
             utils.file.clear_fs_caches(remotes=remotes)
 
         print("Clearing tc netem qdiscs...")
-        utils.net.clear_all_tc_qdisc_netems(
-            NUM_REPLICAS, SERVER_NETNS, SERVER_DEV, SERVER_IFB, remote=remotes["host0"]
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
 
         print("Fetching client output logs...")
         utils.file.fetch_files_of_dir(
