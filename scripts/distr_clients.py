@@ -27,6 +27,7 @@ UTILITY_PARAM_NAMES = {
     "bench": [
         "freq_target",
         "value_size",
+        "num_keys",
         "put_ratio",
         "ycsb_trace",
         "length_s",
@@ -262,6 +263,9 @@ if __name__ == "__main__":
     )
     parser_bench.add_argument(
         "-v", "--value_size", type=str, help="value sizes over time"
+    )
+    parser_bench.add_argument(
+        "-k", "--num_keys", type=int, help="number of keys to choose from"
     )
     parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
     parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")

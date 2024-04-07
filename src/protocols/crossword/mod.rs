@@ -658,13 +658,11 @@ impl GenericReplica for CrosswordReplica {
                                     gossip_tail_ignores, disable_gossip_timer,
                                     fault_tolerance, msg_chunk_size,
                                     rs_total_shards, rs_data_shards,
-                                    init_assignment,
-                                    linreg_interval_ms, linreg_keep_ms,
-                                    linreg_outlier_ratio,
+                                    init_assignment, linreg_interval_ms,
+                                    linreg_keep_ms, linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
-                                    b_to_d_threshold,
-                                    record_breakdown, record_value_ver,
-                                    sim_read_lease)?;
+                                    b_to_d_threshold, record_breakdown,
+                                    record_value_ver, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -1130,8 +1128,13 @@ impl GenericReplica for CrosswordReplica {
                         }
                     }
                     if self.config.record_value_ver {
-                        if let Some((key, ver)) = self.curr_ver_of_first_key() {
-                            pf_info!(self.id; "ver of {} is {}", key, ver);
+                        if let Some((key, ver)) = self.val_ver_of_first_key()? {
+                            pf_info!(self.id; "ver of {} @ {} ms is {}",
+                                              key,
+                                              Instant::now()
+                                                .duration_since(self.startup_time)
+                                                .as_millis(),
+                                              ver);
                         }
                     }
                 },

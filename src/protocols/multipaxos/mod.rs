@@ -37,7 +37,7 @@ use get_size::GetSize;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
@@ -79,6 +79,10 @@ pub struct ReplicaConfigMultiPaxos {
     /// Recording performance breakdown statistics?
     pub record_breakdown: bool,
 
+    /// Recording the latest committed value version of a key?
+    /// Only effective if record_breakdown is set to true.
+    pub record_value_ver: bool,
+
     /// Simulate local read lease implementation?
     // TODO: actual read lease impl later? (won't affect anything about
     // evalutaion results though)
@@ -101,6 +105,7 @@ impl Default for ReplicaConfigMultiPaxos {
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
             record_breakdown: false,
+            record_value_ver: false,
             sim_read_lease: false,
         }
     }
@@ -376,6 +381,9 @@ pub struct MultiPaxosReplica {
     /// Current durable snapshot file offset.
     snap_offset: usize,
 
+    /// Base time instant at startup, used as a reference zero timestamp.
+    startup_time: Instant,
+
     /// Performance breakdown stopwatch if doing recording.
     bd_stopwatch: Option<Stopwatch>,
 
@@ -497,7 +505,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
                                     msg_chunk_size, record_breakdown,
-                                    sim_read_lease)?;
+                                    record_value_ver, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -647,6 +655,7 @@ impl GenericReplica for MultiPaxosReplica {
             snap_bar: 0,
             wal_offset: 0,
             snap_offset: 0,
+            startup_time: Instant::now(),
             bd_stopwatch,
             bd_print_interval,
         })
@@ -747,15 +756,26 @@ impl GenericReplica for MultiPaxosReplica {
                 },
 
                 // performance breakdown stats printing
-                _ = self.bd_print_interval.tick(), if !paused && self.is_leader()
-                                                      && self.config.record_breakdown => {
-                    if let Some(sw) = self.bd_stopwatch.as_mut() {
-                        let (cnt, stats) = sw.summarize(4);
-                        pf_info!(self.id; "bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
-                                                     qrum {:.2} {:.2} exec {:.2} {:.2}",
-                                          cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
-                                               stats[2].0, stats[2].1, stats[3].0, stats[3].1);
-                        sw.remove_all();
+                _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
+                    if self.is_leader() {
+                        if let Some(sw) = self.bd_stopwatch.as_mut() {
+                            let (cnt, stats) = sw.summarize(4);
+                            pf_info!(self.id; "bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
+                                                         qrum {:.2} {:.2} exec {:.2} {:.2}",
+                                              cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
+                                                   stats[2].0, stats[2].1, stats[3].0, stats[3].1);
+                            sw.remove_all();
+                        }
+                    }
+                    if self.config.record_value_ver {
+                        if let Some((key, ver)) = self.val_ver_of_first_key()? {
+                            pf_info!(self.id; "ver of {} @ {} ms is {}",
+                                              key,
+                                              Instant::now()
+                                                .duration_since(self.startup_time)
+                                                .as_millis(),
+                                              ver);
+                        }
                     }
                 },
 

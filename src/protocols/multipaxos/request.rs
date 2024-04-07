@@ -137,4 +137,30 @@ impl MultiPaxosReplica {
 
         Ok(())
     }
+
+    /// [for stale read profiling]
+    pub fn val_ver_of_first_key(
+        &mut self,
+    ) -> Result<Option<(String, usize)>, SummersetError> {
+        let (mut key, mut ver) = (None, 0);
+        for inst in self.insts.iter_mut() {
+            if inst.status >= Status::Committed {
+                for (_, req) in &inst.reqs {
+                    if let ApiRequest::Req {
+                        cmd: Command::Put { key: k, .. },
+                        ..
+                    } = req
+                    {
+                        if key.is_none() {
+                            key = Some(k.into());
+                        } else if key.as_ref().unwrap() == k {
+                            ver += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(key.map(|k| (k, ver)))
+    }
 }

@@ -25,8 +25,8 @@ use summerset::{
     parsed_config,
 };
 
-/// Number of distinct keys.
-const NUM_KEYS: usize = 5;
+/// Maximum number of distinct keys.
+const MAX_NUM_KEYS: usize = 16;
 
 /// Max length in bytes of value.
 const MAX_VAL_LEN: usize = 10 * 1024 * 1024;
@@ -35,7 +35,7 @@ lazy_static! {
     /// Pool of keys to choose from.
     static ref KEYS_POOL: Vec<String> = {
         let mut pool = vec![];
-        for _ in 0..NUM_KEYS {
+        for _ in 0..MAX_NUM_KEYS {
             let key = rand::thread_rng()
                 .sample_iter(&Alphanumeric)
                 .take(8)
@@ -80,6 +80,9 @@ pub struct ModeParamsBench {
     ///                             to v1 at t1, then change to v2 at t2, etc.
     pub value_size: String,
 
+    /// Number of keys to choose from.
+    pub num_keys: usize,
+
     /// If non-zero, use a normal distribution of this standard deviation
     /// ratio for every write command.
     pub norm_stdev_ratio: f32,
@@ -102,6 +105,7 @@ impl Default for ModeParamsBench {
             put_ratio: 50,
             ycsb_trace: "".into(),
             value_size: "1024".into(),
+            num_keys: 5,
             norm_stdev_ratio: 0.0,
             unif_interval_ms: 0,
             unif_upper_bound: 128 * 1024,
@@ -179,7 +183,8 @@ impl ClientBench {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     freq_target, length_s,
                                     put_ratio, ycsb_trace,
-                                    value_size, norm_stdev_ratio,
+                                    value_size, num_keys,
+                                    norm_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
             return logged_err!("c"; "invalid params.freq_target '{}'",
@@ -192,6 +197,10 @@ impl ClientBench {
         if params.put_ratio > 100 {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
                                     params.put_ratio);
+        }
+        if params.num_keys == 0 || params.num_keys > MAX_NUM_KEYS {
+            return logged_err!("c"; "invalid params.num_keys '{}'",
+                                    params.num_keys);
         }
         if params.norm_stdev_ratio < 0.0 {
             return logged_err!("c"; "invalid params.norm_stdev_ratio '{}'",
@@ -394,7 +403,8 @@ impl ClientBench {
     /// Issues a random request.
     fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
         // randomly choose a key from key pool; key does not matter too much
-        let key = KEYS_POOL[self.rng.gen_range(0..NUM_KEYS)].clone();
+        let key =
+            KEYS_POOL[self.rng.gen_range(0..self.params.num_keys)].clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
