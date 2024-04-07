@@ -90,7 +90,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Build everything in debug or release (`-r`) mode:
 
 ```bash
-cargo build [-r] --workspace
+cargo build [-r] --workspace [--features ...]
 ```
 
 Run all unit tests:

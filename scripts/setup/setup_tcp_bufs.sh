@@ -32,6 +32,9 @@ then
     echo "Adding start-up changes to /etc/sysctl.conf..."
     sudo tee -a /etc/sysctl.conf <<EOF
 
+# For safer port usage...
+net.ipv4.ip_local_port_range = 53000 60999
+
 # For summerset benchmarking...
 net.ipv4.tcp_rmem = 536870912 1073741824 1073741824
 net.ipv4.tcp_wmem = 536870912 1073741824 1073741824

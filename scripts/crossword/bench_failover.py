@@ -464,7 +464,7 @@ if __name__ == "__main__":
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, remotes=remotes)
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -475,7 +475,7 @@ if __name__ == "__main__":
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            time.sleep(5)
+            time.sleep(10)
             bench_round(remotes["host0"], base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space

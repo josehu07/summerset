@@ -34,8 +34,9 @@ def run_process_pinned(
 ):
     cpu_list = None
     if cores_per_proc > 0:
+        # get number of processors
+        num_cpus = utils.proc.get_cpu_count(remote=remote)
         # pin servers at CPUs [0, cores_per_proc)
-        num_cpus = multiprocessing.cpu_count()
         core_start = 0
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1

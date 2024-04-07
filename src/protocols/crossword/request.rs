@@ -191,4 +191,9 @@ impl CrosswordReplica {
 
         Ok(())
     }
+
+    /// [for stale read profiling]
+    pub fn curr_ver_of_first_key(&self) -> Option<(&str, usize)> {
+        Some(("test_key", 0))
+    }
 }

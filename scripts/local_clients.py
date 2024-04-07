@@ -42,12 +42,13 @@ UTILITY_PARAM_NAMES = {
 def run_process_pinned(i, cmd, capture_stdout=False, cores_per_proc=0):
     cpu_list = None
     if cores_per_proc != 0:
+        # get number of processors
+        num_cpus = utils.proc.get_cpu_count()
         # parse cores_per_proc setting
         if cores_per_proc != int(cores_per_proc) and (
             cores_per_proc > 1 or cores_per_proc < -1
         ):
             raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
-        num_cpus = multiprocessing.cpu_count()
         if cores_per_proc < 0:
             # negative means starting from CPU 0 (instead from last)
             cores_per_proc *= -1

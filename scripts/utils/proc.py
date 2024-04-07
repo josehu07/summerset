@@ -114,7 +114,7 @@ def wait_parallel_procs(procs, names=None, check_rc=True):
                 print(proc.stderr)
 
 
-def check_enough_cpus(expected, remote=None):
+def get_cpu_count(remote=None):
     cpus = multiprocessing.cpu_count()
     if remote is not None:
         cpus = int(
@@ -129,5 +129,10 @@ def check_enough_cpus(expected, remote=None):
             .decode()
             .strip()
         )
+    return cpus
+
+
+def check_enough_cpus(expected, remote=None):
+    cpus = get_cpu_count(remote=remote)
     if cpus < expected:
         print(f"WARN: expect >= {expected} CPUs, found {cpus} on {remote}")

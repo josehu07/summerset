@@ -47,8 +47,9 @@ PROTOCOL_EXTRA_DEFAULTS = {
 def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
     cpu_list = None
     if cores_per_proc > 0:
+        # get number of processors
+        num_cpus = utils.proc.get_cpu_count()
         # pin servers from CPU 0 up; not pinning manager
-        num_cpus = multiprocessing.cpu_count()
         core_start = i * cores_per_proc
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1

@@ -25,10 +25,11 @@ def check_proper_cwd():
         sys.exit(1)
 
 
-def do_cargo_build(release, remotes=None):
+def do_cargo_build(release, cd_dir=None, remotes=None):
     cmd = ["cargo", "build", "--workspace"]
     if release:
         cmd.append("-r")
+    cmd += ["--features", "rse-simd"]
     if remotes is None:
         rc = subprocess.Popen(cmd).wait()
         if rc != 0:
@@ -39,13 +40,16 @@ def do_cargo_build(release, remotes=None):
             procs.append(
                 run_process_over_ssh(
                     remotes[host],
-                    cmd,
+                    # ugly hack to opt-out AVX2 instructions dependency
+                    # on UMass datacenter machines
+                    cmd if "mass" not in remotes[host] else cmd[:-2],
+                    cd_dir=cd_dir,
                     capture_stdout=True,
                     capture_stderr=True,
                     print_cmd=False,
                 )
             )
-        wait_parallel_procs(procs, list(remotes.keys()), check_rc=True)
+        wait_parallel_procs(procs, list(remotes.keys()))
 
 
 def clear_fs_caches(remotes=None):

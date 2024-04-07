@@ -50,8 +50,9 @@ def run_process_pinned(
 ):
     cpu_list = None
     if cores_per_proc > 0:
+        # get number of processors
+        num_cpus = utils.proc.get_cpu_count(remote=remote)
         # pin servers at CPUs [0, cores_per_proc); not pinning manager
-        num_cpus = multiprocessing.cpu_count()
         core_start = 0
         core_end = core_start + cores_per_proc - 1
         assert core_end <= num_cpus - 1
@@ -366,20 +367,7 @@ if __name__ == "__main__":
     # build everything
     if not args.skip_build:
         print("Building everything...")
-        cargo_cmd = ["cargo", "build", "--workspace"]
-        if args.release:
-            cargo_cmd.append("-r")
-        build_procs = []
-        for host in hosts:
-            build_procs.append(
-                utils.proc.run_process_over_ssh(
-                    remotes[host],
-                    cargo_cmd,
-                    cd_dir=cd_dir,
-                    print_cmd=False,
-                )
-            )
-        utils.proc.wait_parallel_procs(build_procs, names=hosts)
+        utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)

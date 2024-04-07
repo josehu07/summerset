@@ -121,6 +121,10 @@ pub struct ReplicaConfigCrossword {
     /// Recording performance breakdown statistics?
     pub record_breakdown: bool,
 
+    /// Recording the latest committed value version of a key?
+    /// Only effective if record_breakdown is set to true.
+    pub record_value_ver: bool,
+
     /// Simulate local read lease implementation?
     // TODO: actual read lease impl later? (won't affect anything about
     // evalutaion results though)
@@ -157,6 +161,7 @@ impl Default for ReplicaConfigCrossword {
             linreg_outlier_ratio: 0.5,
             b_to_d_threshold: 0.0,
             record_breakdown: false,
+            record_value_ver: false,
             sim_read_lease: false,
         }
     }
@@ -658,7 +663,8 @@ impl GenericReplica for CrosswordReplica {
                                     linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
                                     b_to_d_threshold,
-                                    record_breakdown, sim_read_lease)?;
+                                    record_breakdown, record_value_ver,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 id;
@@ -1110,17 +1116,23 @@ impl GenericReplica for CrosswordReplica {
                 },
 
                 // performance breakdown stats printing
-                _ = self.bd_print_interval.tick(), if !paused && self.is_leader()
-                                                      && self.config.record_breakdown => {
-                    if let Some(sw) = self.bd_stopwatch.as_mut() {
-                        let (cnt, stats) = sw.summarize(5);
-                        pf_info!(self.id; "bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
-                                                     arep {:.2} {:.2} qrum {:.2} {:.2} \
-                                                     exec {:.2} {:.2}",
-                                          cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
-                                               stats[2].0, stats[2].1, stats[3].0, stats[3].1,
-                                               stats[4].0, stats[4].1);
-                        sw.remove_all();
+                _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
+                    if self.is_leader() {
+                        if let Some(sw) = self.bd_stopwatch.as_mut() {
+                            let (cnt, stats) = sw.summarize(5);
+                            pf_info!(self.id; "bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
+                                                         arep {:.2} {:.2} qrum {:.2} {:.2} \
+                                                         exec {:.2} {:.2}",
+                                              cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
+                                                   stats[2].0, stats[2].1, stats[3].0, stats[3].1,
+                                                   stats[4].0, stats[4].1);
+                            sw.remove_all();
+                        }
+                    }
+                    if self.config.record_value_ver {
+                        if let Some((key, ver)) = self.curr_ver_of_first_key() {
+                            pf_info!(self.id; "ver of {} is {}", key, ver);
+                        }
                     }
                 },
 

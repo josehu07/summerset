@@ -2,6 +2,7 @@
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::process::Command;
 
 use crate::utils::SummersetError;
 
@@ -153,7 +154,11 @@ pub async fn tcp_bind_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
-        socket.bind(bind_addr)?;
+        if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Output of `ss` command:");
+            eprintln!("{}", get_proc_using_port()?);
+            return Err(SummersetError::from(e));
+        }
 
         match socket.listen(1024) {
             Ok(listener) => return Ok(listener),
@@ -181,7 +186,11 @@ pub async fn tcp_connect_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
-        socket.bind(bind_addr)?;
+        if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Output of `ss` command:");
+            eprintln!("{}", get_proc_using_port()?);
+            return Err(SummersetError::from(e));
+        }
 
         match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),
@@ -196,4 +205,21 @@ pub async fn tcp_connect_with_retry(
     }
 }
 
-// No unit tests for these helpers...
+fn get_proc_using_port() -> Result<String, SummersetError> {
+    Ok(String::from_utf8(
+        Command::new("ss").arg("-tnlp").output()?.stdout,
+    )?)
+}
+
+#[cfg(test)]
+mod safetcp_tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn safetcp_try_ss() -> Result<(), SummersetError> {
+        println!("Output of `ss` command:");
+        println!("{}", get_proc_using_port()?);
+        Ok(())
+    }
+}

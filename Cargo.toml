@@ -22,7 +22,7 @@ rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "0.7", features = ["parse"] }
 log = "0.4"
-reed-solomon-erasure = { version = "6.0", features = ["simd-accel"] }
+reed-solomon-erasure = { version = "6.0" }
 ctrlc = { version = "3.4", features = ["termination"] }
 get-size = { version = "0.1", features = ["derive"] }
 linreg = "0.2"
@@ -30,6 +30,9 @@ statistical = "1.0"
 
 [dev-dependencies]
 criterion = "0.5"
+
+[features]
+rse-simd = ["reed-solomon-erasure/simd-accel"]
 
 [[bench]]
 name = "rse_bench"

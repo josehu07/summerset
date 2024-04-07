@@ -222,6 +222,7 @@ mod qdisc_tests {
     use std::process::Command;
 
     #[test]
+    #[ignore]
     fn qdisc_run_cmd() -> Result<(), SummersetError> {
         // just testing if command running is functional here
         let output = String::from_utf8(

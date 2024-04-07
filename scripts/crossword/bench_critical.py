@@ -28,7 +28,15 @@ BATCH_INTERVAL = 1
 
 LENGTH_SECS = 30
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 28
+RESULT_SECS_END = 25
+
+
+class EnvSetting:
+    def __init__(self, group, delay, jitter, rate):
+        self.group = group
+        self.delay = delay
+        self.jitter = jitter
+        self.rate = rate
 
 
 class RoundParams:
@@ -37,7 +45,7 @@ class RoundParams:
         num_replicas,
         value_size,
         put_ratio,
-        env_group,
+        env_setting,
         paxos_only,
         tags,
         read_lease=True,
@@ -45,7 +53,7 @@ class RoundParams:
         self.num_replicas = num_replicas
         self.value_size = value_size
         self.put_ratio = put_ratio
-        self.env_group = env_group
+        self.env_setting = env_setting
         self.paxos_only = paxos_only
         self.tags = tags
         self.read_lease = read_lease
@@ -53,13 +61,13 @@ class RoundParams:
     def __str__(self):
         return (
             f".{self.num_replicas}.{'mixed' if isinstance(self.value_size, str) else self.value_size}."
-            + f"{self.put_ratio}{'rl' if self.read_lease else ''}.{self.env_group}"
+            + f"{self.put_ratio}{'rl' if self.read_lease else ''}.{self.env_setting.group}"
         )
 
 
 # fmt: off
 SIZE_S = 8
-SIZE_L = 256 * 1024
+SIZE_L = 128 * 1024
 SIZE_MIXED = [
     (0, SIZE_L),
     (LENGTH_SECS // 6, SIZE_S),
@@ -70,18 +78,31 @@ SIZE_MIXED = [
 ]
 SIZE_MIXED = '/'.join([f"{t}:{v}" for t, v in SIZE_MIXED])
 
+ENV_1DC = EnvSetting(
+    "1dc",
+    lambda _: 1,
+    lambda _: 2,
+    lambda _: 1,  # no effect given the original bandwidth
+)
+ENV_WAN = EnvSetting(
+    "wan",
+    lambda _: 1,
+    lambda _: 2,  
+    lambda _: 0.2,  # negligible given the original WAN delay
+)
+
 ROUNDS_PARAMS = [
-    RoundParams(5, SIZE_S,     50,  "1dc", False, ["single"]),
-    RoundParams(5, SIZE_L,     50,  "1dc", False, ["single"]),
-    RoundParams(5, SIZE_MIXED, 50,  "1dc", False, ["single", "cluster-5", "ratio-50"]),
-    RoundParams(5, SIZE_S,     50,  "wan", False, ["single"]),
-    RoundParams(5, SIZE_L,     50,  "wan", False, ["single"]),
-    RoundParams(5, SIZE_MIXED, 50,  "wan", False, ["single"]),
-    RoundParams(3, SIZE_MIXED, 50,  "1dc", True,  ["cluster-3"]),
-    RoundParams(7, SIZE_MIXED, 50,  "1dc", True,  ["cluster-7"]),
-    RoundParams(9, SIZE_MIXED, 50,  "1dc", True,  ["cluster-9"]),
-    RoundParams(5, SIZE_MIXED, 10,  "1dc", True,  ["ratio-10"]),
-    RoundParams(5, SIZE_MIXED, 100, "1dc", True,  ["ratio-100"]),
+    RoundParams(5, SIZE_S,     50,  ENV_1DC, False, ["single"]),
+    RoundParams(5, SIZE_L,     50,  ENV_1DC, False, ["single"]),
+    RoundParams(5, SIZE_MIXED, 50,  ENV_1DC, False, ["single", "cluster-5", "ratio-50"]),
+    RoundParams(5, SIZE_S,     50,  ENV_WAN, False, ["single"]),
+    RoundParams(5, SIZE_L,     50,  ENV_WAN, False, ["single"]),
+    RoundParams(5, SIZE_MIXED, 50,  ENV_WAN, False, ["single"]),
+    RoundParams(3, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-3"]),
+    RoundParams(7, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-7"]),
+    RoundParams(9, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-9"]),
+    RoundParams(5, SIZE_MIXED, 10,  ENV_1DC, True,  ["ratio-10"]),
+    RoundParams(5, SIZE_MIXED, 100, ENV_1DC, True,  ["ratio-100"]),
 ]
 # fmt: on
 
@@ -98,7 +119,7 @@ def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
         "--force_leader",
         "0",
         "-g",
-        round_params.env_group,
+        round_params.env_setting.group,
         "--me",
         "host0",
         "--file_prefix",
@@ -123,9 +144,9 @@ def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
 
 def wait_cluster_setup():
     # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
+    # wait for 30 seconds to safely allow all nodes up
     # not relying on SSH-piped outputs here
-    time.sleep(20)
+    time.sleep(30)
 
 
 def run_bench_clients(remote0, base, repo, protocol, round_params):
@@ -136,7 +157,7 @@ def run_bench_clients(remote0, base, repo, protocol, round_params):
         protocol,
         "-r",
         "-g",
-        round_params.env_group,
+        round_params.env_setting.group,
         "--me",
         "host0",
         "--pin_cores",
@@ -183,7 +204,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
         config += f"+sim_read_lease=true"
     if protocol == "Crossword":
         # TODO: tune this
-        # config += f"+b_to_d_threshold={0.25 if round_params.env_setting.name == 'dc' else 0.05}"
+        config += f"+b_to_d_threshold={0.08}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
@@ -202,7 +223,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
 
     # terminate the cluster
     proc_cluster.terminate()
-    utils.proc.kill_all_distr_procs(round_params.env_group)
+    utils.proc.kill_all_distr_procs(round_params.env_setting.group)
     _, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         fserr.write(serr)
@@ -232,15 +253,17 @@ def collect_outputs(output_dir):
             )
 
             sd, sp, sj, sm = 10, 0, 0, 1
-            if isinstance(round_params.value_size, str):
-                if protocol == "RSPaxos" or protocol == "CRaft":
-                    # setting sm here to compensate for mixed value unstabilities
-                    # in reported numbers
-                    sm = 1 + (round_params.put_ratio / 100) * 0.5
-                if protocol == "Crossword":
-                    # setting sm here to compensate for mixed value unstabilities
-                    # as well as printing models to console
-                    sm = 1 + (round_params.put_ratio / 100) * 0.7
+            # setting sm here to compensate for unstabilities of printing
+            # models to console
+            if (
+                round_params.value_size == SIZE_S
+                and (
+                    protocol == "MultiPaxos"
+                    or protocol == "Raft"
+                    or protocol == "Crossword"
+                )
+            ) or (isinstance(round_params.value_size, str) and protocol == "Crossword"):
+                sm = 1 + (round_params.put_ratio / 100)
             tput_mean_list = utils.output.list_smoothing(
                 result["tput_sum"], sd, sp, sj, sm
             )
@@ -260,31 +283,6 @@ def collect_outputs(output_dir):
                     "stdev": lat_stdev_list,
                 },
             }
-
-    for round_params in ROUNDS_PARAMS:
-        midfix_str = str(round_params)
-
-        def result_cap(pa, pb, down):
-            if f"{pa}{midfix_str}" in results and f"{pb}{midfix_str}" in results:
-                for metric in ("tput", "lat"):
-                    for stat in ("mean", "stdev"):
-                        results[f"{pa}{midfix_str}"][metric][stat] = (
-                            utils.output.list_capping(
-                                results[f"{pa}{midfix_str}"][metric][stat],
-                                results[f"{pb}{midfix_str}"][metric][stat],
-                                5,
-                                down=down if metric == "tput" else not down,
-                            )
-                        )
-
-        # list capping to remove unexpected performance spikes/dips due to
-        # normal distribution sampling a very small/large value
-        result_cap("CRaft", "RSPaxos", False)
-        result_cap("CRaft", "RSPaxos", True)
-        result_cap("Raft", "MultiPaxos", False)
-        result_cap("Raft", "MultiPaxos", True)
-        result_cap("Crossword", "MultiPaxos", False)
-        result_cap("Crossword", "RSPaxos", False)
 
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
@@ -311,7 +309,7 @@ def collect_outputs(output_dir):
                             / len(lat_stdev_list)
                         )
                         ** 0.5
-                        / (1000 * NUM_CLIENTS / SERVER_PIN_CORES),
+                        / (1000 * NUM_CLIENTS / CLIENT_PIN_CORES),
                     },
                 }
 
@@ -438,7 +436,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     pdf_midfix = (
         f"{round_params.num_replicas}."
         + f"{'small' if round_params.value_size == SIZE_S else 'large' if round_params.value_size == SIZE_L else 'mixed'}."
-        + f"{round_params.put_ratio}.{round_params.env_setting.name}"
+        + f"{round_params.put_ratio}.{round_params.env_setting.group}"
     )
     pdf_name = f"{plots_dir}/exper-{EXPER_NAME}-{pdf_midfix}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
@@ -451,7 +449,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
 def plot_single_rounds_results(results, rounds_params, plots_dir):
     env_ymax = dict()
     for round_params in rounds_params:
-        env_name = round_params.env_setting.name
+        env_name = round_params.env_setting.group
         if env_name not in env_ymax:
             env_ymax[env_name] = {
                 "tput": 0.0,
@@ -474,7 +472,7 @@ def plot_single_rounds_results(results, rounds_params, plots_dir):
                 round_params,
                 plots_dir,
                 None,
-                # env_ymax[round_params.env_setting.name],
+                # env_ymax[round_params.env_setting.group],
             )
             if not common_plotted:
                 plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], plots_dir)
@@ -748,7 +746,9 @@ if __name__ == "__main__":
         for group in ("1dc", "wan"):
             utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes[group]["host0"])
             utils.proc.kill_all_distr_procs(group)
-            utils.file.do_cargo_build(True, remotes=remotes)
+            utils.file.do_cargo_build(
+                True, cd_dir=f"{base}/{repo}", remotes=remotes[group]
+            )
             utils.file.clear_fs_caches(remotes=remotes[group])
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -757,26 +757,44 @@ if __name__ == "__main__":
             if not os.path.isdir(path):
                 os.system(f"mkdir -p {path}")
 
+        last_env_group = None
         for round_params in ROUNDS_PARAMS:
             print(f"Running experiments {round_params}...")
+
+            this_env = round_params.env_setting
+            if this_env.group != last_env_group:
+                print("Setting tc netem qdiscs...")
+                utils.net.set_tc_qdisc_netems_main(
+                    this_env.delay,
+                    this_env.jitter,
+                    this_env.rate,
+                    involve_ifb=True,
+                    remotes=remotes[this_env.group],
+                )
+                last_env_group = this_env.group
+
             for protocol in PROTOCOLS:
                 if round_params.paxos_only and "Raft" in protocol:
                     continue
-                time.sleep(5)
+                time.sleep(10)
                 bench_round(
-                    remotes[round_params.env_group]["host0"],
+                    remotes[this_env.group]["host0"],
                     base,
                     repo,
                     protocol,
                     round_params,
                     runlog_path,
                 )
-                utils.proc.kill_all_distr_procs(round_params.env_group)
+                utils.proc.kill_all_distr_procs(this_env.group)
                 utils.file.remove_files_in_dir(  # to free up storage space
                     f"{base}/states/{EXPER_NAME}",
-                    remotes=remotes[round_params.env_group],
+                    remotes=remotes[this_env.group],
                 )
-                utils.file.clear_fs_caches(remotes=remotes[round_params.env_group])
+                utils.file.clear_fs_caches(remotes=remotes[this_env.group])
+
+        print("Clearing tc netem qdiscs...")
+        for group in ("1dc", "wan"):
+            utils.net.clear_tc_qdisc_netems_main(remotes=remotes[group])
 
         print("Fetching client output logs...")
         for group in ("1dc", "wan"):

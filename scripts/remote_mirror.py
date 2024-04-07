@@ -79,6 +79,7 @@ def compose_build_cmd(release):
     cmd = ["cargo", "build", "--workspace"]
     if release:
         cmd.append("-r")
+    cmd += ["--features", "rse-simd"]
     return cmd
 
 
@@ -98,7 +99,9 @@ def build_on_targets(destinations, dst_path, release, sequential):
             procs.append(
                 utils.proc.run_process_over_ssh(
                     remote,
-                    cmd,
+                    # ugly hack to opt-out AVX2 instructions dependency
+                    # on UMass datacenter machines
+                    cmd if "mass" not in remote else cmd[:-2],
                     cd_dir=dst_path,
                     capture_stdout=True,
                     capture_stderr=True,

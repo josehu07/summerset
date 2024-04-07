@@ -31,5 +31,3 @@ For a shell command, `$` indicates running it on the local development machine, 
         1. `% ./scripts/setup/setup_net_devs.sh`
     11. Record the SSH key pair for mutual login between remote nodes
         1. `% ./scripts/setup/sshkey_record.sh`
-    12. Build Summerset in release mode:
-        1. `% cargo build -r --workspace`

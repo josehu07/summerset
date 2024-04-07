@@ -233,7 +233,7 @@ def collect_outputs(output_dir):
         if protocol == "Crossword":
             # setting sd here to avoid the lines to completely overlap with
             # each other
-            sd = 20
+            sd = 22
         tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
@@ -319,10 +319,10 @@ def plot_results(results, plots_dir):
             annotation_clip=False,
         )
 
-    draw_env_change_indicator(17, "Data smaller", -13)
-    draw_env_change_indicator(38, "Bw drops", 8)
-    draw_env_change_indicator(59, "Bw frees", 16)
-    draw_env_change_indicator(84, "2 nodes lag", 24)
+    draw_env_change_indicator(17, "Data smaller", -14)
+    draw_env_change_indicator(38, "Bw drops", 10)
+    draw_env_change_indicator(59, "Bw frees", 19)
+    draw_env_change_indicator(84, "2 nodes lag", 28)
 
     # configuration indicators
     def draw_config_indicator(x, y, c, q, color):
@@ -423,7 +423,7 @@ if __name__ == "__main__":
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, remotes=remotes)
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -443,7 +443,7 @@ if __name__ == "__main__":
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            time.sleep(5)
+            time.sleep(10)
             bench_round(remotes, base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space
