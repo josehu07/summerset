@@ -768,7 +768,7 @@ impl GenericReplica for MultiPaxosReplica {
                         }
                     }
                     if self.config.record_value_ver {
-                        if let Some((key, ver)) = self.val_ver_of_first_key()? {
+                        if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
                             pf_info!(self.id; "ver of {} @ {} ms is {}",
                                               key,
                                               Instant::now()

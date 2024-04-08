@@ -240,6 +240,7 @@ def plot_results(results, plots_dir):
         {
             "figure.figsize": (6, 3),
             "font.size": 13,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")

@@ -330,6 +330,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
         {
             "figure.figsize": (2.6, 2.2),
             "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     midfix_str = str(round_params)
@@ -485,6 +486,7 @@ def plot_cluster_size_results(results, rounds_params, plots_dir):
         {
             "figure.figsize": (3.5, 2),
             "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper-cluster_size")
@@ -552,6 +554,7 @@ def plot_write_ratio_results(results, rounds_params, plots_dir):
         {
             "figure.figsize": (2.8, 2),
             "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper-write_ratio")
@@ -617,6 +620,7 @@ def plot_major_ylabels(ylabels, plots_dir):
         {
             "figure.figsize": (1.5, 2.2),
             "font.size": 12,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure(f"Ylabels")

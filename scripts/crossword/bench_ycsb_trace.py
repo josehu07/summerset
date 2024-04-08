@@ -477,6 +477,7 @@ def plot_legend(handles, labels, odir):
         {
             "figure.figsize": (2, 2),
             "font.size": 10,
+            "pdf.fonttype": 42,
         }
     )
     plt.figure("Legend")

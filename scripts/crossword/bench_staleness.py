@@ -30,6 +30,7 @@ VALUE_SIZE = 64 * 1024
 PUT_RATIO = 50
 
 LENGTH_SECS = 60
+RESULT_SECS_END = 55
 
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
@@ -98,7 +99,7 @@ def run_bench_clients(remote0, base, repo, protocol):
         "-v",
         str(VALUE_SIZE),
         "-k",
-        "1",
+        "10",
         "-w",
         str(PUT_RATIO),
         "-l",
@@ -120,6 +121,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
+    config += f"+init_assignment='1'"
     config += f"+record_breakdown=true"
     config += f"+record_value_ver=true"
 
@@ -157,6 +159,7 @@ def collect_ver_stats(runlog_dir):
     def get_node_id(line):
         return int(line[line.index("(") + 1 : line.index(")")])
 
+    candidates = set(range(NUM_REPLICAS))
     with open(f"{runlog_dir}/{protocol}.s.err", "r") as flog:
         for line in flog:
             if "becoming a leader" in line:
@@ -165,11 +168,15 @@ def collect_ver_stats(runlog_dir):
                 leader = get_node_id(line)
             elif "ver of" in line:
                 node = get_node_id(line)
+                if node not in candidates:
+                    continue
                 segs = line.strip().split()
                 sec = float(segs[-4]) / 1000.0
                 ver = int(segs[-1])
                 ver_stats[node]["secs"].append(sec)
                 ver_stats[node]["vers"].append(ver)
+                if sec > RESULT_SECS_END:
+                    candidates.remove(node)
 
     if leader is None:
         raise RuntimeError("leader step-up not detected")
@@ -188,6 +195,134 @@ def print_results(leader, ver_stats):
         for ver in ver_stats[node]["vers"]:
             print(f" {ver:>5d}", end="")
         print()
+
+
+def plot_staleness(leader, ver_stats, plots_dir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (2, 2),
+            "font.size": 10,
+            "pdf.fonttype": 42,
+        }
+    )
+    fig = plt.figure("Exper")
+
+    ROLE_XS_YS = {
+        "Leader": (ver_stats[leader]["secs"], ver_stats[leader]["vers"]),
+        "Follower": (
+            ver_stats[(leader + 1) % NUM_REPLICAS]["secs"],
+            ver_stats[(leader + 1) % NUM_REPLICAS]["vers"],
+        ),
+        "RSPaxos": (
+            ver_stats[leader]["secs"],
+            [0 for _ in range(len(ver_stats[leader]["secs"]))],
+        ),
+    }
+    ROLE_LABEL_COLOR_MARKER_SIZE_ZORDER = {
+        "Leader": ("Leader ≈\nMultiPaxos follower", "orange", "v", 5, 10),
+        "Follower": ("Crossword follower", "steelblue", "o", 5, 0),
+        "RSPaxos": ("RSPaxos follower", "red", "x", 5, 0),
+    }
+
+    for role in ROLE_XS_YS:
+        xs, ys = ROLE_XS_YS[role]
+        label, color, marker, markersize, zorder = ROLE_LABEL_COLOR_MARKER_SIZE_ZORDER[
+            role
+        ]
+        plt.plot(
+            xs,
+            ys,
+            color=color,
+            linewidth=1.2,
+            marker=marker,
+            markersize=markersize,
+            label=label,
+            zorder=zorder,
+        )
+
+    plt.text(
+        25,
+        200,
+        "version diff.\n≤ 2",
+        verticalalignment="center",
+        horizontalalignment="center",
+        color="dimgray",
+        fontsize=8,
+    )
+    plt.plot(
+        [
+            26,
+            31,
+        ],
+        [172, 155],
+        color="dimgray",
+        linestyle="-",
+        linewidth=0.6,
+    )
+
+    plt.text(
+        42,
+        62,
+        " stale reads\ninfeasible\nat followers",
+        verticalalignment="center",
+        horizontalalignment="center",
+        color="dimgray",
+        fontsize=8,
+    )
+    plt.plot(
+        [
+            42,
+            42,
+        ],
+        [22, 11],
+        color="dimgray",
+        linestyle="-",
+        linewidth=0.6,
+    )
+
+    ax = fig.axes[0]
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.xlabel("Time (secs)")
+
+    plt.ylim(bottom=-1)
+    plt.ylabel("Value version")
+
+    plt.tight_layout()
+
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+    return ax.get_legend_handles_labels()
+
+
+def plot_legend(handles, labels, plots_dir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (2, 1),
+            "font.size": 10,
+            "pdf.fonttype": 42,
+        }
+    )
+    plt.figure("Legend")
+
+    plt.axis("off")
+
+    lgd = plt.legend(
+        handles,
+        labels,
+        handlelength=1.2,
+        loc="center",
+        bbox_to_anchor=(0.5, 0.5),
+    )
+
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
 
 
 if __name__ == "__main__":
@@ -243,5 +378,5 @@ if __name__ == "__main__":
         leader, ver_stats = collect_ver_stats(runlog_dir)
         print_results(leader, ver_stats)
 
-        # handles, labels = plot_staleness(leader, ver_stats, plots_dir)
-        # plot_legend(handles, labels, plots_dir)
+        handles, labels = plot_staleness(leader, ver_stats, plots_dir)
+        plot_legend(handles, labels, plots_dir)

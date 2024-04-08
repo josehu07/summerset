@@ -235,6 +235,7 @@ def plot_breakdown(bd_stats, plots_dir):
         {
             "figure.figsize": (3, 2),
             "font.size": 10,
+            "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
