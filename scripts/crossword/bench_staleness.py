@@ -263,7 +263,7 @@ def plot_staleness(leader, ver_stats, plots_dir):
     plt.text(
         42,
         62,
-        " stale reads\ninfeasible\nat followers",
+        " stale read\ninfeasible\nat followers",
         verticalalignment="center",
         horizontalalignment="center",
         color="dimgray",
