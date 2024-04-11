@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import time
+import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -17,7 +18,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "staleness"
-PROTOCOLS = ["Crossword"]
+PROTOCOLS = ["MultiPaxos", "Crossword"]
 
 MIN_HOST0_CPUS = 30
 SERVER_PIN_CORES = 20
@@ -26,11 +27,13 @@ CLIENT_PIN_CORES = 2
 NUM_REPLICAS = 5
 NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
-VALUE_SIZE = 64 * 1024
-PUT_RATIO = 50
+VALUE_SIZE = 4096
+PUT_RATIO = 100
+NUM_KEYS_LIST = list(range(1, 11))
 
-LENGTH_SECS = 60
-RESULT_SECS_END = 55
+LENGTH_SECS = 45
+RESULT_SECS_BEGIN = 10
+RESULT_SECS_END = 35
 
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
@@ -73,7 +76,7 @@ def wait_cluster_setup():
     time.sleep(20)
 
 
-def run_bench_clients(remote0, base, repo, protocol):
+def run_bench_clients(remote0, base, repo, protocol, num_keys):
     cmd = [
         "python3",
         "./scripts/distr_clients.py",
@@ -99,7 +102,7 @@ def run_bench_clients(remote0, base, repo, protocol):
         "-v",
         str(VALUE_SIZE),
         "-k",
-        "10",
+        str(num_keys),
         "-w",
         str(PUT_RATIO),
         "-l",
@@ -117,31 +120,33 @@ def run_bench_clients(remote0, base, repo, protocol):
     )
 
 
-def bench_round(remote0, base, repo, protocol, runlog_path):
-    print(f"  {EXPER_NAME}  {protocol:<10s}")
+def bench_round(remote0, base, repo, protocol, num_keys, runlog_path):
+    midfix_str = f".{num_keys}"
+    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    config += f"+init_assignment='1'"
     config += f"+record_breakdown=true"
     config += f"+record_value_ver=true"
+    if protocol == "Crossword":
+        config += f"+init_assignment='1'"
 
     # launch service cluster
     proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol)
+    proc_clients = run_bench_clients(remote0, base, repo, protocol, num_keys)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -152,142 +157,213 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_ver_stats(runlog_dir):
-    protocol = "Crossword"
-    leader = None
-    ver_stats = [{"secs": [], "vers": []} for _ in range(NUM_REPLICAS)]
+    ver_stats = dict()
 
     def get_node_id(line):
         return int(line[line.index("(") + 1 : line.index(")")])
 
-    candidates = set(range(NUM_REPLICAS))
-    with open(f"{runlog_dir}/{protocol}.s.err", "r") as flog:
-        for line in flog:
-            if "becoming a leader" in line:
-                if leader is not None:
-                    raise RuntimeError("multiple leader step-up detected")
-                leader = get_node_id(line)
-            elif "ver of" in line:
-                node = get_node_id(line)
-                if node not in candidates:
-                    continue
-                segs = line.strip().split()
-                sec = float(segs[-4]) / 1000.0
-                ver = int(segs[-1])
-                ver_stats[node]["secs"].append(sec)
-                ver_stats[node]["vers"].append(ver)
-                if sec > RESULT_SECS_END:
-                    candidates.remove(node)
+    for num_keys in NUM_KEYS_LIST:
+        midfix_str = f".{num_keys}"
+        for protocol in PROTOCOLS:
+            candidates = set(range(NUM_REPLICAS))
+            leader, sec0 = None, None
+            result = [{"secs": [], "vers": []} for _ in range(NUM_REPLICAS)]
+            with open(f"{runlog_dir}/{protocol}{midfix_str}.s.err", "r") as flog:
+                for line in flog:
+                    if "becoming a leader" in line:
+                        if leader is not None:
+                            raise RuntimeError("multiple leader step-up detected")
+                        leader = get_node_id(line)
+                    elif "ver of" in line:
+                        node = get_node_id(line)
+                        if node not in candidates:
+                            continue
 
-    if leader is None:
-        raise RuntimeError("leader step-up not detected")
-    return leader, ver_stats
+                        segs = line.strip().split()
+                        sec = float(segs[-4]) / 1000.0
+                        if sec0 is None:
+                            sec0 = sec
+                        sec -= sec0
+                        if sec < RESULT_SECS_BEGIN:
+                            continue
+
+                        ver = int(segs[-1])
+                        result[node]["secs"].append(sec)
+                        result[node]["vers"].append(ver)
+
+                        if sec > RESULT_SECS_END:
+                            if leader is None:
+                                raise RuntimeError("leader step-up not detected")
+                            candidates.remove(node)
+                            ver_stats[f"{protocol}{midfix_str}"] = {
+                                "leader": leader,
+                                "result": result,
+                            }
+                            break
+
+    diff_stats = dict()
+    for num_keys in NUM_KEYS_LIST:
+        midfix_str = f".{num_keys}"
+        for protocol in PROTOCOLS:
+            leader, result = (
+                ver_stats[f"{protocol}{midfix_str}"]["leader"],
+                ver_stats[f"{protocol}{midfix_str}"]["result"],
+            )
+            assert leader >= 0 and leader < len(result)
+
+            dresult = {"secs": [], "diffs": []}
+            for i, lsec in enumerate(result[leader]["secs"]):
+                lver = result[leader]["vers"][i]
+                diffs = []
+                for node in range(NUM_REPLICAS):
+                    if node != leader:
+                        for j, fsec in enumerate(result[node]["secs"]):
+                            fver = result[node]["vers"][j]
+                            if abs(fsec - lsec) < 1.0:  # allow an error margin
+                                diffs.append(lver - fver)
+                                break
+                if len(diffs) == NUM_REPLICAS - 1:
+                    # remove out-of-quorum stragglers impact
+                    diffs = sorted(diffs)[: NUM_REPLICAS // 2]
+                    avg_diff = max(sum(diffs) / len(diffs), 0.0)
+                    dresult["secs"].append(lsec)
+                    dresult["diffs"].append(avg_diff)
+
+            mid_diffs = sorted(dresult["diffs"])[1:-1]
+            assert len(mid_diffs) > 0
+            avg_diff = sum(mid_diffs) / len(mid_diffs)
+            diff_stats[f"{protocol}{midfix_str}"] = {
+                "avg": avg_diff,
+                "result": dresult,
+            }
+
+    return ver_stats, diff_stats
 
 
-def print_results(leader, ver_stats):
-    assert leader >= 0 and leader < len(ver_stats)
-    for node in range(len(ver_stats)):
-        print(node, f"{'leader' if node == leader else 'follower':<8s}")
-        print("  secs", end="")
-        for sec in ver_stats[node]["secs"]:
+def print_results(ver_stats, diff_stats):
+    for protocol_with_midfix in ver_stats:
+        print(protocol_with_midfix)
+        leader, result, davg, dresult = (
+            ver_stats[protocol_with_midfix]["leader"],
+            ver_stats[protocol_with_midfix]["result"],
+            diff_stats[protocol_with_midfix]["avg"],
+            diff_stats[protocol_with_midfix]["result"],
+        )
+
+        # for node in range(len(result)):
+        #     print(f"  {node} {'leader' if node == leader else 'follower':<8s}")
+        #     print("    secs", end="")
+        #     for sec in result[node]["secs"]:
+        #         print(f" {sec:>5.1f}", end="")
+        #     print()
+        #     print("    vers", end="")
+        #     for ver in result[node]["vers"]:
+        #         print(f" {ver:>5d}", end="")
+        #     print()
+
+        print("    secs", end="")
+        for sec in dresult["secs"]:
             print(f" {sec:>5.1f}", end="")
-        print()
-        print("  vers", end="")
-        for ver in ver_stats[node]["vers"]:
-            print(f" {ver:>5d}", end="")
-        print()
+        print(f" {'avg':>5s}")
+        print("   diffs", end="")
+        for diff in dresult["diffs"]:
+            print(f" {diff:>5.1f}", end="")
+        print(f" {davg:>5.1f}")
 
 
-def plot_staleness(leader, ver_stats, plots_dir):
+def plot_staleness(diff_stats, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2, 2),
+            "figure.figsize": (2.9, 2),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
 
-    ROLE_XS_YS = {
-        "Leader": (ver_stats[leader]["secs"], ver_stats[leader]["vers"]),
-        "Follower": (
-            ver_stats[(leader + 1) % NUM_REPLICAS]["secs"],
-            ver_stats[(leader + 1) % NUM_REPLICAS]["vers"],
-        ),
-        "RSPaxos": (
-            ver_stats[leader]["secs"],
-            [0 for _ in range(len(ver_stats[leader]["secs"]))],
-        ),
-    }
-    ROLE_LABEL_COLOR_MARKER_SIZE_ZORDER = {
-        "Leader": ("Leader ≈\nMultiPaxos follower", "orange", "v", 5, 10),
-        "Follower": ("Crossword follower", "steelblue", "o", 5, 0),
-        "RSPaxos": ("RSPaxos follower", "red", "x", 5, 0),
+    TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
+    PROTOCOL_ORDER = ["RSPaxos", "Crossword", "MultiPaxos"]
+    PROTOCOL_COLOR_MARKER_SIZE_ZORDER = {
+        "MultiPaxos": ("dimgray", "v", 5, 0),
+        "Crossword": ("steelblue", "o", 5, 10),
+        "RSPaxos": ("red", "x", 5, 0),
     }
 
-    for role in ROLE_XS_YS:
-        xs, ys = ROLE_XS_YS[role]
-        label, color, marker, markersize, zorder = ROLE_LABEL_COLOR_MARKER_SIZE_ZORDER[
-            role
-        ]
+    xmin = TIME_INTERVAL_UNIT - 1
+    ymax, protocol_ys = 0.0, dict()
+    for protocol in PROTOCOLS + ["RSPaxos"]:
+        ys = None
+        if protocol != "RSPaxos":
+            ys = [diff_stats[f"{protocol}.{k}"]["avg"] for k in NUM_KEYS_LIST]
+            if max(ys) > ymax:
+                ymax = max(ys)
+        else:
+            ys = [ymax * 1.6 for _ in NUM_KEYS_LIST]
+        ys.sort(reverse=True)
+        protocol_ys[protocol] = ys
+
+    for protocol in PROTOCOL_ORDER:
+        color, marker, markersize, zorder = PROTOCOL_COLOR_MARKER_SIZE_ZORDER[protocol]
         plt.plot(
-            xs,
-            ys,
+            [k * TIME_INTERVAL_UNIT for k in NUM_KEYS_LIST],
+            protocol_ys[protocol],
             color=color,
             linewidth=1.2,
             marker=marker,
             markersize=markersize,
-            label=label,
+            label=protocol,
             zorder=zorder,
         )
 
-    plt.text(
-        25,
-        200,
-        "version diff.\n≤ 2",
-        verticalalignment="center",
-        horizontalalignment="center",
-        color="dimgray",
-        fontsize=8,
-    )
-    plt.plot(
-        [
-            26,
-            31,
-        ],
-        [172, 155],
-        color="dimgray",
-        linestyle="-",
-        linewidth=0.6,
-    )
+    def draw_yaxis_break(yloc):
+        ypb, ypt = yloc - 4, yloc + 4
+        ys = [ypb, ypb, ypt, ypt]
+        xs = [xmin - 0.6, xmin + 0.6, xmin + 0.6, xmin - 0.6]
+        plt.fill(xs, ys, "w", fill=True, linewidth=0, zorder=10, clip_on=False)
+        plt.plot(
+            [xmin - 0.6, xmin + 0.6],
+            [ypb + 1, ypb - 1],
+            color="k",
+            linewidth=1,
+            zorder=20,
+            clip_on=False,
+        )
+        plt.plot(
+            [xmin - 0.6, xmin + 0.6],
+            [ypt + 1, ypt - 1],
+            color="k",
+            linewidth=1,
+            zorder=20,
+            clip_on=False,
+        )
+        plt.text(
+            xmin,
+            yloc,
+            "~",
+            fontsize=8,
+            zorder=30,
+            clip_on=False,
+            ha="center",
+            va="center",
+        )
 
-    plt.text(
-        42,
-        62,
-        " stale read\ninfeasible\nat followers",
-        verticalalignment="center",
-        horizontalalignment="center",
-        color="dimgray",
-        fontsize=8,
-    )
-    plt.plot(
-        [
-            42,
-            42,
-        ],
-        [22, 11],
-        color="dimgray",
-        linestyle="-",
-        linewidth=0.6,
-    )
+    draw_yaxis_break(70)
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    plt.xlabel("Time (secs)")
+    plt.xlim(left=xmin)
+    plt.xlabel("Avg. time between writes (ms)")
 
     plt.ylim(bottom=-1)
-    plt.ylabel("Value version")
+    plt.ylabel("Staleness (#ver.)")
+
+    yticks = [0, 25, 50]  # TODO: currently hardcoded
+    yticklabels = [str(y) for y in yticks]
+    yticks += [ymax * 1.6]
+    yticklabels += ["∞"]
+    plt.yticks(yticks, yticklabels)
 
     plt.tight_layout()
 
@@ -361,12 +437,20 @@ if __name__ == "__main__":
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
 
-        print("Running experiments...")
-        for protocol in PROTOCOLS:
-            time.sleep(10)
-            bench_round(remotes["host0"], base, repo, protocol, runlog_path)
-            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-            utils.file.clear_fs_caches(remotes=remotes)
+        for num_keys in NUM_KEYS_LIST:
+            print(f"Running experiments {num_keys}...")
+
+            for protocol in PROTOCOLS:
+                time.sleep(10)
+                bench_round(
+                    remotes["host0"], base, repo, protocol, num_keys, runlog_path
+                )
+                utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+                utils.file.remove_files_in_dir(  # to free up storage space
+                    f"{base}/states/{EXPER_NAME}",
+                    remotes=remotes,
+                )
+                utils.file.clear_fs_caches(remotes=remotes)
 
     else:
         runlog_dir = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -375,8 +459,8 @@ if __name__ == "__main__":
         if not os.path.isdir(plots_dir):
             os.system(f"mkdir -p {plots_dir}")
 
-        leader, ver_stats = collect_ver_stats(runlog_dir)
-        print_results(leader, ver_stats)
+        ver_stats, diff_stats = collect_ver_stats(runlog_dir)
+        print_results(ver_stats, diff_stats)
 
-        handles, labels = plot_staleness(leader, ver_stats, plots_dir)
+        handles, labels = plot_staleness(diff_stats, plots_dir)
         plot_legend(handles, labels, plots_dir)
