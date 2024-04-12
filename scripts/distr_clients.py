@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import subprocess
-import multiprocessing
 import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
@@ -13,9 +12,9 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
 CLIENT_LOOP_IP = "0.0.0.0"
-CLIENT_BIND_BASE_PORT = lambda c: 40000 + c * 100
+CLIENT_BIND_BASE_PORT = lambda p, c: 42000 + (p * 100 + c) * 10
 
-MANAGER_CLI_PORT = 52601
+MANAGER_CLI_PORT = lambda p: 40001 + p * 10
 
 
 CLIENT_OUTPUT_PATH = (
@@ -128,6 +127,7 @@ def run_clients(
     cd_dir,
     protocol,
     utility,
+    partition,
     num_clients,
     dist_machs,
     params,
@@ -154,8 +154,8 @@ def run_clients(
     client_procs = []
     for i in range(num_clients):
         client = base_idx + i
-        bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(client)}"
-        manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT}"
+        bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(partition, client)}"
+        manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT(partition)}"
 
         cmd = compose_client_cmd(
             protocol,
@@ -245,6 +245,13 @@ if __name__ == "__main__":
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
     parser_bench.add_argument(
+        "-a",
+        "--partition",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="if doing keyspace partitioning, the partition idx",
+    )
+    parser_bench.add_argument(
         "-n",
         "--num_clients",
         type=int,
@@ -331,20 +338,32 @@ if __name__ == "__main__":
     if args.man not in remotes:
         raise ValueError(f"invalid manager oracle's host {args.man}")
 
-    # check that number of replicas does not exceed 99
-    if args.utility == "bench" and args.num_clients > 99:
-        raise ValueError("#clients > 99 not supported yet (as ports are hardcoded)")
+    # check that the partition index is valid
+    partition_in_args, partition = False, 0
+    if args.utility == "bench":
+        partition_in_args = "partition" in args
+        if partition_in_args and (args.partition < 0 or args.partition >= 5):
+            raise ValueError("currently only supports <= 5 partitions")
+        partition = 0 if not partition_in_args else args.partition
+
+    # check that number of clients does not exceed 99
+    if args.utility == "bench":
+        if args.num_clients <= 0:
+            raise ValueError(f"invalid number of clients {args.num_clients}")
+        elif args.num_clients > 99:
+            raise ValueError(f"#clients {args.num_clients} > 99 not supported")
 
     # check that the prefix folder path exists, or create it if not
     if (
         args.utility == "bench"
+        and partition == 0
         and len(args.file_prefix) > 0
         and not os.path.isdir(args.file_prefix)
     ):
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    if not args.skip_build:
+    if not partition_in_args and not args.skip_build:
         print("Building everything...")
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
@@ -360,6 +379,7 @@ if __name__ == "__main__":
         cd_dir,
         args.protocol,
         args.utility,
+        partition,
         num_clients,
         0 if args.utility != "bench" else args.dist_machs,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),

@@ -2,7 +2,7 @@
 
 
 PORT_RANGE_MIN=40000
-PORT_RANGE_MAX=59999
+PORT_RANGE_MAX=49999
 
 
 echo
@@ -38,7 +38,7 @@ then
     sudo tee -a /etc/sysctl.conf <<EOF
 
 # For safer port usage...
-net.ipv4.ip_local_port_range = 60000 60999
+net.ipv4.ip_local_port_range = $((${PORT_RANGE_MAX}+1)) 60999
 EOF
     sudo sysctl --system
 fi

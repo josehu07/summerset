@@ -717,13 +717,13 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 1
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:53801".parse()?)
+                TransportHub::new_and_setup(1, 3, "127.0.0.1:40211".parse()?)
                     .await?;
             barrier1.wait().await;
             hub.connect_to_peer(
                 2,
-                "127.0.0.1:30100".parse()?,
-                "127.0.0.1:53802".parse()?,
+                "127.0.0.1:41110".parse()?,
+                "127.0.0.1:40212".parse()?,
             )
             .await?;
             // recv a message from 0
@@ -747,7 +747,7 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 2
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:53802".parse()?)
+                TransportHub::new_and_setup(2, 3, "127.0.0.1:40212".parse()?)
                     .await?;
             barrier2.wait().await;
             // recv a message from 0
@@ -764,19 +764,19 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:53800".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:40210".parse()?)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(
             1,
-            "127.0.0.1:30001".parse()?,
-            "127.0.0.1:53801".parse()?,
+            "127.0.0.1:41101".parse()?,
+            "127.0.0.1:40211".parse()?,
         )
         .await?;
         hub.connect_to_peer(
             2,
-            "127.0.0.1:30002".parse()?,
-            "127.0.0.1:53802".parse()?,
+            "127.0.0.1:41102".parse()?,
+            "127.0.0.1:40212".parse()?,
         )
         .await?;
         // send a message to 1 and 2
@@ -808,7 +808,7 @@ mod transport_tests {
         tokio::spawn(async move {
             // replica 1/2
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:54801".parse()?)
+                TransportHub::new_and_setup(1, 3, "127.0.0.1:40221".parse()?)
                     .await?;
             barrier2.wait().await;
             // recv a message from 0
@@ -820,12 +820,12 @@ mod transport_tests {
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:54802".parse()?)
+                TransportHub::new_and_setup(2, 3, "127.0.0.1:40222".parse()?)
                     .await?;
             hub.connect_to_peer(
                 0,
-                "127.0.0.1:40100".parse()?,
-                "127.0.0.1:54800".parse()?,
+                "127.0.0.1:41220".parse()?,
+                "127.0.0.1:40220".parse()?,
             )
             .await?;
             // send a message to 0
@@ -834,13 +834,13 @@ mod transport_tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:54800".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:40220".parse()?)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(
             1,
-            "127.0.0.1:40001".parse()?,
-            "127.0.0.1:54801".parse()?,
+            "127.0.0.1:41201".parse()?,
+            "127.0.0.1:40221".parse()?,
         )
         .await?;
         assert!(hub.current_peers()?.get(1)?);

@@ -2,7 +2,6 @@ import sys
 import os
 import signal
 import argparse
-import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import utils
@@ -10,14 +9,14 @@ import utils
 
 SERVER_LOOP_IP = "127.0.0.1"
 SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
-SERVER_API_PORT = lambda r: 52700 + r
-SERVER_P2P_PORT = lambda r: 52800 + r
-SERVER_BIND_BASE_PORT = lambda r: 50000 + r * 100
+SERVER_API_PORT = lambda r: 40100 + r
+SERVER_P2P_PORT = lambda r: 40200 + r
+SERVER_BIND_BASE_PORT = lambda r: 41000 + r * 10
 
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
-MANAGER_SRV_PORT = 52600
-MANAGER_CLI_PORT = 52601
+MANAGER_SRV_PORT = 40000
+MANAGER_CLI_PORT = 40001
 
 
 PROTOCOL_BACKER_PATH = (

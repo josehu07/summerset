@@ -2,7 +2,6 @@ import os
 import sys
 import argparse
 import subprocess
-import multiprocessing
 import math
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
@@ -11,11 +10,11 @@ import utils
 
 CLIENT_LOOP_IP = "127.0.0.1"
 CLIENT_VETH_IP = lambda c: f"10.0.2.{c}"
-CLIENT_BIND_BASE_PORT = lambda c: 40000 + c * 100
+CLIENT_BIND_BASE_PORT = lambda c: 42000 + c * 10
 
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
-MANAGER_CLI_PORT = 52601
+MANAGER_CLI_PORT = 40001
 
 
 CLIENT_OUTPUT_PATH = (
@@ -261,9 +260,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # check that number of replicas does not exceed 99
-    if args.utility == "bench" and args.num_clients > 99:
-        raise ValueError("#clients > 99 not supported yet (as ports are hardcoded)")
+    # check that number of clients does not exceed 99
+    if args.utility == "bench":
+        if args.num_clients <= 0:
+            raise ValueError(f"invalid number of clients {args.num_clients}")
+        elif args.num_clients > 99:
+            raise ValueError(f"#clients {args.num_clients} > 99 not supported")
 
     # check that the prefix folder path exists, or create it if not
     if (

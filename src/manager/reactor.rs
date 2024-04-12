@@ -480,7 +480,7 @@ mod reactor_tests {
         tokio::spawn(async move {
             // manager-side
             let mut reactor =
-                ClientReactor::new_and_setup("127.0.0.1:53601".parse()?)
+                ClientReactor::new_and_setup("127.0.0.1:40011".parse()?)
                     .await?;
             barrier2.wait().await;
             // recv request from client
@@ -495,8 +495,8 @@ mod reactor_tests {
                         (
                             0,
                             ServerInfo {
-                                api_addr: "127.0.0.1:53700".parse()?,
-                                p2p_addr: "127.0.0.1:53800".parse()?,
+                                api_addr: "127.0.0.1:40110".parse()?,
+                                p2p_addr: "127.0.0.1:40210".parse()?,
                                 is_leader: true,
                                 is_paused: false,
                                 start_slot: 0,
@@ -505,8 +505,8 @@ mod reactor_tests {
                         (
                             1,
                             ServerInfo {
-                                api_addr: "127.0.0.1:53701".parse()?,
-                                p2p_addr: "127.0.0.1:53801".parse()?,
+                                api_addr: "127.0.0.1:40111".parse()?,
+                                p2p_addr: "127.0.0.1:40211".parse()?,
                                 is_leader: false,
                                 is_paused: false,
                                 start_slot: 0,
@@ -521,8 +521,8 @@ mod reactor_tests {
         // client-side
         barrier.wait().await;
         let mut ctrl_stub = ClientCtrlStub::new_by_connect(
-            "127.0.0.1:31710".parse()?,
-            "127.0.0.1:53601".parse()?,
+            "127.0.0.1:43179".parse()?,
+            "127.0.0.1:40011".parse()?,
         )
         .await?;
         // send request to manager
@@ -536,8 +536,8 @@ mod reactor_tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53700".parse()?,
-                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            api_addr: "127.0.0.1:40110".parse()?,
+                            p2p_addr: "127.0.0.1:40210".parse()?,
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -546,8 +546,8 @@ mod reactor_tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53701".parse()?,
-                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            api_addr: "127.0.0.1:40111".parse()?,
+                            p2p_addr: "127.0.0.1:40211".parse()?,
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,
@@ -568,8 +568,8 @@ mod reactor_tests {
             {
                 barrier2.wait().await;
                 let mut ctrl_stub = ClientCtrlStub::new_by_connect(
-                    "127.0.0.1:41710".parse()?,
-                    "127.0.0.1:54601".parse()?,
+                    "127.0.0.1:44179".parse()?,
+                    "127.0.0.1:40021".parse()?,
                 )
                 .await?;
                 // send request to manager
@@ -583,8 +583,8 @@ mod reactor_tests {
                             (
                                 0,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:53700".parse()?,
-                                    p2p_addr: "127.0.0.1:53800".parse()?,
+                                    api_addr: "127.0.0.1:40120".parse()?,
+                                    p2p_addr: "127.0.0.1:40220".parse()?,
                                     is_leader: true,
                                     is_paused: false,
                                     start_slot: 0,
@@ -593,8 +593,8 @@ mod reactor_tests {
                             (
                                 1,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:53701".parse()?,
-                                    p2p_addr: "127.0.0.1:53801".parse()?,
+                                    api_addr: "127.0.0.1:40121".parse()?,
+                                    p2p_addr: "127.0.0.1:40221".parse()?,
                                     is_leader: false,
                                     is_paused: false,
                                     start_slot: 0,
@@ -611,8 +611,8 @@ mod reactor_tests {
             {
                 // come back as new client
                 let mut ctrl_stub = ClientCtrlStub::new_by_connect(
-                    "127.0.0.1:41710".parse()?,
-                    "127.0.0.1:54601".parse()?,
+                    "127.0.0.1:44179".parse()?,
+                    "127.0.0.1:40021".parse()?,
                 )
                 .await?;
                 // send request to manager
@@ -626,8 +626,8 @@ mod reactor_tests {
                             (
                                 0,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:53700".parse()?,
-                                    p2p_addr: "127.0.0.1:53800".parse()?,
+                                    api_addr: "127.0.0.1:40120".parse()?,
+                                    p2p_addr: "127.0.0.1:40220".parse()?,
                                     is_leader: true,
                                     is_paused: false,
                                     start_slot: 0,
@@ -636,8 +636,8 @@ mod reactor_tests {
                             (
                                 1,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:53701".parse()?,
-                                    p2p_addr: "127.0.0.1:53801".parse()?,
+                                    api_addr: "127.0.0.1:40121".parse()?,
+                                    p2p_addr: "127.0.0.1:40221".parse()?,
                                     is_leader: false,
                                     is_paused: false,
                                     start_slot: 0,
@@ -651,7 +651,7 @@ mod reactor_tests {
         });
         // manager-side
         let mut reactor =
-            ClientReactor::new_and_setup("127.0.0.1:54601".parse()?).await?;
+            ClientReactor::new_and_setup("127.0.0.1:40021".parse()?).await?;
         barrier.wait().await;
         // recv request from client
         let (client, req) = reactor.recv_req().await?;
@@ -665,8 +665,8 @@ mod reactor_tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53700".parse()?,
-                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            api_addr: "127.0.0.1:40120".parse()?,
+                            p2p_addr: "127.0.0.1:40220".parse()?,
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -675,8 +675,8 @@ mod reactor_tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53701".parse()?,
-                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            api_addr: "127.0.0.1:40121".parse()?,
+                            p2p_addr: "127.0.0.1:40221".parse()?,
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,
@@ -699,8 +699,8 @@ mod reactor_tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53700".parse()?,
-                            p2p_addr: "127.0.0.1:53800".parse()?,
+                            api_addr: "127.0.0.1:40120".parse()?,
+                            p2p_addr: "127.0.0.1:40220".parse()?,
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -709,8 +709,8 @@ mod reactor_tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:53701".parse()?,
-                            p2p_addr: "127.0.0.1:53801".parse()?,
+                            api_addr: "127.0.0.1:40121".parse()?,
+                            p2p_addr: "127.0.0.1:40221".parse()?,
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,

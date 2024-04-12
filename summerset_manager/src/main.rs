@@ -172,8 +172,8 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
-            cli_port: 52601,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -187,7 +187,7 @@ mod manager_args_tests {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
             srv_port: 1023,
-            cli_port: 52601,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -200,7 +200,7 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
+            srv_port: 40000,
             cli_port: 1023,
             population: 3,
             threads: 2,
@@ -214,8 +214,8 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
-            cli_port: 52600,
+            srv_port: 40000,
+            cli_port: 40000,
             population: 3,
             threads: 2,
         };
@@ -228,8 +228,8 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
-            cli_port: 52601,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -242,8 +242,8 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
-            cli_port: 52601,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 0,
             threads: 2,
         };
@@ -256,8 +256,8 @@ mod manager_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             bind_ip: "127.0.0.1".parse()?,
-            srv_port: 52600,
-            cli_port: 52601,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 1,
         };

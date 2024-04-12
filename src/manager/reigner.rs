@@ -512,8 +512,8 @@ mod reigner_tests {
             // replica 0
             setup_bar0.wait().await;
             let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:30010".parse()?,
-                "127.0.0.1:53600".parse()?,
+                "127.0.0.1:41109".parse()?,
+                "127.0.0.1:40010".parse()?,
             )
             .await?;
             assert_eq!(hub.me, 0);
@@ -521,8 +521,8 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:53700".parse()?,
-                p2p_addr: "127.0.0.1:53800".parse()?,
+                api_addr: "127.0.0.1:40110".parse()?,
+                p2p_addr: "127.0.0.1:40210".parse()?,
             })?;
             // recv a message from manager
             assert_eq!(
@@ -540,8 +540,8 @@ mod reigner_tests {
             setup_bar1.wait().await;
             server1_bar1.wait().await;
             let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:30110".parse()?,
-                "127.0.0.1:53600".parse()?,
+                "127.0.0.1:41119".parse()?,
+                "127.0.0.1:40010".parse()?,
             )
             .await?;
             assert_eq!(hub.me, 1);
@@ -549,15 +549,15 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:53701".parse()?,
-                p2p_addr: "127.0.0.1:53801".parse()?,
+                api_addr: "127.0.0.1:40111".parse()?,
+                p2p_addr: "127.0.0.1:40211".parse()?,
             })?;
             // recv a message from manager
             assert_eq!(
                 hub.recv_ctrl().await?,
                 CtrlMsg::ConnectToPeers {
                     population: 2,
-                    to_peers: HashMap::from([(0, "127.0.0.1:53800".parse()?)])
+                    to_peers: HashMap::from([(0, "127.0.0.1:40210".parse()?)])
                 }
             );
             Ok::<(), SummersetError>(())
@@ -566,7 +566,7 @@ mod reigner_tests {
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
         let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:53600".parse()?,
+            "127.0.0.1:40010".parse()?,
             tx_id_assign,
             rx_id_result,
         )
@@ -582,8 +582,8 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 0,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:53700".parse()?,
-                p2p_addr: "127.0.0.1:53800".parse()?
+                api_addr: "127.0.0.1:40110".parse()?,
+                p2p_addr: "127.0.0.1:40210".parse()?
             }
         );
         // send reply to server 0
@@ -604,15 +604,15 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 1,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:53701".parse()?,
-                p2p_addr: "127.0.0.1:53801".parse()?
+                api_addr: "127.0.0.1:40111".parse()?,
+                p2p_addr: "127.0.0.1:40211".parse()?
             }
         );
         // send reply to server 1
         reigner.send_ctrl(
             CtrlMsg::ConnectToPeers {
                 population: 2,
-                to_peers: HashMap::from([(0, "127.0.0.1:53800".parse()?)]),
+                to_peers: HashMap::from([(0, "127.0.0.1:40210".parse()?)]),
             },
             id,
         )?;
@@ -629,8 +629,8 @@ mod reigner_tests {
             // replica
             barrier2.wait().await;
             let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:40010".parse()?,
-                "127.0.0.1:54600".parse()?,
+                "127.0.0.1:41209".parse()?,
+                "127.0.0.1:40020".parse()?,
             )
             .await?;
             assert_eq!(hub.me, 0);
@@ -638,8 +638,8 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:54700".parse()?,
-                p2p_addr: "127.0.0.1:54800".parse()?,
+                api_addr: "127.0.0.1:40120".parse()?,
+                p2p_addr: "127.0.0.1:40220".parse()?,
             })?;
             // send a message to manager and wait for reply blockingly
             assert_eq!(
@@ -654,7 +654,7 @@ mod reigner_tests {
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
         let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:54600".parse()?,
+            "127.0.0.1:40020".parse()?,
             tx_id_assign,
             rx_id_result,
         )
@@ -670,8 +670,8 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 0,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:54700".parse()?,
-                p2p_addr: "127.0.0.1:54800".parse()?
+                api_addr: "127.0.0.1:40120".parse()?,
+                p2p_addr: "127.0.0.1:40220".parse()?
             }
         );
         // send reply to server 0
@@ -696,8 +696,8 @@ mod reigner_tests {
             // replica 0
             barrier2.wait().await;
             let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:50010".parse()?,
-                "127.0.0.1:55600".parse()?,
+                "127.0.0.1:41309".parse()?,
+                "127.0.0.1:40030".parse()?,
             )
             .await?;
             assert_eq!(hub.me, 0);
@@ -705,8 +705,8 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:55700".parse()?,
-                p2p_addr: "127.0.0.1:55800".parse()?,
+                api_addr: "127.0.0.1:40130".parse()?,
+                p2p_addr: "127.0.0.1:40230".parse()?,
             })?;
             // recv a message from manager
             assert_eq!(
@@ -721,8 +721,8 @@ mod reigner_tests {
             assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
             time::sleep(Duration::from_millis(100)).await;
             let mut hub = ControlHub::new_and_setup(
-                "127.0.0.1:50110".parse()?,
-                "127.0.0.1:55600".parse()?,
+                "127.0.0.1:41319".parse()?,
+                "127.0.0.1:40030".parse()?,
             )
             .await?;
             assert_eq!(hub.me, 0);
@@ -730,8 +730,8 @@ mod reigner_tests {
             hub.send_ctrl(CtrlMsg::NewServerJoin {
                 id: hub.me,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:55700".parse()?,
-                p2p_addr: "127.0.0.1:55800".parse()?,
+                api_addr: "127.0.0.1:40130".parse()?,
+                p2p_addr: "127.0.0.1:40230".parse()?,
             })?;
             // recv a message from manager
             assert_eq!(
@@ -747,7 +747,7 @@ mod reigner_tests {
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
         let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:55600".parse()?,
+            "127.0.0.1:40030".parse()?,
             tx_id_assign,
             rx_id_result,
         )
@@ -763,8 +763,8 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 0,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:55700".parse()?,
-                p2p_addr: "127.0.0.1:55800".parse()?
+                api_addr: "127.0.0.1:40130".parse()?,
+                p2p_addr: "127.0.0.1:40230".parse()?
             }
         );
         // send reply to server 0
@@ -785,8 +785,8 @@ mod reigner_tests {
             CtrlMsg::NewServerJoin {
                 id: 0,
                 protocol: SmrProtocol::SimplePush,
-                api_addr: "127.0.0.1:55700".parse()?,
-                p2p_addr: "127.0.0.1:55800".parse()?
+                api_addr: "127.0.0.1:40130".parse()?,
+                p2p_addr: "127.0.0.1:40230".parse()?
             }
         );
         // send reply to server 0

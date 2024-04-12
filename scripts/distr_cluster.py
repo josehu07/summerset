@@ -2,7 +2,6 @@ import sys
 import os
 import signal
 import argparse
-import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import utils
@@ -12,13 +11,13 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
 SERVER_LOOP_IP = "0.0.0.0"
-SERVER_API_PORT = lambda r: 52700 + r
-SERVER_P2P_PORT = lambda r: 52800 + r
-SERVER_BIND_BASE_PORT = lambda r: 50000 + r * 100
+SERVER_API_PORT = lambda p, r: 40100 + (p * 10 + r)
+SERVER_P2P_PORT = lambda p, r: 40200 + (p * 10 + r)
+SERVER_BIND_BASE_PORT = lambda p, r: 41000 + (p * 10 + r) * 10
 
 MANAGER_LOOP_IP = "0.0.0.0"
-MANAGER_SRV_PORT = 52600
-MANAGER_CLI_PORT = 52601
+MANAGER_SRV_PORT = lambda p: 40000 + p * 10
+MANAGER_CLI_PORT = lambda p: 40001 + p * 10
 
 
 PROTOCOL_BACKER_PATH = (
@@ -143,14 +142,14 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
     return cmd
 
 
-def launch_manager(protocol, num_replicas, release):
+def launch_manager(protocol, partition, num_replicas, release):
     bind_ip = MANAGER_LOOP_IP
 
     cmd = compose_manager_cmd(
         protocol,
         bind_ip,
-        MANAGER_SRV_PORT,
-        MANAGER_CLI_PORT,
+        MANAGER_SRV_PORT(partition),
+        MANAGER_CLI_PORT(partition),
         num_replicas,
         release,
     )
@@ -204,6 +203,7 @@ def launch_servers(
     me,
     cd_dir,
     protocol,
+    partition,
     num_replicas,
     release,
     config,
@@ -223,14 +223,14 @@ def launch_servers(
     for replica in range(num_replicas):
         host = hosts[replica]
 
-        bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(replica)}"
-        manager_addr = f"{manager_pub_ip}:{MANAGER_SRV_PORT}"
+        bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(partition, replica)}"
+        manager_addr = f"{manager_pub_ip}:{MANAGER_SRV_PORT(partition)}"
 
         cmd = compose_server_cmd(
             protocol,
             bind_base,
-            SERVER_API_PORT(replica),
-            SERVER_P2P_PORT(replica),
+            SERVER_API_PORT(partition, replica),
+            SERVER_P2P_PORT(partition, replica),
             manager_addr,
             config_with_defaults(
                 protocol,
@@ -274,6 +274,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
+    )
+    parser.add_argument(
+        "-a",
+        "--partition",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument(
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"
@@ -322,9 +329,17 @@ if __name__ == "__main__":
     )
     cd_dir = f"{base}/{repo}"
 
+    # check that the partition index is valid
+    partition_in_args = "partition" in args
+    if partition_in_args and (args.partition < 0 or args.partition >= 5):
+        raise ValueError("currently only supports <= 5 partitions")
+    partition = 0 if not partition_in_args else args.partition
+
     # check that number of replicas is valid
+    if args.num_replicas <= 0:
+        raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError("#replicas exceeds #hosts in the config file")
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -337,40 +352,44 @@ if __name__ == "__main__":
     utils.config.check_remote_is_me(remotes[args.me])
 
     # kill all existing server and manager processes
-    print("Killing related processes...")
-    kill_procs = []
-    for host in hosts:
-        kill_procs.append(
-            utils.proc.run_process_over_ssh(
-                remotes[host],
-                ["./scripts/kill_all_procs.sh"],
-                cd_dir=cd_dir,
-                print_cmd=False,
+    if not partition_in_args:
+        print("Killing related processes...")
+        kill_procs = []
+        for host in hosts:
+            kill_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["./scripts/kill_all_procs.sh"],
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
             )
-        )
-    utils.proc.wait_parallel_procs(kill_procs, names=hosts)
+        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
-    print("Preparing states folder...")
-    prepare_procs = []
-    for host in hosts:
-        prepare_procs.append(
-            utils.proc.run_process_over_ssh(
-                remotes[host],
-                ["mkdir", "-p", args.file_prefix],
-                cd_dir=cd_dir,
-                print_cmd=False,
+    if partition == 0:
+        print("Preparing states folder...")
+        prepare_procs = []
+        for host in hosts:
+            prepare_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["mkdir", "-p", args.file_prefix],
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
             )
-        )
-    utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
+        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # build everything
-    if not args.skip_build:
+    if not partition_in_args and not args.skip_build:
         print("Building everything...")
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release)
+    manager_proc = launch_manager(
+        args.protocol, partition, args.num_replicas, args.release
+    )
     wait_manager_setup(manager_proc)
 
     # create a thread that prints out captured manager outputs
@@ -390,6 +409,7 @@ if __name__ == "__main__":
         args.me,
         cd_dir,
         args.protocol,
+        partition,
         args.num_replicas,
         args.release,
         args.config,
@@ -401,6 +421,8 @@ if __name__ == "__main__":
     )
 
     # register termination signals handler
+    # NOTE: this also terminates other partitions' processes if doing
+    #       keyspace partitioning
     def kill_spawned_procs(*args):
         print("Killing related processes...")
         kill_procs = []

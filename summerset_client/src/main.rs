@@ -43,7 +43,7 @@ struct CliArgs {
 
     /// Base address 'localip:port' to use in bind addresses for sockets
     /// that communicate with server nodes.
-    /// Ports [port, port + N) must be available at process launch.
+    /// Ports [port, port + N] must be available at process launch.
     #[arg(short, long)]
     bind_base: SocketAddr,
 
@@ -124,7 +124,7 @@ fn client_main() -> Result<(), SummersetError> {
         // NOTE: currently only supports <= 9 servers due to the hardcoded
         // binding ports
         let ctrl_bind =
-            SocketAddr::new(args.bind_base.ip(), args.bind_base.port() + 10);
+            SocketAddr::new(args.bind_base.ip(), args.bind_base.port() + 9);
         let api_bind_base = args.bind_base;
         let endpoint = protocol
             .new_client_endpoint(
@@ -203,8 +203,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:41700".parse()?,
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -222,8 +222,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:41700".parse()?,
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -238,8 +238,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "invalid_mode".into(),
-            bind_base: "127.0.0.1:41700".parse()?,
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -254,8 +254,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:41700".parse()?,
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
@@ -270,8 +270,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:41700".parse()?,
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 0,
             config: "".into(),
