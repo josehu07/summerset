@@ -93,7 +93,7 @@ def config_with_defaults(
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
-            ["rm", "-f", backer_path],
+            ["sudo", "rm", "-f", backer_path],
             print_cmd=False,
         ).wait()
 
@@ -105,7 +105,7 @@ def config_with_defaults(
         if fresh_files:
             utils.proc.run_process_over_ssh(
                 remote,
-                ["rm", "-f", snapshot_path],
+                ["sudo", "rm", "-f", snapshot_path],
                 print_cmd=False,
             ).wait()
 

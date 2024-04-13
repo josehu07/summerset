@@ -36,7 +36,7 @@ RESULT_SECS_BEGIN = 10
 RESULT_SECS_END = 35
 
 
-def launch_cluster(remote0, base, repo, protocol, config=None):
+def launch_cluster(remote0, base, repo, protocol, num_keys, config=None):
     cmd = [
         "python3",
         "./scripts/distr_cluster.py",
@@ -53,6 +53,8 @@ def launch_cluster(remote0, base, repo, protocol, config=None):
         "host0",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
+        "--file_midfix",
+        f".{num_keys}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--skip_build",
@@ -109,6 +111,8 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys):
         str(LENGTH_SECS),
         "--file_prefix",
         f"{base}/output/{EXPER_NAME}",
+        "--file_midfix",
+        f".{num_keys}",
     ]
     return utils.proc.run_process_over_ssh(
         remote0,
@@ -121,8 +125,7 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys):
 
 
 def bench_round(remote0, base, repo, protocol, num_keys, runlog_path):
-    midfix_str = f".{num_keys}"
-    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
+    print(f"  {EXPER_NAME}  {protocol:<10s}.{num_keys}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
@@ -131,7 +134,9 @@ def bench_round(remote0, base, repo, protocol, num_keys, runlog_path):
         config += f"+init_assignment='1'"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, protocol, num_keys, config=config
+    )
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -139,14 +144,14 @@ def bench_round(remote0, base, repo, protocol, num_keys, runlog_path):
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
+    with open(f"{runlog_path}/{protocol}.{num_keys}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
+    with open(f"{runlog_path}/{protocol}.{num_keys}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:

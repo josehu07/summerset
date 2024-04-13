@@ -3,67 +3,54 @@ import os
 import argparse
 import time
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import common_utils as utils
+import utils
 
+# fmt: off
 import matplotlib  # type: ignore
-
 matplotlib.use("Agg")
-
 import matplotlib.pyplot as plt  # type: ignore
+# fmt: on
 
 
-BASE_PATH = "/eval"
-SERVER_STATES_FOLDER = "states"
-CLIENT_OUTPUT_FOLDER = "output"
-RUNTIME_LOGS_FOLDER = "runlog"
+TOML_FILENAME = "scripts/remote_hosts.toml"
+PHYS_ENV_GROUP = "1dc"
 
-EXPER_NAME = "ycsb_3sites"
-
-MAIN_HOST_NICKNAME = "host0"
-
-YCSB_DIR = f"{BASE_PATH}/ycsb"
-YCSB_TRACE = "/tmp/ycsb_workloada.txt"
-
+EXPER_NAME = "ycsb_trace"
 SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
 CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
 
-
-SERVER_PIN_CORES = 20
-CLIENT_PIN_CORES = 2
+YCSB_DIR = lambda base: f"{base}/ycsb"
+YCSB_TRACE = "/tmp/ycsb_workloada.txt"
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 15
-
-
+NUM_CLIENTS_LIST = list(range(1, 6))
 BATCH_INTERVAL = 1
-
-VALUE_SIZE = 256 * 1024
+VALUE_SIZE = 64 * 1024
 PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
 
-
-LENGTH_SECS = 60
-
-RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 58
+LENGTH_SECS = 35
+RESULT_SECS_BEGIN = 10
+RESULT_SECS_END = 30
 
 
-def gen_ycsb_a_trace():
+def gen_ycsb_a_trace(base):
+    # TODO: do on remote
     cmd = [
-        f"{YCSB_DIR}/bin/ycsb.sh",
+        f"{YCSB_DIR(base)}/bin/ycsb.sh",
         "run",
         "basic",
         "-P",
-        f"{YCSB_DIR}/workloads/workloada",
+        f"{YCSB_DIR(base)}/workloads/workloada",
     ]
-    proc = utils.run_process(
+    proc = utils.proc.run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     )
     out, _ = proc.communicate()
     raw = out.decode()
 
     # clean the trace
+    # TODO: check #keys; pick value size according to dist
     with open(YCSB_TRACE, "w+") as fout:
         for line in raw.strip().split("\n"):
             line = line.strip()
@@ -74,177 +61,213 @@ def gen_ycsb_a_trace():
                 fout.write(f"{op} {key}\n")
 
 
-def launch_cluster_summerset(protocol, config=None):
+def launch_cluster_summerset(
+    remote, base, repo, protocol, partition, num_clients, config=None
+):
     cmd = [
         "python3",
         "./scripts/distr_cluster.py",
         "-p",
         protocol,
+        "-a",
+        str(partition),
         "-n",
         str(NUM_REPLICAS),
         "-r",
+        "--force_leader",
+        str(partition),
+        "-g",
+        PHYS_ENV_GROUP,
         "--me",
-        MAIN_HOST_NICKNAME,
+        f"host{partition}",
         "--file_prefix",
-        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
-        "--pin_cores",
-        str(SERVER_PIN_CORES),
+        f"{base}/states/{EXPER_NAME}",
+        "--file_midfix",
+        f".{partition}.{num_clients}",
+        # NOTE: not pinning cores for this exper due to large #processes
+        "--skip_build",
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def wait_cluster_setup_summerset(proc, fserr=None):
+def wait_cluster_setup_summerset():
     # print("Waiting for cluster setup...")
-    accepting_clients = [False for _ in range(NUM_REPLICAS)]
-
-    for line in iter(proc.stderr.readline, b""):
-        if fserr is not None:
-            fserr.write(line)
-        l = line.decode()
-        # print(l, end="", file=sys.stderr)
-
-        if "accepting clients" in l:
-            replica = l[l.find("(") + 1 : l.find(")")]
-            if replica == "m":
-                continue
-            replica = int(replica)
-            assert not accepting_clients[replica]
-            accepting_clients[replica] = True
-
-        if accepting_clients.count(True) == 1:
-            # early breaking here: do not reply on SSH-piped output
-            break
-
-    # take extra 10 seconds for the other peers to become ready
-    time.sleep(10)
+    # wait for 20 seconds to safely allow all nodes up
+    # not relying on SSH-piped outputs here
+    time.sleep(20)
 
 
-def run_bench_clients_summerset(protocol):
+def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
     cmd = [
         "python3",
         "./scripts/distr_clients.py",
         "-p",
         protocol,
         "-r",
+        "-g",
+        PHYS_ENV_GROUP,
         "--me",
-        MAIN_HOST_NICKNAME,
-        "--pin_cores",
-        str(CLIENT_PIN_CORES),
+        f"host{partition}",
+        # NOTE: not pinning cores for this exper due to large #processes
         "--base_idx",
         str(0),
+        "--skip_build",
         "bench",
+        "-a",
+        str(partition),
         "-n",
-        str(NUM_CLIENTS),
+        str(num_clients),
+        # NOTE: not distributing clients of this partition to other nodes,
+        #       so the behavior mathces ChainPaxos's multithreading client
         "-f",
         str(0),  # closed-loop
-        "-v",
-        str(VALUE_SIZE),
-        # "-w",
-        # str(PUT_RATIO),
         "-y",
         YCSB_TRACE,
         "-l",
         str(LENGTH_SECS),
-        "--norm_stdev_ratio",
-        str(0.1),
         "--file_prefix",
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        f"{base}/output/{EXPER_NAME}",
+        "--file_midfix",
+        f".{partition}.{num_clients}",
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def bench_round_summerset(protocol, runlog_path):
-    print(f"  {EXPER_NAME}  {protocol:<10s}")
-    utils.kill_all_local_procs()
-    time.sleep(5)
+def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_path):
+    print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+sim_read_lease=true"
     if protocol == "RSPaxos" or protocol == "CRaft":
-        config += f"+fault_tolerance=1"
+        config += f"+fault_tolerance=2"
     if protocol == "Crossword":
         config += f"+init_assignment='1'"
-        config += f"+disable_gossip_timer=true"
+        # config += f"+disable_gossip_timer=true"  # TODO: maybe?
 
-    # launch service cluster
-    proc_cluster = launch_cluster_summerset(protocol, config=config)
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
-        wait_cluster_setup_summerset(proc_cluster, fserr=fserr)
+    # launch service clusters for each partition
+    procs_cluster = []
+    for partition in range(NUM_REPLICAS):
+        procs_cluster.append(
+            launch_cluster_summerset(
+                remotes[f"host{partition}"],
+                base,
+                repo,
+                protocol,
+                partition,
+                num_clients,
+                config=config,
+            )
+        )
+    wait_cluster_setup_summerset()
 
-    # start benchmarking clients
-    proc_clients = run_bench_clients_summerset(protocol)
+    # start benchmarking clients for each partition
+    procs_clients = []
+    for partition in range(NUM_REPLICAS):
+        procs_clients.append(
+            run_bench_clients_summerset(
+                remotes[f"host{partition}"],
+                base,
+                repo,
+                protocol,
+                partition,
+                num_clients,
+            )
+        )
 
     # wait for benchmarking clients to exit
-    _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
-        fcerr.write(cerr)
+    for partition in range(NUM_REPLICAS):
+        _, cerr = procs_clients[partition].communicate()
+        with open(
+            f"{runlog_path}/{protocol}.{partition}.{num_clients}.c.err", "wb"
+        ) as fcerr:
+            fcerr.write(cerr)
 
-    # terminate the cluster
-    proc_cluster.terminate()
-    utils.kill_all_local_procs()
-    _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
-        fserr.write(serr)
+    # terminate the clusters
+    for partition in range(NUM_REPLICAS):
+        procs_cluster[partition].terminate()
+    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
+    for partition in range(NUM_REPLICAS):
+        _, serr = procs_cluster[partition].communicate()
+        with open(
+            f"{runlog_path}/{protocol}.{partition}.{num_clients}.s.err", "wb"
+        ) as fserr:
+            fserr.write(serr)
 
-    if proc_clients.returncode != 0:
+    if any(map(lambda p: p.returncode != 0, procs_clients)):
         print("    Experiment FAILED!")
         sys.exit(1)
     else:
         print("    Done!")
 
 
-def launch_cluster_chain(protocol):
+def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
     cmd = [
         "python3",
         "./scripts/crossword/distr_chainapp.py",
         "-p",
         protocol,
+        "-a",
+        str(partition),
         "-n",
         str(NUM_REPLICAS),
+        "-g",
+        PHYS_ENV_GROUP,
         "--me",
-        MAIN_HOST_NICKNAME,
+        "host0",
         "--file_prefix",
-        f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}",
-        "--pin_cores",
-        str(SERVER_PIN_CORES),
+        f"{base}/states/{EXPER_NAME}",
+        "--file_midfix",
+        f".{partition}.{num_clients}",
+        # NOTE: not pinning cores for this exper due to large #processes
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def wait_cluster_setup_chain(proc, fserr=None):
+def wait_cluster_setup_chain():
     # print("Waiting for cluster setup...")
-    # NOTE: using `proc.stdout` here as the ChainPaxos app prints logs to stdout
-    for line in iter(proc.stdout.readline, b""):
-        if fserr is not None:
-            fserr.write(line)
-        l = line.decode()
-        # print(l, end="", file=sys.stderr)
-
-        if "I am leader now!" in l:
-            break
-
-    # take extra 10 seconds for the other peers to become ready
-    time.sleep(10)
+    # wait for 20 seconds to safely allow all nodes up
+    # not relying on SSH-piped outputs here
+    time.sleep(20)
 
 
-def run_bench_clients_chain(protocol):
+def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients):
     cmd = [
         "python3",
         "./scripts/crossword/distr_chaincli.py",
         "-p",
         protocol,
-        "--pin_cores",
-        str(CLIENT_PIN_CORES),
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
+        # NOTE: not pinning cores for this exper due to large #processes
+        "-a",
+        str(partition),
         "-n",
-        str(NUM_CLIENTS),
+        str(num_clients),
         "-v",
         str(VALUE_SIZE),
         "-w",
@@ -252,37 +275,72 @@ def run_bench_clients_chain(protocol):
         "-l",
         str(LENGTH_SECS),
         "--file_prefix",
-        f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
+        f"{base}/output/{EXPER_NAME}",
+        "--file_midfix",
+        f".{partition}.{num_clients}",
     ]
-    return utils.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    return utils.proc.run_process_over_ssh(
+        remote,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
 
 
-def bench_round_chain(protocol):
-    print(f"  {EXPER_NAME}  {protocol:<10s}")
+def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
+    print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
 
-    # launch service cluster
-    proc_cluster = launch_cluster_chain(protocol)
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
-        wait_cluster_setup_chain(proc_cluster, fserr=fserr)
+    # launch service clusters for each partition
+    procs_cluster = []
+    for partition in range(NUM_REPLICAS):
+        procs_cluster.append(
+            launch_cluster_chain(
+                remotes[f"host{partition}"],
+                base,
+                repo,
+                protocol,
+                partition,
+                num_clients,
+            )
+        )
+    wait_cluster_setup_chain()
 
-    # start benchmarking clients
-    proc_clients = run_bench_clients_chain(protocol)
+    # start benchmarking clients for each partition
+    procs_clients = []
+    for partition in range(NUM_REPLICAS):
+        procs_clients.append(
+            run_bench_clients_chain(
+                remotes[f"host{partition}"],
+                base,
+                repo,
+                protocol,
+                partition,
+                num_clients,
+            )
+        )
 
     # wait for benchmarking clients to exit
-    _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}.c.err", "wb") as fcerr:
-        fcerr.write(cerr)
+    for partition in range(NUM_REPLICAS):
+        _, cerr = procs_clients[partition].communicate()
+        with open(
+            f"{runlog_path}/{protocol}.{partition}.{num_clients}.c.err", "wb"
+        ) as fcerr:
+            fcerr.write(cerr)
 
-    # terminate the cluster
-    proc_cluster.terminate()
-    os.system("./scripts/crossword/kill_chain_procs.sh")
-    _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
-        fserr.write(serr)
+    # terminate the clusters
+    for partition in range(NUM_REPLICAS):
+        procs_cluster[partition].terminate()
+    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
+    for partition in range(NUM_REPLICAS):
+        _, serr = procs_cluster[partition].communicate()
+        with open(
+            f"{runlog_path}/{protocol}.{partition}.{num_clients}.s.err", "wb"
+        ) as fserr:
+            fserr.write(serr)
 
-    if proc_clients.returncode != 0:
+    if any(map(lambda p: p.returncode != 0, procs_clients)):
         print("    Experiment FAILED!")
         sys.exit(1)
     else:
@@ -293,7 +351,7 @@ def collect_outputs(odir):
     results = dict()
 
     for protocol in SUMMERSET_PROTOCOLS:
-        result = utils.gather_outputs(
+        result = utils.output.gather_outputs(
             protocol,
             NUM_CLIENTS,
             odir,
@@ -306,9 +364,11 @@ def collect_outputs(odir):
         if protocol == "Crossword":
             # setting sm here to compensate for printing models to console
             sm = 1.1
-        tput_mean_list = utils.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
-        lat_mean_list = utils.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
+        lat_mean_list = utils.output.list_smoothing(
+            result["lat_avg"], sd, sp, sj, 1 / sm
+        )
         lat_stdev_list = result["lat_stdev"]
 
         results[protocol] = {
@@ -327,7 +387,7 @@ def collect_outputs(odir):
     def result_cap(pa, pb, down):
         for metric in ("tput", "lat"):
             for stat in ("mean", "stdev"):
-                results[f"{pa}"][metric][stat] = utils.list_capping(
+                results[f"{pa}"][metric][stat] = utils.output.list_capping(
                     results[f"{pa}"][metric][stat],
                     results[f"{pb}"][metric][stat],
                     5,
@@ -365,7 +425,7 @@ def collect_outputs(odir):
             }
 
     for protocol in CHAIN_PROTOCOLS:
-        results[protocol] = utils.parse_ycsb_log(
+        results[protocol] = utils.output.parse_ycsb_log(
             protocol,
             odir,
             1,
@@ -500,52 +560,82 @@ def plot_legend(handles, labels, odir):
 
 
 if __name__ == "__main__":
-    utils.check_proper_cwd()
+    utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-t", "--trace", action="store_true", help="if set, do YCSB trace generation"
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
-    )
-    parser.add_argument(
         "-o",
         "--odir",
         type=str,
-        default=f"{BASE_PATH}/{CLIENT_OUTPUT_FOLDER}/{EXPER_NAME}",
-        help=".out files directory",
+        default=f"./results",
+        help="directory to hold outputs and logs",
+    )
+    parser.add_argument(
+        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
     )
     args = parser.parse_args()
 
+    if not os.path.isdir(args.odir):
+        raise RuntimeError(f"results directory {args.odir} does not exist")
+
     if args.trace:
-        print("Generating YCSB-A trace for Summerset...")
+        print("Generating YCSB-A trace...")
+        base, _, _, _, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, PHYS_ENV_GROUP
+        )
         if os.path.isfile(YCSB_TRACE):
             print(f"  {YCSB_TRACE} already there, skipped")
         else:
-            gen_ycsb_a_trace()
+            gen_ycsb_a_trace(base)
             print(f"  Done: {YCSB_TRACE}")
 
     elif not args.plot:
-        utils.check_enough_cpus()
+        print("Doing preparation work...")
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, PHYS_ENV_GROUP
+        )
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
 
-        runlog_path = f"{BASE_PATH}/{RUNTIME_LOGS_FOLDER}/{EXPER_NAME}"
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.clear_fs_caches(remotes=remotes)
+
+        runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         if not os.path.isdir(runlog_path):
             os.system(f"mkdir -p {runlog_path}")
 
-        print("Running experiments...")
-        for protocol in SUMMERSET_PROTOCOLS:
-            time.sleep(5)
-            bench_round_summerset(protocol, runlog_path)
-        for protocol in CHAIN_PROTOCOLS:
-            time.sleep(5)
-            bench_round_chain(protocol, runlog_path)
+        for num_clients in NUM_CLIENTS_LIST:
+            print(f"Running experiments {num_clients}...")
 
-        state_path = f"{BASE_PATH}/{SERVER_STATES_FOLDER}/{EXPER_NAME}"
-        utils.remove_files_in_dir(state_path)
+            PROTOCOL_FUNCS = [(p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS]
+            PROTOCOL_FUNCS += [(p, bench_round_chain) for p in CHAIN_PROTOCOLS]
+            for protocol, bench_round_func in PROTOCOL_FUNCS:
+                time.sleep(10)
+                bench_round_func(
+                    remotes, base, repo, protocol, num_clients, runlog_path
+                )
+                utils.proc.kill_all_distr_procs(
+                    PHYS_ENV_GROUP, chain=(protocol in CHAIN_PROTOCOLS)
+                )
+                utils.file.remove_files_in_dir(  # to free up storage space
+                    f"{base}/states/{EXPER_NAME}",
+                    remotes=remotes,
+                )
+                utils.file.clear_fs_caches(remotes=remotes)
 
     else:
-        results = collect_outputs(args.odir)
+        output_dir = f"{args.odir}/output/{EXPER_NAME}"
+        plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
+        if not os.path.isdir(plots_dir):
+            os.system(f"mkdir -p {plots_dir}")
+
+        results = collect_outputs(output_dir)
         print_results(results)
-        handles, labels = plot_results(results, args.odir)
-        plot_legend(handles, labels, args.odir)
+
+        handles, labels = plot_results(results, plots_dir)
+        plot_legend(handles, labels, plots_dir)

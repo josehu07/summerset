@@ -65,7 +65,7 @@ def run_process_pinned(
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
         return utils.proc.run_process(
-            cmd, capture_stdout=capture_stdout, cpu_list=cpu_list
+            cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
         )
     else:
         return utils.proc.run_process_over_ssh(

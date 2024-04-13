@@ -2,7 +2,6 @@ import sys
 import os
 import signal
 import argparse
-import multiprocessing
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -14,19 +13,19 @@ CHAIN_REPO_NAME = "chain"
 CHAIN_JAR_FOLDER = "deploy/server"
 
 
-SERVER_CONSENSUS_PORT = 50300
-SERVER_FRONTEND_PEER_PORT = 50400
-SERVER_APP_PORT = 50500
+SERVER_CONSENSUS_PORT = lambda p: 40000 + p
+SERVER_FRONTEND_PEER_PORT = lambda p: 40010 + p
+SERVER_APP_PORT = lambda p: 40020 + p
 
 SERVER_LEADER_TIMEOUT = 5000
 SERVER_NOOP_INTERVAL = 100
 
 
-PROTOCOLS = {"chain_delayed", "chain_mixed", "chainrep", "epaxos"}
-
 PROTOCOL_BACKER_PATH = (
     lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
 )
+
+PROTOCOLS = {"chain_delayed", "chain_mixed", "chainrep", "epaxos"}
 
 
 def run_process_pinned(
@@ -54,6 +53,9 @@ def run_process_pinned(
 def compose_server_cmd(
     protocol,
     ipaddrs,
+    consensus_port,
+    frontend_peer_port,
+    app_port,
     quorum_size,
     replica_id,
     remote,
@@ -66,7 +68,7 @@ def compose_server_cmd(
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
-            ["rm", "-f", backer_file],
+            ["sudo", "rm", "-f", backer_file],
             print_cmd=False,
         ).wait()
 
@@ -83,9 +85,9 @@ def compose_server_cmd(
         f"initial_membership={','.join(ipaddrs.values())}",
         "initial_state=ACTIVE",
         f"quorum_size={quorum_size}",
-        f"consensus_port={SERVER_CONSENSUS_PORT}",
-        f"frontend_peer_port={SERVER_FRONTEND_PEER_PORT}",
-        f"app_port={SERVER_APP_PORT}",
+        f"consensus_port={consensus_port}",
+        f"frontend_peer_port={frontend_peer_port}",
+        f"app_port={app_port}",
         f"leader_timeout={SERVER_LEADER_TIMEOUT}",
         f"noop_interval={SERVER_NOOP_INTERVAL}",
     ]
@@ -100,6 +102,7 @@ def launch_servers(
     me,
     cd_dir,
     protocol,
+    partition,
     num_replicas,
     file_prefix,
     file_midfix,
@@ -116,6 +119,9 @@ def launch_servers(
         cmd = compose_server_cmd(
             protocol,
             ipaddrs,
+            SERVER_CONSENSUS_PORT(partition),
+            SERVER_FRONTEND_PEER_PORT(partition),
+            SERVER_APP_PORT(partition),
             (num_replicas // 2) + 1,
             replica,
             remotes[host],
@@ -156,6 +162,13 @@ if __name__ == "__main__":
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument(
+        "-a",
+        "--partition",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="if doing keyspace partitioning, the partition idx",
+    )
+    parser.add_argument(
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"
     )
     parser.add_argument(
@@ -191,9 +204,17 @@ if __name__ == "__main__":
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
+    # check that the partition index is valid
+    partition_in_args = "partition" in args
+    if partition_in_args and (args.partition < 0 or args.partition >= 5):
+        raise ValueError("currently only supports <= 5 partitions")
+    partition = 0 if not partition_in_args else args.partition
+
     # check that number of replicas is valid
+    if args.num_replicas <= 0:
+        raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError("#replicas exceeds #hosts in the config file")
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -205,33 +226,35 @@ if __name__ == "__main__":
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
 
-    # kill all existing server and manager processes
-    print("Killing related processes...")
-    kill_procs = []
-    for host in hosts:
-        kill_procs.append(
-            utils.proc.run_process_over_ssh(
-                remotes[host],
-                ["./scripts/crossword/kill_chain_procs.sh"],
-                cd_dir=cd_dir_summerset,
-                print_cmd=False,
+    # kill all existing server processes
+    if not partition_in_args:
+        print("Killing related processes...")
+        kill_procs = []
+        for host in hosts:
+            kill_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["./scripts/crossword/kill_chain_procs.sh"],
+                    cd_dir=cd_dir_summerset,
+                    print_cmd=False,
+                )
             )
-        )
-    utils.proc.wait_parallel_procs(kill_procs, names=hosts)
+        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
-    print("Preparing states folder...")
-    prepare_procs = []
-    for host in hosts:
-        prepare_procs.append(
-            utils.proc.run_process_over_ssh(
-                remotes[host],
-                ["mkdir", "-p", args.file_prefix],
-                cd_dir=cd_dir_chain,
-                print_cmd=False,
+    if partition == 0:
+        print("Preparing states folder...")
+        prepare_procs = []
+        for host in hosts:
+            prepare_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["mkdir", "-p", args.file_prefix],
+                    cd_dir=cd_dir_chain,
+                    print_cmd=False,
+                )
             )
-        )
-    utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
+        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # get the main Ethernet interface name on each host
     print("Getting main interface name...")
@@ -244,7 +267,7 @@ if __name__ == "__main__":
         print(interface)
         interfaces[host] = interface
 
-    # then launch server replicas
+    # launch server replicas
     server_procs = launch_servers(
         remotes,
         ipaddrs,
@@ -253,6 +276,7 @@ if __name__ == "__main__":
         args.me,
         cd_dir_chain,
         args.protocol,
+        partition,
         args.num_replicas,
         args.file_prefix,
         args.file_midfix,
@@ -261,6 +285,8 @@ if __name__ == "__main__":
     )
 
     # register termination signals handler
+    # NOTE: this also terminates other partitions' processes if doing
+    #       keyspace partitioning
     def kill_spawned_procs(*args):
         print("Killing related processes...")
         kill_procs = []

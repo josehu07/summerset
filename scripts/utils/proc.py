@@ -16,7 +16,7 @@ def kill_all_local_procs():
     os.system(cmd)
 
 
-def kill_all_distr_procs(group, targets="all"):
+def kill_all_distr_procs(group, targets="all", chain=False):
     # print(f"Killing all procs on {group} {targets}...")
     cmd = [
         "python3",
@@ -26,6 +26,8 @@ def kill_all_distr_procs(group, targets="all"):
         "-t",
         targets,
     ]
+    if chain:
+        cmd.append("--chain")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
 
 
