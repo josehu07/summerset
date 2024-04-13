@@ -2,7 +2,12 @@ import statistics
 import random
 
 
-def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap):
+def gather_outputs(
+    protocol_with_midfix, num_clients, path_prefix, tb, te, tgap, partition=None
+):
+    if partition is not None:
+        protocol_with_midfix += f".{partition}"
+
     outputs = dict()
     for c in range(num_clients):
         outputs[c] = {"time": [], "tput": [], "lat": []}
@@ -48,17 +53,20 @@ def gather_outputs(protocol_with_midfix, num_clients, path_prefix, tb, te, tgap)
         result["tput_min"].append(min(tputs))
         result["tput_max"].append(max(tputs))
         result["tput_avg"].append(sum(tputs) / len(tputs))
-        result["tput_stdev"].append(statistics.stdev(tputs))
+        result["tput_stdev"].append(statistics.stdev(tputs) if num_clients > 1 else 0.0)
         result["lat_min"].append(min(lats))
         result["lat_max"].append(max(lats))
         result["lat_avg"].append(sum(lats) / len(lats))
-        result["lat_stdev"].append(statistics.stdev(lats))
+        result["lat_stdev"].append(statistics.stdev(lats) if num_clients > 1 else 0.0)
         t += tgap
 
     return result
 
 
-def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te):
+def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te, partition=None):
+    if partition is not None:
+        protocol_with_midfix += f".{partition}"
+
     tputs, tput_stdevs, lats, lat_stdevs = [], [], [], []
     with open(f"{path_prefix}/{protocol_with_midfix}.out", "r") as fout:
         for line in fout:

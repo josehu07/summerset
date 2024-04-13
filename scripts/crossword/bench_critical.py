@@ -26,9 +26,9 @@ CLIENT_PIN_CORES = 2
 NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 
-LENGTH_SECS = 30
+LENGTH_SECS = 60
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 25
+RESULT_SECS_END = 55
 
 
 class EnvSetting:
@@ -205,8 +205,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
     if round_params.read_lease:
         config += f"+sim_read_lease=true"
     if protocol == "Crossword":
-        # TODO: tune this
-        config += f"+b_to_d_threshold={0.08}"
+        config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster

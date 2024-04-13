@@ -17,24 +17,33 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "ycsb_trace"
-# SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-SUMMERSET_PROTOCOLS = ["Crossword"]
-# CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
-CHAIN_PROTOCOLS = ["chain_delayed"]
+SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
 
 GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
 
 NUM_REPLICAS = 5
-# NUM_CLIENTS_LIST = list(range(1, 6))
-NUM_CLIENTS_LIST = [2]
+NUM_CLIENTS_LIST = list(range(1, 11))
 BATCH_INTERVAL = 1
-VALUE_SIZE = 64 * 1024
 PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
 
-LENGTH_SECS = 35
+LENGTH_SECS = 60
 RESULT_SECS_BEGIN = 10
-RESULT_SECS_END = 30
+RESULT_SECS_END = 50
+
+SIZE_S = 8
+SIZE_L = 128 * 1024
+SIZE_M = 64 * 1024
+SIZE_MIXED = [
+    (0, SIZE_L),
+    (LENGTH_SECS // 6, SIZE_S),
+    ((LENGTH_SECS // 6) * 2, SIZE_L),
+    ((LENGTH_SECS // 6) * 3, SIZE_S),
+    ((LENGTH_SECS // 6) * 4, SIZE_L),
+    ((LENGTH_SECS // 6) * 5, SIZE_S),
+]
+SIZE_MIXED = "/".join([f"{t}:{v}" for t, v in SIZE_MIXED])
 
 NETEM_MEAN = lambda _: 1
 NETEM_JITTER = lambda _: 2
@@ -115,7 +124,7 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
         "-y",
         YCSB_TRACE,
         "-v",
-        str(VALUE_SIZE),
+        SIZE_MIXED,
         "-l",
         str(LENGTH_SECS),
         "--file_prefix",
@@ -141,7 +150,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
     if protocol == "RSPaxos" or protocol == "CRaft":
         config += f"+fault_tolerance=2"
     if protocol == "Crossword":
-        config += f"+init_assignment='1'"
+        config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
         # config += f"+disable_gossip_timer=true"  # TODO: maybe?
 
     # launch service clusters for each partition
@@ -255,7 +264,7 @@ def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients
         "-t",
         str(num_clients),
         "-v",
-        str(VALUE_SIZE),
+        str(SIZE_M),
         "-w",
         str(PUT_RATIO),
         "-l",
@@ -333,92 +342,61 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
         print("    Done!")
 
 
-def collect_outputs(odir):
+def collect_outputs(output_dir):
     results = dict()
 
     for protocol in SUMMERSET_PROTOCOLS:
-        result = utils.output.gather_outputs(
-            protocol,
-            NUM_CLIENTS,
-            odir,
-            RESULT_SECS_BEGIN,
-            RESULT_SECS_END,
-            0.1,
-        )
-
-        sd, sp, sj, sm = 20, 0, 0, 1
-        if protocol == "Crossword":
-            # setting sm here to compensate for printing models to console
-            sm = 1.1
-        tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
-        tput_stdev_list = result["tput_stdev"]
-        lat_mean_list = utils.output.list_smoothing(
-            result["lat_avg"], sd, sp, sj, 1 / sm
-        )
-        lat_stdev_list = result["lat_stdev"]
-
-        results[protocol] = {
-            "tput": {
-                "mean": tput_mean_list,
-                "stdev": tput_stdev_list,
-            },
-            "lat": {
-                "mean": lat_mean_list,
-                "stdev": lat_stdev_list,
-            },
-        }
-
-    # do capping for other protocols to remove weird spikes/dips introduced
-    # by the TCP stack
-    def result_cap(pa, pb, down):
-        for metric in ("tput", "lat"):
-            for stat in ("mean", "stdev"):
-                results[f"{pa}"][metric][stat] = utils.output.list_capping(
-                    results[f"{pa}"][metric][stat],
-                    results[f"{pb}"][metric][stat],
-                    5,
-                    down=down if metric == "tput" else not down,
+        results[protocol] = {"tputs": [], "lats": []}
+        for num_clients in NUM_CLIENTS_LIST:
+            part_tputs, part_lats = [], []
+            for partition in range(NUM_REPLICAS):
+                print("!!!", protocol, num_clients, partition)
+                result = utils.output.gather_outputs(
+                    f"{protocol}.{num_clients}",
+                    num_clients,
+                    output_dir,
+                    RESULT_SECS_BEGIN,
+                    RESULT_SECS_END,
+                    0.1,
+                    partition=partition,
                 )
 
-    result_cap("RSPaxos", "CRaft", False)
-    result_cap("RSPaxos", "CRaft", True)
-    result_cap("MultiPaxos", "Raft", False)
-    result_cap("MultiPaxos", "Raft", True)
+                sd, sp, sj, sm = 10, 0, 0, 1
+                # if protocol == "Crossword":
+                #     # setting sm here to compensate for printing models to console
+                #     sm = 1.1
+                tput_mean_list = utils.output.list_smoothing(
+                    result["tput_sum"], sd, sp, sj, sm
+                )
+                lat_mean_list = utils.output.list_smoothing(
+                    result["lat_avg"], sd, sp, sj, 1 / sm
+                )
 
-    for protocol in SUMMERSET_PROTOCOLS:
-        if protocol in results:
-            tput_mean_list = results[protocol]["tput"]["mean"]
-            tput_stdev_list = results[protocol]["tput"]["stdev"]
-            lat_mean_list = results[protocol]["lat"]["mean"]
-            lat_stdev_list = results[protocol]["lat"]["stdev"]
+                part_tputs.append(sum(tput_mean_list) / len(tput_mean_list))
+                part_lats.append((sum(lat_mean_list) / len(lat_mean_list)) / 1000)
 
-            results[protocol] = {
-                "tput": {
-                    "mean": sum(tput_mean_list) / len(tput_mean_list),
-                    "stdev": (
-                        sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
-                    )
-                    ** 0.5,
-                },
-                "lat": {
-                    "mean": (sum(lat_mean_list) / len(lat_mean_list)) / 1000,
-                    "stdev": (
-                        sum(map(lambda s: s**2, lat_stdev_list)) / len(lat_stdev_list)
-                    )
-                    ** 0.5
-                    / (1000 * NUM_CLIENTS / SERVER_PIN_CORES),
-                },
-            }
+            results[protocol]["tputs"].append(sum(part_tputs))
+            results[protocol]["lats"].append(sum(part_lats) / len(part_lats))
 
     for protocol in CHAIN_PROTOCOLS:
-        results[protocol] = utils.output.parse_ycsb_log(
-            protocol,
-            odir,
-            1,
-            1,
-        )
-        results[protocol]["tput"]["stdev"] /= NUM_CLIENTS / SERVER_PIN_CORES
-        results[protocol]["lat"]["stdev"] /= NUM_CLIENTS / SERVER_PIN_CORES
+        results[protocol] = {"tputs": [], "lats": []}
+        for num_clients in NUM_CLIENTS_LIST:
+            part_tputs, part_lats = [], []
+            for partition in range(NUM_REPLICAS):
+                print("!!!", protocol, num_clients, partition)
+                result = utils.output.parse_ycsb_log(
+                    f"{protocol}.{num_clients}",
+                    output_dir,
+                    1,
+                    1,
+                    partition=partition,
+                )
+
+                part_tputs.append(result["tput"]["mean"])
+                part_lats.append(result["lat"]["mean"])
+
+            results[protocol]["tputs"].append(sum(part_tputs))
+            results[protocol]["lats"].append(sum(part_lats) / len(part_lats))
 
     return results
 
@@ -426,13 +404,17 @@ def collect_outputs(odir):
 def print_results(results):
     for protocol, result in results.items():
         print(protocol)
-        print(
-            f"  tput  mean {result['tput']['mean']:7.2f}  stdev {result['tput']['stdev']:7.2f}"
-            + f"  lat  mean {result['lat']['mean']:7.2f}  stdev {result['lat']['stdev']:7.2f}"
-        )
+        print("  tputs", end="")
+        for tput in result["tputs"]:
+            print(f"  {tput:7.2f}", end="")
+        print()
+        print("  lats ", end="")
+        for lat in result["lats"]:
+            print(f"  {lat:7.2f}", end="")
+        print()
 
 
-def plot_results(results, odir):
+def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (4.5, 2),
@@ -518,7 +500,7 @@ def plot_results(results, odir):
     return ax1.get_legend_handles_labels()
 
 
-def plot_legend(handles, labels, odir):
+def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2, 2),
@@ -654,5 +636,5 @@ if __name__ == "__main__":
         results = collect_outputs(output_dir)
         print_results(results)
 
-        handles, labels = plot_results(results, plots_dir)
-        plot_legend(handles, labels, plots_dir)
+        # handles, labels = plot_results(results, plots_dir)
+        # plot_legend(handles, labels, plots_dir)
