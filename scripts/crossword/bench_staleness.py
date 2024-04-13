@@ -89,6 +89,8 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys):
         PHYS_ENV_GROUP,
         "--me",
         "host0",
+        "--man",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
         "--base_idx",

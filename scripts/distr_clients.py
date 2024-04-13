@@ -339,12 +339,17 @@ if __name__ == "__main__":
         raise ValueError(f"invalid manager oracle's host {args.man}")
 
     # check that the partition index is valid
-    partition_in_args, partition = False, 0
+    partition_in_args, partition, file_midfix = False, 0, args.file_midfix
     if args.utility == "bench":
         partition_in_args = "partition" in args
         if partition_in_args and (args.partition < 0 or args.partition >= 5):
             raise ValueError("currently only supports <= 5 partitions")
         partition = 0 if not partition_in_args else args.partition
+        file_midfix = (
+            args.file_midfix
+            if not partition_in_args
+            else f"{args.file_midfix}.{partition}"
+        )
 
     # check that number of clients does not exceed 99
     if args.utility == "bench":
@@ -356,7 +361,6 @@ if __name__ == "__main__":
     # check that the prefix folder path exists, or create it if not
     if (
         args.utility == "bench"
-        and partition == 0
         and len(args.file_prefix) > 0
         and not os.path.isdir(args.file_prefix)
     ):
@@ -407,9 +411,7 @@ if __name__ == "__main__":
                 # doing automated experiments, so capture output
                 out, _ = client_proc.communicate(timeout=timeout)
                 with open(
-                    CLIENT_OUTPUT_PATH(
-                        args.protocol, args.file_prefix, args.file_midfix, i
-                    ),
+                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, file_midfix, i),
                     "w+",
                 ) as fout:
                     fout.write(out.decode())

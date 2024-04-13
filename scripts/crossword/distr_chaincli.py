@@ -202,6 +202,9 @@ if __name__ == "__main__":
     if partition_in_args and (args.partition < 0 or args.partition >= 5):
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
+    file_midfix = (
+        args.file_midfix if not partition_in_args else f"{args.file_midfix}.{partition}"
+    )
 
     # check that number of clients is valid
     if args.num_threads <= 0:
@@ -235,7 +238,7 @@ if __name__ == "__main__":
             # doing automated experiments, so capture output
             out, _ = client_proc.communicate(timeout=timeout)
             with open(
-                CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, args.file_midfix),
+                CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, file_midfix),
                 "w+",
             ) as fout:
                 fout.write(out.decode())

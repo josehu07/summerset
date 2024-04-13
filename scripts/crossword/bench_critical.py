@@ -160,6 +160,8 @@ def run_bench_clients(remote0, base, repo, protocol, round_params):
         round_params.env_setting.group,
         "--me",
         "host0",
+        "--man",
+        "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
         "--base_idx",

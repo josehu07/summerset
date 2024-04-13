@@ -209,6 +209,9 @@ if __name__ == "__main__":
     if partition_in_args and (args.partition < 0 or args.partition >= 5):
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
+    file_midfix = (
+        args.file_midfix if not partition_in_args else f"{args.file_midfix}.{partition}"
+    )
 
     # check that number of replicas is valid
     if args.num_replicas <= 0:
@@ -242,19 +245,18 @@ if __name__ == "__main__":
         utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
-    if partition == 0:
-        print("Preparing states folder...")
-        prepare_procs = []
-        for host in hosts:
-            prepare_procs.append(
-                utils.proc.run_process_over_ssh(
-                    remotes[host],
-                    ["mkdir", "-p", args.file_prefix],
-                    cd_dir=cd_dir_chain,
-                    print_cmd=False,
-                )
+    print("Preparing states folder...")
+    prepare_procs = []
+    for host in hosts:
+        prepare_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["mkdir", "-p", args.file_prefix],
+                cd_dir=cd_dir_chain,
+                print_cmd=False,
             )
-        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
+        )
+    utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # get the main Ethernet interface name on each host
     print("Getting main interface name...")
@@ -279,7 +281,7 @@ if __name__ == "__main__":
         partition,
         args.num_replicas,
         args.file_prefix,
-        args.file_midfix,
+        file_midfix,
         not args.keep_files,
         args.pin_cores,
     )

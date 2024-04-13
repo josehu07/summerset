@@ -17,14 +17,17 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "ycsb_trace"
-SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
+# SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
+SUMMERSET_PROTOCOLS = ["Crossword"]
+# CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
+CHAIN_PROTOCOLS = ["chain_delayed"]
 
-YCSB_DIR = lambda base: f"{base}/ycsb"
+GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
 
 NUM_REPLICAS = 5
-NUM_CLIENTS_LIST = list(range(1, 6))
+# NUM_CLIENTS_LIST = list(range(1, 6))
+NUM_CLIENTS_LIST = [2]
 BATCH_INTERVAL = 1
 VALUE_SIZE = 64 * 1024
 PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
@@ -33,32 +36,9 @@ LENGTH_SECS = 35
 RESULT_SECS_BEGIN = 10
 RESULT_SECS_END = 30
 
-
-def gen_ycsb_a_trace(base):
-    # TODO: do on remote
-    cmd = [
-        f"{YCSB_DIR(base)}/bin/ycsb.sh",
-        "run",
-        "basic",
-        "-P",
-        f"{YCSB_DIR(base)}/workloads/workloada",
-    ]
-    proc = utils.proc.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
-    )
-    out, _ = proc.communicate()
-    raw = out.decode()
-
-    # clean the trace
-    # TODO: check #keys; pick value size according to dist
-    with open(YCSB_TRACE, "w+") as fout:
-        for line in raw.strip().split("\n"):
-            line = line.strip()
-            if line.startswith("READ ") or line.startswith("UPDATE "):
-                segs = line.split()
-                op = segs[0]
-                key = segs[2]
-                fout.write(f"{op} {key}\n")
+NETEM_MEAN = lambda _: 1
+NETEM_JITTER = lambda _: 2
+NETEM_RATE = lambda r: 1  # no effect given the original bandwidth
 
 
 def launch_cluster_summerset(
@@ -83,7 +63,7 @@ def launch_cluster_summerset(
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
-        f".{partition}.{num_clients}",
+        f".{num_clients}",
         # NOTE: not pinning cores for this exper due to large #processes
         "--skip_build",
     ]
@@ -117,6 +97,8 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
         PHYS_ENV_GROUP,
         "--me",
         f"host{partition}",
+        "--man",
+        f"host{partition}",
         # NOTE: not pinning cores for this exper due to large #processes
         "--base_idx",
         str(0),
@@ -127,17 +109,19 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
         "-n",
         str(num_clients),
         # NOTE: not distributing clients of this partition to other nodes,
-        #       so the behavior mathces ChainPaxos's multithreading client
+        #       so the behavior matches ChainPaxos's multithreading client
         "-f",
         str(0),  # closed-loop
         "-y",
         YCSB_TRACE,
+        "-v",
+        str(VALUE_SIZE),
         "-l",
         str(LENGTH_SECS),
         "--file_prefix",
         f"{base}/output/{EXPER_NAME}",
         "--file_midfix",
-        f".{partition}.{num_clients}",
+        f".{num_clients}",
     ]
     return utils.proc.run_process_over_ssh(
         remote,
@@ -194,7 +178,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
     for partition in range(NUM_REPLICAS):
         _, cerr = procs_clients[partition].communicate()
         with open(
-            f"{runlog_path}/{protocol}.{partition}.{num_clients}.c.err", "wb"
+            f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb"
         ) as fcerr:
             fcerr.write(cerr)
 
@@ -205,7 +189,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
     for partition in range(NUM_REPLICAS):
         _, serr = procs_cluster[partition].communicate()
         with open(
-            f"{runlog_path}/{protocol}.{partition}.{num_clients}.s.err", "wb"
+            f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb"
         ) as fserr:
             fserr.write(serr)
 
@@ -229,11 +213,11 @@ def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
         "-g",
         PHYS_ENV_GROUP,
         "--me",
-        "host0",
+        f"host{partition}",
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
-        f".{partition}.{num_clients}",
+        f".{num_clients}",
         # NOTE: not pinning cores for this exper due to large #processes
     ]
     return utils.proc.run_process_over_ssh(
@@ -259,14 +243,16 @@ def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients
         "./scripts/crossword/distr_chaincli.py",
         "-p",
         protocol,
+        "-n",
+        str(NUM_REPLICAS),
         "-g",
         PHYS_ENV_GROUP,
         "--me",
-        "host0",
+        f"host{partition}",
         # NOTE: not pinning cores for this exper due to large #processes
         "-a",
         str(partition),
-        "-n",
+        "-t",
         str(num_clients),
         "-v",
         str(VALUE_SIZE),
@@ -277,7 +263,7 @@ def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients
         "--file_prefix",
         f"{base}/output/{EXPER_NAME}",
         "--file_midfix",
-        f".{partition}.{num_clients}",
+        f".{num_clients}",
     ]
     return utils.proc.run_process_over_ssh(
         remote,
@@ -290,7 +276,7 @@ def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients
 
 
 def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
-    print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
+    print(f"  {EXPER_NAME}  {protocol:<13s}.{num_clients}")
 
     # launch service clusters for each partition
     procs_cluster = []
@@ -325,7 +311,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
     for partition in range(NUM_REPLICAS):
         _, cerr = procs_clients[partition].communicate()
         with open(
-            f"{runlog_path}/{protocol}.{partition}.{num_clients}.c.err", "wb"
+            f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb"
         ) as fcerr:
             fcerr.write(cerr)
 
@@ -336,7 +322,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
     for partition in range(NUM_REPLICAS):
         _, serr = procs_cluster[partition].communicate()
         with open(
-            f"{runlog_path}/{protocol}.{partition}.{num_clients}.s.err", "wb"
+            f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb"
         ) as fserr:
             fserr.write(serr)
 
@@ -583,14 +569,25 @@ if __name__ == "__main__":
 
     if args.trace:
         print("Generating YCSB-A trace...")
-        base, _, _, _, _, _ = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
-        if os.path.isfile(YCSB_TRACE):
-            print(f"  {YCSB_TRACE} already there, skipped")
-        else:
-            gen_ycsb_a_trace(base)
-            print(f"  Done: {YCSB_TRACE}")
+        hosts = hosts[:NUM_REPLICAS]
+        remotes = {h: remotes[h] for h in hosts}
+
+        trace_procs = []
+        for host in hosts:
+            trace_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["python3", f"./scripts/{GEN_YCSB_SCRIPT}"],
+                    cd_dir=f"{base}/{repo}",
+                    capture_stdout=True,
+                    capture_stderr=True,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(trace_procs, names=hosts)
 
     elif not args.plot:
         print("Doing preparation work...")
@@ -606,8 +603,19 @@ if __name__ == "__main__":
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
-        if not os.path.isdir(runlog_path):
-            os.system(f"mkdir -p {runlog_path}")
+        output_path = f"{args.odir}/output/{EXPER_NAME}"
+        for path in (runlog_path, output_path):
+            if not os.path.isdir(path):
+                os.system(f"mkdir -p {path}")
+
+        print("Setting tc netem qdiscs...")
+        utils.net.set_tc_qdisc_netems_main(
+            NETEM_MEAN,
+            NETEM_JITTER,
+            NETEM_RATE,
+            involve_ifb=True,
+            remotes=remotes,
+        )
 
         for num_clients in NUM_CLIENTS_LIST:
             print(f"Running experiments {num_clients}...")
@@ -627,6 +635,15 @@ if __name__ == "__main__":
                     remotes=remotes,
                 )
                 utils.file.clear_fs_caches(remotes=remotes)
+
+        print("Clearing tc netem qdiscs...")
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
+
+        print("Fetching client output logs...")
+        for remote in remotes.values():
+            utils.file.fetch_files_of_dir(
+                remote, f"{base}/output/{EXPER_NAME}", output_path
+            )
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

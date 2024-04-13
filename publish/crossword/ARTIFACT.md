@@ -4,8 +4,8 @@ For a shell command, `$` indicates running it on the local development machine, 
 
 1. On you local dev machine, change into the repo's path
     1. `cd path/to/summerset`
-1. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
-2. For each of the hosts (examples below are for `host0`), do the following setup work
+2. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
+3. For each of the hosts (examples below are for `host0`), do the following setup work
     1. SSH to it
     2. Create `/eval` path and acquire its ownership:
         1. `% sudo mkdir /eval`
@@ -29,5 +29,7 @@ For a shell command, `$` indicates running it on the local development machine, 
         1. `% ./scripts/setup/setup_tcp_bufs.sh`
     10. Set up network devices (for netem experiments)
         1. `% ./scripts/setup/setup_net_devs.sh`
-    11. Record the SSH key pair for mutual login between remote nodes
+    11. Configure & open TCP ports
+        1. `% ./scripts/setup/open_tcp_ports.sh`
+    12. Record the SSH key pair for mutual login between remote nodes
         1. `% ./scripts/setup/sshkey_record.sh`
