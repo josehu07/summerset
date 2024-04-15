@@ -5,7 +5,14 @@ For a shell command, `$` indicates running it on the local development machine, 
 1. On you local dev machine, change into the repo's path
     1. `cd path/to/summerset`
 2. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
-3. For each of the hosts (examples below are for `host0`), do the following setup work
+3. Add the following setting to your `~/.ssh/config` for skipping the SSH `known_hosts` check
+
+    ```text
+    Host *
+        StrictHostKeyChecking no
+    ```
+
+4. For each of the hosts (examples below are for `host0`), do the following setup work
     1. SSH to it
     2. Create `/eval` path and acquire its ownership:
         1. `% sudo mkdir /eval`
