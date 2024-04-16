@@ -288,13 +288,14 @@ def plot_staleness(diff_stats, plots_dir):
     )
     fig = plt.figure("Exper")
 
-    TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
-    PROTOCOL_ORDER = ["RSPaxos", "Crossword", "MultiPaxos"]
-    PROTOCOL_COLOR_MARKER_SIZE_ZORDER = {
-        "MultiPaxos": ("dimgray", "v", 5, 0),
-        "Crossword": ("steelblue", "o", 5, 10),
-        "RSPaxos": ("red", "x", 5, 0),
+    PROTOCOLS_ORDER = ["RSPaxos", "Crossword", "MultiPaxos"]
+    PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
+        "MultiPaxos": ("MultiPaxos", "dimgray", "v", 0),
+        "Crossword": ("Crossword", "steelblue", "o", 10),
+        "RSPaxos": ("RSPaxos", "red", "x", 0),
     }
+    TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
+    MARKER_SIZE = 5
 
     xmin = TIME_INTERVAL_UNIT - 1
     ymax, protocol_ys = 0.0, dict()
@@ -309,16 +310,16 @@ def plot_staleness(diff_stats, plots_dir):
         ys.sort(reverse=True)
         protocol_ys[protocol] = ys
 
-    for protocol in PROTOCOL_ORDER:
-        color, marker, markersize, zorder = PROTOCOL_COLOR_MARKER_SIZE_ZORDER[protocol]
+    for protocol in PROTOCOLS_ORDER:
+        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[protocol]
         plt.plot(
             [k * TIME_INTERVAL_UNIT for k in NUM_KEYS_LIST],
             protocol_ys[protocol],
             color=color,
             linewidth=1.2,
             marker=marker,
-            markersize=markersize,
-            label=protocol,
+            markersize=MARKER_SIZE,
+            label=label,
             zorder=zorder,
         )
 
@@ -401,6 +402,11 @@ def plot_legend(handles, labels, plots_dir):
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
+    for rec in lgd.get_texts():
+        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+            rec.set_fontstyle("italic")
+        # if "Crossword" in rec.get_text():
+        #     rec.set_fontweight("bold")
 
     pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)

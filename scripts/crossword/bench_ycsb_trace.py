@@ -24,7 +24,7 @@ GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
 
 NUM_REPLICAS = 5
-NUM_CLIENTS_LIST = list(range(1, 11))
+NUM_CLIENTS_LIST = list(range(1, 26, 4))
 BATCH_INTERVAL = 1
 PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
 
@@ -47,7 +47,7 @@ SIZE_MIXED = "/".join([f"{t}:{v}" for t, v in SIZE_MIXED])
 
 NETEM_MEAN = lambda _: 1
 NETEM_JITTER = lambda _: 2
-NETEM_RATE = lambda r: 1  # no effect given the original bandwidth
+NETEM_RATE = lambda _: 1  # no effect given the original bandwidth
 
 
 def launch_cluster_summerset(
@@ -151,7 +151,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
         config += f"+fault_tolerance=2"
     if protocol == "Crossword":
         config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
-        # config += f"+disable_gossip_timer=true"  # TODO: maybe?
+        config += f"+disable_gossip_timer=true"  # TODO: maybe?
 
     # launch service clusters for each partition
     procs_cluster = []
@@ -350,7 +350,6 @@ def collect_outputs(output_dir):
         for num_clients in NUM_CLIENTS_LIST:
             part_tputs, part_lats = [], []
             for partition in range(NUM_REPLICAS):
-                print("!!!", protocol, num_clients, partition)
                 result = utils.output.gather_outputs(
                     f"{protocol}.{num_clients}",
                     num_clients,
@@ -362,9 +361,9 @@ def collect_outputs(output_dir):
                 )
 
                 sd, sp, sj, sm = 10, 0, 0, 1
-                # if protocol == "Crossword":
-                #     # setting sm here to compensate for printing models to console
-                #     sm = 1.1
+                if protocol == "Crossword":
+                    # setting sm here to compensate for printing models to console
+                    sm = 1.1
                 tput_mean_list = utils.output.list_smoothing(
                     result["tput_sum"], sd, sp, sj, sm
                 )
@@ -383,7 +382,6 @@ def collect_outputs(output_dir):
         for num_clients in NUM_CLIENTS_LIST:
             part_tputs, part_lats = [], []
             for partition in range(NUM_REPLICAS):
-                print("!!!", protocol, num_clients, partition)
                 result = utils.output.parse_ycsb_log(
                     f"{protocol}.{num_clients}",
                     output_dir,
@@ -417,87 +415,64 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4.5, 2),
-            "font.size": 12,
+            "figure.figsize": (3, 2),
+            "font.size": 10,
             "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
+        "chain_mixed",
+        "chain_delayed",
         "MultiPaxos",
         "Raft",
-        "Crossword",
         "RSPaxos",
         "CRaft",
-        "chain_delayed",
+        "Crossword",
     ]
-    PROTOCOLS_LABEL_COLOR_HATCH = {
-        "MultiPaxos": ("MultiPaxos", "darkgray", None),
-        "Raft": ("Raft", "lightgreen", None),
-        "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos", "salmon", "//"),
-        "CRaft": ("CRaft", "wheat", "\\\\"),
-        "chain_delayed": ("ChainPaxos", "plum", "--"),
+    PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
+        "MultiPaxos": ("MultiPaxos", "dimgray", "v", 5),
+        "Raft": ("Raft", "forestgreen", "v", 0),
+        "Crossword": ("Crossword", "steelblue", "o", 10),
+        "RSPaxos": ("RSPaxos (f=1)", "red", "x", 5),
+        "CRaft": ("CRaft (f=1)", "peru", "x", 0),
+        "chain_mixed": ("ChainPaxos (mixed)", "magenta", "d", 5),
+        "chain_delayed": ("ChainPaxos (delay)", "mediumpurple", "d", 0),
     }
+    MARKER_SIZE = 4
 
-    ax1 = plt.subplot(121)
-    for i, protocol in enumerate(PROTOCOLS_ORDER):
-        xpos = i + 1
-        result = results[protocol]["tput"]
-
-        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
-            xpos,
-            result["mean"],
-            width=1,
+    for protocol in PROTOCOLS_ORDER:
+        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[protocol]
+        plt.plot(
+            results[protocol]["tputs"],
+            results[protocol]["lats"],
             color=color,
-            edgecolor="black",
-            linewidth=1.4,
+            linewidth=1.2,
+            marker=marker,
+            markersize=MARKER_SIZE,
             label=label,
-            hatch=hatch,
-            # yerr=result["stdev"],
-            # ecolor="black",
-            # capsize=1,
+            zorder=zorder,
         )
 
-    plt.tick_params(bottom=False, labelbottom=False)
-    plt.ylabel("Throughput (reqs/s)")
+    ax = fig.axes[0]
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-    ax2 = plt.subplot(122)
-    for i, protocol in enumerate(PROTOCOLS_ORDER):
-        xpos = i + 1
-        result = results[protocol]["lat"]
+    plt.xlim(left=0)
+    plt.xlabel("Throughput (reqs/s)")
 
-        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
-            xpos,
-            result["mean"],
-            width=1,
-            color=color,
-            edgecolor="gray",
-            linewidth=1.4,
-            hatch=hatch,
-            yerr=result["stdev"],
-            ecolor="black",
-            capsize=1,
-        )
-
-    plt.tick_params(bottom=False, labelbottom=False)
+    plt.ylim(bottom=0)
     plt.ylabel("Latency (ms)")
-
-    for ax in fig.axes:
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/exper-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
-    return ax1.get_legend_handles_labels()
+    return ax.get_legend_handles_labels()
 
 
 def plot_legend(handles, labels, plots_dir):
@@ -515,13 +490,17 @@ def plot_legend(handles, labels, plots_dir):
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=0.9,
-        handlelength=1.3,
+        handlelength=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
+    for rec in lgd.get_texts():
+        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+            rec.set_fontstyle("italic")
+        # if "Crossword" in rec.get_text():
+        #     rec.set_fontweight("bold")
 
-    pdf_name = f"{odir}/legend-{EXPER_NAME}.pdf"
+    pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -636,5 +615,5 @@ if __name__ == "__main__":
         results = collect_outputs(output_dir)
         print_results(results)
 
-        # handles, labels = plot_results(results, plots_dir)
-        # plot_legend(handles, labels, plots_dir)
+        handles, labels = plot_results(results, plots_dir)
+        plot_legend(handles, labels, plots_dir)
