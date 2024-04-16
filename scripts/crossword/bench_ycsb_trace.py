@@ -18,7 +18,7 @@ PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "ycsb_trace"
 SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-CHAIN_PROTOCOLS = ["chain_delayed", "chain_mixed"]
+CHAIN_PROTOCOLS = ["chain_mixed"]
 
 GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
@@ -423,32 +423,35 @@ def plot_results(results, plots_dir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
+        "chain_mixed",
+        # "chain_delayed",
         "MultiPaxos",
         "Raft",
         "RSPaxos",
         "CRaft",
         "Crossword",
-        "chain_mixed",
-        "chain_delayed",
     ]
-    PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
-        "MultiPaxos": ("MultiPaxos", "dimgray", "v", 5),
-        "Raft": ("Raft", "forestgreen", "v", 0),
-        "Crossword": ("Crossword", "steelblue", "o", 10),
-        "RSPaxos": ("RSPaxos (f=1)", "red", "x", 0),
-        "CRaft": ("CRaft (f=1)", "peru", "x", 5),
-        "chain_mixed": ("ChainPaxos* (mixed)", "magenta", "d", 0),
-        "chain_delayed": ("ChainPaxos* (delay)", "mediumpurple", "d", 5),
+    PROTOCOLS_LABEL_COLOR_MARKER_STYLE_ZORDER = {
+        "MultiPaxos": ("MultiPaxos", "dimgray", "v", "-", 5),
+        "Raft": ("Raft", "forestgreen", "v", ":", 0),
+        "Crossword": ("Crossword", "steelblue", "o", "-", 10),
+        "RSPaxos": ("RSPaxos (f=1)", "red", "x", "-", 0),
+        "CRaft": ("CRaft (f=1)", "peru", "x", ":", 5),
+        "chain_mixed": ("ChainPaxos*", "magenta", "d", "-", 0),
+        # "chain_delayed": ("ChainPaxos* (delay)", "mediumpurple", "d", 5),
     }
     MARKER_SIZE = 4
 
     for protocol in PROTOCOLS_ORDER:
-        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[protocol]
+        label, color, marker, linestyle, zorder = (
+            PROTOCOLS_LABEL_COLOR_MARKER_STYLE_ZORDER[protocol]
+        )
         plt.plot(
             results[protocol]["tputs"],
             results[protocol]["lats"],
             color=color,
-            linewidth=1.2,
+            linewidth=1.0,
+            linestyle=linestyle,
             marker=marker,
             markersize=MARKER_SIZE,
             label=label,

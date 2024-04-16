@@ -295,7 +295,7 @@ def plot_staleness(diff_stats, plots_dir):
         "RSPaxos": ("RSPaxos", "red", "x", 0),
     }
     TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
-    MARKER_SIZE = 5
+    MARKER_SIZE = 4
 
     xmin = TIME_INTERVAL_UNIT - 1
     ymax, protocol_ys = 0.0, dict()
@@ -398,7 +398,7 @@ def plot_legend(handles, labels, plots_dir):
     lgd = plt.legend(
         handles,
         labels,
-        handlelength=1.2,
+        handlelength=0.9,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
