@@ -155,8 +155,9 @@ pub async fn tcp_bind_with_retry(
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
         if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
-            eprintln!("{}", get_proc_using_port()?);
+            eprintln!("{}", get_ss_cmd_output()?);
             return Err(SummersetError::from(e));
         }
 
@@ -187,8 +188,9 @@ pub async fn tcp_connect_with_retry(
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
         if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
-            eprintln!("{}", get_proc_using_port()?);
+            eprintln!("{}", get_ss_cmd_output()?);
             return Err(SummersetError::from(e));
         }
 
@@ -205,9 +207,9 @@ pub async fn tcp_connect_with_retry(
     }
 }
 
-fn get_proc_using_port() -> Result<String, SummersetError> {
+fn get_ss_cmd_output() -> Result<String, SummersetError> {
     Ok(String::from_utf8(
-        Command::new("ss").arg("-tnlp").output()?.stdout,
+        Command::new("ss").arg("-tnap").output()?.stdout,
     )?)
 }
 
@@ -219,7 +221,7 @@ mod safetcp_tests {
     #[ignore]
     fn safetcp_try_ss() -> Result<(), SummersetError> {
         println!("Output of `ss` command:");
-        println!("{}", get_proc_using_port()?);
+        println!("{}", get_ss_cmd_output()?);
         Ok(())
     }
 }

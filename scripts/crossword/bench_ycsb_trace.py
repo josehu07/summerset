@@ -24,7 +24,7 @@ GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
 
 NUM_REPLICAS = 5
-NUM_CLIENTS_LIST = list(range(1, 26, 4))
+NUM_CLIENTS_LIST = list(range(1, 100, 7))
 BATCH_INTERVAL = 1
 PUT_RATIO = 50  # YCSB-A has 50% updates + 50% reads
 
@@ -90,9 +90,9 @@ def launch_cluster_summerset(
 
 def wait_cluster_setup_summerset():
     # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
+    # wait for 30 seconds to safely allow all nodes up
     # not relying on SSH-piped outputs here
-    time.sleep(20)
+    time.sleep(30)
 
 
 def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
@@ -363,7 +363,7 @@ def collect_outputs(output_dir):
                 sd, sp, sj, sm = 10, 0, 0, 1
                 if protocol == "Crossword":
                     # setting sm here to compensate for printing models to console
-                    sm = 1.1
+                    sm = 1 + ((PUT_RATIO / 2) / 100)
                 tput_mean_list = utils.output.list_smoothing(
                     result["tput_sum"], sd, sp, sj, sm
                 )
@@ -404,11 +404,11 @@ def print_results(results):
         print(protocol)
         print("  tputs", end="")
         for tput in result["tputs"]:
-            print(f"  {tput:7.2f}", end="")
+            print(f"  {tput:8.2f}", end="")
         print()
         print("  lats ", end="")
         for lat in result["lats"]:
-            print(f"  {lat:7.2f}", end="")
+            print(f"  {lat:8.2f}", end="")
         print()
 
 
@@ -423,22 +423,22 @@ def plot_results(results, plots_dir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
-        "chain_mixed",
-        "chain_delayed",
         "MultiPaxos",
         "Raft",
         "RSPaxos",
         "CRaft",
         "Crossword",
+        "chain_mixed",
+        "chain_delayed",
     ]
     PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
         "MultiPaxos": ("MultiPaxos", "dimgray", "v", 5),
         "Raft": ("Raft", "forestgreen", "v", 0),
         "Crossword": ("Crossword", "steelblue", "o", 10),
-        "RSPaxos": ("RSPaxos (f=1)", "red", "x", 5),
-        "CRaft": ("CRaft (f=1)", "peru", "x", 0),
-        "chain_mixed": ("ChainPaxos (mixed)", "magenta", "d", 5),
-        "chain_delayed": ("ChainPaxos (delay)", "mediumpurple", "d", 0),
+        "RSPaxos": ("RSPaxos (f=1)", "red", "x", 0),
+        "CRaft": ("CRaft (f=1)", "peru", "x", 5),
+        "chain_mixed": ("ChainPaxos* (mixed)", "magenta", "d", 0),
+        "chain_delayed": ("ChainPaxos* (delay)", "mediumpurple", "d", 5),
     }
     MARKER_SIZE = 4
 
