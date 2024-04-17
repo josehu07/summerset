@@ -195,7 +195,7 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb):
 
     plt.tight_layout()
 
-    pdf_name = "results/final/motivation/motiv_profile_cdf.pdf"
+    pdf_name = "results/intros/motiv_profile_cdf.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -227,7 +227,7 @@ def plot_len_cnts_legend(handles, labels):
         bbox_to_anchor=(0.5, 0.5),
     )
 
-    pdf_name = "results/final/motivation/legend-motiv_profile.pdf"
+    pdf_name = "results/intros/legend-motiv_profile.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -235,13 +235,13 @@ def plot_len_cnts_legend(handles, labels):
 
 if __name__ == "__main__":
     len_cnts_tidb, len_cnts_crdb = None, None
-    with open("results/final/motivation/length_counts-tidb.pkl", "rb") as fpkl:
+    with open("results/intros/length_counts-tidb.pkl", "rb") as fpkl:
         len_cnts_tidb = pickle.load(fpkl)
     print("TiDB --")
     preprocess_len_cnts(len_cnts_tidb)
     print()
 
-    with open("results/final/motivation/length_counts-crdb.pkl", "rb") as fpkl:
+    with open("results/intros/length_counts-crdb.pkl", "rb") as fpkl:
         len_cnts_crdb = pickle.load(fpkl)
     len_cnts_crdb = {
         int(l * TIDB_DATA_SIZE / CRDB_DATA_SIZE): c for l, c in len_cnts_crdb.items()
