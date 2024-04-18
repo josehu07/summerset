@@ -112,8 +112,8 @@ def wait_parallel_procs(procs, names=None, check_rc=True):
                 print(f"  {name}: OK")
             else:
                 print(f"  {name}: ERROR")
-                print(proc.stdout)
-                print(proc.stderr)
+                print(proc.stdout.decode())
+                print(proc.stderr.decode())
 
 
 def get_cpu_count(remote=None):

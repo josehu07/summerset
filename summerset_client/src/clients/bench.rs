@@ -25,27 +25,13 @@ use summerset::{
     parsed_config,
 };
 
-/// Maximum number of distinct keys.
-const MAX_NUM_KEYS: usize = 16;
+/// Fixed length in bytes of key.
+const KEY_LEN: usize = 8;
 
 /// Max length in bytes of value.
-const MAX_VAL_LEN: usize = 10 * 1024 * 1024;
+const MAX_VAL_LEN: usize = 16 * 1024 * 1024;
 
 lazy_static! {
-    /// Pool of keys to choose from.
-    static ref KEYS_POOL: Vec<String> = {
-        let mut pool = vec![];
-        for _ in 0..MAX_NUM_KEYS {
-            let key = rand::thread_rng()
-                .sample_iter(&Alphanumeric)
-                .take(8)
-                .map(char::from)
-                .collect();
-            pool.push(key)
-        }
-        pool
-    };
-
     /// A very long pre-generated value string to get values from.
     static ref MOM_VALUE: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -121,14 +107,17 @@ pub struct ClientBench {
     /// Mode parameters struct.
     params: ModeParamsBench,
 
+    /// Random number generator.
+    rng: ThreadRng,
+
+    /// List of randomly generated keys if in synthetic mode.
+    keys_pool: Option<Vec<String>>,
+
     /// Trace of (op, key) pairs to (repeatedly) replay.
     trace_vec: Option<Vec<(bool, String)>>,
 
     /// Trace operation index to play next.
     trace_idx: usize,
-
-    /// Random number generator.
-    rng: ThreadRng,
 
     /// Map from time range (secs) -> specified value size mean value.
     value_size: RangeMap<u64, usize>,
@@ -198,7 +187,7 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.put_ratio '{}'",
                                     params.put_ratio);
         }
-        if params.num_keys == 0 || params.num_keys > MAX_NUM_KEYS {
+        if params.num_keys == 0 {
             return logged_err!("c"; "invalid params.num_keys '{}'",
                                     params.num_keys);
         }
@@ -216,6 +205,22 @@ impl ClientBench {
             return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
                                     params.unif_upper_bound);
         }
+
+        let keys_pool = if params.ycsb_trace.is_empty() {
+            let mut pool = Vec::with_capacity(params.num_keys);
+            for _ in 0..params.num_keys {
+                pool.push(
+                    rand::thread_rng()
+                        .sample_iter(&Alphanumeric)
+                        .take(KEY_LEN)
+                        .map(char::from)
+                        .collect(),
+                );
+            }
+            Some(pool)
+        } else {
+            None
+        };
 
         let trace_vec = if !params.ycsb_trace.is_empty() {
             Some(Self::load_trace_file(&params.ycsb_trace)?)
@@ -253,9 +258,10 @@ impl ClientBench {
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
+            rng: rand::thread_rng(),
+            keys_pool,
             trace_vec,
             trace_idx: 0,
-            rng: rand::thread_rng(),
             value_size,
             norm_dist,
             unif_dist,
@@ -402,9 +408,14 @@ impl ClientBench {
 
     /// Issues a random request.
     fn issue_rand_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
-        // randomly choose a key from key pool; key does not matter too much
-        let key =
-            KEYS_POOL[self.rng.gen_range(0..self.params.num_keys)].clone();
+        debug_assert!(self.keys_pool.is_some());
+        let key = self
+            .keys_pool
+            .as_ref()
+            .unwrap()
+            .get(self.rng.gen_range(0..self.params.num_keys))
+            .unwrap()
+            .clone();
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;

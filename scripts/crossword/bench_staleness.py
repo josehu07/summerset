@@ -18,7 +18,12 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "staleness"
-PROTOCOLS = ["MultiPaxos", "Crossword"]
+PROTOCOL_GAPS = [
+    ("MultiPaxos", None),
+    ("Crossword", 0),
+    ("Crossword", 100),
+    ("Crossword", 200),
+]
 
 MIN_HOST0_CPUS = 30
 SERVER_PIN_CORES = 20
@@ -29,14 +34,18 @@ NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 VALUE_SIZE = 4096
 PUT_RATIO = 100
-NUM_KEYS_LIST = list(range(1, 11))
+NUM_KEYS_LIST = [(2**i) for i in range(6)]
 
 LENGTH_SECS = 45
 RESULT_SECS_BEGIN = 10
 RESULT_SECS_END = 35
 
 
-def launch_cluster(remote0, base, repo, protocol, num_keys, config=None):
+def round_midfix_str(gossip_gap, num_keys):
+    return f".{0 if gossip_gap is None else gossip_gap}.{num_keys}"
+
+
+def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     cmd = [
         "python3",
         "./scripts/distr_cluster.py",
@@ -54,7 +63,7 @@ def launch_cluster(remote0, base, repo, protocol, num_keys, config=None):
         "--file_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--file_midfix",
-        f".{num_keys}",
+        midfix_str,
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--skip_build",
@@ -78,7 +87,7 @@ def wait_cluster_setup():
     time.sleep(20)
 
 
-def run_bench_clients(remote0, base, repo, protocol, num_keys):
+def run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str):
     cmd = [
         "python3",
         "./scripts/distr_clients.py",
@@ -114,7 +123,7 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys):
         "--file_prefix",
         f"{base}/output/{EXPER_NAME}",
         "--file_midfix",
-        f".{num_keys}",
+        midfix_str,
     ]
     return utils.proc.run_process_over_ssh(
         remote0,
@@ -126,34 +135,38 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys):
     )
 
 
-def bench_round(remote0, base, repo, protocol, num_keys, runlog_path):
-    print(f"  {EXPER_NAME}  {protocol:<10s}.{num_keys}")
+def bench_round(remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path):
+    midfix_str = round_midfix_str(gossip_gap, num_keys)
+    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
     config += f"+record_value_ver=true"
     if protocol == "Crossword":
         config += f"+init_assignment='1'"
+        config += f"+gossip_tail_ignores={gossip_gap}"
 
     # launch service cluster
     proc_cluster = launch_cluster(
-        remote0, base, repo, protocol, num_keys, config=config
+        remote0, base, repo, protocol, midfix_str, config=config
     )
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol, num_keys)
+    proc_clients = run_bench_clients(
+        remote0, base, repo, protocol, num_keys, midfix_str
+    )
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}.{num_keys}.c.err", "wb") as fcerr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}.{num_keys}.s.err", "wb") as fserr:
+    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
@@ -170,8 +183,9 @@ def collect_ver_stats(runlog_dir):
         return int(line[line.index("(") + 1 : line.index(")")])
 
     for num_keys in NUM_KEYS_LIST:
-        midfix_str = f".{num_keys}"
-        for protocol in PROTOCOLS:
+        for protocol, gossip_gap in PROTOCOL_GAPS:
+            midfix_str = round_midfix_str(gossip_gap, num_keys)
+
             candidates = set(range(NUM_REPLICAS))
             leader, sec0 = None, None
             result = [{"secs": [], "vers": []} for _ in range(NUM_REPLICAS)]
@@ -210,8 +224,9 @@ def collect_ver_stats(runlog_dir):
 
     diff_stats = dict()
     for num_keys in NUM_KEYS_LIST:
-        midfix_str = f".{num_keys}"
-        for protocol in PROTOCOLS:
+        for protocol, gossip_gap in PROTOCOL_GAPS:
+            midfix_str = round_midfix_str(gossip_gap, num_keys)
+
             leader, result = (
                 ver_stats[f"{protocol}{midfix_str}"]["leader"],
                 ver_stats[f"{protocol}{midfix_str}"]["result"],
@@ -288,57 +303,72 @@ def plot_staleness(diff_stats, plots_dir):
     )
     fig = plt.figure("Exper")
 
-    PROTOCOLS_ORDER = ["RSPaxos", "Crossword", "MultiPaxos"]
+    PROTOCOLS_ORDER = [
+        "RSPaxos.None",
+        "Crossword.200",
+        "Crossword.100",
+        "Crossword.0",
+        "MultiPaxos.None",
+    ]
     PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
-        "MultiPaxos": ("MultiPaxos", "dimgray", "v", 0),
-        "Crossword": ("Crossword", "steelblue", "o", 10),
-        "RSPaxos": ("RSPaxos", "red", "x", 0),
+        "MultiPaxos.None": ("MultiPaxos", "dimgray", "v", 0),
+        "Crossword.200": ("Crossword, 200", "royalblue", "p", 5),
+        "Crossword.100": ("Crossword, 100", "steelblue", "o", 10),
+        "Crossword.0": ("Crossword, 0", "lightsteelblue", "2", 5),
+        "RSPaxos.None": ("RSPaxos", "red", "x", 0),
     }
     TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
     MARKER_SIZE = 4
 
-    xmin = TIME_INTERVAL_UNIT - 1
+    xmin = TIME_INTERVAL_UNIT - 0.5
     ymax, protocol_ys = 0.0, dict()
-    for protocol in PROTOCOLS + ["RSPaxos"]:
+    for protocol, gossip_gap in PROTOCOL_GAPS + [("RSPaxos", None)]:
         ys = None
         if protocol != "RSPaxos":
-            ys = [diff_stats[f"{protocol}.{k}"]["avg"] for k in NUM_KEYS_LIST]
+            ys = [
+                diff_stats[f"{protocol}{round_midfix_str(gossip_gap, k)}"]["avg"]
+                for k in NUM_KEYS_LIST
+            ]
             if max(ys) > ymax:
                 ymax = max(ys)
         else:
             ys = [ymax * 1.6 for _ in NUM_KEYS_LIST]
         ys.sort(reverse=True)
-        protocol_ys[protocol] = ys
+        protocol_ys[f"{protocol}.{gossip_gap}"] = ys
 
-    for protocol in PROTOCOLS_ORDER:
-        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[protocol]
+    for protocol_with_gap in PROTOCOLS_ORDER:
+        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[
+            protocol_with_gap
+        ]
         plt.plot(
             [k * TIME_INTERVAL_UNIT for k in NUM_KEYS_LIST],
-            protocol_ys[protocol],
+            protocol_ys[protocol_with_gap],
             color=color,
             linewidth=1.2,
             marker=marker,
-            markersize=MARKER_SIZE,
+            markersize=(
+                MARKER_SIZE if ".0" not in protocol_with_gap else MARKER_SIZE + 3
+            ),
             label=label,
             zorder=zorder,
         )
 
     def draw_yaxis_break(yloc):
-        ypb, ypt = yloc - 4, yloc + 4
+        ypb, ypt = yloc - 8, yloc + 8
         ys = [ypb, ypb, ypt, ypt]
-        xs = [xmin - 0.6, xmin + 0.6, xmin + 0.6, xmin - 0.6]
+        xs = [xmin - 0.3, xmin + 0.3, xmin + 0.3, xmin - 0.3]
         plt.fill(xs, ys, "w", fill=True, linewidth=0, zorder=10, clip_on=False)
         plt.plot(
-            [xmin - 0.6, xmin + 0.6],
-            [ypb + 1, ypb - 1],
+            [xmin - 0.3, xmin + 0.3],
+            [ypb + 3, ypb - 3],
             color="k",
             linewidth=1,
             zorder=20,
             clip_on=False,
         )
         plt.plot(
-            [xmin - 0.6, xmin + 0.6],
-            [ypt + 1, ypt - 1],
+            [xmin - 0.3, xmin + 0.3],
+            [ypt + 3, ypt - 3],
             color="k",
             linewidth=1,
             zorder=20,
@@ -346,7 +376,7 @@ def plot_staleness(diff_stats, plots_dir):
         )
         plt.text(
             xmin,
-            yloc,
+            yloc - 1,
             "~",
             fontsize=8,
             zorder=30,
@@ -355,19 +385,25 @@ def plot_staleness(diff_stats, plots_dir):
             va="center",
         )
 
-    draw_yaxis_break(70)
+    draw_yaxis_break(ymax * 1.3)
 
     ax = fig.axes[0]
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
+    plt.xscale("log")
     plt.xlim(left=xmin)
-    plt.xlabel("Time between writes (ms)")
+    plt.xlabel("Time between writes\n(ms, log-scale)")
 
-    plt.ylim(bottom=-1)
+    xticks = [TIME_INTERVAL_UNIT, 10, 100]  # TODO: currently hardcoded
+    xticklabels = [str(x) for x in xticks]
+    plt.xticks(xticks, xticklabels)
+
+    plt.ylim(bottom=-3)
     plt.ylabel("Staleness (#ver.)")
 
-    yticks = [0, 25, 50]  # TODO: currently hardcoded
+    max_ytick = int((ymax // 50) * 50)
+    yticks = list(range(0, max_ytick + 1, 50))
     yticklabels = [str(y) for y in yticks]
     yticks += [ymax * 1.6]
     yticklabels += ["∞"]
@@ -386,7 +422,7 @@ def plot_staleness(diff_stats, plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2, 1),
+            "figure.figsize": (2, 2),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -398,7 +434,7 @@ def plot_legend(handles, labels, plots_dir):
     lgd = plt.legend(
         handles,
         labels,
-        handlelength=0.9,
+        handlelength=1.0,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
@@ -453,10 +489,16 @@ if __name__ == "__main__":
         for num_keys in NUM_KEYS_LIST:
             print(f"Running experiments {num_keys}...")
 
-            for protocol in PROTOCOLS:
+            for protocol, gossip_gap in PROTOCOL_GAPS:
                 time.sleep(10)
                 bench_round(
-                    remotes["host0"], base, repo, protocol, num_keys, runlog_path
+                    remotes["host0"],
+                    base,
+                    repo,
+                    protocol,
+                    gossip_gap,
+                    num_keys,
+                    runlog_path,
                 )
                 utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
                 utils.file.remove_files_in_dir(  # to free up storage space
@@ -467,7 +509,6 @@ if __name__ == "__main__":
 
     else:
         runlog_dir = f"{args.odir}/runlog/{EXPER_NAME}"
-        # states_dir = f"{args.odir}/states/{EXPER_NAME}"
         plots_dir = f"{args.odir}/plots/{EXPER_NAME}"
         if not os.path.isdir(plots_dir):
             os.system(f"mkdir -p {plots_dir}")
