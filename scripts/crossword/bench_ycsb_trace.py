@@ -447,7 +447,7 @@ def plot_results(results, plots_dir):
             PROTOCOLS_LABEL_COLOR_MARKER_STYLE_ZORDER[protocol]
         )
         plt.plot(
-            results[protocol]["tputs"],
+            [tput / 1000.0 for tput in results[protocol]["tputs"]],
             results[protocol]["lats"],
             color=color,
             linewidth=1.0,
@@ -463,7 +463,7 @@ def plot_results(results, plots_dir):
     ax.spines["right"].set_visible(False)
 
     plt.xlim(left=0)
-    plt.xlabel("Throughput (reqs/s)")
+    plt.xlabel("Throughput (k reqs/s)")
 
     plt.ylim(bottom=0)
     plt.ylabel("Latency (ms)")
