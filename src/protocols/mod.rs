@@ -18,6 +18,10 @@ mod simple_push;
 use simple_push::{SimplePushReplica, SimplePushClient};
 pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
 
+mod chain_rep;
+use chain_rep::{ChainRepReplica, ChainRepClient};
+pub use chain_rep::{ReplicaConfigChainRep, ClientConfigChainRep};
+
 mod multipaxos;
 use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
 pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
@@ -43,6 +47,7 @@ pub use crossword::{ReplicaConfigCrossword, ClientConfigCrossword};
 pub enum SmrProtocol {
     RepNothing,
     SimplePush,
+    ChainRep,
     MultiPaxos,
     Raft,
     RSPaxos,
@@ -65,6 +70,7 @@ impl SmrProtocol {
         match name {
             "RepNothing" => Some(Self::RepNothing),
             "SimplePush" => Some(Self::SimplePush),
+            "ChainRep" => Some(Self::ChainRep),
             "MultiPaxos" => Some(Self::MultiPaxos),
             "Raft" => Some(Self::Raft),
             "RSPaxos" => Some(Self::RSPaxos),
@@ -112,6 +118,19 @@ impl SmrProtocol {
             Self::SimplePush => {
                 box_if_ok!(
                     SimplePushReplica::new_and_setup(
+                        api_addr,
+                        p2p_addr,
+                        ctrl_bind,
+                        p2p_bind_base,
+                        manager,
+                        config_str
+                    )
+                    .await
+                )
+            }
+            Self::ChainRep => {
+                box_if_ok!(
+                    ChainRepReplica::new_and_setup(
                         api_addr,
                         p2p_addr,
                         ctrl_bind,
@@ -221,6 +240,17 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::ChainRep => {
+                box_if_ok!(
+                    ChainRepClient::new_and_setup(
+                        ctrl_bind,
+                        api_bind_base,
+                        manager,
+                        config_str
+                    )
+                    .await
+                )
+            }
             Self::MultiPaxos => {
                 box_if_ok!(
                     MultiPaxosClient::new_and_setup(
@@ -303,6 +333,7 @@ mod protocols_name_tests {
     fn parse_valid_names() {
         valid_name_test!(RepNothing);
         valid_name_test!(SimplePush);
+        valid_name_test!(ChainRep);
         valid_name_test!(MultiPaxos);
         valid_name_test!(Raft);
         valid_name_test!(RSPaxos);

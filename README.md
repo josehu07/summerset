@@ -162,8 +162,11 @@ python3 scripts/distr_clients.py -h
 - [x] implementation of Raft
   - [ ] TLA+ spec
 - [x] implementation of CRaft
-- [x] implementation of Crossword prototype
+- [x] implementation of Crossword
   - [x] TLA+ spec
+- [ ] implementation of Chain Replication
+  - [ ] basic chain rep protocol
+  - [ ] failure detection & recovery
 - [ ] long-term planned improvements
   - [ ] use a sophisticated storage backend
   - [ ] efficient state-transfer snapshotting

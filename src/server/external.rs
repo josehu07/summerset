@@ -27,7 +27,6 @@ use tokio::time::{self, Duration, MissedTickBehavior};
 pub type RequestId = u64;
 
 /// Request received from client.
-// TODO: add proper read-only flag field/type...
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum ApiRequest {
     /// Regular request.
@@ -41,6 +40,18 @@ pub enum ApiRequest {
 
     /// Client leave notification.
     Leave,
+}
+
+impl ApiRequest {
+    /// Is the command contained in the request read-only?
+    #[inline]
+    pub fn read_only(&self) -> bool {
+        if let ApiRequest::Req { cmd, .. } = self {
+            cmd.read_only()
+        } else {
+            false
+        }
+    }
 }
 
 /// Reply back to client.

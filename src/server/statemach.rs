@@ -25,6 +25,18 @@ pub enum Command {
     Put { key: String, value: String },
 }
 
+impl Command {
+    /// Is the command type read-only?
+    #[inline]
+    pub fn read_only(&self) -> bool {
+        if let Command::Get { .. } = self {
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Command execution result returned by the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum CommandResult {
