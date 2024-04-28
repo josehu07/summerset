@@ -566,8 +566,7 @@ impl GenericEndpoint for ChainRepClient {
             .insert(self.head_id, self.head_api_stub.take().unwrap());
         self.mid_api_stubs
             .insert(self.tail_id, self.tail_api_stub.take().unwrap());
-        for (id, stub) in self.mid_api_stubs.drain() {
-            let mut api_stub = stub.into_inner();
+        for (id, mut api_stub) in self.mid_api_stubs.drain() {
             let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
             while !sent {
                 sent = api_stub.send_req(None)?;
@@ -604,6 +603,8 @@ impl GenericEndpoint for ChainRepClient {
             _ => false,
         };
 
+        debug_assert!(self.head_api_stub.is_some());
+        debug_assert!(self.tail_api_stub.is_some());
         if read_only {
             self.tail_api_stub.as_mut().unwrap().send_req(req)
         } else {
@@ -612,24 +613,14 @@ impl GenericEndpoint for ChainRepClient {
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        debug_assert!(self.api_stubs.contains_key(&self.head_id));
-        debug_assert!(self.api_stubs.contains_key(&self.tail_id));
-        let reply = if self.head_id == self.tail_id {
-            self.api_stubs
-                .get_mut(&self.head_id)
-                .unwrap()
-                .get_mut()
-                .recv_reply()
-                .await?
-        } else {
-            let head_reply =
-                self.api_stubs.get(&self.head_id).unwrap().borrow_mut();
-            let tail_stub =
-                self.api_stubs.get(&self.tail_id).unwrap().borrow_mut();
-            tokio::select! {
-                reply = head_stub.recv_reply() => { reply? },
-                reply = tail_stub.recv_reply() => { reply? },
-            }
+        debug_assert!(self.head_api_stub.is_some());
+        debug_assert!(self.tail_api_stub.is_some());
+        let head_stub = self.head_api_stub.as_mut().unwrap();
+        let tail_stub = self.tail_api_stub.as_mut().unwrap();
+
+        let reply = tokio::select! {
+            reply = head_stub.recv_reply() => { reply? },
+            reply = tail_stub.recv_reply() => { reply? },
         };
 
         // ignoring the `redirect` field here...
