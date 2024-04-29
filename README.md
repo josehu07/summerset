@@ -133,7 +133,6 @@ python3 scripts/distr_clients.py -h
 - [x] implementation of Raft
   - [ ] TLA+ spec
 - [x] implementation of CRaft
-- [x] implementation of Crossword
   - [x] TLA+ spec
 - [ ] long-term planned improvements
   - [ ] use a sophisticated storage backend

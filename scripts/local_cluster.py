@@ -42,23 +42,6 @@ PROTOCOL_EXTRA_DEFAULTS = {
 }
 
 
-def config_with_file_paths(protocol, config, replica):
-    result_config = PROTOCOL_BACKER_PATH[protocol](replica)
-    if protocol in PROTOCOL_SNAPSHOT_PATH:
-        result_config += "+"
-        result_config += PROTOCOL_SNAPSHOT_PATH[protocol](replica)
-
-    if config is not None and len(config) > 0:
-        if "backer_path" in config or "snapshot_path" in config:
-            result_config = config  # use user-supplied path
-            # NOTE: ignores the other one
-        else:
-            result_config += "+"
-            result_config += config
-
-    return result_config
-
-
 def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
     cpu_list = None
     if cores_per_proc > 0:

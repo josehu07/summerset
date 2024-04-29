@@ -44,10 +44,6 @@ pub struct ReplicaConfigRepNothing {
 
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
-
-    // Performance simulation params (all zeros means no perf simulation):
-    pub perf_storage_a: u64,
-    pub perf_storage_b: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -58,8 +54,6 @@ impl Default for ReplicaConfigRepNothing {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,
-            perf_storage_a: 0,
-            perf_storage_b: 0,
         }
     }
 }
