@@ -6,9 +6,21 @@ use crate::utils::SummersetError;
 
 use fixedbitset::FixedBitSet;
 
+use get_size::GetSize;
+
+use serde::{Serialize, Deserialize};
+
 /// Compact bitmap for u8 ID -> bool mapping.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bitmap(FixedBitSet);
+
+// implement `GetSize` trait for `Bitmap`; the heap size is approximated as
+// #bits rounded up to multiple of 4 bytes
+impl GetSize for Bitmap {
+    fn get_heap_size(&self) -> usize {
+        (self.0.len() + 32 - 1) / 32
+    }
+}
 
 impl Bitmap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
@@ -131,6 +143,18 @@ impl fmt::Debug for Bitmap {
             }
         }
         write!(f, "]}}")
+    }
+}
+
+// Implement alternative compact printing.
+impl Bitmap {
+    #[inline]
+    pub fn compact_str(&self) -> String {
+        self.to_vec()
+            .into_iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<String>>()
+            .join(",")
     }
 }
 

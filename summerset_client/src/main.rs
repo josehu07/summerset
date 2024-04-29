@@ -15,14 +15,16 @@ use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
 mod drivers;
 mod clients;
 
-use crate::clients::{ClientMode, ClientRepl, ClientBench, ClientTester};
+use crate::clients::{
+    ClientMode, ClientRepl, ClientBench, ClientTester, ClientMess,
+};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("RepNothing"))]
+    #[arg(short, long)]
     protocol: String,
 
     /// Protocol-specific client configuration TOML string.
@@ -38,6 +40,12 @@ struct CliArgs {
     /// Every '+' is treated as newline.
     #[arg(long, default_value_t = String::from(""))]
     params: String,
+
+    /// Base address 'localip:port' to use in bind addresses for sockets
+    /// that communicate with server nodes.
+    /// Ports [port, port + N] must be available at process launch.
+    #[arg(short, long)]
+    bind_base: SocketAddr,
 
     /// Cluster manager oracle's client-facing address.
     #[arg(short, long)]
@@ -82,7 +90,7 @@ impl CliArgs {
     }
 }
 
-// Client side executable main entrance.
+/// Actual main function of Summerset client executable.
 fn client_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let mut args = CliArgs::parse();
@@ -113,8 +121,18 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
+        // NOTE: currently only supports <= 9 servers due to the hardcoded
+        // binding ports
+        let ctrl_bind =
+            SocketAddr::new(args.bind_base.ip(), args.bind_base.port() + 9);
+        let api_bind_base = args.bind_base;
         let endpoint = protocol
-            .new_client_endpoint(args.manager, config_str)
+            .new_client_endpoint(
+                ctrl_bind,
+                api_bind_base,
+                args.manager,
+                config_str,
+            )
             .await?;
 
         match mode {
@@ -144,16 +162,26 @@ fn client_main() -> Result<(), SummersetError> {
                 )?;
                 tester.run().await?;
             }
+            ClientMode::Mess => {
+                // run one-shot control client
+                let mut mess = ClientMess::new(
+                    endpoint,
+                    Duration::from_millis(args.timeout_ms),
+                    params_str,
+                )?;
+                mess.run().await?;
+            }
         }
 
         Ok::<(), SummersetError>(()) // give type hint for this async closure
     })
 }
 
+/// Main function of Summerset client executable.
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
+        .format_timestamp_millis()
+        .format_module_path(false)
         .format_target(false)
         .init();
 
@@ -175,7 +203,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -193,7 +222,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
             utility: "repl".into(),
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -208,7 +238,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "invalid_mode".into(),
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
             config: "".into(),
@@ -223,7 +254,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 1,
             timeout_ms: 5000,
             config: "".into(),
@@ -238,7 +270,8 @@ mod client_args_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            manager: "127.0.0.1:52601".parse()?,
+            bind_base: "127.0.0.1:42170".parse()?,
+            manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 0,
             config: "".into(),

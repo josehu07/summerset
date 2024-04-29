@@ -1,6 +1,6 @@
 //! Summerset cluster manager oracle.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, Ipv4Addr};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -19,14 +19,20 @@ use summerset::{SmrProtocol, SummersetError, pf_error};
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// Name of SMR protocol to use.
-    #[arg(short, long, default_value_t = String::from("RepNothing"))]
+    #[arg(short, long)]
     protocol: String,
 
+    /// Local IP to use for binding the listening sockets.
+    #[arg(short, long)]
+    bind_ip: Ipv4Addr,
+
     /// Server-facing API port.
+    /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52600)]
     srv_port: u16,
 
     /// Client-facing API port.
+    /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52601)]
     cli_port: u16,
 
@@ -76,31 +82,31 @@ impl CliArgs {
     }
 }
 
-// Cluster manager executable main entrance.
+/// Actual main function of Summerset manager oracle.
 fn manager_main() -> Result<(), SummersetError> {
     // read in and parse command line arguments
     let args = CliArgs::parse();
     let protocol = args.sanitize()?;
 
     // parse server-facing API port
-    let srv_addr: SocketAddr = format!("127.0.0.1:{}", args.srv_port)
+    let srv_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.srv_port)
         .parse()
         .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse srv_addr: port {}: {}",
-            args.srv_port, e
-        ))
-    })?;
+            SummersetError(format!(
+                "failed to parse srv_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.srv_port, e
+            ))
+        })?;
 
     // parse client-facing API port
-    let cli_addr: SocketAddr = format!("127.0.0.1:{}", args.cli_port)
+    let cli_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.cli_port)
         .parse()
         .map_err(|e| {
-        SummersetError(format!(
-            "failed to parse cli_addr: port {}: {}",
-            args.cli_port, e
-        ))
-    })?;
+            SummersetError(format!(
+                "failed to parse cli_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.cli_port, e
+            ))
+        })?;
 
     // set up termination signals handler
     let (tx_term, rx_term) = watch::channel(false);
@@ -111,7 +117,6 @@ fn manager_main() -> Result<(), SummersetError> {
     })?;
 
     let log_level = log::max_level();
-
     {
         // create tokio multi-threaded runtime
         let runtime = Builder::new_multi_thread()
@@ -135,16 +140,17 @@ fn manager_main() -> Result<(), SummersetError> {
 
             Ok::<(), SummersetError>(()) // give type hint for this async closure
         })?;
-    }
+    } // drop the runtime here
 
     log::set_max_level(log_level);
     Ok(())
 }
 
+/// Main function of Summerset manager oracle.
 fn main() -> ExitCode {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp(None)
-        .format_module_path(true)
+        .format_timestamp_millis()
+        .format_module_path(false)
         .format_target(false)
         .init();
 
@@ -165,8 +171,9 @@ mod manager_args_tests {
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            srv_port: 52600,
-            cli_port: 52601,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -178,8 +185,9 @@ mod manager_args_tests {
     fn sanitize_invalid_srv_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             srv_port: 1023,
-            cli_port: 52601,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -191,7 +199,8 @@ mod manager_args_tests {
     fn sanitize_invalid_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            srv_port: 52600,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
             cli_port: 1023,
             population: 3,
             threads: 2,
@@ -204,8 +213,9 @@ mod manager_args_tests {
     fn sanitize_same_srv_cli_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            srv_port: 52600,
-            cli_port: 52600,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
+            cli_port: 40000,
             population: 3,
             threads: 2,
         };
@@ -217,8 +227,9 @@ mod manager_args_tests {
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
-            srv_port: 52600,
-            cli_port: 52601,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 2,
         };
@@ -230,8 +241,9 @@ mod manager_args_tests {
     fn sanitize_invalid_population() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            srv_port: 52600,
-            cli_port: 52601,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 0,
             threads: 2,
         };
@@ -243,8 +255,9 @@ mod manager_args_tests {
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
-            srv_port: 52600,
-            cli_port: 52601,
+            bind_ip: "127.0.0.1".parse()?,
+            srv_port: 40000,
+            cli_port: 40001,
             population: 3,
             threads: 1,
         };

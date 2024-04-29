@@ -18,10 +18,12 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 | Name | Description |
 | :--: | :---------- |
 | `RepNothing` | Simplest protocol w/o any replication |
-| `SimplePush` | Pushing to peers w/o any consistency guarantees |
-| `MultiPaxos` | Classic [MultiPaxos](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf) protocol |
-| `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding |
-| `Raft` | [Raft](https://raft.github.io/raft.pdf) on explicit log and strong leadership |
+| `SimplePush` | Pushing to peers w/o consistency guarantees |
+| `ChainRep` | Bare implementation of Chain Replication ([paper](https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf)) |
+| `MultiPaxos` | Classic MultiPaxos protocol ([paper](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf)) |
+| `RSPaxos` | MultiPaxos w/ Reed-Solomon erasure code sharding ([paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf)) |
+| `Raft` | Raft with explicit log and strong leadership ([paper](https://raft.github.io/raft.pdf)) |
+| `CRaft` | Raft w/ erasure code sharding and fallback support ([paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf)) |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
@@ -33,9 +35,9 @@ Formal TLA+ specification of some protocols are provided in `tla+/`.
 - **Async Rust**: Summerset is written in Rust and demonstrates canonical usage of async programming structures backed by the [`tokio`](https://tokio.rs/) framework;
 - **Event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop;
 - **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels.
-- **Protocol-generic**: With the above two points combined, Summerset is able to support a set of different replication protocols in one codebase, each being just a single file, with common functionalities abstracted out.
+- **Protocol-generic**: With the above two points combined, Summerset is able to support a set of different replication protocols in one codebase, with common functionalities abstracted out.
 
-These design choices make protocol implementation in Summerset surprisingly straight-forward and **understandable**, without any sacrifice on performance. Comments / issues / PRs are always welcome!
+These design choices make protocol implementation in Summerset straight-forward and understandable, without any sacrifice on performance. Comments / issues / PRs are always welcome!
 
 </details>
 
@@ -50,7 +52,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Build everything in debug or release (`-r`) mode:
 
 ```bash
-cargo build [-r] --workspace
+cargo build [-r] --workspace [--features ...]
 ```
 
 Run all unit tests:
@@ -95,40 +97,56 @@ To run a client endpoint executable:
 cargo run [-r] -p summerset_client -- -h
 ```
 
-Currently supported client utility modes include: `repl` for an interactive CLI, `bench` for performance benchmarking, and `tester` for correctness testing (not yet complete).
+Currently supported client utility modes include: `repl` for an interactive CLI, `bench` for performance benchmarking, and `tester` for correctness testing.
 
 ### Helper Scripts
 
-Some helper scripts for running everything as local processes are available in `scripts/`:
+Some helper scripts for running Summerset processes are available. First, install dependencies:
+
+```bash
+pip3 install toml
+```
+
+You can find the scripts for running Summerset locally in `scripts/`:
 
 ```bash
 python3 scripts/local_cluster.py -h
-python3 scripts/local_client.py -h
+python3 scripts/local_clients.py -h
 ```
 
-Complete cluster management and benchmarking scripts are available in another repo, [Wayrest](https://github.com/josehu07/wayrest) (not yet public), which is a Python module for managing replication protocol clusters and running distributed experiments.
+And for running on a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
+
+```bash
+python3 scripts/distr_cluster.py -h
+python3 scripts/distr_clients.py -h
+```
 
 ## TODO List
 
-- [x] event-based programming structure
-- [x] cluster manager oracle impl.
+- [x] async event-loop foundation
+- [x] implementation of Chain Replication
+  - [ ] failure detection & recovery
+  - [ ] TLA+ spec
 - [x] implementation of MultiPaxos
-  - [x] client-side timeout/retry logic
-  - [x] state persistence & restart check
-  - [x] automatic leader election, backoffs
-  - [x] snapshotting & garbage collection
-  - [ ] specialize read-only commands?
-  - [ ] separate commit vs. exec responses?
-  - [ ] membership discovery & view changes?
+  - [x] TLA+ spec
+- [x] implementation of RS-Paxos
 - [x] implementation of Raft
-  - [x] state persistence & restart check
-  - [x] snapshotting & garbage collection
-  - [ ] membership discovery & view changes?
-- [x] client-side utilities
-  - [x] REPL-style client
-  - [x] random benchmarking client
-  - [x] testing client
-  - [ ] YCSB-driven client
+  - [ ] TLA+ spec
+- [x] implementation of CRaft
+- [x] implementation of Crossword
+  - [x] TLA+ spec
+- [ ] long-term planned improvements
+  - [ ] use a sophisticated storage backend
+  - [ ] efficient state-transfer snapshotting
+  - [ ] more robust TCP msg infrastructure
+  - [ ] membership discovery & view change
+  - [ ] multi-versioning & stale reads
+  - [ ] partitioned groups service structure
+- [ ] client-side utilities
+  - [x] interactive REPL
+  - [x] benchmarking client
+  - [x] unit tester
+  - [ ] linearizability fuzzer
 - [ ] better README & documentation
 
 ---

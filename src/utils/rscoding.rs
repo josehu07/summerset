@@ -41,7 +41,7 @@ pub struct RSCodeword<T> {
     data_copy: Option<T>,
 
     /// Zero-sized phantom marker to make this struct act as if it owns a data
-    /// of type `T` (yet in the form of vec of bytes).
+    /// of type `T` (yet actually in the form of vec of bytes).
     phantom: PhantomData<T>,
 }
 
@@ -57,18 +57,15 @@ where
             .map(|s| if let Some(b) = s { b.len() } else { 0 })
             .sum()
     }
-
-    fn get_size(&self) -> usize {
-        Self::get_stack_size() + self.get_heap_size()
-    }
 }
 
 impl<T> RSCodeword<T>
 where
     T: fmt::Debug + Clone + Serialize + DeserializeOwned + Send + Sync,
 {
-    /// Creates a new RSCodeword from original data or empty bytes.
-    fn new(
+    /// Internal method for creating a new RSCodeword from original data or
+    /// empty bytes.
+    fn internal_new(
         data_copy: Option<T>,
         data_bytes: Option<BytesMut>,
         data_len: usize,
@@ -77,12 +74,6 @@ where
     ) -> Result<Self, SummersetError> {
         if num_data_shards == 0 {
             return Err(SummersetError("num_data_shards is zero".into()));
-        }
-        if data_len != 0 && data_len < num_data_shards as usize {
-            return Err(SummersetError(format!(
-                "data length too small: {}",
-                data_len
-            )));
         }
 
         let num_total_shards = num_data_shards + num_parity_shards;
@@ -94,7 +85,7 @@ where
 
         let shards = if let Some(mut data_bytes) = data_bytes {
             // if newing from original data
-            assert_eq!(data_bytes.len(), data_len);
+            debug_assert_eq!(data_bytes.len(), data_len);
 
             // pad length to multiple of num_data_shards and compute shard size
             let padded_len = shard_len * num_data_shards as usize;
@@ -104,16 +95,16 @@ where
             let mut shards = Vec::with_capacity(num_data_shards as usize);
             for _ in 0..(num_data_shards - 1) {
                 let shard = data_bytes.split_to(shard_len);
-                assert_eq!(shard.len(), shard_len);
+                debug_assert_eq!(shard.len(), shard_len);
                 shards.push(Some(shard));
             }
-            assert_eq!(data_bytes.len(), shard_len);
+            debug_assert_eq!(data_bytes.len(), shard_len);
             shards.push(Some(data_bytes)); // the last shard
-            assert_eq!(shards.len(), num_data_shards as usize);
+            debug_assert_eq!(shards.len(), num_data_shards as usize);
             for _ in num_data_shards..num_total_shards {
                 shards.push(None);
             }
-            assert_eq!(shards.len(), num_total_shards as usize);
+            debug_assert_eq!(shards.len(), num_total_shards as usize);
             shards
         } else {
             // if newing from empty
@@ -141,7 +132,7 @@ where
         let mut data_writer = BytesMut::new().writer();
         encode_write(&mut data_writer, &data)?;
         let data_len = data_writer.get_ref().len();
-        Self::new(
+        Self::internal_new(
             Some(data),
             Some(data_writer.into_inner()),
             data_len,
@@ -155,14 +146,14 @@ where
         num_data_shards: u8,
         num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
-        Self::new(None, None, 0, num_data_shards, num_parity_shards)
+        Self::internal_new(None, None, 0, num_data_shards, num_parity_shards)
     }
 
     /// Creates an `RSCodeword` struct that owns a copy of a subset of the
     /// shards, and a complete copy of the original data if required.
     pub fn subset_copy(
         &self,
-        subset: Bitmap,
+        subset: &Bitmap,
         copy_data: bool,
     ) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
@@ -305,14 +296,16 @@ where
         self.shards.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    /// Gets a vec of available shard indexes.
+    /// Gets a bitmap of available shard indexes set true.
     #[inline]
-    pub fn avail_shards_vec(&self) -> Vec<u8> {
-        self.shards
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| if s.is_some() { Some(i as u8) } else { None })
-            .collect()
+    pub fn avail_shards_map(&self) -> Bitmap {
+        let mut map = Bitmap::new(self.num_shards(), false);
+        for (i, s) in self.shards.iter().enumerate() {
+            if s.is_some() {
+                map.set(i as u8, true).unwrap();
+            }
+        }
+        map
     }
 
     /// Gets a bitmap of available shard indexes set true.
@@ -400,7 +393,8 @@ where
         Ok(())
     }
 
-    /// Reconstructs all shards or data shards from currently available shards.
+    /// Internal method for reconstructing all shards or data shards from
+    /// currently available shards.
     fn reconstruct(
         &mut self,
         rs: Option<&ReedSolomon>,
@@ -412,13 +406,12 @@ where
         if self.num_parity_shards == 0 {
             if self.avail_data_shards() == self.num_data_shards {
                 return Ok(());
-            } else {
-                return Err(SummersetError(format!(
-                    "insufficient data shards: {}/ {}",
-                    self.avail_data_shards(),
-                    self.num_data_shards
-                )));
             }
+            return Err(SummersetError(format!(
+                "insufficient data shards: {}/ {}",
+                self.avail_data_shards(),
+                self.num_data_shards
+            )));
         }
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;
@@ -539,7 +532,7 @@ impl<'a> ShardsReader<'a> {
             if shard.is_none() {
                 return Err(SummersetError("some data shard is None".into()));
             }
-            assert_eq!(shard.as_ref().unwrap().len(), shard_len);
+            debug_assert_eq!(shard.as_ref().unwrap().len(), shard_len);
         }
 
         Ok(ShardsReader {
@@ -656,11 +649,13 @@ mod rscoding_tests {
         let data = TestData("interesting_value".into());
         let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
         // invalid subset
-        assert!(cwa.subset_copy(Bitmap::from(6, vec![0, 5]), false).is_err());
+        assert!(cwa
+            .subset_copy(&Bitmap::from(6, vec![0, 5]), false)
+            .is_err());
         // valid subsets
-        let cw01 = cwa.subset_copy(Bitmap::from(5, vec![0, 1]), false)?;
+        let cw01 = cwa.subset_copy(&Bitmap::from(5, vec![0, 1]), false)?;
         assert_eq!(cw01.avail_data_shards(), 2);
-        let cw02 = cwa.subset_copy(Bitmap::from(5, vec![0, 2]), true)?;
+        let cw02 = cwa.subset_copy(&Bitmap::from(5, vec![0, 2]), true)?;
         assert_eq!(cw02.avail_data_shards(), 2);
         assert!(cw02.data_copy.is_some());
         // valid absorbing

@@ -45,7 +45,7 @@ pub enum LogAction<Ent> {
     Truncate { offset: usize },
 
     /// Discard the log before given offset, keeping the tail part (and
-    /// optionally a head part).
+    /// optionally a fixed head part).
     Discard { offset: usize, keep: usize },
 }
 
@@ -121,7 +121,7 @@ where
             OpenOptions::new().read(true).write(true).open(path).await?;
         backer_file.seek(SeekFrom::End(0)).await?; // seek to EOF
 
-        let (tx_log, mut rx_log) =
+        let (tx_log, rx_log) =
             mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
@@ -192,6 +192,30 @@ where
         match self.rx_ack.try_recv() {
             Ok((id, result)) => Ok((id, result)),
             Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
+
+    /// Submits an action and waits for its result blockingly.
+    /// Returns a tuple where the first element is a vec containing any old
+    /// results of previously submitted actions received in the middle and
+    /// the second element is the result of this sync action.
+    pub async fn do_sync_action(
+        &mut self,
+        id: LogActionId,
+        action: LogAction<Ent>,
+    ) -> Result<
+        (Vec<(LogActionId, LogResult<Ent>)>, LogResult<Ent>),
+        SummersetError,
+    > {
+        self.submit_action(id, action)?;
+        let mut old_results = vec![];
+        loop {
+            let (this_id, result) = self.get_result().await?;
+            if this_id == id {
+                return Ok((old_results, result));
+            } else {
+                old_results.push((this_id, result));
+            }
         }
     }
 }
@@ -339,7 +363,7 @@ where
     }
 
     /// Discard the file before given index, keeping the tail part (and
-    /// optionally a head part).
+    /// optionally a fixed head part).
     async fn discard_log(
         me: ReplicaId,
         backer: &mut File,
@@ -510,7 +534,7 @@ mod storage_tests {
         let (offset_ok, now_size) =
             StorageHub::write_entry(0, &mut backer_file, 0, &entry, 0, false)
                 .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, now_size) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -520,7 +544,7 @@ mod storage_tests {
             false,
         )
         .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, now_size) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -530,7 +554,7 @@ mod storage_tests {
             true,
         )
         .await?;
-        assert!(offset_ok);
+        debug_assert!(offset_ok);
         let (offset_ok, _) = StorageHub::write_entry(
             0,
             &mut backer_file,
@@ -540,7 +564,7 @@ mod storage_tests {
             false,
         )
         .await?;
-        assert!(!offset_ok);
+        debug_assert!(!offset_ok);
         Ok(())
     }
 
@@ -553,7 +577,7 @@ mod storage_tests {
         let mid_size =
             StorageHub::append_entry(0, &mut backer_file, 0, &entry, false)
                 .await?;
-        assert!(mid_size >= entry_bytes.len());
+        debug_assert!(mid_size >= entry_bytes.len());
         let end_size = StorageHub::append_entry(
             0,
             &mut backer_file,
@@ -562,7 +586,7 @@ mod storage_tests {
             true,
         )
         .await?;
-        assert!(end_size - mid_size >= entry_bytes.len());
+        debug_assert!(end_size - mid_size >= entry_bytes.len());
         Ok(())
     }
 
@@ -778,6 +802,42 @@ mod storage_tests {
             hub.get_result().await?,
             (
                 2,
+                LogResult::Truncate {
+                    offset_ok: true,
+                    now_size: 0
+                }
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_do_sync() -> Result<(), SummersetError> {
+        let path = Path::new("/tmp/test-backer-7.log");
+        let mut hub = StorageHub::new_and_setup(0, path).await?;
+        let entry = TestEntry("abcdefgh".into());
+        let entry_bytes = encode_to_vec(&entry)?;
+        hub.submit_action(0, LogAction::Append { entry, sync: true })?;
+        hub.submit_action(1, LogAction::Read { offset: 0 })?;
+        assert_eq!(
+            hub.do_sync_action(2, LogAction::Truncate { offset: 0 },)
+                .await?,
+            (
+                vec![
+                    (
+                        0,
+                        LogResult::Append {
+                            now_size: 8 + entry_bytes.len()
+                        }
+                    ),
+                    (
+                        1,
+                        LogResult::Read {
+                            entry: Some(TestEntry("abcdefgh".into())),
+                            end_offset: 8 + entry_bytes.len(),
+                        }
+                    )
+                ],
                 LogResult::Truncate {
                     offset_ok: true,
                     now_size: 0
