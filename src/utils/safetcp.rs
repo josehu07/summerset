@@ -2,6 +2,7 @@
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::process::Command;
 
 use crate::utils::SummersetError;
 
@@ -13,7 +14,7 @@ use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_read as decode_from_read;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpStream, TcpListener};
+use tokio::net::{TcpSocket, TcpStream, TcpListener};
 use tokio::time::{self, Duration};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
@@ -23,10 +24,10 @@ use tokio::time::{self, Duration};
 ///
 /// CANCELLATION SAFETY: we cannot use `read_u64()` and `read_exact()` here
 /// because this function is intended to be used as a `tokio::select!` branch
-/// and that those two methods are not cancellation-safe. In the case of being
-/// cancelled midway before receiving the entire object (note that such
-/// cancellation can only happen at `.await` points), bytes already read are
-/// stored in the read buffer and will continue to be appended by future
+/// and that those two methods are not cancellation-safe. Instead, in the case
+/// of being cancelled midway before receiving the entire object (note that
+/// such cancellation can only happen at `.await` points), bytes already read
+/// are stored in the read buffer and will continue to be appended by future
 /// invocations until successful returning.
 pub async fn safe_tcp_read<T, Conn>(
     read_buf: &mut BytesMut,
@@ -60,6 +61,7 @@ where
     // if reached this point, no further cancellation to this call is
     // possible (because there are no more awaits ahead); discard bytes
     // used in this call
+    // TODO: may want to use a ring buffer to avoid potential memmove
     if read_buf.len() > obj_end {
         let buf_tail = Bytes::copy_from_slice(&read_buf[obj_end..]);
         read_buf.clear();
@@ -107,15 +109,15 @@ where
         ));
     } else if obj.is_some() {
         // sending a new object, fill write_buf
-        assert_eq!(*write_buf_cursor, 0);
+        debug_assert_eq!(*write_buf_cursor, 0);
         let write_bytes = encode_to_vec(obj.unwrap())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
-        assert_eq!(write_buf.len(), 8);
+        debug_assert_eq!(write_buf.len(), 8);
         write_buf.extend_from_slice(write_bytes.as_slice());
     } else {
         // retrying last unsuccessful write
-        assert!(*write_buf_cursor < write_buf.len());
+        debug_assert!(*write_buf_cursor < write_buf.len());
     }
 
     // try until the length + the object are all written
@@ -143,11 +145,23 @@ where
 
 /// Wrapper over tokio `TcpListener::bind()` that provides a retrying logic.
 pub async fn tcp_bind_with_retry(
-    addr: SocketAddr,
+    bind_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
     loop {
-        match TcpListener::bind(addr).await {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_linger(None)?;
+        socket.set_reuseaddr(true)?;
+        socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
+        if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Binding {} failed!", bind_addr);
+            eprintln!("Output of `ss` command:");
+            eprintln!("{}", get_ss_cmd_output()?);
+            return Err(SummersetError::from(e));
+        }
+
+        match socket.listen(1024) {
             Ok(listener) => return Ok(listener),
             Err(e) => {
                 if retries == 0 {
@@ -160,13 +174,27 @@ pub async fn tcp_bind_with_retry(
     }
 }
 
-/// Wrapper over tokio `TcpStream::connect()` that provides a retrying logic.
+/// Wrapper over tokio `TcpStream::connect()` that binds the socket to a
+/// specific address and provides a retrying logic.
 pub async fn tcp_connect_with_retry(
-    addr: SocketAddr,
+    bind_addr: SocketAddr,
+    conn_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpStream, SummersetError> {
     loop {
-        match TcpStream::connect(addr).await {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_linger(None)?;
+        socket.set_reuseaddr(true)?;
+        socket.set_reuseport(true)?;
+        socket.set_nodelay(true)?;
+        if let Err(e) = socket.bind(bind_addr) {
+            eprintln!("Binding {} failed!", bind_addr);
+            eprintln!("Output of `ss` command:");
+            eprintln!("{}", get_ss_cmd_output()?);
+            return Err(SummersetError::from(e));
+        }
+
+        match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),
             Err(e) => {
                 if retries == 0 {
@@ -179,4 +207,21 @@ pub async fn tcp_connect_with_retry(
     }
 }
 
-// No unit tests for these helpers...
+fn get_ss_cmd_output() -> Result<String, SummersetError> {
+    Ok(String::from_utf8(
+        Command::new("ss").arg("-tnap").output()?.stdout,
+    )?)
+}
+
+#[cfg(test)]
+mod safetcp_tests {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn safetcp_try_ss() -> Result<(), SummersetError> {
+        println!("Output of `ss` command:");
+        println!("{}", get_ss_cmd_output()?);
+        Ok(())
+    }
+}

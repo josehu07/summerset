@@ -13,10 +13,12 @@ mod protocols;
 // Things (other than exported macros) exposed to users of this crate:
 
 #[doc(inline)]
-pub use crate::utils::{SummersetError, Bitmap, Timer};
+pub use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword};
 
 #[doc(inline)]
-pub use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply, ClusterManager};
+pub use crate::manager::{
+    CtrlMsg, CtrlRequest, CtrlReply, ServerInfo, ClusterManager,
+};
 
 #[doc(inline)]
 pub use crate::server::{
@@ -34,6 +36,8 @@ pub use crate::protocols::SmrProtocol;
 // config strings
 pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
 pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};
+pub use crate::protocols::{ReplicaConfigChainRep, ClientConfigChainRep};
 pub use crate::protocols::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 pub use crate::protocols::{ReplicaConfigRaft, ClientConfigRaft};
 pub use crate::protocols::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
+pub use crate::protocols::{ReplicaConfigCRaft, ClientConfigCRaft};

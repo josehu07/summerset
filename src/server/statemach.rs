@@ -25,6 +25,14 @@ pub enum Command {
     Put { key: String, value: String },
 }
 
+impl Command {
+    /// Is the command type read-only?
+    #[inline]
+    pub fn read_only(&self) -> bool {
+        matches!(self, Command::Get { .. })
+    }
+}
+
 /// Command execution result returned by the state machine.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 pub enum CommandResult {
@@ -103,6 +111,28 @@ impl StateMachine {
         match self.rx_ack.try_recv() {
             Ok((id, result)) => Ok((id, result)),
             Err(e) => Err(SummersetError(e.to_string())),
+        }
+    }
+
+    /// Submits a command and waits for its execution result blockingly.
+    /// Returns a tuple where the first element is a vec containing any old
+    /// results of previously submitted commands received in the middle and
+    /// the second element is the result of this sync command.
+    pub async fn do_sync_cmd(
+        &mut self,
+        id: CommandId,
+        cmd: Command,
+    ) -> Result<(Vec<(CommandId, CommandResult)>, CommandResult), SummersetError>
+    {
+        self.submit_cmd(id, cmd)?;
+        let mut old_results = vec![];
+        loop {
+            let (this_id, result) = self.get_result().await?;
+            if this_id == id {
+                return Ok((old_results, result));
+            } else {
+                old_results.push((this_id, result));
+            }
         }
     }
 }
@@ -290,6 +320,44 @@ mod statemach_tests {
                 1,
                 CommandResult::Put {
                     old_value: Some("179".into())
+                }
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn api_do_sync() -> Result<(), SummersetError> {
+        let mut sm = StateMachine::new_and_setup(0).await?;
+        sm.submit_cmd(
+            0,
+            Command::Put {
+                key: "Jose".into(),
+                value: "179".into(),
+            },
+        )?;
+        sm.submit_cmd(
+            1,
+            Command::Put {
+                key: "Jose".into(),
+                value: "180".into(),
+            },
+        )?;
+        assert_eq!(
+            sm.do_sync_cmd(2, Command::Get { key: "Jose".into() },)
+                .await?,
+            (
+                vec![
+                    (0, CommandResult::Put { old_value: None }),
+                    (
+                        1,
+                        CommandResult::Put {
+                            old_value: Some("179".into())
+                        }
+                    )
+                ],
+                CommandResult::Get {
+                    value: Some("180".into())
                 }
             )
         );

@@ -68,26 +68,6 @@ impl DriverOpenLoop {
         self.endpoint.leave(permanent).await
     }
 
-    /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
-    /// timed-out.
-    async fn recv_reply_with_timeout(
-        &mut self,
-    ) -> Result<Option<ApiReply>, SummersetError> {
-        self.timer.kickoff(self.timeout)?;
-
-        tokio::select! {
-            () = self.timer.timeout() => {
-                pf_debug!(self.id; "timed-out waiting for reply");
-                Ok(None)
-            }
-
-            reply = self.endpoint.recv_reply() => {
-                self.timer.cancel()?; // cancel current deadline
-                Ok(Some(reply?))
-            }
-        }
-    }
-
     /// Makes a Get request. Returns request ID for later reference if send
     /// successful, or `Ok(None)` if got a `WouldBlock` failure. In the latter
     /// case, caller must do `retry()`s before issuing any new requests,
@@ -166,10 +146,30 @@ impl DriverOpenLoop {
         }
     }
 
+    /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
+    /// timed-out.
+    async fn recv_reply_timed(
+        &mut self,
+    ) -> Result<Option<ApiReply>, SummersetError> {
+        self.timer.kickoff(self.timeout)?;
+
+        tokio::select! {
+            () = self.timer.timeout() => {
+                pf_debug!(self.id; "timed-out waiting for reply");
+                Ok(None)
+            }
+
+            reply = self.endpoint.recv_reply() => {
+                self.timer.cancel()?; // cancel current deadline
+                Ok(Some(reply?))
+            }
+        }
+    }
+
     /// Waits for the next reply.
     pub async fn wait_reply(&mut self) -> Result<DriverReply, SummersetError> {
         loop {
-            let reply = self.recv_reply_with_timeout().await?;
+            let reply = self.recv_reply_timed().await?;
             match reply {
                 Some(ApiReply::Reply {
                     id: reply_id,

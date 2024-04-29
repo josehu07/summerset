@@ -42,11 +42,12 @@ impl ControlHub {
     /// and a recv channel for buffering incoming control messages. Returns the
     /// assigned server ID on success.
     pub async fn new_and_setup(
+        bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
-        pf_info!("s"; "connecting to manager '{}'...", manager);
-        let mut stream = tcp_connect_with_retry(manager, 10).await?;
+        pf_debug!("s"; "connecting to manager '{}'...", manager);
+        let mut stream = tcp_connect_with_retry(bind_addr, manager, 10).await?;
         let id = stream.read_u8().await?; // first receive assigned server ID
         let population = stream.read_u8().await?; // then receive population
         pf_debug!(id; "assigned server ID: {} of {}", id, population);
@@ -81,6 +82,23 @@ impl ControlHub {
             .send(msg)
             .map_err(|e| SummersetError(e.to_string()))?;
         Ok(())
+    }
+
+    /// Sends a control message to the cluster manager and waits for an
+    /// expected reply blockingly.
+    pub async fn do_sync_ctrl(
+        &mut self,
+        msg: CtrlMsg,
+        expect: fn(&CtrlMsg) -> bool,
+    ) -> Result<CtrlMsg, SummersetError> {
+        self.send_ctrl(msg)?;
+        loop {
+            let reply = self.recv_ctrl().await?;
+            if expect(&reply) {
+                return Ok(reply);
+            }
+            // else simply discard
+        }
     }
 }
 
@@ -140,8 +158,10 @@ impl ControlHub {
                                     pf_debug!(me; "should start retrying ctrl send");
                                     retrying = true;
                                 }
-                                Err(e) => {
-                                    pf_error!(me; "error sending ctrl: {}", e);
+                                Err(_e) => {
+                                    // NOTE: commented out to prevent console lags
+                                    // during benchmarking
+                                    // pf_error!(me; "error sending ctrl: {}", e);
                                 }
                             }
                         },
@@ -149,24 +169,7 @@ impl ControlHub {
                     }
                 },
 
-                // receives control message from manager
-                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
-                    match msg {
-                        Ok(msg) => {
-                            // pf_trace!(me; "recv ctrl {:?}", msg);
-                            if let Err(e) = tx_recv.send(msg) {
-                                pf_error!(me; "error sending to tx_recv: {}", e);
-                            }
-                        },
-
-                        Err(e) => {
-                            pf_error!(me; "error reading ctrl: {}", e);
-                            break; // probably the manager exitted ungracefully
-                        }
-                    }
-                },
-
-                // retrying last unsuccessful reply send
+                // retrying last unsuccessful send
                 _ = conn_write.writable(), if retrying => {
                     match Self::write_ctrl(
                         &mut write_buf,
@@ -181,8 +184,29 @@ impl ControlHub {
                         Ok(false) => {
                             pf_debug!(me; "still should retry last ctrl send");
                         }
-                        Err(e) => {
-                            pf_error!(me; "error retrying last ctrl send: {}", e);
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error retrying last ctrl send: {}", e);
+                        }
+                    }
+                },
+
+                // receives control message from manager
+                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
+                    match msg {
+                        Ok(msg) => {
+                            // pf_trace!(me; "recv ctrl {:?}", msg);
+                            if let Err(e) = tx_recv.send(msg) {
+                                pf_error!(me; "error sending to tx_recv: {}", e);
+                            }
+                        },
+
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            // during benchmarking
+                            // pf_error!(me; "error reading ctrl: {}", e);
+                            break; // probably the manager exitted ungracefully
                         }
                     }
                 }

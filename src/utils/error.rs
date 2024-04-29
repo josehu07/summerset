@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::io;
+use std::string;
 use std::net;
 use std::num;
 
@@ -31,7 +32,9 @@ macro_rules! impl_from_error {
 }
 
 impl_from_error!(io::Error);
+impl_from_error!(string::FromUtf8Error);
 impl_from_error!(num::ParseIntError);
+impl_from_error!(num::ParseFloatError);
 impl_from_error!(net::AddrParseError);
 impl_from_error!(rmp_serde::encode::Error);
 impl_from_error!(rmp_serde::decode::Error);
@@ -45,11 +48,16 @@ impl_from_error!(
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(tokio::sync::mpsc::error::SendError<()>);
 impl_from_error!(
-    tokio::sync::mpsc::error::SendError<(ReplicaId, net::SocketAddr)>
+    tokio::sync::mpsc::error::SendError<(
+        ReplicaId,
+        net::SocketAddr,
+        net::SocketAddr
+    )>
 );
 impl_from_error!(tokio::sync::mpsc::error::SendError<(ReplicaId, u8)>);
 impl_from_error!(reed_solomon_erasure::Error);
 impl_from_error!(ctrlc::Error);
+impl_from_error!(linreg::Error);
 
 #[cfg(test)]
 mod error_tests {

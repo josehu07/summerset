@@ -16,7 +16,7 @@ macro_rules! parsed_config {
         // closure helper for easier error returning
         let compose_config = || -> Result<$config_type, SummersetError> {
             let mut config: $config_type = Default::default();
-            if let None = config_str {
+            if config_str.is_none() {
                 return Ok(config);
             }
 

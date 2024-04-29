@@ -4,6 +4,6 @@ mod clusman;
 mod reigner;
 mod reactor;
 
-pub use clusman::ClusterManager;
+pub use clusman::{ServerInfo, ClusterManager};
 pub use reigner::{CtrlMsg, ServerReigner};
 pub use reactor::{CtrlRequest, CtrlReply, ClientReactor};
