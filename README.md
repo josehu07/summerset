@@ -140,14 +140,20 @@ Currently supported client utility modes include: `repl` for an interactive CLI,
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset locally are available in `scripts/`:
+Some helper scripts for running Summerset processes are available. First, install dependencies:
+
+```bash
+pip3 install toml
+```
+
+You can find the scripts for running Summerset locally in `scripts/`:
 
 ```bash
 python3 scripts/local_cluster.py -h
 python3 scripts/local_clients.py -h
 ```
 
-And for running on a set of distributed machines (requires correctly filled `scripts/remote_hosts.toml` file):
+And for running on a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
 
 ```bash
 python3 scripts/distr_cluster.py -h
@@ -157,6 +163,9 @@ python3 scripts/distr_clients.py -h
 ## TODO List
 
 - [x] async event-loop foundation
+- [x] implementation of Chain Replication
+  - [ ] failure detection & recovery
+  - [ ] TLA+ spec
 - [x] implementation of MultiPaxos
   - [x] TLA+ spec
 - [x] implementation of RS-Paxos
@@ -165,9 +174,6 @@ python3 scripts/distr_clients.py -h
 - [x] implementation of CRaft
 - [x] implementation of Crossword
   - [x] TLA+ spec
-- [ ] implementation of Chain Replication
-  - [ ] basic chain rep protocol
-  - [ ] failure detection & recovery
 - [ ] long-term planned improvements
   - [ ] use a sophisticated storage backend
   - [ ] efficient state-transfer snapshotting
