@@ -443,9 +443,13 @@ def plot_results(results, plots_dir):
     MARKER_SIZE = 4
 
     for protocol in PROTOCOLS_ORDER:
-        label, color, marker, linestyle, zorder = (
-            PROTOCOLS_LABEL_COLOR_MARKER_STYLE_ZORDER[protocol]
-        )
+        (
+            label,
+            color,
+            marker,
+            linestyle,
+            zorder,
+        ) = PROTOCOLS_LABEL_COLOR_MARKER_STYLE_ZORDER[protocol]
         plt.plot(
             [tput / 1000.0 for tput in results[protocol]["tputs"]],
             results[protocol]["lats"],
