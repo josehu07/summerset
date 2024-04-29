@@ -8,7 +8,6 @@
 
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use crate::utils::{
     SummersetError, Bitmap, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
@@ -95,7 +94,6 @@ where
         me: ReplicaId,
         population: u8,
         p2p_addr: SocketAddr,
-        perf_a_b: Option<(u64, u64)>, // performance simulation params
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!(me; "invalid population {}", population);
@@ -131,7 +129,7 @@ where
         Ok(TransportHub {
             me,
             population,
-            rx_recv: rx_recv_true,
+            rx_recv,
             tx_sends: tx_sends_read,
             _peer_acceptor_handle: peer_acceptor_handle,
             tx_connect,

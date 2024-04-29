@@ -64,12 +64,6 @@ pub struct ClusterManager {
     /// ServerReigner module.
     server_reigner: ServerReigner,
 
-    /// Receiver side of the server ID assignment channel.
-    rx_id_assign: mpsc::UnboundedReceiver<()>,
-
-    /// Sender side of the server ID assignment result channel.
-    tx_id_result: mpsc::UnboundedSender<(ReplicaId, u8)>,
-
     /// ClientReactor module.
     client_reactor: ClientReactor,
 }
@@ -105,8 +99,6 @@ impl ClusterManager {
             servers_info: HashMap::new(),
             assigned_ids: HashSet::new(),
             server_reigner,
-            rx_id_assign,
-            tx_id_result,
             client_reactor,
         })
     }

@@ -308,13 +308,6 @@ where
         map
     }
 
-    /// Gets a bitmap of available shard indexes set true.
-    #[inline]
-    pub fn avail_shards_map(&self) -> Bitmap {
-        let ones = self.avail_shards_vec();
-        Bitmap::from(self.num_shards(), ones)
-    }
-
     /// Gets length of original data in bytes.
     #[inline]
     pub fn data_len(&self) -> usize {

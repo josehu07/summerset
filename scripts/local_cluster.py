@@ -41,12 +41,6 @@ PROTOCOL_EXTRA_DEFAULTS = {
     "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
 }
 
-PROTOCOL_SNAPSHOT_PATH = {
-    "MultiPaxos": lambda r: f"snapshot_path='/tmp/summerset.multipaxos.{r}.snap'",
-    "Raft": lambda r: f"snapshot_path='/tmp/summerset.raft.{r}.snap'",
-    "RSPaxos": lambda r: f"snapshot_path='/tmp/summerset.rs_paxos.{r}.snap'",
-}
-
 
 def config_with_file_paths(protocol, config, replica):
     result_config = PROTOCOL_BACKER_PATH[protocol](replica)

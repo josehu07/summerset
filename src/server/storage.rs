@@ -3,7 +3,6 @@
 use std::fmt;
 use std::path::Path;
 use std::io::SeekFrom;
-use std::sync::Arc;
 
 use crate::utils::SummersetError;
 use crate::server::ReplicaId;
@@ -19,7 +18,6 @@ use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use tokio::time::{self, Duration};
 
 /// Log action ID type.
 pub type LogActionId = u64;
@@ -108,7 +106,6 @@ where
     pub async fn new_and_setup(
         me: ReplicaId,
         path: &Path,
-        perf_a_b: Option<(u64, u64)>, // performance simulation params
     ) -> Result<Self, SummersetError> {
         // prepare backing file
         if !fs::try_exists(path).await? {
@@ -125,35 +122,8 @@ where
             mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
-        // if doing performance delay simulation, add on-the-fly delay to
-        // each message received
-        let rx_log_true = if let Some((perf_a, perf_b)) = perf_a_b {
-            let (tx_log_delayed, rx_log_delayed) = mpsc::unbounded_channel();
-            let tx_log_delayed_arc = Arc::new(tx_log_delayed);
-
-            tokio::spawn(async move {
-                while let Some((id, log_action)) = rx_log.recv().await {
-                    let tx_log_delayed_clone = tx_log_delayed_arc.clone();
-                    tokio::spawn(async move {
-                        let approx_size = log_action.get_size() as u64;
-                        let delay_ns = perf_a + approx_size * perf_b;
-                        time::sleep(Duration::from_nanos(delay_ns)).await;
-                        tx_log_delayed_clone.send((id, log_action)).unwrap();
-                    });
-                }
-            });
-
-            rx_log_delayed
-        } else {
-            rx_log
-        };
-
-        let logger_handle = tokio::spawn(Self::logger_thread(
-            me,
-            backer_file,
-            rx_log_true,
-            tx_ack,
-        ));
+        let logger_handle =
+            tokio::spawn(Self::logger_thread(me, backer_file, rx_log, tx_ack));
 
         Ok(StorageHub {
             me,
@@ -773,7 +743,7 @@ mod storage_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_log_ack() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-6.log");
-        let mut hub = StorageHub::new_and_setup(0, path, None).await?;
+        let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = encode_to_vec(&entry)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;

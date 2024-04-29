@@ -161,14 +161,6 @@ impl SmrProtocol {
                     .await
                 )
             }
-            Self::Raft => {
-                box_if_ok!(
-                    RaftReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
-                )
-            }
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosReplica::new_and_setup(
