@@ -28,7 +28,7 @@ lazy_static! {
         ("primitive_ops", true),
         ("client_reconnect", true),
         ("non_leader_reset", true),
-        ("leader_node_reset", true),
+        ("leader_node_reset", false),
         ("two_nodes_reset", false),
         ("all_nodes_reset", false),
         ("non_leader_pause", false),

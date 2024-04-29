@@ -341,7 +341,7 @@ impl RSPaxosReplica {
                 endprep_slot: 0,
             });
 
-            // record update to largest prepare ballot
+            // record update to instance ballot & data
             inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),

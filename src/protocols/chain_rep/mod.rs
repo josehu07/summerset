@@ -14,13 +14,12 @@ mod control;
 use std::collections::HashMap;
 use std::path::Path;
 use std::net::SocketAddr;
-use std::time::SystemTime;
 
-use crate::utils::{SummersetError, Bitmap, Timer, Stopwatch};
+use crate::utils::SummersetError;
 use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
 use crate::server::{
-    ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
-    ExternalApi, ApiRequest, ApiReply, StorageHub, LogActionId, TransportHub,
+    ReplicaId, ControlHub, StateMachine, CommandResult, CommandId, ExternalApi,
+    ApiRequest, ApiReply, StorageHub, LogActionId, TransportHub,
     GenericReplica,
 };
 use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
@@ -32,7 +31,7 @@ use get_size::GetSize;
 
 use serde::{Serialize, Deserialize};
 
-use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
+use tokio::time::Duration;
 use tokio::sync::watch;
 
 /// Configuration parameters struct.
@@ -142,7 +141,11 @@ pub struct ChainRepReplica {
     /// In-memory log of entries.
     log: Vec<LogEntry>,
 
+    /// Index of the first non-propagated log entry.
+    prop_bar: usize,
+
     /// Index of the first non-executed log entry.
+    /// It is always true that exec_bar <= prop_bar <= log.len()
     exec_bar: usize,
 
     /// Current durable WAL log file offset.
@@ -183,20 +186,55 @@ impl ChainRepReplica {
         }
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Create an empty null log entry.
     #[inline]
-    fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
-        ((slot << 32) | cmd_idx) as CommandId
+    fn null_log_entry() -> LogEntry {
+        LogEntry {
+            status: Status::Null,
+            reqs: vec![],
+            wal_offset: 0,
+        }
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Locate the first null log entry or append one if no holes exist.
+    fn first_null_slot(&mut self) -> usize {
+        for s in self.exec_bar..self.log.len() {
+            if self.log[s].status == Status::Null {
+                return s;
+            }
+        }
+        self.log.push(Self::null_log_entry());
+        self.log.len() - 1
+    }
+
+    /// Compose CommandId from:
+    ///   - slot index & command index within if non read-only
+    ///   - request ID & client ID if read-only
     #[inline]
-    fn split_command_id(command_id: CommandId) -> (usize, usize) {
-        let slot = (command_id >> 32) as usize;
-        let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
-        (slot, cmd_idx)
+    fn make_command_id(
+        slot_or_req_id: usize,
+        cmd_idx_or_client: usize,
+        read_only: bool,
+    ) -> CommandId {
+        debug_assert!(slot_or_req_id <= (u32::MAX as usize));
+        debug_assert!(cmd_idx_or_client <= ((u32::MAX >> 1) as usize));
+        let mut cmd_id =
+            ((slot_or_req_id << 32) | (cmd_idx_or_client << 1)) as CommandId;
+        if read_only {
+            cmd_id += 1;
+        }
+        cmd_id
+    }
+
+    /// Decompose CommandId into:
+    ///   - slot index & command index within if non read-only
+    ///   - request ID & client ID if read-only
+    #[inline]
+    fn split_command_id(command_id: CommandId) -> (usize, usize, bool) {
+        let slot_or_req_id = (command_id >> 32) as usize;
+        let cmd_idx_or_client = ((command_id & ((1 << 32) - 1)) >> 1) as usize;
+        let read_only = (command_id % 2) == 1;
+        (slot_or_req_id, cmd_idx_or_client, read_only)
     }
 }
 
@@ -245,7 +283,7 @@ impl GenericReplica for ChainRepReplica {
         // later peer connections
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
-            protocol: SmrProtocol::MultiPaxos,
+            protocol: SmrProtocol::ChainRep,
             api_addr,
             p2p_addr,
         })?;
@@ -291,6 +329,7 @@ impl GenericReplica for ChainRepReplica {
             storage_hub,
             transport_hub,
             log: vec![],
+            prop_bar: 0,
             exec_bar: 0,
             wal_offset: 0,
         })

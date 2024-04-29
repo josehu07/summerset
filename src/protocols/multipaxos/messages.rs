@@ -282,7 +282,7 @@ impl MultiPaxosReplica {
                 });
             }
 
-            // record update to largest prepare ballot
+            // record update to instance ballot & data
             inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),

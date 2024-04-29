@@ -36,6 +36,7 @@ pub use crate::protocols::SmrProtocol;
 // config strings
 pub use crate::protocols::{ReplicaConfigRepNothing, ClientConfigRepNothing};
 pub use crate::protocols::{ReplicaConfigSimplePush, ClientConfigSimplePush};
+pub use crate::protocols::{ReplicaConfigChainRep, ClientConfigChainRep};
 pub use crate::protocols::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
 pub use crate::protocols::{ReplicaConfigRaft, ClientConfigRaft};
 pub use crate::protocols::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};

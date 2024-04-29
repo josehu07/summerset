@@ -13,7 +13,7 @@ sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOF | sudo fdisk ${TARGET_DEV}
     n               # new partition
     ${PART_NUMBER}  # use partition number
                     # default start sec
-                    # default end sec
+    +240G           # default end sec
     N               # not removing ext3 signature
     p               # print the resulting table
     w               # sync to disk

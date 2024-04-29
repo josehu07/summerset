@@ -12,7 +12,40 @@ impl ChainRepReplica {
         &mut self,
         entry: WalEntry,
     ) -> Result<(), SummersetError> {
-        unimplemented!()
+        // locate entry in memory, filling in null entries if needed
+        while self.log.len() <= entry.slot {
+            self.log.push(Self::null_log_entry());
+        }
+
+        // update log entry state
+        self.log[entry.slot].status = Status::Propagated;
+        self.log[entry.slot].reqs = entry.reqs;
+
+        // submit commands in contiguously filled entries to the state machine
+        if entry.slot == self.prop_bar {
+            while self.prop_bar < self.log.len() {
+                if self.log[self.prop_bar].status < Status::Propagated {
+                    break;
+                }
+                // execute all commands in this entry synchronously
+                for (_, req) in self.log[self.prop_bar].reqs.clone() {
+                    if let ApiRequest::Req { cmd, .. } = req {
+                        self.state_machine
+                            .do_sync_cmd(
+                                0, // using 0 as dummy command ID
+                                cmd,
+                            )
+                            .await?;
+                    }
+                }
+                // update entry status, prop_bar and exec_bar
+                self.log[self.prop_bar].status = Status::Executed;
+                self.prop_bar += 1;
+                self.exec_bar += 1;
+            }
+        }
+
+        Ok(())
     }
 
     /// Recover state from durable storage WAL log.
@@ -63,7 +96,8 @@ impl ChainRepReplica {
             .1
         {
             if self.wal_offset > 0 {
-                pf_info!(self.id; "recovered from wal log: exec {}", self.exec_bar);
+                pf_info!(self.id; "recovered from wal log: prop {} exec {}",
+                                  self.prop_bar, self.exec_bar);
             }
             Ok(())
         } else {

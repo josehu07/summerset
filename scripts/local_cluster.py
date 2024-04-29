@@ -29,6 +29,7 @@ PROTOCOL_SNAPSHOT_PATH = (
 PROTOCOL_MAY_SNAPSHOT = {
     "RepNothing": False,
     "SimplePush": False,
+    "ChainRep": False,
     "MultiPaxos": True,
     "Raft": True,
     "RSPaxos": True,

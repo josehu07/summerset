@@ -57,11 +57,12 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 | Name | Description |
 | :--: | :---------- |
 | `RepNothing` | Simplest protocol w/o any replication |
-| `SimplePush` | Pushing to peers w/o any consistency guarantees |
-| `MultiPaxos` | Classic [MultiPaxos](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf) protocol |
-| `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding |
-| `Raft` | [Raft](https://raft.github.io/raft.pdf) on explicit log and strong leadership |
-| `CRaft` | Raft w/ erasure code sharding and fallback support |
+| `SimplePush` | Pushing to peers w/o consistency guarantees |
+| `ChainRep` | Bare implementation of Chain Replication ([paper](https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf)) |
+| `MultiPaxos` | Classic MultiPaxos protocol ([paper](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf)) |
+| `RS-Paxos` | MultiPaxos w/ Reed-Solomon erasure code sharding ([paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf)) |
+| `Raft` | Raft with explicit log and strong leadership ([paper](https://raft.github.io/raft.pdf)) |
+| `CRaft` | Raft w/ erasure code sharding and fallback support ([paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf)) |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 

@@ -29,11 +29,7 @@ impl Command {
     /// Is the command type read-only?
     #[inline]
     pub fn read_only(&self) -> bool {
-        if let Command::Get { .. } = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Command::Get { .. })
     }
 }
 
