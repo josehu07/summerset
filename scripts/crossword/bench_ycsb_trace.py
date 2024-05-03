@@ -25,7 +25,7 @@ SUMMERSET_PROTOCOLS = [
     "CRaft",
     "Crossword",
 ]
-CHAIN_PROTOCOLS = ["chain_mixed"]
+CHAIN_PROTOCOLS = []
 
 GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
@@ -431,7 +431,7 @@ def plot_results(results, plots_dir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
-        "chain_mixed",
+        # "chain_mixed",
         # "chain_delayed",
         "ChainRep",
         "MultiPaxos",
@@ -447,7 +447,7 @@ def plot_results(results, plots_dir):
         "RSPaxos": ("RSPaxos (f=1)", "red", "x", "-", 0),
         "CRaft": ("CRaft (f=1)", "peru", "x", ":", 5),
         "ChainRep": ("Chain Rep.", "indigo", "^", "-", 0),
-        "chain_mixed": ("ChainPaxos*", "magenta", "d", "-", 0),
+        # "chain_mixed": ("ChainPaxos*", "magenta", "d", "-", 0),
         # "chain_delayed": ("ChainPaxos* (delay)", "mediumpurple", "d", 5),
     }
     MARKER_SIZE = 4

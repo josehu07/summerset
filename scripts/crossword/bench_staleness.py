@@ -296,7 +296,7 @@ def print_results(ver_stats, diff_stats):
 def plot_staleness(diff_stats, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.5, 2),
+            "figure.figsize": (3.5, 1.7),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -356,10 +356,10 @@ def plot_staleness(diff_stats, plots_dir):
     def draw_yaxis_break(yloc):
         ypb, ypt = yloc - 8, yloc + 8
         ys = [ypb, ypb, ypt, ypt]
-        xs = [xmin - 0.3, xmin + 0.3, xmin + 0.3, xmin - 0.3]
+        xs = [xmin - 0.2, xmin + 0.2, xmin + 0.2, xmin - 0.2]
         plt.fill(xs, ys, "w", fill=True, linewidth=0, zorder=10, clip_on=False)
         plt.plot(
-            [xmin - 0.3, xmin + 0.3],
+            [xmin - 0.2, xmin + 0.2],
             [ypb + 3, ypb - 3],
             color="k",
             linewidth=1,
@@ -367,7 +367,7 @@ def plot_staleness(diff_stats, plots_dir):
             clip_on=False,
         )
         plt.plot(
-            [xmin - 0.3, xmin + 0.3],
+            [xmin - 0.2, xmin + 0.2],
             [ypt + 3, ypt - 3],
             color="k",
             linewidth=1,
@@ -401,6 +401,7 @@ def plot_staleness(diff_stats, plots_dir):
 
     plt.ylim(bottom=-3)
     plt.ylabel("Staleness (#ver.)")
+    ax.yaxis.set_label_coords(-0.15, 0.4)
 
     max_ytick = int((ymax // 50) * 50)
     yticks = list(range(0, max_ytick + 1, 50))
