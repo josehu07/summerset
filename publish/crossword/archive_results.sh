@@ -20,7 +20,7 @@ fi
 
 TAR_NAME="$1.tar.xz"
 
-DROPBOX_DIR="~/Dropbox/UW-Madison/ADSL-Systems-Lab/Data-Backups/Crossword"
+DROPBOX_DIR="${HOME}/Dropbox/UW-Madison/ADSL-Systems-Lab/Data-Backups/Crossword"
 
 
 if [ $# -ge 2 ] && [ "$2" = "ex" ];

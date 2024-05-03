@@ -35,13 +35,13 @@ PLOT_FILES=("models/cstr_bounds"
             "plots/critical/legend-critical"
             "plots/critical/legend-critical-minor"
             "plots/staleness/exper-staleness"
-            "plots/staleness/legend-staleness"
-            "plots/ycsb_trace/exper-ycsb_trace"
-            "plots/ycsb_trace/legend-ycsb_trace")
+            "plots/ycsb_trace/exper-ycsb_trace")
 PLOT_FILES_BOTTOM_MORE=("intros/legend-motiv_profile"
                         "plots/critical/ylabels-critical"
                         "plots/failover/legend-failover"
-                        "plots/adaptive/legend-adaptive")
+                        "plots/adaptive/legend-adaptive"
+                        "plots/staleness/legend-staleness"
+                        "plots/ycsb_trace/legend-ycsb_trace")
 PLOT_FILES_RIGHT_MORE=("intros/motiv_profile_cdf")
 
 

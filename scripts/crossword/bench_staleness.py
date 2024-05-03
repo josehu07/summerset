@@ -296,7 +296,7 @@ def print_results(ver_stats, diff_stats):
 def plot_staleness(diff_stats, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.5, 2),
+            "figure.figsize": (3.5, 2),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -393,7 +393,7 @@ def plot_staleness(diff_stats, plots_dir):
 
     plt.xscale("log")
     plt.xlim(left=xmin)
-    plt.xlabel("Time between writes\n(ms, log-scale)")
+    plt.xlabel("Time between writes (ms, log-scale)")
 
     xticks = [TIME_INTERVAL_UNIT, 10, 100]  # TODO: currently hardcoded
     xticklabels = [str(x) for x in xticks]
