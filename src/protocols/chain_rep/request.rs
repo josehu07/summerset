@@ -58,7 +58,7 @@ impl ChainRepReplica {
             }
             let slot = self.first_null_slot();
             self.log[slot].status = Status::Streaming;
-            self.log[slot].reqs = req_batch.clone();
+            self.log[slot].reqs.clone_from(&req_batch);
 
             self.storage_hub.submit_action(
                 slot as LogActionId,

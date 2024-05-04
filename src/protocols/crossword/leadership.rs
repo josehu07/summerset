@@ -474,7 +474,7 @@ impl CrosswordReplica {
                 let subset_copy = inst
                     .reqs_cw
                     .subset_copy(&assignment[self.id as usize], false)?;
-                inst.assignment = assignment.clone();
+                inst.assignment.clone_from(assignment);
                 inst.voted = (inst.bal, subset_copy.clone());
 
                 // record update to largest accepted ballot and corresponding data

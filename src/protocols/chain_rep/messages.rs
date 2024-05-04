@@ -28,7 +28,7 @@ impl ChainRepReplica {
         }
 
         self.log[slot].status = Status::Streaming;
-        self.log[slot].reqs = reqs.clone();
+        self.log[slot].reqs.clone_from(&reqs);
 
         // record the new log entry durably
         self.storage_hub.submit_action(
