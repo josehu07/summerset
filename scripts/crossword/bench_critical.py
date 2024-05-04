@@ -86,9 +86,9 @@ ENV_1DC = EnvSetting(
 )
 ENV_WAN = EnvSetting(
     "wan",
-    lambda _: 1,
-    lambda _: 2,  
-    lambda _: 0.2,  # negligible given the original WAN delay
+    lambda _: 1,  # negligible given the original WAN delay
+    lambda _: 2,  # negligible given the original WAN delay
+    lambda _: 0.2,
 )
 
 ROUNDS_PARAMS = [
