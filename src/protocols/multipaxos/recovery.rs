@@ -47,7 +47,7 @@ impl MultiPaxosReplica {
                 let inst = &mut self.insts[slot - self.start_slot];
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
-                inst.reqs = reqs.clone();
+                inst.reqs.clone_from(&reqs);
                 inst.voted = (ballot, reqs);
                 // it could be the case that the PrepareBal action for this
                 // ballot has been snapshotted

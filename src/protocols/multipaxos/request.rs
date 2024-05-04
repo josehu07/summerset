@@ -84,7 +84,7 @@ impl MultiPaxosReplica {
         {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
-            inst.reqs = req_batch.clone();
+            inst.reqs.clone_from(&req_batch);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,

@@ -143,7 +143,7 @@ impl CrosswordReplica {
         let subset_copy = inst
             .reqs_cw
             .subset_copy(&assignment[self.id as usize], false)?;
-        inst.assignment = assignment.clone();
+        inst.assignment.clone_from(assignment);
         inst.voted = (inst.bal, subset_copy.clone());
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::Accepting),

@@ -178,7 +178,7 @@ where
                     i
                 )));
             }
-            shards[i] = self.shards[i].clone();
+            shards[i].clone_from(&self.shards[i]);
         }
 
         let data_copy = if copy_data {

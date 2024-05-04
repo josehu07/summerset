@@ -271,7 +271,7 @@ impl MultiPaxosReplica {
 
             inst.bal = ballot;
             inst.status = Status::Accepting;
-            inst.reqs = reqs.clone();
+            inst.reqs.clone_from(&reqs);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
