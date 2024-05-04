@@ -229,12 +229,12 @@ def collect_outputs(output_dir):
 def print_results(results):
     for protocol, result in results.items():
         print(protocol)
-        # for i, t in enumerate(result["time"]):
-        #     print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
-        #     if (i + 1) % 6 == 0:
-        #         print()
-        # if len(result["time"]) % 6 != 0:
-        #     print()
+        for i, t in enumerate(result["time"]):
+            print(f" [{t:>5.1f}] {result['tput'][i]:>7.2f} ", end="")
+            if (i + 1) % 6 == 0:
+                print()
+        if len(result["time"]) % 6 != 0:
+            print()
 
 
 def plot_results(results, plots_dir):

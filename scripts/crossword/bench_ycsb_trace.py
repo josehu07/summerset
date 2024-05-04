@@ -17,8 +17,15 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "ycsb_trace"
-SUMMERSET_PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
-CHAIN_PROTOCOLS = ["chain_mixed"]
+SUMMERSET_PROTOCOLS = [
+    "ChainRep",
+    "MultiPaxos",
+    "RSPaxos",
+    "Raft",
+    "CRaft",
+    "Crossword",
+]
+CHAIN_PROTOCOLS = []
 
 GEN_YCSB_SCRIPT = "crossword/gen_ycsb_a_trace.py"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"
@@ -146,7 +153,8 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
     print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    config += f"+sim_read_lease=true"
+    if protocol != "ChainRep":
+        config += f"+sim_read_lease=true"
     if protocol == "RSPaxos" or protocol == "CRaft":
         config += f"+fault_tolerance=2"
     if protocol == "Crossword":
@@ -415,7 +423,7 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3, 2),
+            "figure.figsize": (3.6, 2),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -423,8 +431,9 @@ def plot_results(results, plots_dir):
     fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
-        "chain_mixed",
+        # "chain_mixed",
         # "chain_delayed",
+        "ChainRep",
         "MultiPaxos",
         "Raft",
         "RSPaxos",
@@ -437,7 +446,8 @@ def plot_results(results, plots_dir):
         "Crossword": ("Crossword", "steelblue", "o", "-", 10),
         "RSPaxos": ("RSPaxos (f=1)", "red", "x", "-", 0),
         "CRaft": ("CRaft (f=1)", "peru", "x", ":", 5),
-        "chain_mixed": ("ChainPaxos*", "magenta", "d", "-", 0),
+        "ChainRep": ("Chain Rep.", "indigo", "^", "-", 0),
+        # "chain_mixed": ("ChainPaxos*", "magenta", "d", "-", 0),
         # "chain_delayed": ("ChainPaxos* (delay)", "mediumpurple", "d", 5),
     }
     MARKER_SIZE = 4
@@ -502,7 +512,11 @@ def plot_legend(handles, labels, plots_dir):
         bbox_to_anchor=(0.5, 0.5),
     )
     for rec in lgd.get_texts():
-        if "RSPaxos" in rec.get_text() or "CRaft" in rec.get_text():
+        if (
+            "RSPaxos" in rec.get_text()
+            or "CRaft" in rec.get_text()
+            or "Chain Rep." in rec.get_text()
+        ):
             rec.set_fontstyle("italic")
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")
