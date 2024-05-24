@@ -3,7 +3,7 @@ name = "summerset_client"
 description = "Summerset client side executable"
 version = "0.1.0"
 edition = "2021"
-authors = ["Guanzhou Jose Hu <huguanzhou123@gmail.com>"]
+authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]
 summerset = { path = "../" }
