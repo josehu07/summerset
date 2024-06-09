@@ -69,7 +69,9 @@ impl ControlHub {
     }
 
     /// Waits for the next control event message from cluster manager.
-    pub(crate) async fn recv_ctrl(&mut self) -> Result<CtrlMsg, SummersetError> {
+    pub(crate) async fn recv_ctrl(
+        &mut self,
+    ) -> Result<CtrlMsg, SummersetError> {
         match self.rx_recv.recv().await {
             Some(msg) => Ok(msg),
             None => logged_err!(self.me; "recv channel has been closed"),
@@ -77,10 +79,11 @@ impl ControlHub {
     }
 
     /// Sends a control message to the cluster manager.
-    pub(crate) fn send_ctrl(&mut self, msg: CtrlMsg) -> Result<(), SummersetError> {
-        self.tx_send
-            .send(msg)
-            .map_err(SummersetError::msg)?;
+    pub(crate) fn send_ctrl(
+        &mut self,
+        msg: CtrlMsg,
+    ) -> Result<(), SummersetError> {
+        self.tx_send.send(msg).map_err(SummersetError::msg)?;
         Ok(())
     }
 

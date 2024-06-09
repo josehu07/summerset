@@ -127,7 +127,9 @@ impl CrosswordReplica {
     /// which all other peers have snapshotted); we assume here that failed
     /// Accept messages will be retried indefinitely until success before its
     /// associated data gets discarded from leader's memory.
-    pub(super) async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn take_new_snapshot(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
                            self.start_slot, self.exec_bar, self.snap_bar);
         debug_assert!(self.exec_bar >= self.start_slot);

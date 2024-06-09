@@ -263,7 +263,9 @@ impl CrosswordReplica {
 
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
-    pub(super) fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_hb_hear_timer(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.hb_hear_timer.cancel()?;
 
         if !self.config.disable_hb_timer {

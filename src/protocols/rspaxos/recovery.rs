@@ -120,7 +120,9 @@ impl RSPaxosReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

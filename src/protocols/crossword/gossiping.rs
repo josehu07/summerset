@@ -16,7 +16,9 @@ use tokio::time::Duration;
 impl CrosswordReplica {
     /// Chooses a random gossip_timeout from the min-max range and kicks off
     /// the gossip_timer.
-    pub(super) fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_gossip_timer(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
         if !self.config.disable_gossip_timer {
