@@ -65,22 +65,24 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<(ClientMode, SmrProtocol), SummersetError> {
         if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else if self.timeout_ms == 0 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid timeout duration {} ms",
                 self.timeout_ms
             )))
         } else {
-            let mode =
-                ClientMode::parse_name(&self.utility).ok_or(SummersetError(
-                    format!("utility mode '{}' unrecognized", self.utility),
-                ))?;
+            let mode = ClientMode::parse_name(&self.utility).ok_or(
+                SummersetError::msg(format!(
+                    "utility mode '{}' unrecognized",
+                    self.utility
+                )),
+            )?;
             let protocol = SmrProtocol::parse_name(&self.protocol).ok_or(
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "protocol name '{}' unrecognized",
                     self.protocol
                 )),

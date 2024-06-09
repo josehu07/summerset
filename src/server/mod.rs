@@ -8,8 +8,11 @@ mod external;
 mod control;
 
 pub use replica::{GenericReplica, ReplicaId};
-pub use external::{ExternalApi, RequestId, ApiRequest, ApiReply};
-pub use statemach::{StateMachine, CommandId, Command, CommandResult};
-pub use storage::{StorageHub, LogActionId, LogAction, LogResult};
-pub use transport::TransportHub;
-pub use control::ControlHub;
+pub use external::{RequestId, ApiRequest, ApiReply};
+pub use statemach::{CommandId, Command, CommandResult};
+
+pub(crate) use external::ExternalApi;
+pub(crate) use statemach::StateMachine;
+pub(crate) use storage::{StorageHub, LogActionId, LogAction, LogResult};
+pub(crate) use transport::TransportHub;
+pub(crate) use control::ControlHub;

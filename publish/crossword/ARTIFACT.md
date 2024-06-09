@@ -3,7 +3,7 @@
 For a shell command, `$` indicates running it on the local development machine, while `%` indicates running it on a CloudLab remote host.
 
 1. On you local dev machine, change into the repo's path
-    1. `cd path/to/summerset`
+    1. `$ cd path/to/summerset`
 2. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
 3. Add the following setting to your `~/.ssh/config` for skipping the SSH `known_hosts` check
 
@@ -23,7 +23,7 @@ For a shell command, `$` indicates running it on the local development machine, 
     5. Resize the root partition to make more space
         1. `% cd /eval/summerset`
         2. `% ./scripts/setup/resize_partition.sh`
-    6. Update Linux kernel version to v.6.1.64, the one used for evaluations presented in the paper
+    6. Update Linux kernel version to v6.1.64, the one used for evaluations presented in the paper
         1. `% ./scripts/setup/install_kernel.sh`
         2. `% sudo reboot`
     7. After rebooting, double check the kernel version

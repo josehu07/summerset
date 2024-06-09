@@ -20,12 +20,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Log action ID type.
-pub type LogActionId = u64;
+pub(crate) type LogActionId = u64;
 
 /// Action command to the logger. File cursor will be positioned at EOF after
 /// every action.
 #[derive(Debug, Serialize, Deserialize, GetSize)]
-pub enum LogAction<Ent> {
+pub(crate) enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
 
@@ -49,7 +49,7 @@ pub enum LogAction<Ent> {
 
 /// Action result returned by the logger.
 #[derive(Debug, Serialize, Deserialize, PartialEq, GetSize)]
-pub enum LogResult<Ent> {
+pub(crate) enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
     Read {
         entry: Option<Ent>,
@@ -73,7 +73,7 @@ pub enum LogResult<Ent> {
 }
 
 /// Durable storage logging module.
-pub struct StorageHub<Ent> {
+pub(crate) struct StorageHub<Ent> {
     /// My replica ID.
     me: ReplicaId,
 
@@ -103,7 +103,7 @@ where
     /// Creates a log channel for submitting logging actions to the logger and
     /// an ack channel for getting results. Prepares the given backing file as
     /// durability backend.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         me: ReplicaId,
         path: &Path,
     ) -> Result<Self, SummersetError> {
@@ -134,18 +134,16 @@ where
     }
 
     /// Submits an action by sending it to the log channel.
-    pub fn submit_action(
+    pub(crate) fn submit_action(
         &mut self,
         id: LogActionId,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
-        self.tx_log
-            .send((id, action))
-            .map_err(|e| SummersetError(e.to_string()))
+        self.tx_log.send((id, action)).map_err(SummersetError::msg)
     }
 
     /// Waits for the next logging result by receiving from the ack channel.
-    pub async fn get_result(
+    pub(crate) async fn get_result(
         &mut self,
     ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
         match self.rx_ack.recv().await {
@@ -156,12 +154,12 @@ where
 
     /// Try to get the next logging result using `try_recv()`.
     #[allow(dead_code)]
-    pub fn try_get_result(
+    pub(crate) fn try_get_result(
         &mut self,
     ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
         match self.rx_ack.try_recv() {
             Ok((id, result)) => Ok((id, result)),
-            Err(e) => Err(SummersetError(e.to_string())),
+            Err(e) => Err(SummersetError::msg(e)),
         }
     }
 
@@ -169,7 +167,7 @@ where
     /// Returns a tuple where the first element is a vec containing any old
     /// results of previously submitted actions received in the middle and
     /// the second element is the result of this sync action.
-    pub async fn do_sync_action(
+    pub(crate) async fn do_sync_action(
         &mut self,
         id: LogActionId,
         action: LogAction<Ent>,

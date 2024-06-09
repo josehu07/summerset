@@ -16,7 +16,9 @@ use tokio::time::Duration;
 impl CrosswordReplica {
     /// Chooses a random gossip_timeout from the min-max range and kicks off
     /// the gossip_timer.
-    pub fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_gossip_timer(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
         if !self.config.disable_gossip_timer {
@@ -88,7 +90,7 @@ impl CrosswordReplica {
     /// Triggers gossiping for my missing shards in committed but not-yet-
     /// executed instances: fetch missing shards from peers, preferring
     /// follower peers that hold data shards.
-    pub fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
         // maintain a map from peer ID to send to -> slots_excl to send
         let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Bitmap)>> =
             HashMap::with_capacity(self.population as usize - 1);

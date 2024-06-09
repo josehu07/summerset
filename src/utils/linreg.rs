@@ -11,7 +11,7 @@ use linreg::linear_regression_of;
 
 /// Performance model of a peer target.
 #[derive(Debug, PartialEq, Clone)]
-pub struct PerfModel {
+pub(crate) struct PerfModel {
     /// Base bandwidth factor (slope) in ms/MiB.
     slope: f64,
 
@@ -35,7 +35,7 @@ impl fmt::Display for PerfModel {
 impl PerfModel {
     /// Creates a new perf model struct.
     #[inline]
-    pub fn new(slope: f64, delay: f64, jitter: f64) -> Self {
+    pub(crate) fn new(slope: f64, delay: f64, jitter: f64) -> Self {
         PerfModel {
             delay,
             jitter,
@@ -45,7 +45,7 @@ impl PerfModel {
 
     /// Updates the perf model numbers.
     #[inline]
-    pub fn update(&mut self, slope: f64, delay: f64, jitter: f64) {
+    pub(crate) fn update(&mut self, slope: f64, delay: f64, jitter: f64) {
         self.slope = slope;
         self.delay = delay;
         self.jitter = jitter;
@@ -53,7 +53,7 @@ impl PerfModel {
 
     /// Calculate estimated response time given a data size.
     #[inline]
-    pub fn predict(&self, x: usize) -> f64 {
+    pub(crate) fn predict(&self, x: usize) -> f64 {
         let size_mb = x as f64 / (1024 * 1024) as f64;
         self.slope * size_mb + self.delay + self.jitter
     }
@@ -62,7 +62,7 @@ impl PerfModel {
 /// Linear regression helper struct for maintaining time-tagged datapoints
 /// and computing a linear regression model upon requested.
 #[derive(Debug)]
-pub struct LinearRegressor {
+pub(crate) struct LinearRegressor {
     /// Windows of currently held datapoints, divided into range buckets.
     buckets: Vec<Vec<(u128, usize, f64)>>,
 
@@ -77,7 +77,7 @@ pub struct LinearRegressor {
 impl LinearRegressor {
     /// Creates a new linear regressor helper struct.
     // NOTE: currently only using two buckets: size 0 and everything above.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut buckets = vec![];
         let mut rangemap = RangeMap::new();
         buckets.push(vec![]);
@@ -94,7 +94,7 @@ impl LinearRegressor {
 
     /// Injects a new datapoint into the window. It is assumed that all
     /// injections must have monotonically non-decreasing time tags.
-    pub fn append_sample(&mut self, t: u128, x: usize, y: f64) {
+    pub(crate) fn append_sample(&mut self, t: u128, x: usize, y: f64) {
         let bucket_idx = *self.rangemap.get(&x).unwrap();
         debug_assert!(bucket_idx < self.buckets.len());
         let bucket = &mut self.buckets[bucket_idx];
@@ -108,7 +108,7 @@ impl LinearRegressor {
     }
 
     /// Discards everything with timestamp tag before given time.
-    pub fn discard_before(&mut self, t: u128) {
+    pub(crate) fn discard_before(&mut self, t: u128) {
         for bucket in self.buckets.iter_mut() {
             let mut keep = bucket.len();
             for (i, dp) in bucket.iter().enumerate() {
@@ -129,7 +129,7 @@ impl LinearRegressor {
     /// Returns the result of linear regression model calculated on the
     /// current window of datapoints. If the model is not valid right now,
     /// compute it.
-    pub fn calc_model(
+    pub(crate) fn calc_model(
         &mut self,
         outliers_ratio: f32,
     ) -> Result<PerfModel, SummersetError> {

@@ -64,7 +64,7 @@ impl RepNothingReplica {
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
-    pub async fn handle_ctrl_msg(
+    pub(super) async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
         paused: &mut bool,

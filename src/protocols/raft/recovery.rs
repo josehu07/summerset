@@ -8,7 +8,9 @@ use crate::server::{LogAction, LogResult};
 // RaftReplica recovery from WAL log
 impl RaftReplica {
     /// Recover state from durable storage WAL log.
-    pub async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         debug_assert_eq!(self.log_offset, 0);
 
         // first, try to read the first several bytes, which should record

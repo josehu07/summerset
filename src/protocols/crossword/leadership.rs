@@ -15,7 +15,7 @@ use tokio::time::Duration;
 // CrosswordReplica leadership related logic
 impl CrosswordReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
-    pub fn check_leader(
+    pub(super) fn check_leader(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -43,7 +43,7 @@ impl CrosswordReplica {
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
-    pub fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
         }
@@ -194,7 +194,7 @@ impl CrosswordReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
@@ -263,7 +263,9 @@ impl CrosswordReplica {
 
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
-    pub fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_hb_hear_timer(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.hb_hear_timer.cancel()?;
 
         if !self.config.disable_hb_timer {
@@ -282,7 +284,7 @@ impl CrosswordReplica {
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
-    pub fn heard_heartbeat(
+    pub(super) fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         hb_id: HeartbeatId,

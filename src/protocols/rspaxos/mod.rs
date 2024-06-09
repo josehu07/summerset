@@ -113,13 +113,13 @@ impl Default for ReplicaConfigRSPaxos {
 }
 
 /// Ballot number type. Use 0 as a null ballot number.
-pub type Ballot = u64;
+pub(crate) type Ballot = u64;
 
 /// Instance status enum.
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub enum Status {
+pub(crate) enum Status {
     Null = 0,
     Preparing = 1,
     Accepting = 2,
@@ -128,11 +128,11 @@ pub enum Status {
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
-pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
+pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
-pub struct LeaderBookkeeping {
+pub(crate) struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
     trigger_slot: usize,
 
@@ -151,7 +151,7 @@ pub struct LeaderBookkeeping {
 
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
-pub struct ReplicaBookkeeping {
+pub(crate) struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 
@@ -164,7 +164,7 @@ pub struct ReplicaBookkeeping {
 
 /// In-memory instance containing a (possibly partial) commands batch.
 #[derive(Debug, Clone)]
-pub struct Instance {
+pub(crate) struct Instance {
     /// Ballot number.
     bal: Ballot,
 
@@ -192,7 +192,7 @@ pub struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum WalEntry {
+pub(crate) enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -213,7 +213,7 @@ pub enum WalEntry {
 /// end of the snapshot file for simplicity. In production, the snapshot
 /// file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum SnapEntry {
+pub(crate) enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log instances covered
@@ -227,7 +227,7 @@ pub enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub enum PeerMsg {
+pub(crate) enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
         /// Slot index in Prepare message is the triggering slot of this
@@ -291,7 +291,7 @@ pub enum PeerMsg {
 }
 
 /// RSPaxos server replica module.
-pub struct RSPaxosReplica {
+pub(crate) struct RSPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -814,7 +814,7 @@ impl Default for ClientConfigRSPaxos {
 }
 
 /// RSPaxos client-side module.
-pub struct RSPaxosClient {
+pub(crate) struct RSPaxosClient {
     /// Client ID.
     id: ClientId,
 
@@ -955,7 +955,7 @@ impl GenericEndpoint for RSPaxosClient {
                 .unwrap()
                 .send_req(req)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))
@@ -989,7 +989,7 @@ impl GenericEndpoint for RSPaxosClient {
 
             Ok(reply)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))

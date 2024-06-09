@@ -66,7 +66,7 @@ impl Default for ModeParamsTester {
 }
 
 /// Correctness testing client struct.
-pub struct ClientTester {
+pub(crate) struct ClientTester {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -79,7 +79,7 @@ pub struct ClientTester {
 
 impl ClientTester {
     /// Creates a new testing client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -361,7 +361,7 @@ impl ClientTester {
     }
 
     /// Runs the specified correctness test.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         let test_name = self.params.test_name.clone();
         let mut all_pass = true;
 
@@ -398,7 +398,7 @@ impl ClientTester {
         if all_pass {
             Ok(())
         } else {
-            Err(SummersetError("some test(s) failed".into()))
+            Err(SummersetError::msg("some test(s) failed"))
         }
     }
 }

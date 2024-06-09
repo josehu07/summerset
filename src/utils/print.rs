@@ -8,12 +8,8 @@
 /// ```
 #[macro_export]
 macro_rules! pf_trace {
-    ($prefix:expr; $fmt_str:literal) => {
-        log::trace!(concat!("({}) ", $fmt_str), $prefix)
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        log::trace!(concat!("({}) ", $fmt_str), $prefix, $($fmt_arg)*)
+    ($prefix:expr; $($fmt_args:tt)*) => {
+        log::trace!("({}) {}", $prefix, format!($($fmt_args)*))
     };
 }
 
@@ -25,12 +21,8 @@ macro_rules! pf_trace {
 /// ```
 #[macro_export]
 macro_rules! pf_debug {
-    ($prefix:expr; $fmt_str:literal) => {
-        log::debug!(concat!("({}) ", $fmt_str), $prefix)
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        log::debug!(concat!("({}) ", $fmt_str), $prefix, $($fmt_arg)*)
+    ($prefix:expr; $($fmt_args:tt)*) => {
+        log::debug!("({}) {}", $prefix, format!($($fmt_args)*))
     };
 }
 
@@ -42,12 +34,8 @@ macro_rules! pf_debug {
 /// ```
 #[macro_export]
 macro_rules! pf_info {
-    ($prefix:expr; $fmt_str:literal) => {
-        log::info!(concat!("({}) ", $fmt_str), $prefix)
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        log::info!(concat!("({}) ", $fmt_str), $prefix, $($fmt_arg)*)
+    ($prefix:expr; $($fmt_args:tt)*) => {
+        log::info!("({}) {}", $prefix, format!($($fmt_args)*))
     };
 }
 
@@ -59,12 +47,8 @@ macro_rules! pf_info {
 /// ```
 #[macro_export]
 macro_rules! pf_warn {
-    ($prefix:expr; $fmt_str:literal) => {
-        log::warn!(concat!("({}) ", $fmt_str), $prefix)
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        log::warn!(concat!("({}) ", $fmt_str), $prefix, $($fmt_arg)*)
+    ($prefix:expr; $($fmt_args:tt)*) => {
+        log::warn!("({}) {}", $prefix, format!($($fmt_args)*))
     };
 }
 
@@ -76,12 +60,8 @@ macro_rules! pf_warn {
 /// ```
 #[macro_export]
 macro_rules! pf_error {
-    ($prefix:expr; $fmt_str:literal) => {
-        log::error!(concat!("({}) ", $fmt_str), $prefix)
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        log::error!(concat!("({}) ", $fmt_str), $prefix, $($fmt_arg)*)
+    ($prefix:expr; $($fmt_args:tt)*) => {
+        log::error!("({}) {}", $prefix, format!($($fmt_args)*))
     };
 }
 
@@ -94,17 +74,10 @@ macro_rules! pf_error {
 /// ```
 #[macro_export]
 macro_rules! logged_err {
-    ($prefix:expr; $fmt_str:literal) => {
+    ($prefix:expr; $($fmt_args:tt)*) => {
         {
-            pf_error!($prefix; $fmt_str);
-            Err(SummersetError($fmt_str.into()))
-        }
-    };
-
-    ($prefix:expr; $fmt_str:literal, $($fmt_arg:tt)*) => {
-        {
-            pf_error!($prefix; $fmt_str, $($fmt_arg)*);
-            Err(SummersetError(format!($fmt_str, $($fmt_arg)*)))
+            pf_error!($prefix; $($fmt_args)*);
+            Err(SummersetError::msg(format!($($fmt_args)*)))
         }
     };
 }
@@ -117,14 +90,14 @@ mod print_tests {
     fn error_no_args() {
         assert_eq!(
             logged_err!(0; "interesting message"),
-            Err::<(), SummersetError>(SummersetError(
-                "interesting message".into()
+            Err::<(), SummersetError>(SummersetError::msg(
+                "interesting message"
             ))
         );
         assert_eq!(
             logged_err!("jose"; "interesting message"),
-            Err::<(), SummersetError>(SummersetError(
-                "interesting message".into()
+            Err::<(), SummersetError>(SummersetError::msg(
+                "interesting message"
             ))
         );
     }
@@ -133,9 +106,7 @@ mod print_tests {
     fn error_with_args() {
         assert_eq!(
             logged_err!(0; "got {} to print", 777),
-            Err::<(), SummersetError>(SummersetError(
-                "got 777 to print".into()
-            ))
+            Err::<(), SummersetError>(SummersetError::msg("got 777 to print"))
         );
     }
 }

@@ -50,32 +50,32 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<SmrProtocol, SummersetError> {
         if self.srv_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid srv_port {}",
                 self.srv_port
             )))
         } else if self.cli_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid cli_port {}",
                 self.cli_port
             )))
         } else if self.srv_port == self.cli_port {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "srv_port == cli_port {}",
                 self.srv_port
             )))
         } else if self.population == 0 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid population {}",
                 self.population
             )))
         } else if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError(
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
                 format!("protocol name '{}' unrecognized", self.protocol),
             ))
         }
@@ -92,7 +92,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let srv_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.srv_port)
         .parse()
         .map_err(|e| {
-            SummersetError(format!(
+            SummersetError::msg(format!(
                 "failed to parse srv_addr: bind_ip {} port {}: {}",
                 args.bind_ip, args.srv_port, e
             ))
@@ -102,7 +102,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let cli_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.cli_port)
         .parse()
         .map_err(|e| {
-            SummersetError(format!(
+            SummersetError::msg(format!(
                 "failed to parse cli_addr: bind_ip {} port {}: {}",
                 args.bind_ip, args.cli_port, e
             ))

@@ -56,7 +56,10 @@ impl Bitmap {
     #[inline]
     pub fn set(&mut self, idx: u8, flag: bool) -> Result<(), SummersetError> {
         if idx as usize >= self.0.len() {
-            return Err(SummersetError(format!("index {} out of bound", idx)));
+            return Err(SummersetError::msg(format!(
+                "index {} out of bound",
+                idx
+            )));
         }
         self.0.set(idx as usize, flag);
         Ok(())
@@ -66,7 +69,10 @@ impl Bitmap {
     #[inline]
     pub fn get(&self, idx: u8) -> Result<bool, SummersetError> {
         if idx as usize >= self.0.len() {
-            return Err(SummersetError(format!("index {} out of bound", idx)));
+            return Err(SummersetError::msg(format!(
+                "index {} out of bound",
+                idx
+            )));
         }
         Ok(self.0[idx as usize])
     }

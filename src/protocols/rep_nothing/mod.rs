@@ -60,12 +60,12 @@ impl Default for ReplicaConfigRepNothing {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub struct WalEntry {
+pub(crate) struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
 
 /// In-memory instance containing a commands batch.
-pub struct Instance {
+pub(crate) struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     execed: Vec<bool>,
@@ -73,7 +73,7 @@ pub struct Instance {
 
 /// RepNothing server replica module.
 // TransportHub module not needed here.
-pub struct RepNothingReplica {
+pub(crate) struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -292,7 +292,7 @@ impl Default for ClientConfigRepNothing {
 }
 
 /// RepNothing client-side module.
-pub struct RepNothingClient {
+pub(crate) struct RepNothingClient {
     /// Client ID.
     id: ClientId,
 
@@ -415,14 +415,14 @@ impl GenericEndpoint for RepNothingClient {
     ) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 

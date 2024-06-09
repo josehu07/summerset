@@ -13,12 +13,10 @@ mod protocols;
 // Things (other than exported macros) exposed to users of this crate:
 
 #[doc(inline)]
-pub use crate::utils::{SummersetError, Bitmap, Timer, RSCodeword};
+pub use crate::utils::{SummersetError, Timer, Stopwatch, Bitmap, RSCodeword};
 
 #[doc(inline)]
-pub use crate::manager::{
-    CtrlMsg, CtrlRequest, CtrlReply, ServerInfo, ClusterManager,
-};
+pub use crate::manager::{CtrlRequest, CtrlReply, ServerInfo, ClusterManager};
 
 #[doc(inline)]
 pub use crate::server::{

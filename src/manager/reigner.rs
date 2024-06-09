@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 /// some initiated by the manager and some by servers.
 // TODO: later add basic lease, membership/view change, link drop, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-pub enum CtrlMsg {
+pub(crate) enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
     /// to connect to.
     NewServerJoin {
@@ -72,7 +72,7 @@ pub enum CtrlMsg {
 }
 
 /// The server-facing controller API module.
-pub struct ServerReigner {
+pub(crate) struct ServerReigner {
     /// Receiver side of the recv channel.
     rx_recv: mpsc::UnboundedReceiver<(ReplicaId, CtrlMsg)>,
 
@@ -93,7 +93,7 @@ impl ServerReigner {
     /// Creates a new server-facing controller module. Spawns the server
     /// acceptor thread. Creates a pair of ID assignment channels. Creates
     /// a recv channel for buffering incoming control messages.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         srv_addr: SocketAddr,
         tx_id_assign: mpsc::UnboundedSender<()>,
         rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
@@ -127,13 +127,13 @@ impl ServerReigner {
 
     /// Returns whether a server ID is connected to me.
     #[allow(dead_code)]
-    pub fn has_server(&self, server: ReplicaId) -> bool {
+    pub(crate) fn has_server(&self, server: ReplicaId) -> bool {
         let tx_sends_guard = self.tx_sends.guard();
         tx_sends_guard.contains_key(&server)
     }
 
     /// Waits for the next control event message from some server.
-    pub async fn recv_ctrl(
+    pub(crate) async fn recv_ctrl(
         &mut self,
     ) -> Result<(ReplicaId, CtrlMsg), SummersetError> {
         match self.rx_recv.recv().await {
@@ -143,7 +143,7 @@ impl ServerReigner {
     }
 
     /// Sends a control message to specified server.
-    pub fn send_ctrl(
+    pub(crate) fn send_ctrl(
         &mut self,
         msg: CtrlMsg,
         server: ReplicaId,
@@ -151,9 +151,7 @@ impl ServerReigner {
         let tx_sends_guard = self.tx_sends.guard();
         match tx_sends_guard.get(&server) {
             Some(tx_send) => {
-                tx_send
-                    .send(msg)
-                    .map_err(|e| SummersetError(e.to_string()))?;
+                tx_send.send(msg).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {
@@ -189,9 +187,10 @@ impl ServerReigner {
     ) -> Result<(), SummersetError> {
         // communicate with the manager's main thread to get assigned server ID
         tx_id_assign.send(())?;
-        let (id, population) = rx_id_result.recv().await.ok_or(
-            SummersetError("failed to get server ID assignment".into()),
-        )?;
+        let (id, population) = rx_id_result
+            .recv()
+            .await
+            .ok_or(SummersetError::msg("failed to get server ID assignment"))?;
 
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {

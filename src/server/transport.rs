@@ -42,7 +42,7 @@ enum PeerMessage<Msg> {
 }
 
 /// Server internal TCP transport module.
-pub struct TransportHub<Msg> {
+pub(crate) struct TransportHub<Msg> {
     /// My replica ID.
     me: ReplicaId,
 
@@ -90,7 +90,7 @@ where
     /// Creates a new server internal TCP transport hub. Spawns the peer
     /// acceptor thread. Creates a recv channel for listening on peers'
     /// messages.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         me: ReplicaId,
         population: u8,
         p2p_addr: SocketAddr,
@@ -140,7 +140,7 @@ where
 
     /// Connects to a peer replica proactively, and spawns the corresponding
     /// messenger thread.
-    pub async fn connect_to_peer(
+    pub(crate) async fn connect_to_peer(
         &mut self,
         id: ReplicaId,
         bind_addr: SocketAddr,
@@ -162,7 +162,7 @@ where
 
     /// Waits for at least enough number of peers have been connected to me to
     /// form a group of specified size.
-    pub async fn wait_for_group(
+    pub(crate) async fn wait_for_group(
         &self,
         group: u8,
     ) -> Result<(), SummersetError> {
@@ -177,7 +177,7 @@ where
     }
 
     /// Gets a bitmap where currently connected peers are set true.
-    pub fn current_peers(&self) -> Result<Bitmap, SummersetError> {
+    pub(crate) fn current_peers(&self) -> Result<Bitmap, SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
         let mut peers = Bitmap::new(self.population, false);
         for &id in tx_sends_guard.keys() {
@@ -190,7 +190,7 @@ where
     }
 
     /// Sends a message to a specified peer by sending to the send channel.
-    pub fn send_msg(
+    pub(crate) fn send_msg(
         &mut self,
         msg: Msg,
         peer: ReplicaId,
@@ -200,7 +200,7 @@ where
             Some(tx_send) => {
                 tx_send
                     .send(PeerMessage::Msg { msg })
-                    .map_err(|e| SummersetError(e.to_string()))?;
+                    .map_err(SummersetError::msg)?;
             }
             None => {
                 // NOTE: commented out to avoid spurious error messages
@@ -217,7 +217,7 @@ where
 
     /// Broadcasts message to specified peers by sending to the send channel.
     /// If `target` is `None`, broadcast to all current peers.
-    pub fn bcast_msg(
+    pub(crate) fn bcast_msg(
         &mut self,
         msg: Msg,
         target: Option<Bitmap>,
@@ -238,7 +238,7 @@ where
                 .get(&peer)
                 .unwrap()
                 .send(PeerMessage::Msg { msg: msg.clone() })
-                .map_err(|e| SummersetError(e.to_string()))?;
+                .map_err(SummersetError::msg)?;
         }
 
         Ok(())
@@ -246,7 +246,7 @@ where
 
     /// Receives a message from some peer by receiving from the recv channel.
     /// Returns a pair of `(peer_id, msg)` on success.
-    pub async fn recv_msg(
+    pub(crate) async fn recv_msg(
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
         match self.rx_recv.recv().await {
@@ -260,18 +260,20 @@ where
 
     /// Try to receive the next message using `try_recv()`.
     #[allow(dead_code)]
-    pub fn try_recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
+    pub(crate) fn try_recv_msg(
+        &mut self,
+    ) -> Result<(ReplicaId, Msg), SummersetError> {
         match self.rx_recv.try_recv() {
             Ok((id, peer_msg)) => match peer_msg {
                 PeerMessage::Msg { msg } => Ok((id, msg)),
                 _ => logged_err!(self.me; "unexpected peer message type"),
             },
-            Err(e) => Err(SummersetError(e.to_string())),
+            Err(e) => Err(SummersetError::msg(e)),
         }
     }
 
     /// Broadcasts leave notifications to all peers and waits for replies.
-    pub async fn leave(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn leave(&mut self) -> Result<(), SummersetError> {
         #[allow(unused_variables)]
         let mut num_peers = 0;
         let tx_sends_guard = self.tx_sends.guard();
@@ -285,7 +287,7 @@ where
                 .get(&peer)
                 .unwrap()
                 .send(PeerMessage::Leave)
-                .map_err(|e| SummersetError(e.to_string()))?;
+                .map_err(SummersetError::msg)?;
             num_peers += 1;
         }
 

@@ -10,18 +10,18 @@ static DEFAULT_JITTER: f64 = 0.0;
 static DEFAULT_RATE: f64 = 100.0;
 
 /// Helper struct holding qdisc information.
-pub struct QdiscInfo {
+pub(crate) struct QdiscInfo {
     /// Main Ethernet interface's name.
     dev_name: String,
 
     /// Delay in ms.
-    pub delay: f64,
+    pub(crate) delay: f64,
 
     /// Jitter in ms.
-    pub jitter: f64,
+    pub(crate) jitter: f64,
 
     /// Rate in Gbps.
-    pub rate: f64,
+    pub(crate) rate: f64,
 }
 
 impl fmt::Display for QdiscInfo {
@@ -54,13 +54,13 @@ impl QdiscInfo {
                 return Ok(seg.into());
             }
         }
-        Err(SummersetError(
-            "error getting `ip route show` output line".into(),
+        Err(SummersetError::msg(
+            "error getting `ip route show` output line",
         ))
     }
 
     /// Creates a new qdisc info struct.
-    pub fn new() -> Result<Self, SummersetError> {
+    pub(crate) fn new() -> Result<Self, SummersetError> {
         Ok(QdiscInfo {
             dev_name: Self::get_interface_name()?,
             delay: DEFAULT_DELAY,
@@ -86,8 +86,8 @@ impl QdiscInfo {
         if !line.is_empty() {
             Ok(line.trim().to_string())
         } else {
-            Err(SummersetError(
-                "error getting `tc qdisc show` output line".into(),
+            Err(SummersetError::msg(
+                "error getting `tc qdisc show` output line",
             ))
         }
     }
@@ -202,7 +202,7 @@ impl QdiscInfo {
     }
 
     /// Updates my fields with a new query.
-    pub fn update(&mut self) -> Result<(), SummersetError> {
+    pub(crate) fn update(&mut self) -> Result<(), SummersetError> {
         let line = self.run_qdisc_show()?;
         let (delay, jitter, rate) = Self::parse_output_line(&line)?;
         debug_assert!(delay >= 0.0);

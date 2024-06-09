@@ -128,7 +128,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of Prepare reply from replica.
-    pub fn handle_msg_prepare_reply(
+    pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -441,7 +441,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of Accept reply from replica.
-    pub fn handle_msg_accept_reply(
+    pub(super) fn handle_msg_accept_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -653,7 +653,7 @@ impl CrosswordReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub fn handle_msg_recv(
+    pub(super) fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

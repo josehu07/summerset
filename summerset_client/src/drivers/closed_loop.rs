@@ -11,9 +11,9 @@ use summerset::{
 };
 
 /// Closed-loop driver struct.
-pub struct DriverClosedLoop {
+pub(crate) struct DriverClosedLoop {
     /// Client ID.
-    pub id: ClientId,
+    pub(crate) id: ClientId,
 
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
@@ -30,7 +30,10 @@ pub struct DriverClosedLoop {
 
 impl DriverClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        endpoint: Box<dyn GenericEndpoint>,
+        timeout: Duration,
+    ) -> Self {
         DriverClosedLoop {
             id: endpoint.id(),
             endpoint,
@@ -41,12 +44,12 @@ impl DriverClosedLoop {
     }
 
     /// Establishes connection with the service.
-    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
         self.endpoint.connect().await
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
-    pub async fn leave(
+    pub(crate) async fn leave(
         &mut self,
         permanent: bool,
     ) -> Result<(), SummersetError> {
@@ -89,7 +92,7 @@ impl DriverClosedLoop {
     }
 
     /// Send a Get request and wait for its reply.
-    pub async fn get(
+    pub(crate) async fn get(
         &mut self,
         key: &str,
     ) -> Result<DriverReply, SummersetError> {
@@ -159,7 +162,7 @@ impl DriverClosedLoop {
     }
 
     /// Send a Put request and wait for its reply.
-    pub async fn put(
+    pub(crate) async fn put(
         &mut self,
         key: &str,
         value: &str,
@@ -236,7 +239,7 @@ impl DriverClosedLoop {
 
     /// Gets a mutable reference to the endpoint's control stub.
     #[allow(dead_code)]
-    pub fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
+    pub(crate) fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         self.endpoint.ctrl_stub()
     }
 }

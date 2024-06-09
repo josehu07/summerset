@@ -99,7 +99,7 @@ impl Default for ReplicaConfigRaft {
 }
 
 /// Term number type, defined for better code readability.
-pub type Term = u64;
+pub(crate) type Term = u64;
 
 /// Request batch type (i.e., the "command" in an entry).
 ///
@@ -108,11 +108,11 @@ pub type Term = u64;
 /// from the leader basically batches all commands it has received since the
 /// last sent heartbeat. Here, to make this implementation more comparable to
 /// MultiPaxos, we trigger batching also explicitly.
-pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
+pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-mem + persistent entry of log, containing a term and a commands batch.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub struct LogEntry {
+pub(crate) struct LogEntry {
     /// Term number.
     term: Term,
 
@@ -134,7 +134,7 @@ pub struct LogEntry {
 /// the backer file is not a WAL log in runtime operation; it might get
 /// overwritten, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum DurEntry {
+pub(crate) enum DurEntry {
     /// Durable metadata.
     Metadata {
         curr_term: Term,
@@ -147,7 +147,7 @@ pub enum DurEntry {
 
 /// Snapshot file entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum SnapEntry {
+pub(crate) enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log entries covered
@@ -161,7 +161,7 @@ pub enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub enum PeerMsg {
+pub(crate) enum PeerMsg {
     /// AppendEntries from leader to followers.
     AppendEntries {
         term: Term,
@@ -198,14 +198,14 @@ pub enum PeerMsg {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub enum Role {
+pub(crate) enum Role {
     Follower,
     Candidate,
     Leader,
 }
 
 /// Raft server replica module.
-pub struct RaftReplica {
+pub(crate) struct RaftReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -681,7 +681,7 @@ impl Default for ClientConfigRaft {
 }
 
 /// Raft client-side module.
-pub struct RaftClient {
+pub(crate) struct RaftClient {
     /// Client ID.
     id: ClientId,
 
@@ -822,7 +822,7 @@ impl GenericEndpoint for RaftClient {
                 .unwrap()
                 .send_req(req)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))
@@ -856,7 +856,7 @@ impl GenericEndpoint for RaftClient {
 
             Ok(reply)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))

@@ -9,7 +9,7 @@ impl CrosswordReplica {
     /// Pretty-print a `Vec<Bitmap>` assignment policy
     #[inline]
     #[allow(clippy::ptr_arg)]
-    pub fn assignment_to_string(assignment: &Vec<Bitmap>) -> String {
+    pub(super) fn assignment_to_string(assignment: &Vec<Bitmap>) -> String {
         assignment
             .iter()
             .enumerate()
@@ -32,7 +32,7 @@ impl CrosswordReplica {
     }
 
     /// Parse config string into initial shards assignment policy.
-    pub fn parse_init_assignment(
+    pub(super) fn parse_init_assignment(
         population: u8,
         rs_total_shards: u8,
         rs_data_shards: u8,
@@ -52,7 +52,7 @@ impl CrosswordReplica {
         } else if let Ok(spr) = s.parse::<u8>() {
             // a single number: the same #shards per replica round-robinly
             if spr < dj_spr || spr > rs_data_shards {
-                return Err(SummersetError(format!(
+                return Err(SummersetError::msg(format!(
                     "invalid shards assignment string {}",
                     s
                 )));
@@ -74,7 +74,7 @@ impl CrosswordReplica {
                 if let Some(idx) = seg.find(':') {
                     let r = seg[..idx].parse::<ReplicaId>()?;
                     if r >= population {
-                        return Err(SummersetError(format!(
+                        return Err(SummersetError::msg(format!(
                             "invalid shards assignment string {}",
                             s
                         )));
@@ -83,7 +83,7 @@ impl CrosswordReplica {
                         assignment[r as usize].set(shard.parse()?, true)?;
                     }
                 } else {
-                    return Err(SummersetError(format!(
+                    return Err(SummersetError::msg(format!(
                         "invalid shards assignment string {}",
                         s
                     )));
@@ -96,7 +96,7 @@ impl CrosswordReplica {
     /// Compute minimum number of shards_per_replica (assuming balanced
     /// assignment) that is be responsive for a given peer_alive cnt.
     #[inline]
-    pub fn min_shards_per_replica(
+    pub(super) fn min_shards_per_replica(
         rs_data_shards: u8,
         majority: u8,
         fault_tolerance: u8,
@@ -111,7 +111,7 @@ impl CrosswordReplica {
     //       to account for this rare case right now
     #[inline]
     #[allow(clippy::too_many_arguments)]
-    pub fn pick_assignment_policy<'a>(
+    pub(super) fn pick_assignment_policy<'a>(
         assignment_adaptive: bool,
         assignment_balanced: bool,
         init_assignment: &'a Vec<Bitmap>,
@@ -191,7 +191,7 @@ impl CrosswordReplica {
     }
 
     /// Records a new datapoint for Accept RTT time.
-    pub fn record_accept_rtt(
+    pub(super) fn record_accept_rtt(
         &mut self,
         peer: ReplicaId,
         tr: u128,
@@ -230,7 +230,7 @@ impl CrosswordReplica {
     }
 
     /// Records a new datapoint for heartbeat RTT time.
-    pub fn record_heartbeat_rtt(
+    pub(super) fn record_heartbeat_rtt(
         &mut self,
         peer: ReplicaId,
         tr: u128,
@@ -268,7 +268,7 @@ impl CrosswordReplica {
     /// Discards all datapoints older than some timespan ago, then updates the
     /// linear regression perf monitoring model for each replica using the
     /// remaining window of datapoints.
-    pub fn update_linreg_model(
+    pub(super) fn update_linreg_model(
         &mut self,
         keep_ms: u64,
     ) -> Result<(), SummersetError> {
@@ -305,7 +305,7 @@ impl CrosswordReplica {
     }
 
     /// Updates `tc qdisc` netem information.
-    pub fn update_qdisc_info(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn update_qdisc_info(&mut self) -> Result<(), SummersetError> {
         if let Some(qdisc_info) = self.qdisc_info.as_mut() {
             qdisc_info.update()?;
         }
