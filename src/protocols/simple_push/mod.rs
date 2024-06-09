@@ -62,7 +62,7 @@ impl Default for ReplicaConfigSimplePush {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum WalEntry {
+pub(crate) enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
     },
@@ -75,7 +75,7 @@ pub enum WalEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub enum PushMsg {
+pub(crate) enum PushMsg {
     Push {
         src_inst_idx: usize,
         reqs: Vec<(ClientId, ApiRequest)>,
@@ -87,7 +87,7 @@ pub enum PushMsg {
 }
 
 /// In-memory instance containing a commands batch.
-pub struct Instance {
+pub(crate) struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     pending_peers: Bitmap,
@@ -96,7 +96,7 @@ pub struct Instance {
 }
 
 /// SimplePush server replica module.
-pub struct SimplePushReplica {
+pub(crate) struct SimplePushReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -371,7 +371,7 @@ impl Default for ClientConfigSimplePush {
 }
 
 /// SimplePush client-side module.
-pub struct SimplePushClient {
+pub(crate) struct SimplePushClient {
     /// Client ID.
     id: ClientId,
 
@@ -494,14 +494,14 @@ impl GenericEndpoint for SimplePushClient {
     ) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 

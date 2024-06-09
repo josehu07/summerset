@@ -76,7 +76,7 @@ impl RSPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
-    pub fn handle_msg_prepare_reply(
+    pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -362,7 +362,7 @@ impl RSPaxosReplica {
     }
 
     /// Handler of Accept reply from replica.
-    pub fn handle_msg_accept_reply(
+    pub(super) fn handle_msg_accept_reply(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -544,7 +544,7 @@ impl RSPaxosReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub fn handle_msg_recv(
+    pub(super) fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

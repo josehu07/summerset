@@ -8,7 +8,7 @@ use crate::server::{CommandResult, CommandId, ApiRequest, ApiReply};
 // CRaftReplica state machine execution
 impl CRaftReplica {
     /// Handler of state machine exec result chan recv.
-    pub fn handle_cmd_result(
+    pub(super) fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,

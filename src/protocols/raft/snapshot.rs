@@ -126,7 +126,9 @@ impl RaftReplica {
     /// which all other peers have snapshotted); we take the conservative
     /// approach that a snapshot is only taken when data has been durably
     /// committed on all servers.
-    pub async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn take_new_snapshot(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
                            self.start_slot, self.last_exec, self.last_snap);
         debug_assert!(self.last_exec + 1 >= self.start_slot);
@@ -189,7 +191,7 @@ impl RaftReplica {
     }
 
     /// Recover initial state from durable storage snapshot file.
-    pub async fn recover_from_snapshot(
+    pub(super) async fn recover_from_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
         debug_assert_eq!(self.snap_offset, 0);

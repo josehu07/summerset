@@ -59,27 +59,27 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<SmrProtocol, SummersetError> {
         if self.api_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid api_port {}",
                 self.api_port
             )))
         } else if self.p2p_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid p2p_port {}",
                 self.p2p_port
             )))
         } else if self.api_port == self.p2p_port {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "api_port == p2p_port {}",
                 self.api_port
             )))
         } else if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError(
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
                 format!("protocol name '{}' unrecognized", self.protocol),
             ))
         }
@@ -97,7 +97,7 @@ fn server_main() -> Result<(), SummersetError> {
         format!("{}:{}", args.bind_base.ip(), args.api_port)
             .parse()
             .map_err(|e| {
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "failed to parse api_addr: bind_ip {} port {}: {}",
                     args.bind_base.ip(),
                     args.api_port,
@@ -110,7 +110,7 @@ fn server_main() -> Result<(), SummersetError> {
         format!("{}:{}", args.bind_base.ip(), args.p2p_port)
             .parse()
             .map_err(|e| {
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "failed to parse p2p_addr: bind_ip {} port {}: {}",
                     args.bind_base.ip(),
                     args.p2p_port,

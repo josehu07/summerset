@@ -108,7 +108,7 @@ impl ExternalApi {
     /// Creates a new external API module. Spawns the client acceptor thread
     /// and the batch ticker thread. Creates a req channel for buffering
     /// incoming client requests.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         me: ReplicaId,
         api_addr: SocketAddr,
         batch_interval: Duration,
@@ -160,7 +160,7 @@ impl ExternalApi {
     }
 
     /// Returns whether a client ID is connected to me.
-    pub fn has_client(&self, client: ClientId) -> bool {
+    pub(crate) fn has_client(&self, client: ClientId) -> bool {
         let tx_replies_guard = self.tx_replies.guard();
         tx_replies_guard.contains_key(&client)
     }
@@ -168,7 +168,7 @@ impl ExternalApi {
     /// Waits for the next batch dumping signal and collects all requests
     /// currently in the req channel. Returns a non-empty `VecDeque` of
     /// requests on success.
-    pub async fn get_req_batch(
+    pub(crate) async fn get_req_batch(
         &mut self,
     ) -> Result<Vec<(ClientId, ApiRequest)>, SummersetError> {
         let mut batch = Vec::with_capacity(self.max_batch_size);
@@ -192,7 +192,7 @@ impl ExternalApi {
     }
 
     /// Sends a reply back to client by sending to the reply channel.
-    pub fn send_reply(
+    pub(crate) fn send_reply(
         &mut self,
         reply: ApiReply,
         client: ClientId,
@@ -200,9 +200,7 @@ impl ExternalApi {
         let tx_replies_guard = self.tx_replies.guard();
         match tx_replies_guard.get(&client) {
             Some(tx_reply) => {
-                tx_reply
-                    .send(reply)
-                    .map_err(|e| SummersetError(e.to_string()))?;
+                tx_reply.send(reply).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {
@@ -217,15 +215,13 @@ impl ExternalApi {
 
     /// Broadcasts a reply to all connected clients (mostly used for testing).
     #[allow(dead_code)]
-    pub fn bcast_reply(
+    pub(crate) fn bcast_reply(
         &mut self,
         reply: ApiReply,
     ) -> Result<(), SummersetError> {
         let tx_replies_guard = self.tx_replies.guard();
         for tx_reply in tx_replies_guard.values() {
-            tx_reply
-                .send(reply.clone())
-                .map_err(|e| SummersetError(e.to_string()))?;
+            tx_reply.send(reply.clone()).map_err(SummersetError::msg)?;
         }
         Ok(())
     }

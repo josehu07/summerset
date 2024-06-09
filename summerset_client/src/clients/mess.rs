@@ -34,7 +34,7 @@ impl Default for ModeParamsMess {
 }
 
 /// One-shot control client struct.
-pub struct ClientMess {
+pub(crate) struct ClientMess {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -47,7 +47,7 @@ pub struct ClientMess {
 
 impl ClientMess {
     /// Creates a new one-shot control client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -146,7 +146,7 @@ impl ClientMess {
     }
 
     /// Runs the one-shot client to make specified control requests.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         self.get_servers_info().await?;
 

@@ -33,7 +33,7 @@ macro_rules! parsed_config {
             // if table is not empty at this time, some parsed keys are not
             // expected hence invalid
             if table.len() > 0 {
-                return Err(SummersetError(format!(
+                return Err(SummersetError::msg(format!(
                     "invalid field name '{}' in config",
                     table.keys().next().unwrap(),
                 )));

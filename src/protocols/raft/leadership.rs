@@ -18,7 +18,7 @@ impl RaftReplica {
     /// Check if the given term is larger than mine. If so, convert my role
     /// back to follower. Returns true if my role was not follower but now
     /// converted to follower, and false otherwise.
-    pub async fn check_term(
+    pub(super) async fn check_term(
         &mut self,
         peer: ReplicaId,
         term: Term,
@@ -74,7 +74,7 @@ impl RaftReplica {
     }
 
     /// Becomes a candidate and starts the election procedure.
-    pub async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
         if self.role != Role::Follower {
             return Ok(());
         }
@@ -136,7 +136,7 @@ impl RaftReplica {
     }
 
     /// Becomes the leader after enough votes granted for me.
-    pub fn become_the_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.control_hub
@@ -172,7 +172,7 @@ impl RaftReplica {
     }
 
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
-    pub fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;
@@ -231,7 +231,7 @@ impl RaftReplica {
 
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
-    pub fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
         self.hb_hear_timer.cancel()?;
 
         if !self.config.disable_hb_timer {
@@ -248,7 +248,7 @@ impl RaftReplica {
     }
 
     /// Heard a heartbeat from some other replica. Resets election timer.
-    pub fn heard_heartbeat(
+    pub(super) fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         _term: Term,

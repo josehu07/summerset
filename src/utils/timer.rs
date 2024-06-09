@@ -66,7 +66,7 @@ impl Timer {
     /// and will notify a timeout only at the new deadline.
     pub fn kickoff(&self, dur: Duration) -> Result<(), SummersetError> {
         if dur.is_zero() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "invalid timeout duration {} ns",
                 dur.as_nanos()
             )));

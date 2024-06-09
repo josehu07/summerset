@@ -9,7 +9,7 @@ use crate::client::ClientId;
 // RepNothingReplica client requests entrance
 impl RepNothingReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {

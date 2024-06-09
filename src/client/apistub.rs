@@ -14,7 +14,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncWriteExt;
 
 /// Client API connection stub.
-pub struct ClientApiStub {
+pub(crate) struct ClientApiStub {
     /// My client ID.
     id: ClientId,
 
@@ -36,7 +36,7 @@ pub struct ClientApiStub {
 
 impl ClientApiStub {
     /// Creates a new API connection stub by connecting to the given server.
-    pub async fn new_by_connect(
+    pub(crate) async fn new_by_connect(
         id: ClientId,
         bind_addr: SocketAddr,
         server: SocketAddr,
@@ -63,7 +63,7 @@ impl ClientApiStub {
     ///                 (typically after doing a few `recv_reply()`s to free
     ///                 up some buffer space)
     ///   - `Err(err)` if any unexpected error occurs
-    pub fn send_req(
+    pub(crate) fn send_req(
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
@@ -85,7 +85,9 @@ impl ClientApiStub {
     }
 
     /// Receives a reply from established server connection.
-    pub async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+    pub(crate) async fn recv_reply(
+        &mut self,
+    ) -> Result<ApiReply, SummersetError> {
         let reply =
             safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 

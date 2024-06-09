@@ -8,7 +8,7 @@ use crate::server::{CommandResult, CommandId, ApiRequest, ApiReply};
 // RepNothingReplica state machine execution
 impl RepNothingReplica {
     /// Handler of state machine exec result chan recv.
-    pub fn handle_cmd_result(
+    pub(super) fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,

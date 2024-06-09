@@ -87,7 +87,7 @@ pub enum CtrlReply {
 }
 
 /// The client-facing reactor API module.
-pub struct ClientReactor {
+pub(crate) struct ClientReactor {
     /// Receiver side of the req channel.
     rx_req: mpsc::UnboundedReceiver<(ClientId, CtrlRequest)>,
 
@@ -109,7 +109,7 @@ impl ClientReactor {
     /// Creates a new client-facing responder module and spawns the client
     /// acceptor thread. Creates a req channel for buffering incoming control
     /// requests.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         cli_addr: SocketAddr,
     ) -> Result<Self, SummersetError> {
         let (tx_req, rx_req) = mpsc::unbounded_channel();
@@ -139,13 +139,13 @@ impl ClientReactor {
 
     /// Returns whether a client ID is connected to me.
     #[allow(dead_code)]
-    pub fn has_client(&self, client: ClientId) -> bool {
+    pub(crate) fn has_client(&self, client: ClientId) -> bool {
         let tx_replies_guard = self.tx_replies.guard();
         tx_replies_guard.contains_key(&client)
     }
 
     /// Waits for the next control event request from some client.
-    pub async fn recv_req(
+    pub(crate) async fn recv_req(
         &mut self,
     ) -> Result<(ClientId, CtrlRequest), SummersetError> {
         match self.rx_req.recv().await {
@@ -155,7 +155,7 @@ impl ClientReactor {
     }
 
     /// Sends a control event reply to specified client.
-    pub fn send_reply(
+    pub(crate) fn send_reply(
         &mut self,
         reply: CtrlReply,
         client: ClientId,
@@ -163,9 +163,7 @@ impl ClientReactor {
         let tx_replies_guard = self.tx_replies.guard();
         match tx_replies_guard.get(&client) {
             Some(tx_reply) => {
-                tx_reply
-                    .send(reply)
-                    .map_err(|e| SummersetError(e.to_string()))?;
+                tx_reply.send(reply).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {

@@ -8,7 +8,7 @@ use crate::server::{ApiRequest, LogResult, LogActionId};
 // RepNothingReplica durable WAL logging
 impl RepNothingReplica {
     /// Handler of durable logging result chan recv.
-    pub fn handle_log_result(
+    pub(super) fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,

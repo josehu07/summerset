@@ -17,12 +17,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// The manager control message handler module.
-pub struct ControlHub {
+pub(crate) struct ControlHub {
     /// My replica ID.
-    pub me: ReplicaId,
+    pub(crate) me: ReplicaId,
 
     /// Number of replicas in cluster.
-    pub population: u8,
+    pub(crate) population: u8,
 
     /// Receiver side of the recv channel.
     rx_recv: mpsc::UnboundedReceiver<CtrlMsg>,
@@ -41,7 +41,7 @@ impl ControlHub {
     /// thread. Creates a send channel for proactively sending control messages
     /// and a recv channel for buffering incoming control messages. Returns the
     /// assigned server ID on success.
-    pub async fn new_and_setup(
+    pub(crate) async fn new_and_setup(
         bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
@@ -69,7 +69,7 @@ impl ControlHub {
     }
 
     /// Waits for the next control event message from cluster manager.
-    pub async fn recv_ctrl(&mut self) -> Result<CtrlMsg, SummersetError> {
+    pub(crate) async fn recv_ctrl(&mut self) -> Result<CtrlMsg, SummersetError> {
         match self.rx_recv.recv().await {
             Some(msg) => Ok(msg),
             None => logged_err!(self.me; "recv channel has been closed"),
@@ -77,16 +77,16 @@ impl ControlHub {
     }
 
     /// Sends a control message to the cluster manager.
-    pub fn send_ctrl(&mut self, msg: CtrlMsg) -> Result<(), SummersetError> {
+    pub(crate) fn send_ctrl(&mut self, msg: CtrlMsg) -> Result<(), SummersetError> {
         self.tx_send
             .send(msg)
-            .map_err(|e| SummersetError(e.to_string()))?;
+            .map_err(SummersetError::msg)?;
         Ok(())
     }
 
     /// Sends a control message to the cluster manager and waits for an
     /// expected reply blockingly.
-    pub async fn do_sync_ctrl(
+    pub(crate) async fn do_sync_ctrl(
         &mut self,
         msg: CtrlMsg,
         expect: fn(&CtrlMsg) -> bool,

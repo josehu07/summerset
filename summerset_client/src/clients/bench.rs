@@ -100,7 +100,7 @@ impl Default for ModeParamsBench {
 }
 
 /// Benchmarking client struct.
-pub struct ClientBench {
+pub(crate) struct ClientBench {
     /// Open-loop request driver.
     driver: DriverOpenLoop,
 
@@ -164,7 +164,7 @@ pub struct ClientBench {
 
 impl ClientBench {
     /// Creates a new benchmarking client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -561,7 +561,7 @@ impl ClientBench {
     }
 
     /// Runs the adaptive benchmark for given time length.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         println!(
             "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",

@@ -66,7 +66,7 @@ impl Default for ReplicaConfigChainRep {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub enum Status {
+pub(crate) enum Status {
     Null = 0,
     Streaming = 1,
     Propagated = 2,
@@ -74,10 +74,10 @@ pub enum Status {
 }
 
 /// Request batch type.
-pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
+pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-memory log entry containing a commands batch.
-pub struct LogEntry {
+pub(crate) struct LogEntry {
     /// Log entry status.
     status: Status,
 
@@ -90,14 +90,14 @@ pub struct LogEntry {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub struct WalEntry {
+pub(crate) struct WalEntry {
     slot: usize,
     reqs: ReqBatch,
 }
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub enum PeerMsg {
+pub(crate) enum PeerMsg {
     /// Propagate message from predecessor to successor.
     Propagate { slot: usize, reqs: ReqBatch },
 
@@ -107,7 +107,7 @@ pub enum PeerMsg {
 }
 
 /// ChainRep server replica module.
-pub struct ChainRepReplica {
+pub(crate) struct ChainRepReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -451,7 +451,7 @@ impl Default for ClientConfigChainRep {
 }
 
 /// ChainRep client-side module.
-pub struct ChainRepClient {
+pub(crate) struct ChainRepClient {
     /// Client ID.
     id: ClientId,
 

@@ -8,7 +8,7 @@ use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
 // MultiPaxosReplica client requests entrance
 impl MultiPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
@@ -139,7 +139,7 @@ impl MultiPaxosReplica {
     }
 
     /// [for stale read profiling]
-    pub fn val_ver_of_first_key(
+    pub(super) fn val_ver_of_first_key(
         &mut self,
     ) -> Result<Option<(String, usize)>, SummersetError> {
         let (mut key, mut ver) = (None, 0);

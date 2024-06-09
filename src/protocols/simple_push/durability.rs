@@ -8,7 +8,7 @@ use crate::server::{ApiRequest, LogResult, LogActionId};
 // SimplePushReplica durable WAL logging
 impl SimplePushReplica {
     /// Handler of durable logging result chan recv.
-    pub fn handle_log_result(
+    pub(super) fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,

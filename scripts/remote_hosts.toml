@@ -2,7 +2,7 @@
 base_path = "/eval"
 repo_name = "summerset"
 
-# (SET PROPERLY) for each group, its host DNS domain names
+# (SET PROPERLY) for each group, its username @ DNS domain names
 [1dc]
 host0 = "josehu@c220g5-111017.wisc.cloudlab.us"
 host1 = "josehu@c220g5-111020.wisc.cloudlab.us"

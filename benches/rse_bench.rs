@@ -27,7 +27,7 @@ static SIZES: [usize; 6] = [
     4096 * 1024,
 ];
 
-struct BenchId(pub usize, pub (u8, u8));
+struct BenchId(usize, (u8, u8));
 
 impl fmt::Display for BenchId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

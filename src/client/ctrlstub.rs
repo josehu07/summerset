@@ -36,7 +36,7 @@ pub struct ClientCtrlStub {
 
 impl ClientCtrlStub {
     /// Creates a new control API stub and connects to the manager.
-    pub async fn new_by_connect(
+    pub(crate) async fn new_by_connect(
         bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
