@@ -214,7 +214,7 @@ impl CrosswordReplica {
                     .get_mut(&peer)
                     .unwrap()
                     .append_sample(tr, size, elapsed_ms);
-                // pf_trace!(self.id; "append {} ac t {} dp {:?}",
+                // pf_trace!("append {} ac t {} dp {:?}",
                 //                    peer, tr, (size, elapsed_ms));
                 break;
             } else if slot < s {
@@ -250,7 +250,7 @@ impl CrosswordReplica {
                     .get_mut(&peer)
                     .unwrap() // heartbeat size ~= 0
                     .append_sample(tr, 0, elapsed_ms);
-                // pf_trace!(self.id; "append {} hb t {} dp {:?}",
+                // pf_trace!("append {} hb t {} dp {:?}",
                 //                    peer, tr, (0, elapsed_ms));
                 break;
             } else if hb_id < id {
@@ -290,15 +290,17 @@ impl CrosswordReplica {
                         *self.linreg_model.get_mut(&peer).unwrap() = model;
                     }
                     Err(_e) => {
-                        // pf_trace!(self.id; "calc_model error: {}", e);
+                        // pf_trace!("calc_model error: {}", e);
                     }
                 }
             }
         }
 
         if now_us - self.last_linreg_print >= 3_000_000 {
-            pf_info!(self.id; "linreg {}",
-                              Self::linreg_models_to_string(&self.linreg_model));
+            pf_info!(
+                "linreg {}",
+                Self::linreg_models_to_string(&self.linreg_model)
+            );
             self.last_linreg_print = now_us;
         }
         Ok(())

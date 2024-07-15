@@ -4,9 +4,9 @@ use std::collections::{HashMap, VecDeque};
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap};
 use crate::manager::CtrlMsg;
-use crate::server::{ReplicaId, LogAction};
+use crate::server::{LogAction, ReplicaId};
+use crate::utils::{Bitmap, SummersetError};
 
 use rand::prelude::*;
 
@@ -27,7 +27,7 @@ impl CrosswordReplica {
             if self.is_leader() {
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                pf_info!(self.id; "no longer a leader...");
+                pf_info!("no longer a leader...");
             }
 
             // reset heartbeat timeout timer to prevent me from trying to
@@ -51,7 +51,7 @@ impl CrosswordReplica {
         self.leader = Some(self.id); // this starts broadcasting heartbeats
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
-        pf_info!(self.id; "becoming a leader...");
+        pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         for cnts in self.hb_reply_cnts.values_mut() {
@@ -96,8 +96,11 @@ impl CrosswordReplica {
             // append a null instance to act as the trigger_slot
             self.insts.push(self.null_instance()?);
         }
-        pf_debug!(self.id; "enter Prepare phase trigger_slot {} bal {}",
-                           trigger_slot, self.bal_prep_sent);
+        pf_debug!(
+            "enter Prepare phase trigger_slot {} bal {}",
+            trigger_slot,
+            self.bal_prep_sent
+        );
 
         // redo Prepare phase for all in-progress instances
         let mut recon_slots: Vec<(usize, Bitmap)> = vec![];
@@ -135,8 +138,11 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   slot, inst.bal);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
             }
 
             // do reconstruction reads for all committed instances that do not
@@ -158,17 +164,20 @@ impl CrosswordReplica {
             },
             None,
         )?;
-        pf_trace!(self.id; "broadcast Prepare messages trigger_slot {} bal {}",
-                           trigger_slot, self.bal_prep_sent);
+        pf_trace!(
+            "broadcast Prepare messages trigger_slot {} bal {}",
+            trigger_slot,
+            self.bal_prep_sent
+        );
 
         // send reconstruction read messages in chunks
         for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
             let slots = chunk.to_vec();
             let num_slots = slots.len();
-            // pf_warn!(self.id; "recons {:?}", slots);
+            // pf_warn!("recons {:?}", slots);
             self.transport_hub
                 .bcast_msg(PeerMsg::Reconstruct { slots_excl: slots }, None)?;
-            pf_trace!(self.id; "broadcast Reconstruct messages for {} slots", num_slots);
+            pf_trace!("broadcast Reconstruct messages for {} slots", num_slots);
 
             // inject a heartbeat after every chunk to keep peers happy
             self.transport_hub.bcast_msg(
@@ -232,7 +241,7 @@ impl CrosswordReplica {
                     // past hbs sent from me; this peer is probably dead
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
-                        pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
                         peer_death = true;
                     }
                     cnts.2 = 0;
@@ -257,7 +266,7 @@ impl CrosswordReplica {
             self.fallback_redo_accepts()?;
         }
 
-        // pf_trace!(self.id; "broadcast heartbeats bal {}", self.bal_prep_sent);
+        // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
     }
 
@@ -273,7 +282,7 @@ impl CrosswordReplica {
                 self.config.hb_hear_timeout_min
                     ..=self.config.hb_hear_timeout_max,
             );
-            // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
             self.hb_hear_timer
                 .kickoff(Duration::from_millis(timeout_ms))?;
         }
@@ -305,7 +314,7 @@ impl CrosswordReplica {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
-                pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                pf_info!("peer_alive updated: {:?}", self.peer_alive);
             }
 
             // if the peer has made a higher ballot number, consider it as
@@ -354,8 +363,11 @@ impl CrosswordReplica {
 
                 // mark this instance as committed
                 inst.status = Status::Committed;
-                pf_debug!(self.id; "committed instance at slot {} bal {}",
-                                   slot, inst.bal);
+                pf_debug!(
+                    "committed instance at slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -365,14 +377,17 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                                   slot, inst.bal);
+                pf_trace!(
+                    "submitted CommitSlot log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 commit_cnt += 1;
             }
 
             if commit_cnt > 0 {
-                pf_trace!(self.id; "heartbeat commit <- {} < slot {}", peer, commit_bar);
+                pf_trace!("heartbeat commit <- {} < slot {}", peer, commit_bar);
             }
         }
 
@@ -399,7 +414,7 @@ impl CrosswordReplica {
             }
         }
 
-        // pf_trace!(self.id; "heard heartbeat <- {} bal {}", peer, ballot);
+        // pf_trace!("heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
 
@@ -470,8 +485,12 @@ impl CrosswordReplica {
                     &self.qdisc_info,
                     &self.peer_alive,
                 );
-                pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
-                                   slot, inst.bal, Self::assignment_to_string(assignment));
+                pf_debug!(
+                    "enter Accept phase for slot {} bal {} asgmt {}",
+                    slot,
+                    inst.bal,
+                    Self::assignment_to_string(assignment)
+                );
 
                 let subset_copy = inst
                     .reqs_cw
@@ -493,8 +512,11 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                                       slot, inst.bal);
+                pf_trace!(
+                    "submitted AcceptData log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 // send Accept messages to all peers, each getting its subset of
                 // shards of data
@@ -521,8 +543,11 @@ impl CrosswordReplica {
                             .push_back((now_us, slot));
                     }
                 }
-                pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                       slot, inst.bal);
+                pf_trace!(
+                    "broadcast Accept messages for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
                 chunk_cnt += 1;
 
                 // inject heartbeats in the middle to keep peers happy

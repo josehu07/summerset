@@ -1,18 +1,19 @@
 //! Summerset's server functionality modules and trait.
 
 mod replica;
-mod statemach;
-mod transport;
-mod storage;
-mod external;
+
 mod control;
+mod external;
+mod statemach;
+mod storage;
+mod transport;
 
+pub use external::{ApiReply, ApiRequest, RequestId};
 pub use replica::{GenericReplica, ReplicaId};
-pub use external::{RequestId, ApiRequest, ApiReply};
-pub use statemach::{CommandId, Command, CommandResult};
+pub use statemach::{Command, CommandId, CommandResult};
 
+pub(crate) use control::ControlHub;
 pub(crate) use external::ExternalApi;
 pub(crate) use statemach::StateMachine;
-pub(crate) use storage::{StorageHub, LogActionId, LogAction, LogResult};
+pub(crate) use storage::{LogAction, LogActionId, LogResult, StorageHub};
 pub(crate) use transport::TransportHub;
-pub(crate) use control::ControlHub;

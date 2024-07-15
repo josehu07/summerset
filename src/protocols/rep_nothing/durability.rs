@@ -2,8 +2,8 @@
 
 use super::*;
 
+use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
-use crate::server::{ApiRequest, LogResult, LogActionId};
 
 // RepNothingReplica durable WAL logging
 impl RepNothingReplica {
@@ -15,7 +15,7 @@ impl RepNothingReplica {
     ) -> Result<(), SummersetError> {
         let inst_idx = action_id as usize;
         if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid log action ID {} seen", inst_idx);
+            return logged_err!("invalid log action ID {} seen", inst_idx);
         }
 
         match log_result {
@@ -24,13 +24,17 @@ impl RepNothingReplica {
                 self.wal_offset = now_size;
             }
             _ => {
-                return logged_err!(self.id; "unexpected log result type for {}: {:?}", inst_idx, log_result);
+                return logged_err!(
+                    "unexpected log result type for {}: {:?}",
+                    inst_idx,
+                    log_result
+                );
             }
         }
 
         let inst = &mut self.insts[inst_idx];
         if inst.durable {
-            return logged_err!(self.id; "duplicate log action ID {} seen", inst_idx);
+            return logged_err!("duplicate log action ID {} seen", inst_idx);
         }
         inst.durable = true;
 

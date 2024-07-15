@@ -3,19 +3,19 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
-};
-use crate::server::ReplicaId;
 use crate::protocols::SmrProtocol;
+use crate::server::ReplicaId;
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+};
 
 use bytes::BytesMut;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -138,7 +138,7 @@ impl ServerReigner {
     ) -> Result<(ReplicaId, CtrlMsg), SummersetError> {
         match self.rx_recv.recv().await {
             Some((id, msg)) => Ok((id, msg)),
-            None => logged_err!("m"; "recv channel has been closed"),
+            None => logged_err!("recv channel has been closed"),
         }
     }
 
@@ -156,7 +156,6 @@ impl ServerReigner {
             }
             None => {
                 logged_err!(
-                    "m";
                     "server ID {} not found among active servers",
                     server
                 )
@@ -194,12 +193,12 @@ impl ServerReigner {
 
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
-            return logged_err!("m"; "error assigning new server ID: {}", e);
+            return logged_err!("error assigning new server ID: {}", e);
         }
 
         // then send population
         if let Err(e) = stream.write_u8(population).await {
-            return logged_err!("m"; "error sending population: {}", e);
+            return logged_err!("error sending population: {}", e);
         }
 
         let mut tx_sends_guard = tx_sends.guard();
@@ -211,10 +210,10 @@ impl ServerReigner {
                 server_controller_handles_guard.remove(id);
                 tx_sends_guard.remove(id);
             } else {
-                return logged_err!("m"; "duplicate server ID listened: {}", id);
+                return logged_err!("duplicate server ID listened: {}", id);
             }
         }
-        pf_debug!("m"; "accepted new server {}", id);
+        pf_debug!("accepted new server {}", id);
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
@@ -246,7 +245,7 @@ impl ServerReigner {
     ) -> Result<(), SummersetError> {
         let mut tx_sends_guard = tx_sends.guard();
         if !tx_sends_guard.contains_key(&id) {
-            return logged_err!("m"; "server {} not found among active ones", id);
+            return logged_err!("server {} not found among active ones", id);
         }
         tx_sends_guard.remove(id);
 
@@ -272,10 +271,10 @@ impl ServerReigner {
             JoinHandle<()>,
         >,
     ) {
-        pf_debug!("m"; "server_acceptor thread spawned");
+        pf_debug!("server_acceptor thread spawned");
 
         let local_addr = server_listener.local_addr().unwrap();
-        pf_info!("m"; "accepting servers on '{}'", local_addr);
+        pf_info!("accepting servers on '{}'", local_addr);
 
         // create an exit mpsc channel for getting notified about termination
         // of server controller threads
@@ -286,7 +285,7 @@ impl ServerReigner {
                 // new client connection
                 accepted = server_listener.accept() => {
                     if let Err(e) = accepted {
-                        pf_warn!("m"; "error accepting server connection: {}", e);
+                        pf_warn!("error accepting server connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
@@ -300,7 +299,7 @@ impl ServerReigner {
                         &mut server_controller_handles,
                         tx_exit.clone(),
                     ).await {
-                        pf_error!("m"; "error accepting new server: {}", e);
+                        pf_error!("error accepting new server: {}", e);
                     }
                 },
 
@@ -312,13 +311,13 @@ impl ServerReigner {
                         &mut tx_sends,
                         &mut server_controller_handles
                     ) {
-                        pf_error!("m"; "error removing left server {}: {}", id, e);
+                        pf_error!("error removing left server {}: {}", id, e);
                     }
                 },
             }
         }
 
-        // pf_debug!("m"; "server_acceptor thread exitted");
+        // pf_debug!("server_acceptor thread exitted");
     }
 }
 
@@ -353,7 +352,7 @@ impl ServerReigner {
         mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) {
-        pf_debug!("m"; "server_controller thread for {} '{}' spawned", id, addr);
+        pf_debug!("server_controller thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::new();
@@ -374,16 +373,16 @@ impl ServerReigner {
                                 Some(&msg)
                             ) {
                                 Ok(true) => {
-                                    // pf_trace!("m"; "sent -> {} ctrl {:?}", id, msg);
+                                    // pf_trace!("sent -> {} ctrl {:?}", id, msg);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("m"; "should start retrying ctrl send -> {}", id);
+                                    pf_debug!("should start retrying ctrl send -> {}", id);
                                     retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
                                     // during benchmarking
-                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
+                                    // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -400,16 +399,16 @@ impl ServerReigner {
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("m"; "finished retrying last ctrl send -> {}", id);
+                            pf_debug!("finished retrying last ctrl send -> {}", id);
                             retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("m"; "still should retry last ctrl send -> {}", id);
+                            pf_debug!("still should retry last ctrl send -> {}", id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!("m"; "error retrying last ctrl send -> {}: {}", id, e);
+                            // pf_error!("error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
                 },
@@ -428,9 +427,9 @@ impl ServerReigner {
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
-                                // pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("m"; "server {} has left", id);
+                                pf_debug!("server {} has left", id);
                             }
                             break;
                         },
@@ -457,19 +456,17 @@ impl ServerReigner {
                                 api_addr,
                                 p2p_addr
                             };
-                            // pf_trace!("m"; "recv <- {} ctrl {:?}", id, msg);
+                            // pf_trace!("recv <- {} ctrl {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)) {
-                                pf_error!("m";
-                                          "error sending to tx_recv for {}: {}",
+                                pf_error!("error sending to tx_recv for {}: {}",
                                           id, e);
                             }
                         },
 
                         Ok(msg) => {
-                            // pf_trace!("m"; "recv <- {} ctrl {:?}", id, msg);
+                            // pf_trace!("recv <- {} ctrl {:?}", id, msg);
                             if let Err(e) = tx_recv.send((id, msg)) {
-                                pf_error!("m";
-                                          "error sending to tx_recv for {}: {}",
+                                pf_error!("error sending to tx_recv for {}: {}",
                                           id, e);
                             }
                         },
@@ -477,7 +474,7 @@ impl ServerReigner {
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!("m"; "error reading ctrl <- {}: {}", id, e);
+                            // pf_error!("error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exitted ungracefully
                         }
                     }
@@ -486,17 +483,17 @@ impl ServerReigner {
         }
 
         if let Err(e) = tx_exit.send(id) {
-            pf_error!("m"; "error sending exit signal for {}: {}", id, e);
+            pf_error!("error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!("m"; "server_controller thread for {} '{}' exitted", id, addr);
+        pf_debug!("server_controller thread for {} '{}' exitted", id, addr);
     }
 }
 
 #[cfg(test)]
-mod reigner_tests {
+mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::server::ControlHub;
+    use std::sync::Arc;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 

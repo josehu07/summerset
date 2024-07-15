@@ -2,9 +2,9 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // RepNothingReplica control messages handling
 impl RepNothingReplica {
@@ -33,7 +33,7 @@ impl RepNothingReplica {
                     now_size: 0,
                 })
         {
-            return logged_err!(self.id; "failed to truncate log to 0");
+            return logged_err!("failed to truncate log to 0");
         }
 
         Ok(())
@@ -44,7 +44,7 @@ impl RepNothingReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got pause req");
+        pf_warn!("server got pause req");
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -55,7 +55,7 @@ impl RepNothingReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got resume req");
+        pf_warn!("server got resume req");
         *paused = false;
         self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
         Ok(())

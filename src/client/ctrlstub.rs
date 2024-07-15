@@ -2,16 +2,16 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
-use crate::manager::{CtrlRequest, CtrlReply};
 use crate::client::ClientId;
+use crate::manager::{CtrlReply, CtrlRequest};
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError, ME,
+};
 
 use bytes::BytesMut;
 
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncReadExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Client -> manager oracle control API stub.
 pub struct ClientCtrlStub {
@@ -44,6 +44,9 @@ impl ClientCtrlStub {
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 
+        ME.set(id.to_string())
+            .expect("setting static identifier `me` should succeed");
+
         Ok(ClientCtrlStub {
             id,
             conn_write: write_half,
@@ -67,7 +70,7 @@ impl ClientCtrlStub {
         req: Option<&CtrlRequest>,
     ) -> Result<bool, SummersetError> {
         if req.is_none() {
-            pf_debug!(self.id; "retrying last unsuccessful send_req");
+            pf_debug!("retrying last unsuccessful send_req");
         }
         let no_retry = safe_tcp_write(
             &mut self.req_buf,
@@ -76,9 +79,9 @@ impl ClientCtrlStub {
             req,
         )?;
 
-        // pf_trace!(self.id; "send req {:?}", req);
+        // pf_trace!("send req {:?}", req);
         if !no_retry {
-            pf_debug!(self.id; "send_req would block; TCP buffer / eth queue full?");
+            pf_debug!("send_req would block; TCP buffer / eth queue full?");
         }
         Ok(no_retry)
     }
@@ -103,7 +106,7 @@ impl ClientCtrlStub {
         let reply =
             safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
-        // pf_trace!(self.id; "recv reply {:?}", reply);
+        // pf_trace!("recv reply {:?}", reply);
         Ok(reply)
     }
 }

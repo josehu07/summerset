@@ -6,23 +6,24 @@ mod print;
 #[macro_use]
 mod config;
 
-mod error;
 mod bitmap;
-mod stopwatch;
-mod timer;
-mod safetcp;
-mod rscoding;
+mod error;
 mod linreg;
 mod qdisc;
+mod rscoding;
+mod safetcp;
+mod stopwatch;
+mod timer;
 
-pub use error::SummersetError;
 pub use bitmap::Bitmap;
+pub use error::SummersetError;
+pub use print::{logger_init, ME};
+pub use rscoding::RSCodeword;
 pub use stopwatch::Stopwatch;
 pub use timer::Timer;
-pub use rscoding::RSCodeword;
 
+pub(crate) use linreg::{LinearRegressor, PerfModel};
+pub(crate) use qdisc::QdiscInfo;
 pub(crate) use safetcp::{
     safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
 };
-pub(crate) use linreg::{PerfModel, LinearRegressor};
-pub(crate) use qdisc::QdiscInfo;

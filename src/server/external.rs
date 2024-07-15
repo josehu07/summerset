@@ -3,23 +3,23 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
-};
-use crate::server::{ReplicaId, Command, CommandResult};
 use crate::client::ClientId;
+use crate::server::{Command, CommandResult, ReplicaId};
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+};
 
 use get_size::GetSize;
 
 use bytes::BytesMut;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncReadExt;
-use tokio::sync::{mpsc, Notify};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
 
@@ -76,7 +76,7 @@ pub enum ApiReply {
 /// The external client-facing API module.
 pub struct ExternalApi {
     /// My replica ID.
-    me: ReplicaId,
+    _me: ReplicaId,
 
     /// Receiver side of the req channel.
     rx_req: mpsc::UnboundedReceiver<(ClientId, ApiRequest)>,
@@ -116,7 +116,6 @@ impl ExternalApi {
     ) -> Result<Self, SummersetError> {
         if batch_interval < Duration::from_micros(1) {
             return logged_err!(
-                me;
                 "batch_interval {} us too small",
                 batch_interval.as_micros()
             );
@@ -133,7 +132,6 @@ impl ExternalApi {
         let client_listener = tcp_bind_with_retry(api_addr, 10).await?;
         let client_acceptor_handle =
             tokio::spawn(Self::client_acceptor_thread(
-                me,
                 tx_req,
                 client_listener,
                 tx_replies_write,
@@ -148,7 +146,7 @@ impl ExternalApi {
         ));
 
         Ok(ExternalApi {
-            me,
+            _me: me,
             rx_req,
             tx_replies: tx_replies_read,
             batch_notify,
@@ -205,7 +203,6 @@ impl ExternalApi {
             }
             None => {
                 logged_err!(
-                    self.me;
                     "client ID {} not found among active clients",
                     client
                 )
@@ -231,7 +228,6 @@ impl ExternalApi {
 impl ExternalApi {
     /// Accepts a new client connection.
     async fn accept_new_client(
-        me: ReplicaId,
         mut stream: TcpStream,
         addr: SocketAddr,
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
@@ -248,7 +244,7 @@ impl ExternalApi {
         let id = match stream.read_u64().await {
             Ok(id) => id,
             Err(e) => {
-                return logged_err!(me; "error receiving new client ID: {}", e);
+                return logged_err!("error receiving new client ID: {}", e);
             }
         };
 
@@ -261,16 +257,16 @@ impl ExternalApi {
                 client_servant_handles_guard.remove(id);
                 tx_replies_guard.remove(id);
             } else {
-                return logged_err!(me; "duplicate client ID listened: {}", id);
+                return logged_err!("duplicate client ID listened: {}", id);
             }
         }
-        pf_debug!(me; "accepted new client {}", id);
+        pf_debug!("accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
 
         let client_servant_handle = tokio::spawn(Self::client_servant_thread(
-            me, id, addr, stream, tx_req, rx_reply, tx_exit,
+            id, addr, stream, tx_req, rx_reply, tx_exit,
         ));
         let mut client_servant_handles_guard = client_servant_handles.guard();
         client_servant_handles_guard.insert(id, client_servant_handle);
@@ -282,7 +278,6 @@ impl ExternalApi {
 
     /// Removes handles of a left client connection.
     fn remove_left_client(
-        me: ReplicaId,
         id: ClientId,
         tx_replies: &mut flashmap::WriteHandle<
             ClientId,
@@ -295,7 +290,7 @@ impl ExternalApi {
     ) -> Result<(), SummersetError> {
         let mut tx_replies_guard = tx_replies.guard();
         if !tx_replies_guard.contains_key(&id) {
-            return logged_err!(me; "client {} not found among active ones", id);
+            return logged_err!("client {} not found among active ones", id);
         }
         tx_replies_guard.remove(id);
 
@@ -307,7 +302,6 @@ impl ExternalApi {
 
     /// Client acceptor thread function.
     async fn client_acceptor_thread(
-        me: ReplicaId,
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         client_listener: TcpListener,
         mut tx_replies: flashmap::WriteHandle<
@@ -319,10 +313,10 @@ impl ExternalApi {
             JoinHandle<()>,
         >,
     ) {
-        pf_debug!(me; "client_acceptor thread spawned");
+        pf_debug!("client_acceptor thread spawned");
 
         let local_addr = client_listener.local_addr().unwrap();
-        pf_info!(me; "accepting clients on '{}'", local_addr);
+        pf_info!("accepting clients on '{}'", local_addr);
 
         // create an exit mpsc channel for getting notified about termination
         // of client servant threads
@@ -333,12 +327,11 @@ impl ExternalApi {
                 // new client connection
                 accepted = client_listener.accept() => {
                     if let Err(e) = accepted {
-                        pf_warn!(me; "error accepting client connection: {}", e);
+                        pf_warn!("error accepting client connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
                     if let Err(e) = Self::accept_new_client(
-                        me,
                         stream,
                         addr,
                         tx_req.clone(),
@@ -346,7 +339,7 @@ impl ExternalApi {
                         &mut client_servant_handles,
                         tx_exit.clone()
                     ).await {
-                        pf_error!(me; "error accepting new client: {}", e);
+                        pf_error!("error accepting new client: {}", e);
                     }
                 },
 
@@ -354,18 +347,17 @@ impl ExternalApi {
                 id = rx_exit.recv() => {
                     let id = id.unwrap();
                     if let Err(e) = Self::remove_left_client(
-                        me,
                         id,
                         &mut tx_replies,
                         &mut client_servant_handles
                     ) {
-                        pf_error!(me; "error removing left client {}: {}", id, e);
+                        pf_error!("error removing left client {}: {}", id, e);
                     }
                 }
             }
         }
 
-        // pf_debug!(me; "client_acceptor thread exitted");
+        // pf_debug!("client_acceptor thread exitted");
     }
 }
 
@@ -393,7 +385,6 @@ impl ExternalApi {
 
     /// Client request listener and reply sender thread function.
     async fn client_servant_thread(
-        me: ReplicaId,
         id: ClientId,
         addr: SocketAddr,
         conn: TcpStream,
@@ -401,7 +392,7 @@ impl ExternalApi {
         mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
         tx_exit: mpsc::UnboundedSender<ClientId>,
     ) {
-        pf_debug!(me; "client_servant thread for {} '{}' spawned", id, addr);
+        pf_debug!("client_servant thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
@@ -426,16 +417,16 @@ impl ExternalApi {
                                 Some(&reply)
                             ) {
                                 Ok(true) => {
-                                    // pf_trace!(me; "replied -> {} reply {:?}", id, reply);
+                                    // pf_trace!("replied -> {} reply {:?}", id, reply);
                                 }
                                 Ok(false) => {
-                                    pf_debug!(me; "should start retrying reply send -> {}", id);
+                                    pf_debug!("should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
                                     // during benchmarking
-                                    // pf_error!(me; "error replying -> {}: {}", id, e);
+                                    // pf_error!("error replying -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -452,16 +443,16 @@ impl ExternalApi {
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!(me; "finished retrying last reply send -> {}", id);
+                            pf_debug!("finished retrying last reply send -> {}", id);
                             retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!(me; "still should retry last reply send -> {}", id);
+                            pf_debug!("still should retry last reply send -> {}", id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!(me; "error retrying last reply send -> {}: {}", id, e);
+                            // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 },
@@ -478,24 +469,24 @@ impl ExternalApi {
                                 &conn_write,
                                 Some(&reply),
                             ) {
-                                // pf_error!(me; "error replying -> {}: {}", id, e);
+                                // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!(me; "client {} has left", id);
+                                pf_debug!("client {} has left", id);
                             }
                             break;
                         },
 
                         Ok(req) => {
-                            // pf_trace!(me; "request <- {} req {:?}", id, req);
+                            // pf_trace!("request <- {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!(me; "error sending to tx_req for {}: {}", id, e);
+                                pf_error!("error sending to tx_req for {}: {}", id, e);
                             }
                         },
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!(me; "error reading request <- {}: {}", id, e);
+                            // pf_error!("error reading request <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -504,9 +495,9 @@ impl ExternalApi {
         }
 
         if let Err(e) = tx_exit.send(id) {
-            pf_error!(me; "error sending exit signal for {}: {}", id, e);
+            pf_error!("error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!(me; "client_servant thread for {} '{}' exitted", id, addr);
+        pf_debug!("client_servant thread for {} '{}' exitted", id, addr);
     }
 }
 
@@ -524,16 +515,16 @@ impl ExternalApi {
         loop {
             interval.tick().await;
             batch_notify.notify_one();
-            // pf_trace!(me; "batch interval ticked");
+            // pf_trace!("batch interval ticked");
         }
     }
 }
 
 #[cfg(test)]
-mod external_tests {
+mod tests {
     use super::*;
+    use crate::client::{ClientApiStub, ClientId};
     use crate::server::{Command, CommandResult};
-    use crate::client::{ClientId, ClientApiStub};
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 

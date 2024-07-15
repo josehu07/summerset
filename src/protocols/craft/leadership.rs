@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
-use crate::server::{ReplicaId, LogAction, LogResult};
+use crate::server::{LogAction, LogResult, ReplicaId};
+use crate::utils::SummersetError;
 
 use rand::prelude::*;
 
@@ -58,14 +58,16 @@ impl CRaftReplica {
             } = result
             {
             } else {
-                return logged_err!(self.id; "unexpected log result type or failed write");
+                return logged_err!(
+                    "unexpected log result type or failed write"
+                );
             }
 
             if self.role != Role::Follower {
                 self.role = Role::Follower;
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                pf_info!(self.id; "converted back to follower");
+                pf_info!("converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -85,8 +87,10 @@ impl CRaftReplica {
         if self.full_copy_mode == to_full_copy {
             return Ok(()); // invalid this mode, ignore
         }
-        pf_info!(self.id; "switching assignment config to: {}",
-                          if to_full_copy { "full-copy" } else { "1-shard" });
+        pf_info!(
+            "switching assignment config to: {}",
+            if to_full_copy { "full-copy" } else { "1-shard" }
+        );
         self.full_copy_mode = to_full_copy;
 
         if to_full_copy {
@@ -151,7 +155,7 @@ impl CRaftReplica {
         self.curr_term += 1;
         self.voted_for = Some(self.id);
         self.votes_granted = HashSet::from([self.id]);
-        pf_info!(self.id; "starting election with term {}...", self.curr_term);
+        pf_info!("starting election with term {}...", self.curr_term);
 
         // reset election timeout timer
         self.heard_heartbeat(self.id, self.curr_term)?;
@@ -168,8 +172,12 @@ impl CRaftReplica {
             },
             None,
         )?;
-        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
-                           self.curr_term, last_slot, last_term);
+        pf_trace!(
+            "broadcast RequestVote with term {} last {} term {}",
+            self.curr_term,
+            last_slot,
+            last_term
+        );
 
         // also make the two critical fields durable, synchronously
         let (old_results, result) = self
@@ -195,7 +203,7 @@ impl CRaftReplica {
         } = result
         {
         } else {
-            return logged_err!(self.id; "unexpected log result type or failed write");
+            return logged_err!("unexpected log result type or failed write");
         }
 
         Ok(())
@@ -203,7 +211,7 @@ impl CRaftReplica {
 
     /// Becomes the leader after enough votes granted for me.
     pub(super) fn become_the_leader(&mut self) -> Result<(), SummersetError> {
-        pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
+        pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
@@ -281,7 +289,7 @@ impl CRaftReplica {
                     // past hbs sent from me; this peer is probably dead
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
-                        pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
                     }
                     cnts.2 = 0;
                 }
@@ -299,7 +307,7 @@ impl CRaftReplica {
             self.switch_assignment_mode(true)?;
         }
 
-        // pf_trace!(self.id; "broadcast heartbeats term {}", self.curr_term);
+        // pf_trace!("broadcast heartbeats term {}", self.curr_term);
         Ok(())
     }
 
@@ -315,7 +323,7 @@ impl CRaftReplica {
                 self.config.hb_hear_timeout_min
                     ..=self.config.hb_hear_timeout_max,
             );
-            // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
             self.hb_hear_timer
                 .kickoff(Duration::from_millis(timeout_ms))?;
         }
@@ -333,7 +341,7 @@ impl CRaftReplica {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
-                pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                pf_info!("peer_alive updated: {:?}", self.peer_alive);
                 // check if we can move back to 1-shard replication
                 // if self.population - self.peer_alive.count()
                 //     < self.config.fault_tolerance
@@ -346,7 +354,7 @@ impl CRaftReplica {
         // reset hearing timer
         self.kickoff_hb_hear_timer()?;
 
-        // pf_trace!(self.id; "heard heartbeat <- {} term {}", peer, term);
+        // pf_trace!("heard heartbeat <- {} term {}", peer, term);
         Ok(())
     }
 }

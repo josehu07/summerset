@@ -1,18 +1,16 @@
 //! Summerset cluster manager oracle.
 
-use std::net::{SocketAddr, Ipv4Addr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
 
 use clap::Parser;
 
 use log::{self, LevelFilter};
 
-use env_logger::Env;
-
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -112,7 +110,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let (tx_term, rx_term) = watch::channel(false);
     ctrlc::set_handler(move || {
         if let Err(e) = tx_term.send(true) {
-            pf_error!("m"; "error sending to term channel: {}", e);
+            pf_error!("error sending to term channel: {}", e);
         }
     })?;
 
@@ -148,23 +146,19 @@ fn manager_main() -> Result<(), SummersetError> {
 
 /// Main function of Summerset manager oracle.
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    logger_init();
 
     if let Err(ref e) = manager_main() {
-        pf_error!("m"; "manager_main exitted: {}", e);
+        pf_error!("manager_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        // pf_warn!("m"; "manager_main exitted successfully");
+        // pf_warn!("manager_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
 
 #[cfg(test)]
-mod manager_args_tests {
+mod arg_tests {
     use super::*;
 
     #[test]

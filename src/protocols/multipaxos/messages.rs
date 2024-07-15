@@ -4,8 +4,8 @@ use std::cmp;
 
 use super::*;
 
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
-use crate::server::{ReplicaId, LogAction};
 
 // MultiPaxosReplica peer-peer messages handling
 impl MultiPaxosReplica {
@@ -19,8 +19,12 @@ impl MultiPaxosReplica {
         if trigger_slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Prepare <- {} trigger_slot {} bal {}",
-                           peer, trigger_slot, ballot);
+        pf_trace!(
+            "received Prepare <- {} trigger_slot {} bal {}",
+            peer,
+            trigger_slot,
+            ballot
+        );
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
@@ -66,8 +70,11 @@ impl MultiPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   slot, ballot);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    slot,
+                    ballot
+                );
             }
         }
 
@@ -87,8 +94,13 @@ impl MultiPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received PrepareReply <- {} for slot {} / {} bal {}",
-                           peer, slot, endprep_slot, ballot);
+        pf_trace!(
+            "received PrepareReply <- {} for slot {} / {} bal {}",
+            peer,
+            slot,
+            endprep_slot,
+            ballot
+        );
 
         // if ballot is what I'm currently waiting on for Prepare replies:
         if ballot == self.bal_prep_sent {
@@ -145,8 +157,11 @@ impl MultiPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   this_slot, inst.bal);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    this_slot,
+                    inst.bal
+                );
             }
 
             {
@@ -198,8 +213,11 @@ impl MultiPaxosReplica {
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
                         inst.status = Status::Accepting;
-                        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                           this_slot, inst.bal);
+                        pf_debug!(
+                            "enter Accept phase for slot {} bal {}",
+                            this_slot,
+                            inst.bal
+                        );
 
                         // record update to largest accepted ballot and its
                         // corresponding data
@@ -218,7 +236,6 @@ impl MultiPaxosReplica {
                             },
                         )?;
                         pf_trace!(
-                            self.id;
                             "submitted AcceptData log action for slot {} bal {}",
                             this_slot, ballot
                         );
@@ -232,8 +249,11 @@ impl MultiPaxosReplica {
                             },
                             None,
                         )?;
-                        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                           this_slot, ballot);
+                        pf_trace!(
+                            "broadcast Accept messages for slot {} bal {}",
+                            this_slot,
+                            ballot
+                        );
                     }
                 }
             }
@@ -253,8 +273,12 @@ impl MultiPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Accept <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(
+            "received Accept <- {} for slot {} bal {}",
+            peer,
+            slot,
+            ballot
+        );
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
@@ -291,8 +315,11 @@ impl MultiPaxosReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
-            pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                               slot, ballot);
+            pf_trace!(
+                "submitted AcceptData log action for slot {} bal {}",
+                slot,
+                ballot
+            );
         }
 
         Ok(())
@@ -309,8 +336,12 @@ impl MultiPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received AcceptReply <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(
+            "received AcceptReply <- {} for slot {} bal {}",
+            peer,
+            slot,
+            ballot
+        );
 
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
@@ -339,8 +370,11 @@ impl MultiPaxosReplica {
             // if quorum size reached, mark this instance as committed
             if leader_bk.accept_acks.count() >= self.quorum_cnt {
                 inst.status = Status::Committed;
-                pf_debug!(self.id; "committed instance at slot {} bal {}",
-                                   slot, inst.bal);
+                pf_debug!(
+                    "committed instance at slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 // [for perf breakdown]
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
@@ -356,8 +390,11 @@ impl MultiPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                                   slot, inst.bal);
+                pf_trace!(
+                    "submitted CommitSlot log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
             }
         }
 

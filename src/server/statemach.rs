@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::utils::SummersetError;
 use crate::server::ReplicaId;
+use crate::utils::SummersetError;
 
 use get_size::GetSize;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -49,7 +49,7 @@ type State = HashMap<String, String>;
 /// The local volatile state machine, which is simply an in-memory HashMap.
 pub(crate) struct StateMachine {
     /// My replica ID.
-    me: ReplicaId,
+    _me: ReplicaId,
 
     /// Sender side of the exec channel.
     tx_exec: mpsc::UnboundedSender<(CommandId, Command)>,
@@ -74,10 +74,10 @@ impl StateMachine {
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
         let executor_handle =
-            tokio::spawn(Self::executor_thread(me, rx_exec, tx_ack));
+            tokio::spawn(Self::executor_thread(rx_exec, tx_ack));
 
         Ok(StateMachine {
-            me,
+            _me: me,
             tx_exec,
             rx_ack,
             _executor_handle: executor_handle,
@@ -99,7 +99,7 @@ impl StateMachine {
     ) -> Result<(CommandId, CommandResult), SummersetError> {
         match self.rx_ack.recv().await {
             Some((id, result)) => Ok((id, result)),
-            None => logged_err!(self.me; "ack channel has been closed"),
+            None => logged_err!("ack channel has been closed"),
         }
     }
 
@@ -155,33 +155,32 @@ impl StateMachine {
 
     /// Executor thread function.
     async fn executor_thread(
-        me: ReplicaId,
         mut rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
         tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
     ) {
-        pf_debug!(me; "executor thread spawned");
+        pf_debug!("executor thread spawned");
 
         // create the state HashMap
         let mut state = State::new();
 
         while let Some((id, cmd)) = rx_exec.recv().await {
             let res = Self::execute(&mut state, &cmd);
-            // pf_trace!(me; "executed {:?}", cmd);
+            // pf_trace!("executed {:?}", cmd);
 
             if let Err(e) = tx_ack.send((id, res)) {
-                pf_error!(me; "error sending to tx_ack: {}", e);
+                pf_error!("error sending to tx_ack: {}", e);
             }
         }
 
         // channel gets closed and no messages remain
-        pf_debug!(me; "executor thread exitted");
+        pf_debug!("executor thread exitted");
     }
 }
 
 #[cfg(test)]
-mod statemach_tests {
+mod tests {
     use super::*;
-    use rand::{Rng, seq::SliceRandom};
+    use rand::{seq::SliceRandom, Rng};
 
     #[test]
     fn get_empty() {

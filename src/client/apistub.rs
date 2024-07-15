@@ -2,21 +2,21 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
-use crate::server::{ApiRequest, ApiReply};
 use crate::client::ClientId;
+use crate::server::{ApiReply, ApiRequest};
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError,
+};
 
 use bytes::BytesMut;
 
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Client API connection stub.
 pub(crate) struct ClientApiStub {
     /// My client ID.
-    id: ClientId,
+    _id: ClientId,
 
     /// Write-half split of the TCP connection stream.
     conn_write: OwnedWriteHalf,
@@ -46,7 +46,7 @@ impl ClientApiStub {
         let (read_half, write_half) = stream.into_split();
 
         Ok(ClientApiStub {
-            id,
+            _id: id,
             conn_write: write_half,
             req_buf: BytesMut::with_capacity(8 + 1024),
             req_buf_cursor: 0,
@@ -68,7 +68,7 @@ impl ClientApiStub {
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
         if req.is_none() {
-            pf_debug!(self.id; "retrying last unsuccessful send_req");
+            pf_debug!("retrying last unsuccessful send_req");
         }
         let no_retry = safe_tcp_write(
             &mut self.req_buf,
@@ -77,9 +77,9 @@ impl ClientApiStub {
             req,
         )?;
 
-        // pf_trace!(self.id; "send req {:?}", req);
+        // pf_trace!("send req {:?}", req);
         if !no_retry {
-            pf_debug!(self.id; "send_req would block; TCP buffer / eth queue full?");
+            pf_debug!("send_req would block; TCP buffer / eth queue full?");
         }
         Ok(no_retry)
     }
@@ -91,7 +91,7 @@ impl ClientApiStub {
         let reply =
             safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
-        // pf_trace!(self.id; "recv reply {:?}", reply);
+        // pf_trace!("recv reply {:?}", reply);
         Ok(reply)
     }
 }

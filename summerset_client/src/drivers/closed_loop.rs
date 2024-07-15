@@ -5,16 +5,12 @@ use crate::drivers::DriverReply;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error,
-    logged_err,
+    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
+    Command, CommandResult, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Closed-loop driver struct.
 pub(crate) struct DriverClosedLoop {
-    /// Client ID.
-    pub(crate) id: ClientId,
-
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
 
@@ -35,7 +31,6 @@ impl DriverClosedLoop {
         timeout: Duration,
     ) -> Self {
         DriverClosedLoop {
-            id: endpoint.id(),
             endpoint,
             next_req: 0,
             timer: Timer::new(),
@@ -80,7 +75,7 @@ impl DriverClosedLoop {
 
         tokio::select! {
             () = self.timer.timeout() => {
-                pf_debug!(self.id; "timed-out waiting for reply");
+                pf_debug!("timed-out waiting for reply");
                 Ok(None)
             }
 
@@ -142,7 +137,6 @@ impl DriverClosedLoop {
 
                             _ => {
                                 return logged_err!(
-                                    self.id;
                                     "command type mismatch: expected Get"
                                 );
                             }
@@ -155,7 +149,7 @@ impl DriverClosedLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }
@@ -218,7 +212,6 @@ impl DriverClosedLoop {
 
                             _ => {
                                 return logged_err!(
-                                    self.id;
                                     "command type mismatch: expected Put"
                                 );
                             }
@@ -231,7 +224,7 @@ impl DriverClosedLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }

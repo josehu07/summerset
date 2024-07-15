@@ -128,7 +128,7 @@ impl Stopwatch {
 }
 
 #[cfg(test)]
-mod stopwatch_tests {
+mod tests {
     use super::*;
     use tokio::time::{self, Duration};
 

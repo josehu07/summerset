@@ -101,7 +101,7 @@ impl Default for Timer {
 }
 
 #[cfg(test)]
-mod timer_tests {
+mod tests {
     use super::*;
     use tokio::time::{Duration, Instant};
 

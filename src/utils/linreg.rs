@@ -1,7 +1,7 @@
 //! Linear regression helpers for performance monitoring.
 
-use std::fmt;
 use std::collections::HashSet;
+use std::fmt;
 
 use crate::utils::SummersetError;
 
@@ -136,8 +136,8 @@ impl LinearRegressor {
         debug_assert!((0.0..1.0).contains(&outliers_ratio));
 
         if let Some(model) = self.model.as_ref() {
-            // pf_trace!("linreg"; "calc ts {:?} dps {:?} {:?}",
-            //                     self.timestamps, self.datapoints, model);
+            // pf_trace!("calc ts {:?} dps {:?} {:?}",
+            //           self.timestamps, self.datapoints, model);
             Ok(model.clone())
         } else {
             // use all datapoints in the size 0 bucket (i.e., the heartbeat
@@ -231,8 +231,8 @@ impl LinearRegressor {
 
             slope *= (1024 * 1024) as f64;
             let model = PerfModel::new(slope, delay, jitter);
-            // pf_warn!("linreg"; "calc ts {:?} dps {:?} {}",
-            //                    self.timestamps, self.datapoints, model);
+            // pf_warn!("calc ts {:?} dps {:?} {}",
+            //          self.timestamps, self.datapoints, model);
             self.model = Some(model.clone());
             Ok(model)
         }
@@ -240,7 +240,7 @@ impl LinearRegressor {
 }
 
 #[cfg(test)]
-mod linreg_tests {
+mod tests {
     use super::*;
 
     #[test]

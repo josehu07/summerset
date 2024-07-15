@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
-use crate::server::{Command, ApiRequest, LogAction, LogResult};
+use crate::server::{ApiRequest, Command, LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // RaftReplica snapshotting & GC logic
 impl RaftReplica {
@@ -47,10 +47,7 @@ impl RaftReplica {
             self.snap_offset = now_size;
             Ok(())
         } else {
-            logged_err!(
-                self.id;
-                "unexpected log result type"
-            )
+            logged_err!("unexpected log result type")
         }
     }
 
@@ -97,7 +94,6 @@ impl RaftReplica {
                 self.log_offset = now_size;
             } else {
                 return logged_err!(
-                    self.id;
                     "unexpected log result type or failed discard"
                 );
             }
@@ -129,8 +125,12 @@ impl RaftReplica {
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "taking new snapshot: start {} exec {} snap {}",
-                           self.start_slot, self.last_exec, self.last_snap);
+        pf_debug!(
+            "taking new snapshot: start {} exec {} snap {}",
+            self.start_slot,
+            self.last_exec,
+            self.last_snap
+        );
         debug_assert!(self.last_exec + 1 >= self.start_slot);
 
         // always keep at least one entry in log to make indexing happy
@@ -167,7 +167,9 @@ impl RaftReplica {
                 offset_ok: true, ..
             } => {}
             _ => {
-                return logged_err!(self.id; "unexpected log result type or failed write");
+                return logged_err!(
+                    "unexpected log result type or failed write"
+                );
             }
         }
 
@@ -186,7 +188,7 @@ impl RaftReplica {
         // reset the leader heartbeat hear timer
         self.kickoff_hb_hear_timer()?;
 
-        pf_info!(self.id; "took snapshot up to: start {}", self.start_slot);
+        pf_info!("took snapshot up to: start {}", self.start_slot);
         Ok(())
     }
 
@@ -255,7 +257,7 @@ impl RaftReplica {
                             break;
                         }
                         _ => {
-                            return logged_err!(self.id; "unexpected log result type");
+                            return logged_err!("unexpected log result type");
                         }
                     }
                 }
@@ -266,8 +268,10 @@ impl RaftReplica {
                 })?;
 
                 if self.start_slot > 0 {
-                    pf_info!(self.id; "recovered from snapshot: start {}",
-                                      self.start_slot);
+                    pf_info!(
+                        "recovered from snapshot: start {}",
+                        self.start_slot
+                    );
                 }
                 Ok(())
             }
@@ -293,12 +297,12 @@ impl RaftReplica {
                     self.snap_offset = now_size;
                     Ok(())
                 } else {
-                    logged_err!(self.id; "unexpected log result type or failed write")
+                    logged_err!("unexpected log result type or failed write")
                 }
             }
 
             _ => {
-                logged_err!(self.id; "unexpected log result type")
+                logged_err!("unexpected log result type")
             }
         }
     }

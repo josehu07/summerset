@@ -12,15 +12,12 @@ use crate::drivers::DriverReply;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, ApiRequest, ApiReply, RequestId,
-    ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error, logged_err,
+    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
+    Command, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Open-loop driver struct.
 pub(crate) struct DriverOpenLoop {
-    /// Client ID.
-    pub(crate) id: ClientId,
-
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
 
@@ -48,7 +45,6 @@ impl DriverOpenLoop {
         timeout: Duration,
     ) -> Self {
         DriverOpenLoop {
-            id: endpoint.id(),
             endpoint,
             next_req: 0,
             pending_reqs: HashMap::new(),
@@ -160,7 +156,7 @@ impl DriverOpenLoop {
 
         tokio::select! {
             () = self.timer.timeout() => {
-                pf_debug!(self.id; "timed-out waiting for reply");
+                pf_debug!("timed-out waiting for reply");
                 Ok(None)
             }
 
@@ -184,7 +180,7 @@ impl DriverOpenLoop {
                     redirect,
                 }) => {
                     if !self.pending_reqs.contains_key(&reply_id) {
-                        // logged_err!(self.id; "request ID {} not in pending set",
+                        // logged_err!("request ID {} not in pending set",
                         //                      reply_id)
                         continue;
                     } else {
@@ -211,7 +207,7 @@ impl DriverOpenLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }

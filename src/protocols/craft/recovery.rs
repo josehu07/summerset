@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, RSCodeword};
 use crate::server::{LogAction, LogResult};
+use crate::utils::{RSCodeword, SummersetError};
 
 // CRaftReplica recovery from WAL log
 impl CRaftReplica {
@@ -66,7 +66,7 @@ impl CRaftReplica {
                             break;
                         }
                         _ => {
-                            return logged_err!(self.id; "unexpected log result type");
+                            return logged_err!("unexpected log result type");
                         }
                     }
                 }
@@ -96,7 +96,9 @@ impl CRaftReplica {
                     self.log_offset = now_size;
                     self.log_meta_end = now_size;
                 } else {
-                    return logged_err!(self.id; "unexpected log result type or failed write");
+                    return logged_err!(
+                        "unexpected log result type or failed write"
+                    );
                 }
                 // ... and push a 0-th dummy entry into in-mem log
                 let null_entry = LogEntry {
@@ -129,11 +131,13 @@ impl CRaftReplica {
                     self.log[0].log_offset = self.log_offset;
                     self.log_offset = now_size;
                 } else {
-                    return logged_err!(self.id; "unexpected log result type or failed write");
+                    return logged_err!(
+                        "unexpected log result type or failed write"
+                    );
                 }
             }
 
-            _ => return logged_err!(self.id; "unexpected log result type"),
+            _ => return logged_err!("unexpected log result type"),
         }
 
         // do an extra Truncate to remove paritial entry at the end if any
@@ -152,12 +156,16 @@ impl CRaftReplica {
             .1
         {
             if self.log_offset > self.log_meta_end {
-                pf_info!(self.id; "recovered from wal log: term {} voted {:?} |log| {}",
-                                  self.curr_term, self.voted_for, self.log.len());
+                pf_info!(
+                    "recovered from wal log: term {} voted {:?} |log| {}",
+                    self.curr_term,
+                    self.voted_for,
+                    self.log.len()
+                );
             }
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type or failed truncate")
+            logged_err!("unexpected log result type or failed truncate")
         }
     }
 }

@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ReplicaId, ApiRequest, LogAction};
+use crate::server::{ApiRequest, LogAction, ReplicaId};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // RSPaxosReplica peer-peer messages handling
 impl RSPaxosReplica {
@@ -20,8 +20,12 @@ impl RSPaxosReplica {
         if trigger_slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Prepare <- {} trigger_slot {} bal {}",
-                           peer, trigger_slot, ballot);
+        pf_trace!(
+            "received Prepare <- {} trigger_slot {} bal {}",
+            peer,
+            trigger_slot,
+            ballot
+        );
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
@@ -67,8 +71,11 @@ impl RSPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   slot, ballot);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    slot,
+                    ballot
+                );
             }
         }
 
@@ -89,9 +96,11 @@ impl RSPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            self.id;
             "received PrepareReply <- {} for slot {} / {} bal {} shards {:?}",
-            peer, slot, endprep_slot, ballot,
+            peer,
+            slot,
+            endprep_slot,
+            ballot,
             voted.as_ref().map(|(_, cw)| cw.avail_shards_map())
         );
 
@@ -150,8 +159,11 @@ impl RSPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   this_slot, inst.bal);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    this_slot,
+                    inst.bal
+                );
             }
 
             {
@@ -245,8 +257,11 @@ impl RSPaxosReplica {
                         }
 
                         inst.status = Status::Accepting;
-                        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                                           this_slot, inst.bal);
+                        pf_debug!(
+                            "enter Accept phase for slot {} bal {}",
+                            this_slot,
+                            inst.bal
+                        );
 
                         // record update to largest accepted ballot and its
                         // corresponding data
@@ -270,7 +285,6 @@ impl RSPaxosReplica {
                             },
                         )?;
                         pf_trace!(
-                            self.id;
                             "submitted AcceptData log action for slot {} bal {}",
                             this_slot, ballot
                         );
@@ -295,8 +309,11 @@ impl RSPaxosReplica {
                                 peer,
                             )?;
                         }
-                        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                           this_slot, ballot);
+                        pf_trace!(
+                            "broadcast Accept messages for slot {} bal {}",
+                            this_slot,
+                            ballot
+                        );
                     }
                 }
             }
@@ -316,8 +333,13 @@ impl RSPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Accept <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot, reqs_cw.avail_shards_map());
+        pf_trace!(
+            "received Accept <- {} for slot {} bal {} shards {:?}",
+            peer,
+            slot,
+            ballot,
+            reqs_cw.avail_shards_map()
+        );
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
@@ -354,8 +376,11 @@ impl RSPaxosReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
-            pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                               slot, ballot);
+            pf_trace!(
+                "submitted AcceptData log action for slot {} bal {}",
+                slot,
+                ballot
+            );
         }
 
         Ok(())
@@ -371,8 +396,12 @@ impl RSPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received AcceptReply <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(
+            "received AcceptReply <- {} for slot {} bal {}",
+            peer,
+            slot,
+            ballot
+        );
 
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
@@ -405,8 +434,11 @@ impl RSPaxosReplica {
                 >= self.majority + self.config.fault_tolerance
             {
                 inst.status = Status::Committed;
-                pf_debug!(self.id; "committed instance at slot {} bal {}",
-                                   slot, inst.bal);
+                pf_debug!(
+                    "committed instance at slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -416,8 +448,11 @@ impl RSPaxosReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                                   slot, inst.bal);
+                pf_trace!(
+                    "submitted CommitSlot log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
             }
         }
 
@@ -430,7 +465,7 @@ impl RSPaxosReplica {
         peer: ReplicaId,
         slots: Vec<usize>,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received Reconstruct <- {} for slots {:?}", peer, slots);
+        pf_trace!("received Reconstruct <- {} for slots {:?}", peer, slots);
         let mut slots_data = HashMap::new();
 
         for slot in slots {
@@ -465,8 +500,11 @@ impl RSPaxosReplica {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(self.id; "sent ReconstructReply -> {} for {} slots",
-                               peer, num_slots);
+            pf_trace!(
+                "sent ReconstructReply -> {} for {} slots",
+                peer,
+                num_slots
+            );
         }
         Ok(())
     }
@@ -481,8 +519,13 @@ impl RSPaxosReplica {
             if slot < self.start_slot {
                 continue; // ignore if slot index outdated
             }
-            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                               peer, slot, ballot, reqs_cw.avail_shards_map());
+            pf_trace!(
+                "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
+                peer,
+                slot,
+                ballot,
+                reqs_cw.avail_shards_map()
+            );
             debug_assert!(slot < self.start_slot + self.insts.len());
             debug_assert!(
                 self.insts[slot - self.start_slot].status >= Status::Committed
@@ -530,8 +573,11 @@ impl RSPaxosReplica {
                                     continue; // ignore other types of requests
                                 }
                             }
-                            pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                               reqs.len(), self.commit_bar);
+                            pf_trace!(
+                                "submitted {} exec commands for slot {}",
+                                reqs.len(),
+                                self.commit_bar
+                            );
                         }
 
                         self.commit_bar += 1;

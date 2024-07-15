@@ -2,8 +2,8 @@
 
 use super::*;
 
+use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
-use crate::server::{CommandResult, CommandId, ApiRequest, ApiReply};
 
 // CrosswordReplica state machine execution
 impl CrosswordReplica {
@@ -18,8 +18,7 @@ impl CrosswordReplica {
             return Ok(()); // ignore if slot index outdated
         }
         debug_assert!(slot < self.start_slot + self.insts.len());
-        pf_trace!(self.id; "executed cmd in instance at slot {} idx {}",
-                           slot, cmd_idx);
+        pf_trace!("executed cmd in instance at slot {} idx {}", slot, cmd_idx);
 
         let inst = &mut self.insts[slot - self.start_slot];
         let reqs = inst.reqs_cw.get_data()?;
@@ -37,19 +36,22 @@ impl CrosswordReplica {
                     },
                     client,
                 )?;
-                pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
-                                   client, slot, cmd_idx);
+                pf_trace!(
+                    "replied -> client {} for slot {} idx {}",
+                    client,
+                    slot,
+                    cmd_idx
+                );
             }
         } else {
-            return logged_err!(self.id; "unexpected API request type");
+            return logged_err!("unexpected API request type");
         }
 
         // if all commands in this instance have been executed, set status to
         // Executed and update `exec_bar`
         if cmd_idx == reqs.len() - 1 {
             inst.status = Status::Executed;
-            pf_debug!(self.id; "executed all cmds in instance at slot {}",
-                               slot);
+            pf_debug!("executed all cmds in instance at slot {}", slot);
 
             // [for perf breakdown]
             if self.is_leader() {

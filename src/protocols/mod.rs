@@ -3,44 +3,44 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::utils::SummersetError;
+use crate::client::GenericEndpoint;
 use crate::manager::ClusterManager;
 use crate::server::GenericReplica;
-use crate::client::GenericEndpoint;
+use crate::utils::SummersetError;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 mod rep_nothing;
-use rep_nothing::{RepNothingReplica, RepNothingClient};
-pub use rep_nothing::{ReplicaConfigRepNothing, ClientConfigRepNothing};
+pub use rep_nothing::{ClientConfigRepNothing, ReplicaConfigRepNothing};
+use rep_nothing::{RepNothingClient, RepNothingReplica};
 
 mod simple_push;
-use simple_push::{SimplePushReplica, SimplePushClient};
-pub use simple_push::{ReplicaConfigSimplePush, ClientConfigSimplePush};
+pub use simple_push::{ClientConfigSimplePush, ReplicaConfigSimplePush};
+use simple_push::{SimplePushClient, SimplePushReplica};
 
 mod chain_rep;
-use chain_rep::{ChainRepReplica, ChainRepClient};
-pub use chain_rep::{ReplicaConfigChainRep, ClientConfigChainRep};
+use chain_rep::{ChainRepClient, ChainRepReplica};
+pub use chain_rep::{ClientConfigChainRep, ReplicaConfigChainRep};
 
 mod multipaxos;
-use multipaxos::{MultiPaxosReplica, MultiPaxosClient};
-pub use multipaxos::{ReplicaConfigMultiPaxos, ClientConfigMultiPaxos};
+pub use multipaxos::{ClientConfigMultiPaxos, ReplicaConfigMultiPaxos};
+use multipaxos::{MultiPaxosClient, MultiPaxosReplica};
 
 mod raft;
-use raft::{RaftReplica, RaftClient};
-pub use raft::{ReplicaConfigRaft, ClientConfigRaft};
+pub use raft::{ClientConfigRaft, ReplicaConfigRaft};
+use raft::{RaftClient, RaftReplica};
 
 mod rspaxos;
-use rspaxos::{RSPaxosReplica, RSPaxosClient};
-pub use rspaxos::{ReplicaConfigRSPaxos, ClientConfigRSPaxos};
+pub use rspaxos::{ClientConfigRSPaxos, ReplicaConfigRSPaxos};
+use rspaxos::{RSPaxosClient, RSPaxosReplica};
 
 mod craft;
-use craft::{CRaftReplica, CRaftClient};
-pub use craft::{ReplicaConfigCRaft, ClientConfigCRaft};
+use craft::{CRaftClient, CRaftReplica};
+pub use craft::{ClientConfigCRaft, ReplicaConfigCRaft};
 
 mod crossword;
-use crossword::{CrosswordReplica, CrosswordClient};
-pub use crossword::{ReplicaConfigCrossword, ClientConfigCrossword};
+pub use crossword::{ClientConfigCrossword, ReplicaConfigCrossword};
+use crossword::{CrosswordClient, CrosswordReplica};
 
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -317,7 +317,7 @@ impl fmt::Display for SmrProtocol {
 }
 
 #[cfg(test)]
-mod protocols_name_tests {
+mod name_tests {
     use super::*;
 
     macro_rules! valid_name_test {

@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CRaftReplica client requests entrance
 impl CRaftReplica {
@@ -14,7 +14,7 @@ impl CRaftReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if self.role != Role::Leader {
@@ -35,8 +35,11 @@ impl CRaftReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, target);
+                    pf_trace!(
+                        "redirected client {} to replica {}",
+                        client,
+                        target
+                    );
                 }
             }
             return Ok(());
@@ -60,7 +63,7 @@ impl CRaftReplica {
                         },
                         *client,
                     )?;
-                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                    pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
@@ -115,7 +118,7 @@ impl CRaftReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted leader append log action for slot {}", slot);
+        pf_trace!("submitted leader append log action for slot {}", slot);
 
         // append an entry to in-memory log
         self.log.push(LogEntry {

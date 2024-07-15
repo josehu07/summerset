@@ -5,18 +5,16 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use env_logger::Env;
-
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
-use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
+use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
 
-mod drivers;
 mod clients;
+mod drivers;
 
 use crate::clients::{
-    ClientMode, ClientRepl, ClientBench, ClientTester, ClientMess,
+    ClientBench, ClientMess, ClientMode, ClientRepl, ClientTester,
 };
 
 /// Command line arguments definition.
@@ -181,23 +179,19 @@ fn client_main() -> Result<(), SummersetError> {
 
 /// Main function of Summerset client executable.
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    logger_init();
 
     if let Err(ref e) = client_main() {
-        pf_error!("c"; "client_main exitted: {}", e);
+        pf_error!("client_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("c"; "client_main exitted successfully");
+        pf_warn!("client_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
 
 #[cfg(test)]
-mod client_args_tests {
+mod arg_tests {
     use super::*;
 
     #[test]

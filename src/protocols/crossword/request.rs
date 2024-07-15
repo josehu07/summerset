@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CrosswordReplica client requests entrance
 impl CrosswordReplica {
@@ -16,7 +16,7 @@ impl CrosswordReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if !self.is_leader() || self.bal_prepared == 0 {
@@ -37,8 +37,11 @@ impl CrosswordReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, target);
+                    pf_trace!(
+                        "redirected client {} to replica {}",
+                        client,
+                        target
+                    );
                 }
             }
             return Ok(());
@@ -62,7 +65,7 @@ impl CrosswordReplica {
                         },
                         *client,
                     )?;
-                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                    pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
@@ -136,8 +139,12 @@ impl CrosswordReplica {
             &self.qdisc_info,
             &self.peer_alive,
         );
-        pf_debug!(self.id; "enter Accept phase for slot {} bal {} asgmt {}",
-                           slot, inst.bal, Self::assignment_to_string(assignment));
+        pf_debug!(
+            "enter Accept phase for slot {} bal {} asgmt {}",
+            slot,
+            inst.bal,
+            Self::assignment_to_string(assignment)
+        );
 
         // record update to largest accepted ballot and corresponding data
         let subset_copy = inst
@@ -158,8 +165,11 @@ impl CrosswordReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "submitted AcceptData log action for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         // send Accept messages to all peers, each getting its subset of
         // shards of data
@@ -186,8 +196,11 @@ impl CrosswordReplica {
                     .push_back((now_us, slot));
             }
         }
-        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "broadcast Accept messages for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         Ok(())
     }

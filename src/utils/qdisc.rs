@@ -217,7 +217,7 @@ impl QdiscInfo {
 }
 
 #[cfg(test)]
-mod qdisc_tests {
+mod tests {
     use super::*;
     use std::process::Command;
 

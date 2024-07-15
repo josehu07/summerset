@@ -2,17 +2,17 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
 use crate::manager::CtrlMsg;
 use crate::server::ReplicaId;
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError, ME,
+};
 
 use bytes::BytesMut;
 
-use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncReadExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -46,17 +46,20 @@ impl ControlHub {
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
-        pf_debug!("s"; "connecting to manager '{}'...", manager);
+        pf_debug!("connecting to manager '{}'...", manager);
         let mut stream = tcp_connect_with_retry(bind_addr, manager, 10).await?;
         let id = stream.read_u8().await?; // first receive assigned server ID
         let population = stream.read_u8().await?; // then receive population
-        pf_debug!(id; "assigned server ID: {} of {}", id, population);
+        pf_debug!("assigned server ID: {} of {}", id, population);
+
+        ME.set(id.to_string())
+            .expect("setting static identifier `me` should succeed");
 
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
         let control_messenger_handle = tokio::spawn(
-            Self::control_messenger_thread(id, stream, tx_recv, rx_send),
+            Self::control_messenger_thread(stream, tx_recv, rx_send),
         );
 
         Ok(ControlHub {
@@ -74,7 +77,7 @@ impl ControlHub {
     ) -> Result<CtrlMsg, SummersetError> {
         match self.rx_recv.recv().await {
             Some(msg) => Ok(msg),
-            None => logged_err!(self.me; "recv channel has been closed"),
+            None => logged_err!("recv channel has been closed"),
         }
     }
 
@@ -129,12 +132,11 @@ impl ControlHub {
 
     /// Manager control message listener and sender thread function.
     async fn control_messenger_thread(
-        me: ReplicaId,
         conn: TcpStream,
         tx_recv: mpsc::UnboundedSender<CtrlMsg>,
         mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
     ) {
-        pf_debug!(me; "control_messenger thread spawned");
+        pf_debug!("control_messenger thread spawned");
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut read_buf = BytesMut::new();
@@ -155,16 +157,16 @@ impl ControlHub {
                                 Some(&msg)
                             ) {
                                 Ok(true) => {
-                                    // pf_trace!(me; "sent ctrl {:?}", msg);
+                                    // pf_trace!("sent ctrl {:?}", msg);
                                 }
                                 Ok(false) => {
-                                    pf_debug!(me; "should start retrying ctrl send");
+                                    pf_debug!("should start retrying ctrl send");
                                     retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
                                     // during benchmarking
-                                    // pf_error!(me; "error sending ctrl: {}", e);
+                                    // pf_error!("error sending ctrl: {}", e);
                                 }
                             }
                         },
@@ -181,16 +183,16 @@ impl ControlHub {
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!(me; "finished retrying last ctrl send");
+                            pf_debug!("finished retrying last ctrl send");
                             retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!(me; "still should retry last ctrl send");
+                            pf_debug!("still should retry last ctrl send");
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!(me; "error retrying last ctrl send: {}", e);
+                            // pf_error!("error retrying last ctrl send: {}", e);
                         }
                     }
                 },
@@ -199,16 +201,16 @@ impl ControlHub {
                 msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
                     match msg {
                         Ok(msg) => {
-                            // pf_trace!(me; "recv ctrl {:?}", msg);
+                            // pf_trace!("recv ctrl {:?}", msg);
                             if let Err(e) = tx_recv.send(msg) {
-                                pf_error!(me; "error sending to tx_recv: {}", e);
+                                pf_error!("error sending to tx_recv: {}", e);
                             }
                         },
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!(me; "error reading ctrl: {}", e);
+                            // pf_error!("error reading ctrl: {}", e);
                             break; // probably the manager exitted ungracefully
                         }
                     }
@@ -216,7 +218,7 @@ impl ControlHub {
             }
         }
 
-        pf_debug!(me; "control_messenger thread exitted");
+        pf_debug!("control_messenger thread exitted");
     }
 }
 

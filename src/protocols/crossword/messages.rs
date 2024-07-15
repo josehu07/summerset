@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ReplicaId, ApiRequest, LogAction};
+use crate::server::{ApiRequest, LogAction, ReplicaId};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CrosswordReplica peer-peer messages handling
 impl CrosswordReplica {
@@ -72,8 +72,12 @@ impl CrosswordReplica {
         if trigger_slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Prepare <- {} trigger_slot {} bal {}",
-                           peer, trigger_slot, ballot);
+        pf_trace!(
+            "received Prepare <- {} trigger_slot {} bal {}",
+            peer,
+            trigger_slot,
+            ballot
+        );
 
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
@@ -119,8 +123,11 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   slot, ballot);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    slot,
+                    ballot
+                );
             }
         }
 
@@ -141,9 +148,11 @@ impl CrosswordReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            self.id;
             "received PrepareReply <- {} for slot {} / {} bal {} shards {:?}",
-            peer, slot, endprep_slot, ballot,
+            peer,
+            slot,
+            endprep_slot,
+            ballot,
             voted.as_ref().map(|(_, cw)| cw.avail_shards_map())
         );
 
@@ -202,8 +211,11 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted PrepareBal log action for slot {} bal {}",
-                                   this_slot, inst.bal);
+                pf_trace!(
+                    "submitted PrepareBal log action for slot {} bal {}",
+                    this_slot,
+                    inst.bal
+                );
             }
 
             {
@@ -313,9 +325,10 @@ impl CrosswordReplica {
                             &self.peer_alive,
                         );
                         pf_debug!(
-                            self.id;
                             "enter Accept phase for slot {} bal {} asgmt {}",
-                            this_slot, inst.bal, Self::assignment_to_string(assignment)
+                            this_slot,
+                            inst.bal,
+                            Self::assignment_to_string(assignment)
                         );
 
                         // record update to largest accepted ballot and corresponding data
@@ -341,7 +354,6 @@ impl CrosswordReplica {
                             },
                         )?;
                         pf_trace!(
-                            self.id;
                             "submitted AcceptData log action for slot {} bal {}",
                             this_slot, ballot
                         );
@@ -371,8 +383,11 @@ impl CrosswordReplica {
                                     .push_back((now_us, this_slot));
                             }
                         }
-                        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                                           this_slot, ballot);
+                        pf_trace!(
+                            "broadcast Accept messages for slot {} bal {}",
+                            this_slot,
+                            ballot
+                        );
                     }
                 }
             }
@@ -393,8 +408,13 @@ impl CrosswordReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received Accept <- {} for slot {} bal {} shards {:?}",
-                           peer, slot, ballot, reqs_cw.avail_shards_map());
+        pf_trace!(
+            "received Accept <- {} for slot {} bal {} shards {:?}",
+            peer,
+            slot,
+            ballot,
+            reqs_cw.avail_shards_map()
+        );
 
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
@@ -433,8 +453,11 @@ impl CrosswordReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
-            pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                               slot, ballot);
+            pf_trace!(
+                "submitted AcceptData log action for slot {} bal {}",
+                slot,
+                ballot
+            );
         }
 
         Ok(())
@@ -452,8 +475,12 @@ impl CrosswordReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "received AcceptReply <- {} for slot {} bal {}",
-                           peer, slot, ballot);
+        pf_trace!(
+            "received AcceptReply <- {} for slot {} bal {}",
+            peer,
+            slot,
+            ballot
+        );
 
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
@@ -501,8 +528,11 @@ impl CrosswordReplica {
                 ) >= inst.reqs_cw.num_data_shards()
             {
                 inst.status = Status::Committed;
-                pf_debug!(self.id; "committed instance at slot {} bal {}",
-                                   slot, inst.bal);
+                pf_debug!(
+                    "committed instance at slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
                 // [for perf breakdown]
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
@@ -518,8 +548,11 @@ impl CrosswordReplica {
                         sync: self.config.logger_sync,
                     },
                 )?;
-                pf_trace!(self.id; "submitted CommitSlot log action for slot {} bal {}",
-                                   slot, inst.bal);
+                pf_trace!(
+                    "submitted CommitSlot log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
             }
         }
 
@@ -532,8 +565,11 @@ impl CrosswordReplica {
         peer: ReplicaId,
         slots_excl: Vec<(usize, Bitmap)>,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received Reconstruct <- {} for {} slots",
-                           peer, slots_excl.len());
+        pf_trace!(
+            "received Reconstruct <- {} for {} slots",
+            peer,
+            slots_excl.len()
+        );
         let mut slots_data = HashMap::new();
 
         for (slot, mut subset) in slots_excl {
@@ -571,8 +607,11 @@ impl CrosswordReplica {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(self.id; "sent ReconstructReply -> {} for {} slots",
-                               peer, num_slots);
+            pf_trace!(
+                "sent ReconstructReply -> {} for {} slots",
+                peer,
+                num_slots
+            );
         }
         Ok(())
     }
@@ -587,8 +626,13 @@ impl CrosswordReplica {
             if slot < self.start_slot {
                 continue; // ignore if slot index outdated
             }
-            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                               peer, slot, ballot, reqs_cw.avail_shards_map());
+            pf_trace!(
+                "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
+                peer,
+                slot,
+                ballot,
+                reqs_cw.avail_shards_map()
+            );
             debug_assert!(slot < self.start_slot + self.insts.len());
             debug_assert!(
                 self.insts[slot - self.start_slot].status >= Status::Committed
@@ -639,8 +683,11 @@ impl CrosswordReplica {
                                     continue; // ignore other types of requests
                                 }
                             }
-                            pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                               reqs.len(), self.commit_bar);
+                            pf_trace!(
+                                "submitted {} exec commands for slot {}",
+                                reqs.len(),
+                                self.commit_bar
+                            );
                         }
 
                         self.commit_bar += 1;

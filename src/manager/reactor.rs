@@ -3,20 +3,20 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
-};
+use crate::client::ClientId;
 use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
-use crate::client::ClientId;
+use crate::utils::{
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+};
 
 use bytes::BytesMut;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::net::{TcpListener, TcpStream};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -150,7 +150,7 @@ impl ClientReactor {
     ) -> Result<(ClientId, CtrlRequest), SummersetError> {
         match self.rx_req.recv().await {
             Some((id, req)) => Ok((id, req)),
-            None => logged_err!("m"; "req channel has been closed"),
+            None => logged_err!("req channel has been closed"),
         }
     }
 
@@ -168,7 +168,6 @@ impl ClientReactor {
             }
             None => {
                 logged_err!(
-                    "m";
                     "client ID {} not found among active clients",
                     client
                 )
@@ -197,7 +196,7 @@ impl ClientReactor {
     ) -> Result<(), SummersetError> {
         // send ID assignment
         if let Err(e) = stream.write_u64(id).await {
-            return logged_err!("m"; "error assigning new client ID: {}", e);
+            return logged_err!("error assigning new client ID: {}", e);
         }
 
         let mut tx_replies_guard = tx_replies.guard();
@@ -209,10 +208,10 @@ impl ClientReactor {
                 client_responder_handles_guard.remove(id);
                 tx_replies_guard.remove(id);
             } else {
-                return logged_err!("m"; "duplicate client ID listened: {}", id);
+                return logged_err!("duplicate client ID listened: {}", id);
             }
         }
-        pf_debug!("m"; "accepted new client {}", id);
+        pf_debug!("accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
@@ -244,7 +243,7 @@ impl ClientReactor {
     ) -> Result<(), SummersetError> {
         let mut tx_replies_guard = tx_replies.guard();
         if !tx_replies_guard.contains_key(&id) {
-            return logged_err!("m"; "client {} not found among active ones", id);
+            return logged_err!("client {} not found among active ones", id);
         }
         tx_replies_guard.remove(id);
 
@@ -268,10 +267,10 @@ impl ClientReactor {
             JoinHandle<()>,
         >,
     ) {
-        pf_debug!("m"; "client_acceptor thread spawned");
+        pf_debug!("client_acceptor thread spawned");
 
         let local_addr = client_listener.local_addr().unwrap();
-        pf_info!("m"; "accepting clients on '{}'", local_addr);
+        pf_info!("accepting clients on '{}'", local_addr);
 
         // maintain a monotonically increasing client ID for new clients
         // start with a relatively high value to avoid confusion with
@@ -287,7 +286,7 @@ impl ClientReactor {
                 // new client connection
                 accepted = client_listener.accept() => {
                     if let Err(e) = accepted {
-                        pf_warn!("m"; "error accepting client connection: {}", e);
+                        pf_warn!("error accepting client connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
@@ -300,7 +299,7 @@ impl ClientReactor {
                         &mut client_responder_handles,
                         tx_exit.clone()
                     ).await {
-                        pf_error!("m"; "error accepting new client: {}", e);
+                        pf_error!("error accepting new client: {}", e);
                     } else {
                         next_client_id += 1;
                     }
@@ -314,13 +313,13 @@ impl ClientReactor {
                         &mut tx_replies,
                         &mut client_responder_handles
                     ) {
-                        pf_error!("m"; "error removing left client {}: {}", id, e);
+                        pf_error!("error removing left client {}: {}", id, e);
                     }
                 },
             }
         }
 
-        // pf_debug!("m"; "client_acceptor thread exitted");
+        // pf_debug!("client_acceptor thread exitted");
     }
 }
 
@@ -355,7 +354,7 @@ impl ClientReactor {
         mut rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
         tx_exit: mpsc::UnboundedSender<ClientId>,
     ) {
-        pf_debug!("m"; "client_responder thread for {} '{}' spawned", id, addr);
+        pf_debug!("client_responder thread for {} '{}' spawned", id, addr);
 
         let (mut conn_read, conn_write) = conn.into_split();
         let mut req_buf = BytesMut::with_capacity(8 + 1024);
@@ -376,16 +375,16 @@ impl ClientReactor {
                                 Some(&reply)
                             ) {
                                 Ok(true) => {
-                                    // pf_trace!("m"; "sent -> {} reply {:?}", id, reply);
+                                    // pf_trace!("sent -> {} reply {:?}", id, reply);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("m"; "should start retrying reply send -> {}", id);
+                                    pf_debug!("should start retrying reply send -> {}", id);
                                     retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
                                     // during benchmarking
-                                    // pf_error!("m"; "error sending -> {}: {}", id, e);
+                                    // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
                         },
@@ -402,16 +401,16 @@ impl ClientReactor {
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("m"; "finished retrying last reply send -> {}", id);
+                            pf_debug!("finished retrying last reply send -> {}", id);
                             retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("m"; "still should retry last reply send -> {}", id);
+                            pf_debug!("still should retry last reply send -> {}", id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!("m"; "error retrying last reply send -> {}: {}", id, e);
+                            // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
                 },
@@ -430,24 +429,24 @@ impl ClientReactor {
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
-                                // pf_error!("m"; "error replying -> {}: {}", id, e);
+                                // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("m"; "client {} has left", id);
+                                pf_debug!("client {} has left", id);
                             }
                             break;
                         },
 
                         Ok(req) => {
-                            // pf_trace!("m"; "recv <- {} req {:?}", id, req);
+                            // pf_trace!("recv <- {} req {:?}", id, req);
                             if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!("m"; "error sending to tx_req for {}: {}", id, e);
+                                pf_error!("error sending to tx_req for {}: {}", id, e);
                             }
                         },
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
-                            // pf_error!("m"; "error reading req <- {}: {}", id, e);
+                            // pf_error!("error reading req <- {}: {}", id, e);
                             break; // probably the client exitted without `leave()`
                         }
                     }
@@ -456,18 +455,18 @@ impl ClientReactor {
         }
 
         if let Err(e) = tx_exit.send(id) {
-            pf_error!("m"; "error sending exit signal for {}: {}", id, e);
+            pf_error!("error sending exit signal for {}: {}", id, e);
         }
-        pf_debug!("m"; "client_responder thread for {} '{}' exitted", id, addr);
+        pf_debug!("client_responder thread for {} '{}' exitted", id, addr);
     }
 }
 
 #[cfg(test)]
-mod reactor_tests {
+mod tests {
     use super::*;
-    use std::sync::Arc;
-    use crate::manager::ServerInfo;
     use crate::client::ClientCtrlStub;
+    use crate::manager::ServerInfo;
+    use std::sync::Arc;
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 

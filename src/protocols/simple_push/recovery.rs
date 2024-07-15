@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap};
 use crate::server::{ApiRequest, LogAction, LogResult};
+use crate::utils::{Bitmap, SummersetError};
 
 // SimplePushReplica recovery from WAL log
 impl SimplePushReplica {
@@ -64,7 +64,7 @@ impl SimplePushReplica {
                     break;
                 }
                 _ => {
-                    return logged_err!(self.id; "unexpected log result type");
+                    return logged_err!("unexpected log result type");
                 }
             }
         }
@@ -85,7 +85,7 @@ impl SimplePushReplica {
         {
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type")
+            logged_err!("unexpected log result type")
         }
     }
 }

@@ -4,43 +4,43 @@
 //! dynamically tunable shard assignment with the correct liveness constraints,
 //! plus follower gossiping for actual usability.
 
-mod request;
-mod durability;
-mod messages;
-mod execution;
-mod leadership;
-mod recovery;
-mod snapshot;
-mod gossiping;
 mod adaptive;
 mod control;
+mod durability;
+mod execution;
+mod gossiping;
+mod leadership;
+mod messages;
+mod recovery;
+mod request;
+mod snapshot;
 
 use std::cmp;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::SystemTime;
 
-use crate::utils::{
-    SummersetError, Bitmap, Timer, Stopwatch, RSCodeword, PerfModel,
-    LinearRegressor, QdiscInfo,
-};
-use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
-use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandId, ExternalApi, ApiRequest,
-    ApiReply, StorageHub, LogActionId, TransportHub, GenericReplica,
-};
-use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
+use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
+use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
+use crate::server::{
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
+    LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
+};
+use crate::utils::{
+    Bitmap, LinearRegressor, PerfModel, QdiscInfo, RSCodeword, Stopwatch,
+    SummersetError, Timer,
+};
 
 use async_trait::async_trait;
 
 use get_size::GetSize;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
@@ -665,63 +665,54 @@ impl GenericReplica for CrosswordReplica {
                                     record_value_ver, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.batch_interval_ms '{}'",
                 config.batch_interval_ms
             );
         }
         if config.hb_hear_timeout_min < 100 {
             return logged_err!(
-                id;
                 "invalid config.hb_hear_timeout_min '{}'",
                 config.hb_hear_timeout_min
             );
         }
         if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
             return logged_err!(
-                id;
                 "invalid config.hb_hear_timeout_max '{}'",
                 config.hb_hear_timeout_max
             );
         }
         if config.hb_send_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
             );
         }
         if config.msg_chunk_size == 0 {
             return logged_err!(
-                id;
                 "invalid config.msg_chunk_size '{}'",
                 config.msg_chunk_size
             );
         }
         if config.linreg_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.linreg_interval_ms '{}'",
                 config.linreg_interval_ms
             );
         }
         if config.linreg_keep_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.linreg_keep_ms '{}'",
                 config.linreg_keep_ms
             );
         }
         if !(0.0..1.0).contains(&config.linreg_outlier_ratio) {
             return logged_err!(
-                id;
                 "invalid config.linreg_outlier_ratio '{}'",
                 config.linreg_outlier_ratio
             );
         }
         if config.b_to_d_threshold < 0.0 {
             return logged_err!(
-                id;
                 "invalid config.b_to_d_threshold '{}'",
                 config.b_to_d_threshold
             );
@@ -753,20 +744,21 @@ impl GenericReplica for CrosswordReplica {
         {
             to_peers
         } else {
-            return logged_err!(id; "unexpected ctrl msg type received");
+            return logged_err!("unexpected ctrl msg type received");
         };
 
         // compute majority and set fault_tolerance level
         let majority = (population / 2) + 1;
         if config.fault_tolerance > (population - majority) {
-            return logged_err!(id; "invalid config.fault_tolerance '{}'",
-                                   config.fault_tolerance);
+            return logged_err!(
+                "invalid config.fault_tolerance '{}'",
+                config.fault_tolerance
+            );
         }
 
         // parse Reed_Solomon coding scheme
         if config.rs_total_shards % population != 0 {
             return logged_err!(
-                id;
                 "invalid config.rs_total_shards '{}'",
                 config.rs_total_shards
             );
@@ -780,7 +772,6 @@ impl GenericReplica for CrosswordReplica {
                     != rs_total_shards / population)
         {
             return logged_err!(
-                id;
                 "invalid config.rs_data_shards '{}'",
                 config.rs_data_shards
             );
@@ -815,9 +806,15 @@ impl GenericReplica for CrosswordReplica {
         if init_assignment.len() != population as usize
             || max_coverage.count() < rs_data_shards
         {
-            return logged_err!(id; "invalid init assignment parsed: {:?}", init_assignment);
+            return logged_err!(
+                "invalid init assignment parsed: {:?}",
+                init_assignment
+            );
         }
-        pf_debug!(id; "init asgmt {}", Self::assignment_to_string(&init_assignment));
+        pf_debug!(
+            "init asgmt {}",
+            Self::assignment_to_string(&init_assignment)
+        );
 
         // if restricted to balanced assignments only, pre-fill
         // `brr_assignments` with balanced round-robin policies
@@ -1022,24 +1019,24 @@ impl GenericReplica for CrosswordReplica {
                 // client request batch
                 req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
-                        pf_error!(self.id; "error getting req batch: {}", e);
+                        pf_error!("error getting req batch: {}", e);
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
                     if let Err(e) = self.handle_req_batch(req_batch) {
-                        pf_error!(self.id; "error handling req batch: {}", e);
+                        pf_error!("error handling req batch: {}", e);
                     }
                 },
 
                 // durable logging result
                 log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
-                        pf_error!(self.id; "error getting log result: {}", e);
+                        pf_error!("error getting log result: {}", e);
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
                     if let Err(e) = self.handle_log_result(action_id, log_result) {
-                        pf_error!(self.id; "error handling log result {}: {}",
+                        pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
                 },
@@ -1049,38 +1046,38 @@ impl GenericReplica for CrosswordReplica {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
                         // during benchmarking
-                        // pf_error!(self.id; "error receiving peer msg: {}", e);
+                        // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
                     if let Err(e) = self.handle_msg_recv(peer, msg) {
-                        pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
+                        pf_error!("error handling msg recv <- {}: {}", peer, e);
                     }
                 },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
-                        pf_error!(self.id; "error getting cmd result: {}", e);
+                        pf_error!("error getting cmd result: {}", e);
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
                     if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
-                        pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
+                        pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
 
                 // leader inactivity timeout
                 _ = self.hb_hear_timer.timeout(), if !paused => {
                     if let Err(e) = self.become_a_leader() {
-                        pf_error!(self.id; "error becoming a leader: {}", e);
+                        pf_error!("error becoming a leader: {}", e);
                     }
                 },
 
                 // leader sending heartbeat
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.bcast_heartbeats() {
-                        pf_error!(self.id; "error broadcasting heartbeats: {}", e);
+                        pf_error!("error broadcasting heartbeats: {}", e);
                     }
                 },
 
@@ -1088,7 +1085,7 @@ impl GenericReplica for CrosswordReplica {
                 _ = self.snapshot_interval.tick(), if !paused
                                                       && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
-                        pf_error!(self.id; "error taking a new snapshot: {}", e);
+                        pf_error!("error taking a new snapshot: {}", e);
                     } else {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
@@ -1099,17 +1096,17 @@ impl GenericReplica for CrosswordReplica {
                 // linear regression model update trigger
                 _ = self.linreg_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.update_linreg_model(self.config.linreg_keep_ms) {
-                        pf_error!(self.id; "error updating linear regression model: {}", e);
+                        pf_error!("error updating linear regression model: {}", e);
                     }
                     if let Err(e) = self.update_qdisc_info() {
-                        pf_error!(self.id; "error updating tc qdisc info: {}", e);
+                        pf_error!("error updating tc qdisc info: {}", e);
                     }
                 },
 
                 // follower gossiping trigger
                 _ = self.gossip_timer.timeout(), if !paused && !self.is_leader() => {
                     if let Err(e) = self.trigger_gossiping() {
-                        pf_error!(self.id; "error triggering gossiping: {}", e);
+                        pf_error!("error triggering gossiping: {}", e);
                     }
                 },
 
@@ -1118,7 +1115,7 @@ impl GenericReplica for CrosswordReplica {
                     if self.is_leader() {
                         if let Some(sw) = self.bd_stopwatch.as_mut() {
                             let (cnt, stats) = sw.summarize(5);
-                            pf_info!(self.id; "bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
+                            pf_info!("bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
                                                          arep {:.2} {:.2} qrum {:.2} {:.2} \
                                                          exec {:.2} {:.2}",
                                               cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
@@ -1129,7 +1126,7 @@ impl GenericReplica for CrosswordReplica {
                     }
                     if self.config.record_value_ver {
                         if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
-                            pf_info!(self.id; "ver of {} @ {} ms is {}",
+                            pf_info!("ver of {} @ {} ms is {}",
                                               key,
                                               Instant::now()
                                                 .duration_since(self.startup_time)
@@ -1142,7 +1139,7 @@ impl GenericReplica for CrosswordReplica {
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
                     if let Err(e) = ctrl_msg {
-                        pf_error!(self.id; "error getting ctrl msg: {}", e);
+                        pf_error!("error getting ctrl msg: {}", e);
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
@@ -1153,14 +1150,14 @@ impl GenericReplica for CrosswordReplica {
                             }
                         },
                         Err(e) => {
-                            pf_error!(self.id; "error handling ctrl msg: {}", e);
+                            pf_error!("error handling ctrl msg: {}", e);
                         }
                     }
                 },
 
                 // receiving termination signal
                 _ = rx_term.changed() => {
-                    pf_warn!(self.id; "server caught termination signal");
+                    pf_warn!("server caught termination signal");
                     return Ok(false);
                 }
             }
@@ -1219,7 +1216,7 @@ impl GenericEndpoint for CrosswordClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("connecting to manager '{}'...", manager);
         let ctrl_stub =
             ClientCtrlStub::new_by_connect(ctrl_bind, manager).await?;
         let id = ctrl_stub.id;
@@ -1243,7 +1240,7 @@ impl GenericEndpoint for CrosswordClient {
     async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
         if !self.api_stubs.is_empty() {
-            return logged_err!(self.id; "reconnecting without leaving");
+            return logged_err!("reconnecting without leaving");
         }
 
         // ask the manager about the list of active servers
@@ -1272,7 +1269,7 @@ impl GenericEndpoint for CrosswordClient {
                     .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
+                    pf_debug!("connecting to server {} '{}'...", id, server);
                     let bind_addr = SocketAddr::new(
                         self.api_bind_base.ip(),
                         self.api_bind_base.port() + id as u16,
@@ -1285,7 +1282,7 @@ impl GenericEndpoint for CrosswordClient {
                 }
                 Ok(())
             }
-            _ => logged_err!(self.id; "unexpected reply type received"),
+            _ => logged_err!("unexpected reply type received"),
         }
     }
 
@@ -1300,7 +1297,7 @@ impl GenericEndpoint for CrosswordClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_debug!(self.id; "left server connection {}", id);
+            pf_debug!("left server connection {}", id);
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -1312,7 +1309,7 @@ impl GenericEndpoint for CrosswordClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_debug!(self.id; "left manager connection");
+            pf_debug!("left manager connection");
         }
 
         Ok(())
@@ -1355,8 +1352,11 @@ impl GenericEndpoint for CrosswordClient {
                     let redirect_id = redirect.unwrap();
                     debug_assert!(self.servers.contains_key(&redirect_id));
                     self.server_id = redirect_id;
-                    pf_debug!(self.id; "redirected to replica {} '{}'",
-                                       redirect_id, self.servers[&redirect_id]);
+                    pf_debug!(
+                        "redirected to replica {} '{}'",
+                        redirect_id,
+                        self.servers[&redirect_id]
+                    );
                 }
             }
 

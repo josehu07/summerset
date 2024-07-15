@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::server::{ApiRequest, LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // RepNothingReplica recovery from WAL log
 impl RepNothingReplica {
@@ -54,7 +54,7 @@ impl RepNothingReplica {
                     break;
                 }
                 _ => {
-                    return logged_err!(self.id; "unexpected log result type");
+                    return logged_err!("unexpected log result type");
                 }
             }
         }
@@ -75,7 +75,7 @@ impl RepNothingReplica {
         {
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type")
+            logged_err!("unexpected log result type")
         }
     }
 }

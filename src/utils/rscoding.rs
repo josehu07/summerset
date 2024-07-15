@@ -4,16 +4,16 @@ use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 
-use crate::utils::{SummersetError, Bitmap};
+use crate::utils::{Bitmap, SummersetError};
 
 use get_size::GetSize;
 
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use rmp_serde::encode::write as encode_write;
 use rmp_serde::decode::from_read as decode_from_read;
+use rmp_serde::encode::write as encode_write;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
@@ -574,7 +574,7 @@ impl<'a> io::Read for ShardsReader<'a> {
 }
 
 #[cfg(test)]
-mod rscoding_tests {
+mod tests {
     use super::*;
     use serde::Deserialize;
 

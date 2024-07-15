@@ -5,8 +5,8 @@ use std::mem;
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap};
 use crate::server::ReplicaId;
+use crate::utils::{Bitmap, SummersetError};
 
 use rand::prelude::*;
 
@@ -25,7 +25,7 @@ impl CrosswordReplica {
             let timeout_ms = thread_rng().gen_range(
                 self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
             );
-            // pf_trace!(self.id; "kickoff gossip_timer @ {} ms", timeout_ms);
+            // pf_trace!("kickoff gossip_timer @ {} ms", timeout_ms);
             self.gossip_timer
                 .kickoff(Duration::from_millis(timeout_ms))?;
         }
@@ -148,8 +148,11 @@ impl CrosswordReplica {
                             },
                             peer,
                         )?;
-                        pf_trace!(self.id; "sent Reconstruct -> {} for {} slots",
-                                           peer, self.config.msg_chunk_size);
+                        pf_trace!(
+                            "sent Reconstruct -> {} for {} slots",
+                            peer,
+                            self.config.msg_chunk_size
+                        );
                     }
                 }
             }
@@ -161,7 +164,11 @@ impl CrosswordReplica {
                 let num_slots = slots_excl.len();
                 self.transport_hub
                     .send_msg(PeerMsg::Reconstruct { slots_excl }, peer)?;
-                pf_trace!(self.id; "sent Reconstruct -> {} for {} slots", peer, num_slots);
+                pf_trace!(
+                    "sent Reconstruct -> {} for {} slots",
+                    peer,
+                    num_slots
+                );
             }
         }
 
@@ -170,8 +177,11 @@ impl CrosswordReplica {
 
         // update gossip_bar
         if slot_up_to > self.gossip_bar {
-            pf_debug!(self.id; "triggered gossiping: slots {} - {}",
-                               self.gossip_bar, slot_up_to - 1);
+            pf_debug!(
+                "triggered gossiping: slots {} - {}",
+                self.gossip_bar,
+                slot_up_to - 1
+            );
             self.gossip_bar = slot_up_to;
         }
 

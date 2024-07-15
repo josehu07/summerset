@@ -1,11 +1,11 @@
 //! Customized unified error type.
 
+use std::error;
 use std::fmt;
 use std::io;
-use std::string;
 use std::net;
 use std::num;
-use std::error;
+use std::string;
 
 /// Customized error type for Summerset.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -69,7 +69,7 @@ impl_from_error_generic!(tokio::sync::watch::error::SendError<T>);
 impl_from_error_generic!(tokio::sync::mpsc::error::SendError<T>);
 
 #[cfg(test)]
-mod error_tests {
+mod tests {
     use super::*;
 
     #[test]

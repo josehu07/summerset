@@ -35,7 +35,7 @@ impl ClientMode {
 }
 
 #[cfg(test)]
-mod modes_name_tests {
+mod name_tests {
     use super::*;
 
     macro_rules! valid_name_test {

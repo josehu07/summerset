@@ -47,7 +47,7 @@ macro_rules! parsed_config {
 }
 
 #[cfg(test)]
-mod config_tests {
+mod tests {
     use crate::utils::SummersetError;
 
     #[derive(Debug, PartialEq)]

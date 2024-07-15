@@ -2,7 +2,7 @@
 
 use tokio::time::Duration;
 
-use summerset::{ReplicaId, RequestId, CommandResult};
+use summerset::{CommandResult, ReplicaId, RequestId};
 
 mod closed_loop;
 mod open_loop;

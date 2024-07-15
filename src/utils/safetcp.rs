@@ -8,13 +8,13 @@ use crate::utils::SummersetError;
 
 use bytes::{Bytes, BytesMut};
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
-use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_read as decode_from_read;
+use rmp_serde::encode::to_vec as encode_to_vec;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpSocket, TcpStream, TcpListener};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
@@ -214,7 +214,7 @@ fn get_ss_cmd_output() -> Result<String, SummersetError> {
 }
 
 #[cfg(test)]
-mod safetcp_tests {
+mod tests {
     use super::*;
 
     #[test]

@@ -4,8 +4,8 @@ use std::cmp;
 
 use super::*;
 
+use crate::server::{ApiRequest, LogAction, LogResult, ReplicaId};
 use crate::utils::SummersetError;
-use crate::server::{ReplicaId, ApiRequest, LogAction, LogResult};
 
 // RaftReplica peer-peer messages handling
 impl RaftReplica {
@@ -22,8 +22,13 @@ impl RaftReplica {
         last_snap: usize,
     ) -> Result<(), SummersetError> {
         if !entries.is_empty() {
-            pf_trace!(self.id; "received AcceptEntries <- {} for slots {} - {} term {}",
-                               leader, prev_slot + 1, prev_slot + entries.len(), term);
+            pf_trace!(
+                "received AcceptEntries <- {} for slots {} - {} term {}",
+                leader,
+                prev_slot + 1,
+                prev_slot + entries.len(),
+                term
+            );
         }
         if self.check_term(leader, term).await? || self.role != Role::Follower {
             if term == self.curr_term && self.role == Role::Candidate {
@@ -72,8 +77,12 @@ impl RaftReplica {
                 },
                 leader,
             )?;
-            pf_trace!(self.id; "sent AcceptEntriesReply -> {} term {} end_slot {} fail",
-                               leader, self.curr_term, prev_slot);
+            pf_trace!(
+                "sent AcceptEntriesReply -> {} term {} end_slot {} fail",
+                leader,
+                self.curr_term,
+                prev_slot
+            );
 
             if term >= self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
@@ -122,7 +131,6 @@ impl RaftReplica {
                     self.log_offset = cut_offset;
                 } else {
                     return logged_err!(
-                        self.id;
                         "unexpected log result type or failed truncate"
                     );
                 }
@@ -155,7 +163,7 @@ impl RaftReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
-            pf_trace!(self.id; "submitted follower append log action for slot {}", slot);
+            pf_trace!("submitted follower append log action for slot {}", slot);
 
             num_appended += 1;
         }
@@ -194,8 +202,11 @@ impl RaftReplica {
                         continue; // ignore other types of requests
                     }
                 }
-                pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                   entry.reqs.len(), slot);
+                pf_trace!(
+                    "submitted {} exec commands for slot {}",
+                    entry.reqs.len(),
+                    slot
+                );
             }
 
             self.last_commit = new_commit;
@@ -218,9 +229,13 @@ impl RaftReplica {
         conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
         if conflict.is_some() || self.match_slot[&peer] != end_slot {
-            pf_trace!(self.id; "received AcceptEntriesReply <- {} term {} end_slot {} {}",
-                               peer, term, end_slot,
-                               if conflict.is_none() { "ok" } else { "fail" });
+            pf_trace!(
+                "received AcceptEntriesReply <- {} term {} end_slot {} {}",
+                peer,
+                term,
+                end_slot,
+                if conflict.is_none() { "ok" } else { "fail" }
+            );
         }
         if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
@@ -271,8 +286,11 @@ impl RaftReplica {
                         continue; // ignore other types of requests
                     }
                 }
-                pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                   entry.reqs.len(), slot);
+                pf_trace!(
+                    "submitted {} exec commands for slot {}",
+                    entry.reqs.len(),
+                    slot
+                );
             }
 
             self.last_commit = new_commit;
@@ -314,7 +332,7 @@ impl RaftReplica {
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
+                return logged_err!("snapshotted slot {} queried", prev_slot);
             }
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
@@ -351,8 +369,12 @@ impl RaftReplica {
                     },
                     peer,
                 )?;
-                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, now_prev_slot + 1, now_prev_slot + end);
+                pf_trace!(
+                    "sent AppendEntries -> {} with slots {} - {}",
+                    peer,
+                    now_prev_slot + 1,
+                    now_prev_slot + end
+                );
 
                 now_prev_slot += end;
             }
@@ -373,8 +395,13 @@ impl RaftReplica {
         last_slot: usize,
         last_term: Term,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received RequestVote <- {} with term {} last {} term {}",
-                           candidate, term, last_slot, last_term);
+        pf_trace!(
+            "received RequestVote <- {} with term {} last {} term {}",
+            candidate,
+            term,
+            last_slot,
+            last_term
+        );
         self.check_term(candidate, term).await?;
 
         // if the given term is smaller than mine, reply false
@@ -386,8 +413,11 @@ impl RaftReplica {
                 },
                 candidate,
             )?;
-            pf_trace!(self.id; "sent RequestVoteReply -> {} term {} false",
-                               candidate, self.curr_term);
+            pf_trace!(
+                "sent RequestVoteReply -> {} term {} false",
+                candidate,
+                self.curr_term
+            );
             return Ok(());
         }
 
@@ -406,8 +436,11 @@ impl RaftReplica {
                     },
                     candidate,
                 )?;
-                pf_trace!(self.id; "sent RequestVoteReply -> {} term {} granted",
-                                   candidate, self.curr_term);
+                pf_trace!(
+                    "sent RequestVoteReply -> {} term {} granted",
+                    candidate,
+                    self.curr_term
+                );
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
@@ -438,7 +471,9 @@ impl RaftReplica {
                 } = result
                 {
                 } else {
-                    return logged_err!(self.id; "unexpected log result type or failed write");
+                    return logged_err!(
+                        "unexpected log result type or failed write"
+                    );
                 }
             }
         }
@@ -453,8 +488,12 @@ impl RaftReplica {
         term: Term,
         granted: bool,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received RequestVoteReply <- {} with term {} {}",
-                           peer, term, if granted { "granted" } else { "false" });
+        pf_trace!(
+            "received RequestVoteReply <- {} with term {} {}",
+            peer,
+            term,
+            if granted { "granted" } else { "false" }
+        );
         if self.check_term(peer, term).await? || self.role != Role::Candidate {
             return Ok(());
         }

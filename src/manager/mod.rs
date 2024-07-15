@@ -1,11 +1,12 @@
 //! Summerset's cluster manager oracle process for testing purposes.
 
 mod clusman;
-mod reigner;
+
 mod reactor;
+mod reigner;
 
-pub use clusman::{ServerInfo, ClusterManager};
-pub use reactor::{CtrlRequest, CtrlReply};
+pub use clusman::{ClusterManager, ServerInfo};
+pub use reactor::{CtrlReply, CtrlRequest};
 
-pub(crate) use reigner::{CtrlMsg, ServerReigner};
 pub(crate) use reactor::ClientReactor;
+pub(crate) use reigner::{CtrlMsg, ServerReigner};

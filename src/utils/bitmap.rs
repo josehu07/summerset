@@ -8,7 +8,7 @@ use fixedbitset::FixedBitSet;
 
 use get_size::GetSize;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Compact bitmap for u8 ID -> bool mapping.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +165,7 @@ impl Bitmap {
 }
 
 #[cfg(test)]
-mod bitmap_tests {
+mod tests {
     use super::*;
 
     #[test]
