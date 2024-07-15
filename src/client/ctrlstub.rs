@@ -44,8 +44,7 @@ impl ClientCtrlStub {
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 
-        ME.set(id.to_string())
-            .expect("setting static identifier `me` should succeed");
+        ME.get_or_init(|| id.to_string());
 
         Ok(ClientCtrlStub {
             id,

@@ -536,7 +536,7 @@ mod tests {
             // server-side
             let mut api = ExternalApi::new_and_setup(
                 0,
-                "127.0.0.1:40110".parse()?,
+                "127.0.0.1:30110".parse()?,
                 Duration::from_millis(1),
                 0,
             )
@@ -608,8 +608,8 @@ mod tests {
         barrier.wait().await;
         let mut api_stub = ClientApiStub::new_by_connect(
             2857,
-            "127.0.0.1:43170".parse()?,
-            "127.0.0.1:40110".parse()?,
+            "127.0.0.1:33170".parse()?,
+            "127.0.0.1:30110".parse()?,
         )
         .await?;
         // send requests to server
@@ -666,7 +666,7 @@ mod tests {
             // server-side
             let mut api = ExternalApi::new_and_setup(
                 0,
-                "127.0.0.1:40120".parse()?,
+                "127.0.0.1:30120".parse()?,
                 Duration::from_millis(1),
                 0,
             )
@@ -738,8 +738,8 @@ mod tests {
             barrier.wait().await;
             let mut api_stub = ClientApiStub::new_by_connect(
                 2857,
-                "127.0.0.1:44170".parse()?,
-                "127.0.0.1:40120".parse()?,
+                "127.0.0.1:34170".parse()?,
+                "127.0.0.1:30120".parse()?,
             )
             .await?;
             // send request to server
@@ -768,8 +768,8 @@ mod tests {
             // come back as new client
             let mut api_stub = ClientApiStub::new_by_connect(
                 2858,
-                "127.0.0.1:44170".parse()?,
-                "127.0.0.1:40120".parse()?,
+                "127.0.0.1:34170".parse()?,
+                "127.0.0.1:30120".parse()?,
             )
             .await?;
             // send request to server

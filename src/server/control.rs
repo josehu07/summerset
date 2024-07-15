@@ -52,8 +52,7 @@ impl ControlHub {
         let population = stream.read_u8().await?; // then receive population
         pf_debug!("assigned server ID: {} of {}", id, population);
 
-        ME.set(id.to_string())
-            .expect("setting static identifier `me` should succeed");
+        ME.get_or_init(|| id.to_string());
 
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         let (tx_send, rx_send) = mpsc::unbounded_channel();

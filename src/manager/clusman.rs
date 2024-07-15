@@ -80,8 +80,8 @@ impl ClusterManager {
         if population == 0 {
             return logged_err!("invalid population {}", population);
         }
-        ME.set("m".into())
-            .expect("setting static identifier `me` should succeed");
+
+        ME.get_or_init(|| "m".into());
 
         let (tx_id_assign, rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();

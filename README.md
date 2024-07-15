@@ -160,7 +160,7 @@ python3 scripts/distr_cluster.py -h
 python3 scripts/distr_clients.py -h
 ```
 
-Note that these scripts assume specific ranges of available ports.
+Note that these scripts use `sudo` and assume specific ranges of available ports.
 
 ## TODO List
 

@@ -1,7 +1,7 @@
 //! Safe TCP bind/connect/read/write helper functions.
 
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 
 use crate::utils::SummersetError;
@@ -154,6 +154,8 @@ pub(crate) async fn tcp_bind_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
+
+        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
         if let Err(e) = socket.bind(bind_addr) {
             eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
@@ -187,6 +189,8 @@ pub(crate) async fn tcp_connect_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
+
+        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
         if let Err(e) = socket.bind(bind_addr) {
             eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");

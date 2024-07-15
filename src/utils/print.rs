@@ -99,7 +99,6 @@ pub fn logger_init() {
             .format_timestamp(None)
             .format_module_path(false)
             .format_target(false)
-            .is_test(true)
             .try_init();
 }
 
