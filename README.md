@@ -108,6 +108,8 @@ cargo doc --open
 
 ## Usage
 
+Summerset currently assumes a Linux environment and is tested on Ubuntu 24.04.
+
 ### Launch a Cluster
 
 First, launch the cluster manager oracle (which only serves setup & testing purposes and does not participate in any of the protocol logic):
@@ -140,7 +142,7 @@ Currently supported client utility modes include: `repl` for an interactive CLI,
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset processes are available. First, install dependencies:
+Some helper scripts for running Summerset processes are provided. First, install dependencies:
 
 ```bash
 pip3 install toml
@@ -153,14 +155,14 @@ python3 scripts/local_cluster.py -h
 python3 scripts/local_clients.py -h
 ```
 
-And for running on a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
+And for a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
 
 ```bash
 python3 scripts/distr_cluster.py -h
 python3 scripts/distr_clients.py -h
 ```
 
-Note that these scripts use `sudo` and assume specific ranges of available ports.
+Note that these scripts use `sudo` and assume specific ranges of available ports, so a server machine environment is recommended.
 
 ## TODO List
 
