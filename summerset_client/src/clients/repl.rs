@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::str::SplitWhitespace;
 
-use crate::drivers::{DriverReply, DriverClosedLoop};
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 use color_print::{cprint, cprintln};
 
 use tokio::time::Duration;
 
 use summerset::{
-    ReplicaId, GenericEndpoint, Command, CtrlRequest, CtrlReply, SummersetError,
+    Command, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
 };
 
 /// Prompt string at the start of line.

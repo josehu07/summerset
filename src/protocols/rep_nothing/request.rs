@@ -2,9 +2,9 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
-use crate::server::{ApiRequest, LogAction, LogActionId};
 use crate::client::ClientId;
+use crate::server::{ApiRequest, LogAction, LogActionId};
+use crate::utils::SummersetError;
 
 // RepNothingReplica client requests entrance
 impl RepNothingReplica {

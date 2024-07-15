@@ -1,13 +1,13 @@
 //! Reed-Solomon erasure coding computation overhead benchmarking.
 
-use std::fmt;
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
-use summerset::{SummersetError, RSCodeword};
+use summerset::{RSCodeword, SummersetError};
 
-use rand::Rng;
 use rand::distributions::Alphanumeric;
+use rand::Rng;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
