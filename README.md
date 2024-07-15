@@ -146,7 +146,7 @@ Some helper scripts for running Summerset processes are available. First, instal
 pip3 install toml
 ```
 
-You can find the scripts for running Summerset locally in `scripts/`:
+You can find the scripts for running Summerset processes locally in `scripts/`:
 
 ```bash
 python3 scripts/local_cluster.py -h
@@ -159,6 +159,8 @@ And for running on a set of distributed machines (requiring correctly filled `sc
 python3 scripts/distr_cluster.py -h
 python3 scripts/distr_clients.py -h
 ```
+
+Note that these scripts assume specific ranges of available ports.
 
 ## TODO List
 
