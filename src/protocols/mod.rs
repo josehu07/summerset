@@ -38,10 +38,6 @@ mod craft;
 use craft::{CRaftClient, CRaftReplica};
 pub use craft::{ClientConfigCRaft, ReplicaConfigCRaft};
 
-mod crossword;
-pub use crossword::{ClientConfigCrossword, ReplicaConfigCrossword};
-use crossword::{CrosswordClient, CrosswordReplica};
-
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum SmrProtocol {
@@ -52,7 +48,6 @@ pub enum SmrProtocol {
     Raft,
     RSPaxos,
     CRaft,
-    Crossword,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -75,7 +70,6 @@ impl SmrProtocol {
             "Raft" => Some(Self::Raft),
             "RSPaxos" => Some(Self::RSPaxos),
             "CRaft" => Some(Self::CRaft),
-            "Crossword" => Some(Self::Crossword),
             _ => None,
         }
     }
@@ -193,19 +187,6 @@ impl SmrProtocol {
                     .await
                 )
             }
-            Self::Crossword => {
-                box_if_ok!(
-                    CrosswordReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
-                )
-            }
         }
     }
 
@@ -295,17 +276,6 @@ impl SmrProtocol {
                     .await
                 )
             }
-            Self::Crossword => {
-                box_if_ok!(
-                    CrosswordClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
-                )
-            }
         }
     }
 }
@@ -338,7 +308,6 @@ mod name_tests {
         valid_name_test!(Raft);
         valid_name_test!(RSPaxos);
         valid_name_test!(CRaft);
-        valid_name_test!(Crossword);
     }
 
     #[test]
