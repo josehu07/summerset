@@ -162,7 +162,7 @@ python3 scripts/distr_cluster.py -h
 python3 scripts/distr_clients.py -h
 ```
 
-Note that these scripts use `sudo` and assume specific ranges of available ports, so a server machine environment is recommended.
+Note that these scripts use `sudo` and assume specific ranges of available ports, so a Linux server machine environment is recommended.
 
 ## TODO List
 
