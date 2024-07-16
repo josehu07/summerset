@@ -129,7 +129,7 @@ def trim_remote_hosts(path):
         for line in lines:
             if line.count("=") == 1 and "@" in line:
                 name = line[: line.index("=")].strip()
-                line = f'{name} = "username@domain.com"'
+                line = f'{name} = "username@domain.com"\n'
             file.write(line)
 
 
