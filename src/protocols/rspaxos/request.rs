@@ -2,19 +2,19 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // RSPaxosReplica client requests entrance
 impl RSPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if !self.is_leader() || self.bal_prepared == 0 {
@@ -35,8 +35,11 @@ impl RSPaxosReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, target);
+                    pf_trace!(
+                        "redirected client {} to replica {}",
+                        client,
+                        target
+                    );
                 }
             }
             return Ok(());
@@ -60,7 +63,7 @@ impl RSPaxosReplica {
                         },
                         *client,
                     )?;
-                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                    pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
@@ -107,8 +110,7 @@ impl RSPaxosReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         inst.bal = self.bal_prepared;
         inst.status = Status::Accepting;
-        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                           slot, inst.bal);
+        pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
         // record update to largest accepted ballot and corresponding data
         let subset_copy = inst.reqs_cw.subset_copy(
@@ -128,8 +130,11 @@ impl RSPaxosReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "submitted AcceptData log action for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         // send Accept messages to all peers, each getting one shard of data
         for peer in 0..self.population {
@@ -148,8 +153,11 @@ impl RSPaxosReplica {
                 peer,
             )?;
         }
-        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "broadcast Accept messages for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         Ok(())
     }

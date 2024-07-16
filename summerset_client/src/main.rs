@@ -5,18 +5,16 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use env_logger::Env;
-
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
-use summerset::{SmrProtocol, SummersetError, pf_warn, pf_error};
+use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
 
-mod drivers;
 mod clients;
+mod drivers;
 
 use crate::clients::{
-    ClientMode, ClientRepl, ClientBench, ClientTester, ClientMess,
+    ClientBench, ClientMess, ClientMode, ClientRepl, ClientTester,
 };
 
 /// Command line arguments definition.
@@ -65,22 +63,24 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<(ClientMode, SmrProtocol), SummersetError> {
         if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else if self.timeout_ms == 0 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid timeout duration {} ms",
                 self.timeout_ms
             )))
         } else {
-            let mode =
-                ClientMode::parse_name(&self.utility).ok_or(SummersetError(
-                    format!("utility mode '{}' unrecognized", self.utility),
-                ))?;
+            let mode = ClientMode::parse_name(&self.utility).ok_or(
+                SummersetError::msg(format!(
+                    "utility mode '{}' unrecognized",
+                    self.utility
+                )),
+            )?;
             let protocol = SmrProtocol::parse_name(&self.protocol).ok_or(
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "protocol name '{}' unrecognized",
                     self.protocol
                 )),
@@ -179,23 +179,19 @@ fn client_main() -> Result<(), SummersetError> {
 
 /// Main function of Summerset client executable.
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    logger_init();
 
     if let Err(ref e) = client_main() {
-        pf_error!("c"; "client_main exitted: {}", e);
+        pf_error!("client_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("c"; "client_main exitted successfully");
+        pf_warn!("client_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
 
 #[cfg(test)]
-mod client_args_tests {
+mod arg_tests {
     use super::*;
 
     #[test]

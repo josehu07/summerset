@@ -4,16 +4,16 @@ use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 
-use crate::utils::{SummersetError, Bitmap};
+use crate::utils::{Bitmap, SummersetError};
 
 use get_size::GetSize;
 
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use rmp_serde::encode::write as encode_write;
 use rmp_serde::decode::from_read as decode_from_read;
+use rmp_serde::encode::write as encode_write;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
@@ -73,7 +73,7 @@ where
         num_parity_shards: u8,
     ) -> Result<Self, SummersetError> {
         if num_data_shards == 0 {
-            return Err(SummersetError("num_data_shards is zero".into()));
+            return Err(SummersetError::msg("num_data_shards is zero"));
         }
 
         let num_total_shards = num_data_shards + num_parity_shards;
@@ -157,7 +157,7 @@ where
         copy_data: bool,
     ) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
-            return Err(SummersetError("codeword is null".into()));
+            return Err(SummersetError::msg("codeword is null"));
         }
 
         let mut shards = vec![None; self.num_shards() as usize];
@@ -173,12 +173,12 @@ where
             )
         {
             if i >= shards.len() {
-                return Err(SummersetError(format!(
+                return Err(SummersetError::msg(format!(
                     "shard index {} out-of-bound",
                     i
                 )));
             }
-            shards[i] = self.shards[i].clone();
+            shards[i].clone_from(&self.shards[i]);
         }
 
         let data_copy = if copy_data {
@@ -205,28 +205,28 @@ where
     ) -> Result<(), SummersetError> {
         // must have configuration parameters matching
         if self.num_data_shards != other.num_data_shards() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "num_data_shards mismatch: expected {}, other {}",
                 self.num_data_shards,
                 other.num_data_shards()
             )));
         }
         if self.num_parity_shards != other.num_parity_shards() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "num_parity_shards mismatch: expected {}, other {}",
                 self.num_parity_shards,
                 other.num_parity_shards()
             )));
         }
         if self.data_len != 0 && self.data_len != other.data_len() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "data_len mismatch: expected {}, other {}",
                 self.data_len,
                 other.data_len()
             )));
         }
         if self.shard_len != 0 && self.shard_len != other.shard_len() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "shard_len mismatch: expected {}, other {}",
                 self.shard_len,
                 other.shard_len()
@@ -327,13 +327,13 @@ where
         rs: &ReedSolomon,
     ) -> Result<(), SummersetError> {
         if rs.data_shard_count() != self.num_data_shards as usize {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "num_data_shards mismatch: expected {}, rs {}",
                 self.num_data_shards,
                 rs.data_shard_count()
             )))
         } else if rs.parity_shard_count() != self.num_parity_shards as usize {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "num_parity_shards mismatch: expected {}, rs {}",
                 self.num_parity_shards,
                 rs.parity_shard_count()
@@ -350,7 +350,7 @@ where
         rs: Option<&ReedSolomon>,
     ) -> Result<(), SummersetError> {
         if self.data_len == 0 {
-            return Err(SummersetError("codeword is null".into()));
+            return Err(SummersetError::msg("codeword is null"));
         }
         if self.num_parity_shards == 0 {
             return Ok(());
@@ -358,11 +358,11 @@ where
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;
         } else {
-            return Err(SummersetError("ReedSolomon coder is None".into()));
+            return Err(SummersetError::msg("ReedSolomon coder is None"));
         }
 
         if self.avail_data_shards() < self.num_data_shards {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "not all data shards present: {} / {}",
                 self.avail_data_shards(),
                 self.num_data_shards
@@ -394,13 +394,13 @@ where
         data_only: bool,
     ) -> Result<(), SummersetError> {
         if self.data_len == 0 {
-            return Err(SummersetError("codeword is null".into()));
+            return Err(SummersetError::msg("codeword is null"));
         }
         if self.num_parity_shards == 0 {
             if self.avail_data_shards() == self.num_data_shards {
                 return Ok(());
             }
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "insufficient data shards: {}/ {}",
                 self.avail_data_shards(),
                 self.num_data_shards
@@ -409,7 +409,7 @@ where
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;
         } else {
-            return Err(SummersetError("ReedSolomon coder is None".into()));
+            return Err(SummersetError::msg("ReedSolomon coder is None"));
         }
 
         if data_only {
@@ -445,7 +445,7 @@ where
         rs: Option<&ReedSolomon>,
     ) -> Result<bool, SummersetError> {
         if self.data_len == 0 {
-            return Err(SummersetError("codeword is null".into()));
+            return Err(SummersetError::msg("codeword is null"));
         }
         if self.num_parity_shards == 0 {
             return Ok(self.avail_data_shards() == self.num_data_shards);
@@ -453,11 +453,11 @@ where
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;
         } else {
-            return Err(SummersetError("ReedSolomon is None".into()));
+            return Err(SummersetError::msg("ReedSolomon is None"));
         }
 
         if self.avail_shards() < self.num_shards() {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "not all shards present: {} / {}",
                 self.avail_shards(),
                 self.num_shards()
@@ -474,10 +474,10 @@ where
     /// otherwise, a cloned deserialization is performed to produce data_copy.
     pub fn get_data(&mut self) -> Result<&T, SummersetError> {
         if self.data_len == 0 {
-            return Err(SummersetError("codeword is null".into()));
+            return Err(SummersetError::msg("codeword is null"));
         }
         if self.avail_data_shards() < self.num_data_shards {
-            return Err(SummersetError(format!(
+            return Err(SummersetError::msg(format!(
                 "not all data shards present: {} / {}",
                 self.avail_data_shards(),
                 self.num_data_shards
@@ -523,7 +523,7 @@ impl<'a> ShardsReader<'a> {
     ) -> Result<Self, SummersetError> {
         for shard in shards.iter().take(num_data_shards as usize) {
             if shard.is_none() {
-                return Err(SummersetError("some data shard is None".into()));
+                return Err(SummersetError::msg("some data shard is None"));
             }
             debug_assert_eq!(shard.as_ref().unwrap().len(), shard_len);
         }
@@ -574,7 +574,7 @@ impl<'a> io::Read for ShardsReader<'a> {
 }
 
 #[cfg(test)]
-mod rscoding_tests {
+mod tests {
     use super::*;
     use serde::Deserialize;
 

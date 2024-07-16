@@ -2,8 +2,8 @@
 
 use super::*;
 
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
-use crate::server::{ReplicaId, LogAction};
 
 // ChainRepReplica peer-peer messages handling
 impl ChainRepReplica {
@@ -14,8 +14,12 @@ impl ChainRepReplica {
         slot: usize,
         reqs: ReqBatch,
     ) -> Result<(), SummersetError> {
-        pf_debug!(self.id; "received Propagate <- {} slot {} num_reqs {}",
-                           peer, slot, reqs.len());
+        pf_debug!(
+            "received Propagate <- {} slot {} num_reqs {}",
+            peer,
+            slot,
+            reqs.len()
+        );
 
         // ignore if Propagate message not from my precessor
         if self.is_head() || self.predecessor().unwrap() != peer {
@@ -28,7 +32,7 @@ impl ChainRepReplica {
         }
 
         self.log[slot].status = Status::Streaming;
-        self.log[slot].reqs = reqs.clone();
+        self.log[slot].reqs.clone_from(&reqs);
 
         // record the new log entry durably
         self.storage_hub.submit_action(
@@ -38,7 +42,7 @@ impl ChainRepReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted durable log action for slot {}", slot);
+        pf_trace!("submitted durable log action for slot {}", slot);
 
         Ok(())
     }
@@ -49,8 +53,7 @@ impl ChainRepReplica {
         peer: ReplicaId,
         slot: usize,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received PropagateReply <- {} slot {}",
-                           peer, slot);
+        pf_trace!("received PropagateReply <- {} slot {}", peer, slot);
 
         // ignore if Propagate reply not from my successor
         if self.is_tail() || self.successor().unwrap() != peer {
@@ -91,9 +94,11 @@ impl ChainRepReplica {
                             continue; // ignore other types of requests
                         }
                     }
-                    pf_trace!(self.id;
-                              "submitted {} exec commands for slot {}",
-                              self.log[self.prop_bar].reqs.len(), self.prop_bar);
+                    pf_trace!(
+                        "submitted {} exec commands for slot {}",
+                        self.log[self.prop_bar].reqs.len(),
+                        self.prop_bar
+                    );
                 }
 
                 self.prop_bar += 1;
@@ -104,7 +109,7 @@ impl ChainRepReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub fn handle_msg_recv(
+    pub(super) fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

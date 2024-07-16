@@ -2,19 +2,17 @@
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use clap::Parser;
 
 use log::{self, LevelFilter};
 
-use env_logger::Env;
-
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -59,27 +57,27 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<SmrProtocol, SummersetError> {
         if self.api_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid api_port {}",
                 self.api_port
             )))
         } else if self.p2p_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid p2p_port {}",
                 self.p2p_port
             )))
         } else if self.api_port == self.p2p_port {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "api_port == p2p_port {}",
                 self.api_port
             )))
         } else if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError(
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
                 format!("protocol name '{}' unrecognized", self.protocol),
             ))
         }
@@ -97,7 +95,7 @@ fn server_main() -> Result<(), SummersetError> {
         format!("{}:{}", args.bind_base.ip(), args.api_port)
             .parse()
             .map_err(|e| {
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "failed to parse api_addr: bind_ip {} port {}: {}",
                     args.bind_base.ip(),
                     args.api_port,
@@ -110,7 +108,7 @@ fn server_main() -> Result<(), SummersetError> {
         format!("{}:{}", args.bind_base.ip(), args.p2p_port)
             .parse()
             .map_err(|e| {
-                SummersetError(format!(
+                SummersetError::msg(format!(
                     "failed to parse p2p_addr: bind_ip {} port {}: {}",
                     args.bind_base.ip(),
                     args.p2p_port,
@@ -130,7 +128,7 @@ fn server_main() -> Result<(), SummersetError> {
     let (tx_term, rx_term) = watch::channel(false);
     ctrlc::set_handler(move || {
         if let Err(e) = tx_term.send(true) {
-            pf_error!("s"; "error sending to term channel: {}", e);
+            pf_error!("error sending to term channel: {}", e);
         }
     })?;
 
@@ -192,23 +190,19 @@ fn server_main() -> Result<(), SummersetError> {
 
 /// Main function of Summerset server executable.
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    logger_init();
 
     if let Err(ref e) = server_main() {
-        pf_error!("s"; "server_main exitted: {}", e);
+        pf_error!("server_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        // pf_warn!("s"; "server_main exitted successfully");
+        // pf_warn!("server_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
 
 #[cfg(test)]
-mod server_args_tests {
+mod arg_tests {
     use super::*;
 
     #[test]

@@ -69,6 +69,8 @@ cargo doc --open
 
 ## Usage
 
+Summerset currently assumes a Linux environment and is tested on Ubuntu 24.04.
+
 ### Launch a Cluster
 
 First, launch the cluster manager oracle (which only serves setup & testing purposes and does not participate in any of the protocol logic):
@@ -101,52 +103,27 @@ Currently supported client utility modes include: `repl` for an interactive CLI,
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset processes are available. First, install dependencies:
+Some helper scripts for running Summerset processes are provided. First, install dependencies:
 
 ```bash
 pip3 install toml
 ```
 
-You can find the scripts for running Summerset locally in `scripts/`:
+You can find the scripts for running Summerset processes locally in `scripts/`:
 
 ```bash
 python3 scripts/local_cluster.py -h
 python3 scripts/local_clients.py -h
 ```
 
-And for running on a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
+And for a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
 
 ```bash
 python3 scripts/distr_cluster.py -h
 python3 scripts/distr_clients.py -h
 ```
 
-## TODO List
-
-- [x] async event-loop foundation
-- [x] implementation of Chain Replication
-  - [ ] failure detection & recovery
-  - [ ] TLA+ spec
-- [x] implementation of MultiPaxos
-  - [x] TLA+ spec
-- [x] implementation of RS-Paxos
-- [x] implementation of Raft
-  - [ ] TLA+ spec
-- [x] implementation of CRaft
-  - [x] TLA+ spec
-- [ ] long-term planned improvements
-  - [ ] use a sophisticated storage backend
-  - [ ] efficient state-transfer snapshotting
-  - [ ] more robust TCP msg infrastructure
-  - [ ] membership discovery & view change
-  - [ ] multi-versioning & stale reads
-  - [ ] partitioned groups service structure
-- [ ] client-side utilities
-  - [x] interactive REPL
-  - [x] benchmarking client
-  - [x] unit tester
-  - [ ] linearizability fuzzer
-- [ ] better README & documentation
+Note that these scripts use `sudo` and assume specific ranges of available ports, so a Linux server machine environment is recommended.
 
 ---
 

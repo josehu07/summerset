@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::drivers::{DriverReply, DriverClosedLoop};
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 use color_print::cprintln;
 
@@ -10,16 +10,16 @@ use log::{self, LevelFilter};
 
 use lazy_static::lazy_static;
 
-use rand::Rng;
 use rand::distributions::Alphanumeric;
+use rand::Rng;
 
 use serde::Deserialize;
 
 use tokio::time::{self, Duration};
 
 use summerset::{
-    ReplicaId, GenericEndpoint, CommandResult, CtrlRequest, CtrlReply,
-    SummersetError, pf_debug, pf_error, logged_err, parsed_config,
+    logged_err, parsed_config, pf_debug, pf_error, CommandResult, CtrlReply,
+    CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
 };
 
 lazy_static! {
@@ -66,7 +66,7 @@ impl Default for ModeParamsTester {
 }
 
 /// Correctness testing client struct.
-pub struct ClientTester {
+pub(crate) struct ClientTester {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -79,7 +79,7 @@ pub struct ClientTester {
 
 impl ClientTester {
     /// Creates a new testing client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -131,25 +131,21 @@ impl ClientTester {
                         if let Some(ref expect_value) = expect_value {
                             if !Self::strings_match(value, expect_value) {
                                 return logged_err!(
-                                    self.driver.id;
                                     "Get value mismatch: expect {:?}, got {:?}",
-                                    expect_value, value
+                                    expect_value,
+                                    value
                                 );
                             }
                         }
                         return Ok(());
                     }
                     return logged_err!(
-                        self.driver.id;
                         "CommandResult type mismatch: expect Get"
                     );
                 }
 
                 DriverReply::Failure => {
-                    return logged_err!(
-                        self.driver.id;
-                        "service replied unknown error"
-                    );
+                    return logged_err!("service replied unknown error");
                 }
 
                 DriverReply::Redirect { .. } => {
@@ -160,7 +156,6 @@ impl ClientTester {
                 DriverReply::Timeout => {
                     timeouts += 1;
                     pf_debug!(
-                        self.driver.id;
                         "client-side timeout {} ms",
                         self.timeout.as_millis()
                     );
@@ -169,7 +164,6 @@ impl ClientTester {
         }
 
         logged_err!(
-            self.driver.id;
             "client-side timeout {} ms {} times",
             self.timeout.as_millis(),
             max_timeouts + 1
@@ -196,7 +190,6 @@ impl ClientTester {
                             if !Self::strings_match(old_value, expect_old_value)
                             {
                                 return logged_err!(
-                                    self.driver.id;
                                     "Put old_value mismatch: expect {:?}, got {:?}",
                                     expect_old_value, old_value
                                 );
@@ -205,16 +198,12 @@ impl ClientTester {
                         return Ok(());
                     }
                     return logged_err!(
-                        self.driver.id;
                         "CommandResult type mismatch: expect Put"
                     );
                 }
 
                 DriverReply::Failure => {
-                    return logged_err!(
-                        self.driver.id;
-                        "service replied unknown error"
-                    );
+                    return logged_err!("service replied unknown error");
                 }
 
                 DriverReply::Redirect { .. } => {
@@ -225,7 +214,6 @@ impl ClientTester {
                 DriverReply::Timeout => {
                     timeouts += 1;
                     pf_debug!(
-                        self.driver.id;
                         "client-side timeout {} ms",
                         self.timeout.as_millis()
                     );
@@ -234,7 +222,6 @@ impl ClientTester {
         }
 
         logged_err!(
-            self.driver.id;
             "client-side timeout {} ms {} times",
             self.timeout.as_millis(),
             max_timeouts + 1
@@ -255,7 +242,7 @@ impl ClientTester {
                 .into_iter()
                 .map(|(id, info)| (id, info.is_leader))
                 .collect()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -271,7 +258,7 @@ impl ClientTester {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::ResetServers { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -286,7 +273,7 @@ impl ClientTester {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::PauseServers { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -301,7 +288,7 @@ impl ClientTester {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::TakeSnapshot { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -317,7 +304,7 @@ impl ClientTester {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::ResumeServers { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -343,8 +330,7 @@ impl ClientTester {
             "node_pause_resume" => self.test_node_pause_resume().await,
             "snapshot_reset" => self.test_snapshot_reset().await,
             _ => {
-                return logged_err!(self.driver.id; "unrecognized test name '{}'",
-                                                   name);
+                return logged_err!("unrecognized test name '{}'", name);
             }
         };
 
@@ -361,7 +347,7 @@ impl ClientTester {
     }
 
     /// Runs the specified correctness test.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         let test_name = self.params.test_name.clone();
         let mut all_pass = true;
 
@@ -398,7 +384,7 @@ impl ClientTester {
         if all_pass {
             Ok(())
         } else {
-            Err(SummersetError("some test(s) failed".into()))
+            Err(SummersetError::msg("some test(s) failed"))
         }
     }
 }

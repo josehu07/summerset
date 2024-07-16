@@ -4,8 +4,8 @@ use std::cmp;
 
 use super::*;
 
+use crate::server::{LogActionId, LogResult};
 use crate::utils::SummersetError;
-use crate::server::{LogResult, LogActionId};
 
 // RaftReplica durable logging
 impl RaftReplica {
@@ -18,8 +18,11 @@ impl RaftReplica {
         if slot < self.start_slot || self.role != Role::Leader {
             return Ok(()); // ignore if outdated
         }
-        pf_trace!(self.id; "finished leader append logging for slot {} <= {}",
-                           slot, slot_e);
+        pf_trace!(
+            "finished leader append logging for slot {} <= {}",
+            slot,
+            slot_e
+        );
         debug_assert_eq!(slot, slot_e);
 
         // broadcast AppendEntries messages to followers
@@ -30,7 +33,7 @@ impl RaftReplica {
 
             let prev_slot = self.try_next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
+                return logged_err!("snapshotted slot {} queried", prev_slot);
             }
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
@@ -69,8 +72,12 @@ impl RaftReplica {
                         },
                         peer,
                     )?;
-                    pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                       peer, now_prev_slot + 1, now_prev_slot + end);
+                    pf_trace!(
+                        "sent AppendEntries -> {} with slots {} - {}",
+                        peer,
+                        now_prev_slot + 1,
+                        now_prev_slot + end
+                    );
 
                     now_prev_slot += end;
                 }
@@ -96,8 +103,11 @@ impl RaftReplica {
         if slot < self.start_slot || self.role != Role::Follower {
             return Ok(()); // ignore if outdated
         }
-        pf_trace!(self.id; "finished follower append logging for slot {} <= {}",
-                           slot, slot_e);
+        pf_trace!(
+            "finished follower append logging for slot {} <= {}",
+            slot,
+            slot_e
+        );
         debug_assert!(slot <= slot_e);
 
         // if all consecutive entries are made durable, reply AppendEntries
@@ -112,8 +122,11 @@ impl RaftReplica {
                     },
                     leader,
                 )?;
-                pf_trace!(self.id; "sent AppendEntriesReply -> {} up to slot {}",
-                                   leader, slot_e);
+                pf_trace!(
+                    "sent AppendEntriesReply -> {} up to slot {}",
+                    leader,
+                    slot_e
+                );
             }
         }
 
@@ -121,7 +134,7 @@ impl RaftReplica {
     }
 
     /// Synthesized handler of durable logging result chan recv.
-    pub fn handle_log_result(
+    pub(super) fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<DurEntry>,
@@ -141,14 +154,14 @@ impl RaftReplica {
             debug_assert!(now_size > self.log_offset);
             self.log_offset = now_size;
         } else {
-            return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
+            return logged_err!("unexpected log result type: {:?}", log_result);
         }
 
         match entry_type {
             Role::Follower => self.handle_logged_follower_append(slot, slot_e),
             Role::Leader => self.handle_logged_leader_append(slot, slot_e),
             _ => {
-                logged_err!(self.id; "unexpected log entry type: {:?}", entry_type)
+                logged_err!("unexpected log entry type: {:?}", entry_type)
             }
         }
     }

@@ -5,16 +5,12 @@ use crate::drivers::DriverReply;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, CommandResult, ApiRequest, ApiReply,
-    RequestId, ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error,
-    logged_err,
+    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
+    Command, CommandResult, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Closed-loop driver struct.
-pub struct DriverClosedLoop {
-    /// Client ID.
-    pub id: ClientId,
-
+pub(crate) struct DriverClosedLoop {
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
 
@@ -30,9 +26,11 @@ pub struct DriverClosedLoop {
 
 impl DriverClosedLoop {
     /// Creates a new closed-loop client.
-    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        endpoint: Box<dyn GenericEndpoint>,
+        timeout: Duration,
+    ) -> Self {
         DriverClosedLoop {
-            id: endpoint.id(),
             endpoint,
             next_req: 0,
             timer: Timer::new(),
@@ -41,12 +39,12 @@ impl DriverClosedLoop {
     }
 
     /// Establishes connection with the service.
-    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
         self.endpoint.connect().await
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
-    pub async fn leave(
+    pub(crate) async fn leave(
         &mut self,
         permanent: bool,
     ) -> Result<(), SummersetError> {
@@ -77,7 +75,7 @@ impl DriverClosedLoop {
 
         tokio::select! {
             () = self.timer.timeout() => {
-                pf_debug!(self.id; "timed-out waiting for reply");
+                pf_debug!("timed-out waiting for reply");
                 Ok(None)
             }
 
@@ -89,7 +87,7 @@ impl DriverClosedLoop {
     }
 
     /// Send a Get request and wait for its reply.
-    pub async fn get(
+    pub(crate) async fn get(
         &mut self,
         key: &str,
     ) -> Result<DriverReply, SummersetError> {
@@ -139,7 +137,6 @@ impl DriverClosedLoop {
 
                             _ => {
                                 return logged_err!(
-                                    self.id;
                                     "command type mismatch: expected Get"
                                 );
                             }
@@ -152,14 +149,14 @@ impl DriverClosedLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }
     }
 
     /// Send a Put request and wait for its reply.
-    pub async fn put(
+    pub(crate) async fn put(
         &mut self,
         key: &str,
         value: &str,
@@ -215,7 +212,6 @@ impl DriverClosedLoop {
 
                             _ => {
                                 return logged_err!(
-                                    self.id;
                                     "command type mismatch: expected Put"
                                 );
                             }
@@ -228,7 +224,7 @@ impl DriverClosedLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }
@@ -236,7 +232,7 @@ impl DriverClosedLoop {
 
     /// Gets a mutable reference to the endpoint's control stub.
     #[allow(dead_code)]
-    pub fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
+    pub(crate) fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         self.endpoint.ctrl_stub()
     }
 }

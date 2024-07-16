@@ -2,9 +2,9 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // ChainRepReplica control messages handling
 impl ChainRepReplica {
@@ -13,7 +13,7 @@ impl ChainRepReplica {
         &mut self,
         durable: bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got restart req");
+        pf_warn!("server got restart req");
 
         // send leave notification to peers and wait for their replies
         self.transport_hub.leave().await?;
@@ -38,7 +38,7 @@ impl ChainRepReplica {
                     now_size: 0,
                 })
         {
-            return logged_err!(self.id; "failed to truncate log to 0");
+            return logged_err!("failed to truncate log to 0");
         }
 
         Ok(())
@@ -49,7 +49,7 @@ impl ChainRepReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got pause req");
+        pf_warn!("server got pause req");
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -60,7 +60,7 @@ impl ChainRepReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got resume req");
+        pf_warn!("server got resume req");
 
         *paused = false;
         self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;
@@ -70,7 +70,7 @@ impl ChainRepReplica {
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
-    pub async fn handle_ctrl_msg(
+    pub(super) async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
         paused: &mut bool,

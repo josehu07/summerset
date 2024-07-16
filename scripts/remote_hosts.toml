@@ -2,17 +2,21 @@
 base_path = "/eval"
 repo_name = "summerset"
 
-# (SET PROPERLY) for each group, its host DNS domain names
+# (SET PROPERLY) for each group, its username @ DNS domain names
 [1dc]
-host0 = "username@host.domain.us"
-host1 = "username@host.domain.us"
-host2 = "username@host.domain.us"
-host3 = "username@host.domain.us"
-host4 = "username@host.domain.us"
+host0 = "username@domain.com"
+host1 = "username@domain.com"
+host2 = "username@domain.com"
+host3 = "username@domain.com"
+host4 = "username@domain.com"
+host5 = "username@domain.com"
+host6 = "username@domain.com"
+host7 = "username@domain.com"
+host8 = "username@domain.com"
 
 [wan]
-host0 = "username@host.domain.us"
-host1 = "username@host.domain.us"
-host2 = "username@host.domain.us"
-host3 = "username@host.domain.us"
-host4 = "username@host.domain.us"
+host0 = "username@domain.com"
+host1 = "username@domain.com"
+host2 = "username@domain.com"
+host3 = "username@domain.com"
+host4 = "username@domain.com"

@@ -1,16 +1,21 @@
 //! Customized unified error type.
 
+use std::error;
 use std::fmt;
 use std::io;
-use std::string;
 use std::net;
 use std::num;
-
-use crate::server::ReplicaId;
+use std::string;
 
 /// Customized error type for Summerset.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SummersetError(pub String);
+pub struct SummersetError(String);
+
+impl SummersetError {
+    pub fn msg(msg: impl ToString) -> Self {
+        SummersetError(msg.to_string())
+    }
+}
 
 impl fmt::Display for SummersetError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -18,7 +23,9 @@ impl fmt::Display for SummersetError {
     }
 }
 
-// Helper macro for saving boiler-plate `impl From<T>`s for transparent
+impl error::Error for SummersetError {}
+
+// Helper macro for saving boiler-plate `impl From<X>`s for transparent
 // conversion from various common error types to `SummersetError`.
 macro_rules! impl_from_error {
     ($error:ty) => {
@@ -26,6 +33,18 @@ macro_rules! impl_from_error {
             fn from(e: $error) -> Self {
                 // just store the source error's string representation
                 SummersetError(e.to_string())
+            }
+        }
+    };
+}
+
+// Helper macro for saving boiler-plate `impl From<X<T>>`s for transparent
+// conversion from various common generic error types to `SummersetError`.
+macro_rules! impl_from_error_generic {
+    ($error:ty) => {
+        impl<T> From<$error> for SummersetError {
+            fn from(e: $error) -> SummersetError {
+                SummersetError::msg(e.to_string())
             }
         }
     };
@@ -40,27 +59,17 @@ impl_from_error!(rmp_serde::encode::Error);
 impl_from_error!(rmp_serde::decode::Error);
 impl_from_error!(toml::ser::Error);
 impl_from_error!(toml::de::Error);
-impl_from_error!(tokio::sync::SetError<tokio::net::TcpListener>);
-impl_from_error!(tokio::sync::SetError<tokio::fs::File>);
-impl_from_error!(
-    tokio::sync::watch::error::SendError<Option<tokio::time::Instant>>
-);
-impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
-impl_from_error!(tokio::sync::mpsc::error::SendError<()>);
-impl_from_error!(
-    tokio::sync::mpsc::error::SendError<(
-        ReplicaId,
-        net::SocketAddr,
-        net::SocketAddr
-    )>
-);
-impl_from_error!(tokio::sync::mpsc::error::SendError<(ReplicaId, u8)>);
 impl_from_error!(reed_solomon_erasure::Error);
 impl_from_error!(ctrlc::Error);
 impl_from_error!(linreg::Error);
+impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
+
+impl_from_error_generic!(tokio::sync::SetError<T>);
+impl_from_error_generic!(tokio::sync::watch::error::SendError<T>);
+impl_from_error_generic!(tokio::sync::mpsc::error::SendError<T>);
 
 #[cfg(test)]
-mod error_tests {
+mod tests {
     use super::*;
 
     #[test]

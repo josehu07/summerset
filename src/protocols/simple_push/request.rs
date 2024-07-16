@@ -2,14 +2,14 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap};
-use crate::server::{ApiRequest, LogAction, LogActionId};
 use crate::client::ClientId;
+use crate::server::{ApiRequest, LogAction, LogActionId};
+use crate::utils::{Bitmap, SummersetError};
 
 // SimplePushReplica client requests entrance
 impl SimplePushReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {

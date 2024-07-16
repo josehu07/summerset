@@ -1,20 +1,20 @@
 //! Client-side utilities for benchmarking, testing, etc.
 
 mod repl;
-pub use repl::ClientRepl;
+pub(crate) use repl::ClientRepl;
 
 mod bench;
-pub use bench::ClientBench;
+pub(crate) use bench::ClientBench;
 
 mod tester;
-pub use tester::ClientTester;
+pub(crate) use tester::ClientTester;
 
 mod mess;
-pub use mess::ClientMess;
+pub(crate) use mess::ClientMess;
 
 /// Enum of supported client utility modes.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum ClientMode {
+pub(crate) enum ClientMode {
     Repl,
     Bench,
     Tester,
@@ -23,7 +23,7 @@ pub enum ClientMode {
 
 impl ClientMode {
     /// Parse command line string into ClientMode enum.
-    pub fn parse_name(name: &str) -> Option<Self> {
+    pub(crate) fn parse_name(name: &str) -> Option<Self> {
         match &name.to_lowercase()[..] {
             "repl" => Some(Self::Repl),
             "bench" => Some(Self::Bench),
@@ -35,7 +35,7 @@ impl ClientMode {
 }
 
 #[cfg(test)]
-mod modes_name_tests {
+mod name_tests {
     use super::*;
 
     macro_rules! valid_name_test {

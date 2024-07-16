@@ -2,13 +2,13 @@
 
 use super::*;
 
+use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
-use crate::server::{ApiRequest, LogResult, LogActionId};
 
 // ChainRepReplica durable WAL logging
 impl ChainRepReplica {
     /// Handler of durable logging result chan recv.
-    pub fn handle_log_result(
+    pub(super) fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,
@@ -31,9 +31,9 @@ impl ChainRepReplica {
             // then update self.wal_offset
             self.wal_offset = now_size;
         } else {
-            return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
+            return logged_err!("unexpected log result type: {:?}", log_result);
         }
-        pf_trace!(self.id; "finished durable logging for slot {}", slot);
+        pf_trace!("finished durable logging for slot {}", slot);
 
         // depending on whether I'm the tail...
         if self.is_tail() {
@@ -67,9 +67,11 @@ impl ChainRepReplica {
                                 continue; // ignore other types of requests
                             }
                         }
-                        pf_trace!(self.id;
-                                  "submitted {} exec commands for slot {}",
-                                  self.log[self.prop_bar].reqs.len(), self.prop_bar);
+                        pf_trace!(
+                            "submitted {} exec commands for slot {}",
+                            self.log[self.prop_bar].reqs.len(),
+                            self.prop_bar
+                        );
                     }
 
                     self.prop_bar += 1;
@@ -85,8 +87,11 @@ impl ChainRepReplica {
                 },
                 self.successor().unwrap(),
             )?;
-            pf_trace!(self.id; "sent Propagate -> {} for slot {}",
-                               self.successor().unwrap(), slot);
+            pf_trace!(
+                "sent Propagate -> {} for slot {}",
+                self.successor().unwrap(),
+                slot
+            );
 
             // if I'm not the head, also reply back to my predecessor
             if !self.is_head() {
@@ -95,8 +100,11 @@ impl ChainRepReplica {
                     PeerMsg::PropagateReply { slot },
                     self.predecessor().unwrap(),
                 )?;
-                pf_trace!(self.id; "sent PropagateReply -> {} for slot {}",
-                                   self.predecessor().unwrap(), slot);
+                pf_trace!(
+                    "sent PropagateReply -> {} for slot {}",
+                    self.predecessor().unwrap(),
+                    slot
+                );
             }
         }
 

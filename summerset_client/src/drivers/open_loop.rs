@@ -12,15 +12,12 @@ use crate::drivers::DriverReply;
 use tokio::time::{Duration, Instant};
 
 use summerset::{
-    GenericEndpoint, ClientId, Command, ApiRequest, ApiReply, RequestId,
-    ClientCtrlStub, Timer, SummersetError, pf_debug, pf_error, logged_err,
+    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
+    Command, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Open-loop driver struct.
-pub struct DriverOpenLoop {
-    /// Client ID.
-    pub id: ClientId,
-
+pub(crate) struct DriverOpenLoop {
     /// Protocol-specific client endpoint.
     endpoint: Box<dyn GenericEndpoint>,
 
@@ -43,9 +40,11 @@ pub struct DriverOpenLoop {
 
 impl DriverOpenLoop {
     /// Creates a new open-loop client.
-    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        endpoint: Box<dyn GenericEndpoint>,
+        timeout: Duration,
+    ) -> Self {
         DriverOpenLoop {
-            id: endpoint.id(),
             endpoint,
             next_req: 0,
             pending_reqs: HashMap::new(),
@@ -56,12 +55,12 @@ impl DriverOpenLoop {
     }
 
     /// Establishes connection with the service.
-    pub async fn connect(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
         self.endpoint.connect().await
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
-    pub async fn leave(
+    pub(crate) async fn leave(
         &mut self,
         permanent: bool,
     ) -> Result<(), SummersetError> {
@@ -73,7 +72,7 @@ impl DriverOpenLoop {
     /// case, caller must do `retry()`s before issuing any new requests,
     /// typically after doing a few `wait_reply()`s to free up some TCP socket
     /// buffer space.
-    pub fn issue_get(
+    pub(crate) fn issue_get(
         &mut self,
         key: &str,
     ) -> Result<Option<RequestId>, SummersetError> {
@@ -101,7 +100,7 @@ impl DriverOpenLoop {
     /// case, caller must do `retry()`s before issuing any new requests,
     /// typically after doing a few `wait_reply()`s to free up some TCP socket
     /// buffer space.
-    pub fn issue_put(
+    pub(crate) fn issue_put(
         &mut self,
         key: &str,
         value: &str,
@@ -130,7 +129,9 @@ impl DriverOpenLoop {
 
     /// Retries the last request that got a `WouldBlock` failure. Returns
     /// request ID if this retry is successful.
-    pub fn issue_retry(&mut self) -> Result<Option<RequestId>, SummersetError> {
+    pub(crate) fn issue_retry(
+        &mut self,
+    ) -> Result<Option<RequestId>, SummersetError> {
         let req_id = self.next_req;
 
         if self.endpoint.send_req(None)? {
@@ -155,7 +156,7 @@ impl DriverOpenLoop {
 
         tokio::select! {
             () = self.timer.timeout() => {
-                pf_debug!(self.id; "timed-out waiting for reply");
+                pf_debug!("timed-out waiting for reply");
                 Ok(None)
             }
 
@@ -167,7 +168,9 @@ impl DriverOpenLoop {
     }
 
     /// Waits for the next reply.
-    pub async fn wait_reply(&mut self) -> Result<DriverReply, SummersetError> {
+    pub(crate) async fn wait_reply(
+        &mut self,
+    ) -> Result<DriverReply, SummersetError> {
         loop {
             let reply = self.recv_reply_timed().await?;
             match reply {
@@ -177,7 +180,7 @@ impl DriverOpenLoop {
                     redirect,
                 }) => {
                     if !self.pending_reqs.contains_key(&reply_id) {
-                        // logged_err!(self.id; "request ID {} not in pending set",
+                        // logged_err!("request ID {} not in pending set",
                         //                      reply_id)
                         continue;
                     } else {
@@ -204,7 +207,7 @@ impl DriverOpenLoop {
                 }
 
                 _ => {
-                    return logged_err!(self.id; "unexpected reply type received");
+                    return logged_err!("unexpected reply type received");
                 }
             }
         }
@@ -212,7 +215,7 @@ impl DriverOpenLoop {
 
     /// Gets a mutable reference to the endpoint's control stub.
     #[allow(dead_code)]
-    pub fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
+    pub(crate) fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         self.endpoint.ctrl_stub()
     }
 }

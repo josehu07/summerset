@@ -2,19 +2,19 @@
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap};
-use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::utils::{Bitmap, SummersetError};
 
 // MultiPaxosReplica client requests entrance
 impl MultiPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not a prepared leader, ignore client requests
         if !self.is_leader() || self.bal_prepared == 0 {
@@ -35,8 +35,11 @@ impl MultiPaxosReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, target);
+                    pf_trace!(
+                        "redirected client {} to replica {}",
+                        client,
+                        target
+                    );
                 }
             }
             return Ok(());
@@ -60,7 +63,7 @@ impl MultiPaxosReplica {
                         },
                         *client,
                     )?;
-                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                    pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
@@ -84,7 +87,7 @@ impl MultiPaxosReplica {
         {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
-            inst.reqs = req_batch.clone();
+            inst.reqs.clone_from(&req_batch);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,
@@ -99,8 +102,7 @@ impl MultiPaxosReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         inst.bal = self.bal_prepared;
         inst.status = Status::Accepting;
-        pf_debug!(self.id; "enter Accept phase for slot {} bal {}",
-                           slot, inst.bal);
+        pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
         // [for perf breakdown]
         if let Some(sw) = self.bd_stopwatch.as_mut() {
@@ -120,8 +122,11 @@ impl MultiPaxosReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted AcceptData log action for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "submitted AcceptData log action for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         // send Accept messages to all peers
         self.transport_hub.bcast_msg(
@@ -132,14 +137,17 @@ impl MultiPaxosReplica {
             },
             None,
         )?;
-        pf_trace!(self.id; "broadcast Accept messages for slot {} bal {}",
-                           slot, inst.bal);
+        pf_trace!(
+            "broadcast Accept messages for slot {} bal {}",
+            slot,
+            inst.bal
+        );
 
         Ok(())
     }
 
     /// [for stale read profiling]
-    pub fn val_ver_of_first_key(
+    pub(super) fn val_ver_of_first_key(
         &mut self,
     ) -> Result<Option<(String, usize)>, SummersetError> {
         let (mut key, mut ver) = (None, 0);

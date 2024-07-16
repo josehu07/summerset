@@ -1,6 +1,6 @@
 //! One-shot client issuing control commands for testing purposes.
 
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 
 use crate::drivers::DriverClosedLoop;
 
@@ -9,8 +9,8 @@ use serde::Deserialize;
 use tokio::time::Duration;
 
 use summerset::{
-    ReplicaId, GenericEndpoint, CtrlRequest, CtrlReply, ServerInfo,
-    SummersetError, pf_info, pf_error, logged_err, parsed_config,
+    logged_err, parsed_config, pf_error, pf_info, CtrlReply, CtrlRequest,
+    GenericEndpoint, ReplicaId, ServerInfo, SummersetError,
 };
 
 /// Mod parameters struct.
@@ -34,7 +34,7 @@ impl Default for ModeParamsMess {
 }
 
 /// One-shot control client struct.
-pub struct ClientMess {
+pub(crate) struct ClientMess {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -47,7 +47,7 @@ pub struct ClientMess {
 
 impl ClientMess {
     /// Creates a new one-shot control client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -105,10 +105,7 @@ impl ClientMess {
                     debug_assert_eq!(servers_info.len() as u8, population);
                     self.servers_info = Some(servers_info);
                 }
-                _ => {
-                    return logged_err!(self.driver.id;
-                                       "unexpected control reply type")
-                }
+                _ => return logged_err!("unexpected control reply type"),
             }
         }
 
@@ -126,7 +123,7 @@ impl ClientMess {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::PauseServers { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
@@ -141,24 +138,24 @@ impl ClientMess {
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         match reply {
             CtrlReply::ResumeServers { .. } => Ok(()),
-            _ => logged_err!(self.driver.id; "unexpected control reply type"),
+            _ => logged_err!("unexpected control reply type"),
         }
     }
 
     /// Runs the one-shot client to make specified control requests.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         self.get_servers_info().await?;
 
         if !self.params.pause.is_empty() {
             let servers = self.parse_comma_separated(&self.params.pause)?;
-            pf_info!(self.driver.id; "pausing servers {:?}", servers);
+            pf_info!("pausing servers {:?}", servers);
             self.pause_servers(servers).await?;
         }
 
         if !self.params.resume.is_empty() {
             let servers = self.parse_comma_separated(&self.params.resume)?;
-            pf_info!(self.driver.id; "resuming servers {:?}", servers);
+            pf_info!("resuming servers {:?}", servers);
             self.resume_servers(servers).await?;
         }
 

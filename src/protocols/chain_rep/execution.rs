@@ -2,13 +2,13 @@
 
 use super::*;
 
+use crate::server::{ApiReply, ApiRequest, RequestId};
 use crate::utils::SummersetError;
-use crate::server::{RequestId, ApiRequest, ApiReply};
 
 // ChainRepReplica state machine execution
 impl ChainRepReplica {
     /// Handler of state machine exec result chan recv.
-    pub fn handle_cmd_result(
+    pub(super) fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,
@@ -20,8 +20,11 @@ impl ChainRepReplica {
             debug_assert!(self.is_tail());
             let (req_id, client) =
                 (slot_or_req_id as RequestId, cmd_idx_or_client as ClientId);
-            pf_trace!(self.id; "executed read-only cmd for client {} req_id {}",
-                               client, req_id);
+            pf_trace!(
+                "executed read-only cmd for client {} req_id {}",
+                client,
+                req_id
+            );
 
             // reply back to the client
             if self.external_api.has_client(client) {
@@ -33,8 +36,11 @@ impl ChainRepReplica {
                     },
                     client,
                 )?;
-                pf_trace!(self.id; "replied -> client {} for read-only req {}",
-                                   client, req_id);
+                pf_trace!(
+                    "replied -> client {} for read-only req {}",
+                    client,
+                    req_id
+                );
             }
         } else {
             // node executed non read-only command
@@ -44,8 +50,11 @@ impl ChainRepReplica {
             if self.log[slot].status != Status::Propagated {
                 return Ok(());
             }
-            pf_trace!(self.id; "executed non read-only cmd of slot {} idx {}",
-                               slot, cmd_idx);
+            pf_trace!(
+                "executed non read-only cmd of slot {} idx {}",
+                slot,
+                cmd_idx
+            );
 
             // if I'm the tail, reply back to the client
             if self.is_tail() {
@@ -60,11 +69,15 @@ impl ChainRepReplica {
                             },
                             client,
                         )?;
-                        pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
-                                           client, slot, cmd_idx);
+                        pf_trace!(
+                            "replied -> client {} for slot {} idx {}",
+                            client,
+                            slot,
+                            cmd_idx
+                        );
                     }
                 } else {
-                    return logged_err!(self.id; "unexpected API request type");
+                    return logged_err!("unexpected API request type");
                 }
             }
 
@@ -72,7 +85,7 @@ impl ChainRepReplica {
             // Executed and update `exec_bar`
             if cmd_idx == self.log[slot].reqs.len() - 1 {
                 self.log[slot].status = Status::Executed;
-                pf_debug!(self.id; "executed all cmds in entry at slot {}", slot);
+                pf_debug!("executed all cmds in entry at slot {}", slot);
 
                 // update index of the first non-executed entry
                 if slot == self.exec_bar {

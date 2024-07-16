@@ -2,13 +2,13 @@
 
 use super::*;
 
+use crate::server::{ApiReply, ApiRequest};
 use crate::utils::SummersetError;
-use crate::server::{ApiRequest, ApiReply};
 
 // MultiPaxosReplica state machine execution
 impl MultiPaxosReplica {
     /// Handler of state machine exec result chan recv.
-    pub fn handle_cmd_result(
+    pub(super) fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,
@@ -18,8 +18,7 @@ impl MultiPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         debug_assert!(slot < self.start_slot + self.insts.len());
-        pf_trace!(self.id; "executed cmd in instance at slot {} idx {}",
-                           slot, cmd_idx);
+        pf_trace!("executed cmd in instance at slot {} idx {}", slot, cmd_idx);
 
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(cmd_idx < inst.reqs.len());
@@ -36,19 +35,22 @@ impl MultiPaxosReplica {
                     },
                     client,
                 )?;
-                pf_trace!(self.id; "replied -> client {} for slot {} idx {}",
-                                   client, slot, cmd_idx);
+                pf_trace!(
+                    "replied -> client {} for slot {} idx {}",
+                    client,
+                    slot,
+                    cmd_idx
+                );
             }
         } else {
-            return logged_err!(self.id; "unexpected API request type");
+            return logged_err!("unexpected API request type");
         }
 
         // if all commands in this instance have been executed, set status to
         // Executed and update `exec_bar`
         if cmd_idx == inst.reqs.len() - 1 {
             inst.status = Status::Executed;
-            pf_debug!(self.id; "executed all cmds in instance at slot {}",
-                               slot);
+            pf_debug!("executed all cmds in instance at slot {}", slot);
 
             // [for perf breakdown]
             if self.is_leader() {

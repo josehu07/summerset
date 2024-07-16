@@ -4,13 +4,13 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
-use crate::drivers::{DriverReply, DriverOpenLoop};
+use crate::drivers::{DriverOpenLoop, DriverReply};
 
 use lazy_static::lazy_static;
 
-use rand::Rng;
 use rand::distributions::Alphanumeric;
 use rand::rngs::ThreadRng;
+use rand::Rng;
 
 use rand_distr::{Distribution, Normal, Uniform};
 
@@ -21,8 +21,8 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    GenericEndpoint, RequestId, SummersetError, pf_debug, pf_error, logged_err,
-    parsed_config,
+    logged_err, parsed_config, pf_debug, pf_error, GenericEndpoint, RequestId,
+    SummersetError,
 };
 
 /// Fixed length in bytes of key.
@@ -100,7 +100,7 @@ impl Default for ModeParamsBench {
 }
 
 /// Benchmarking client struct.
-pub struct ClientBench {
+pub(crate) struct ClientBench {
     /// Open-loop request driver.
     driver: DriverOpenLoop,
 
@@ -164,7 +164,7 @@ pub struct ClientBench {
 
 impl ClientBench {
     /// Creates a new benchmarking client.
-    pub fn new(
+    pub(crate) fn new(
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
@@ -176,34 +176,48 @@ impl ClientBench {
                                     norm_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 1000000 {
-            return logged_err!("c"; "invalid params.freq_target '{}'",
-                                    params.freq_target);
+            return logged_err!(
+                "invalid params.freq_target '{}'",
+                params.freq_target
+            );
         }
         if params.length_s == 0 {
-            return logged_err!("c"; "invalid params.length_s '{}'",
-                                    params.length_s);
+            return logged_err!(
+                "invalid params.length_s '{}'",
+                params.length_s
+            );
         }
         if params.put_ratio > 100 {
-            return logged_err!("c"; "invalid params.put_ratio '{}'",
-                                    params.put_ratio);
+            return logged_err!(
+                "invalid params.put_ratio '{}'",
+                params.put_ratio
+            );
         }
         if params.num_keys == 0 {
-            return logged_err!("c"; "invalid params.num_keys '{}'",
-                                    params.num_keys);
+            return logged_err!(
+                "invalid params.num_keys '{}'",
+                params.num_keys
+            );
         }
         if params.norm_stdev_ratio < 0.0 {
-            return logged_err!("c"; "invalid params.norm_stdev_ratio '{}'",
-                                    params.norm_stdev_ratio);
+            return logged_err!(
+                "invalid params.norm_stdev_ratio '{}'",
+                params.norm_stdev_ratio
+            );
         }
         if params.unif_interval_ms > 1 && params.unif_interval_ms < 100 {
-            return logged_err!("c"; "invalid params.unif_interval_ms '{}'",
-                                    params.unif_interval_ms);
+            return logged_err!(
+                "invalid params.unif_interval_ms '{}'",
+                params.unif_interval_ms
+            );
         }
         if params.unif_upper_bound < 1024
             || params.unif_upper_bound > MAX_VAL_LEN
         {
-            return logged_err!("c"; "invalid params.unif_upper_bound '{}'",
-                                    params.unif_upper_bound);
+            return logged_err!(
+                "invalid params.unif_upper_bound '{}'",
+                params.unif_upper_bound
+            );
         }
 
         let keys_pool = if params.ycsb_trace.is_empty() {
@@ -300,7 +314,10 @@ impl ClientBench {
                         } else if seg == "UPDATE" {
                             false
                         } else {
-                            return logged_err!("c"; "unrecognized trace op '{}'", seg);
+                            return logged_err!(
+                                "unrecognized trace op '{}'",
+                                seg
+                            );
                         }
                     } else if seg_idx == 1 {
                         trace_vec.push((read, seg.into()));
@@ -321,17 +338,17 @@ impl ClientBench {
     ) -> Result<RangeMap<u64, usize>, SummersetError> {
         let mut value_size = RangeMap::new();
         if s.is_empty() {
-            return logged_err!("c"; "invalid params.value_size '{}'", s);
+            return logged_err!("invalid params.value_size '{}'", s);
         } else if let Ok(size) = s.parse::<usize>() {
             // a single number
             if size == 0 {
-                return logged_err!("c"; "size 0 found in params.value_size");
+                return logged_err!("size 0 found in params.value_size");
             }
             value_size.insert(0..u64::MAX, size);
         } else {
             // changes over time
             if !s.starts_with("0:") {
-                return logged_err!("c"; "params.value_size must start with '0:'");
+                return logged_err!("params.value_size must start with '0:'");
             }
             let (mut seg_start, mut seg_size) = (0, 0);
             for (i, seg) in s.split('/').enumerate() {
@@ -339,10 +356,15 @@ impl ClientBench {
                     let time = seg[..idx].parse::<u64>()?;
                     let size = seg[idx + 1..].parse::<usize>()?;
                     if size == 0 {
-                        return logged_err!("c"; "size 0 found in params.value_size");
+                        return logged_err!(
+                            "size 0 found in params.value_size"
+                        );
                     } else if time >= length_s {
-                        return logged_err!("c"; "sec {} >= length_s {} in params.value_size",
-                                                time, length_s);
+                        return logged_err!(
+                            "sec {} >= length_s {} in params.value_size",
+                            time,
+                            length_s
+                        );
                     }
                     if i == 0 {
                         debug_assert_eq!(time, 0);
@@ -355,7 +377,7 @@ impl ClientBench {
                         seg_size = size;
                     }
                 } else {
-                    return logged_err!("c"; "invalid params.value_size '{}'", s);
+                    return logged_err!("invalid params.value_size '{}'", s);
                 }
             }
             debug_assert!(seg_size > 0);
@@ -451,7 +473,7 @@ impl ClientBench {
 
     /// Leaves and reconnects to the service in case the previous server fails.
     async fn leave_reconnect(&mut self) -> Result<(), SummersetError> {
-        pf_debug!(self.driver.id; "leave and reconnecting...");
+        pf_debug!("leave and reconnecting...");
         self.driver.leave(false).await?;
         self.driver.connect().await?;
         Ok(())
@@ -561,7 +583,7 @@ impl ClientBench {
     }
 
     /// Runs the adaptive benchmark for given time length.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         println!(
             "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",

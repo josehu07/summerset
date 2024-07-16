@@ -2,16 +2,16 @@
 
 use tokio::time::Duration;
 
-use summerset::{ReplicaId, RequestId, CommandResult};
+use summerset::{CommandResult, ReplicaId, RequestId};
 
 mod closed_loop;
 mod open_loop;
 
-pub use closed_loop::DriverClosedLoop;
-pub use open_loop::DriverOpenLoop;
+pub(crate) use closed_loop::DriverClosedLoop;
+pub(crate) use open_loop::DriverOpenLoop;
 
 /// Reply result type, common across the two driver styles.
-pub enum DriverReply {
+pub(crate) enum DriverReply {
     /// Successful reply.
     Success {
         /// Request ID.

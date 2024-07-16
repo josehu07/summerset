@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
-use crate::server::{ReplicaId, LogAction, LogResult};
+use crate::server::{LogAction, LogResult, ReplicaId};
+use crate::utils::SummersetError;
 
 use rand::prelude::*;
 
@@ -18,7 +18,7 @@ impl RaftReplica {
     /// Check if the given term is larger than mine. If so, convert my role
     /// back to follower. Returns true if my role was not follower but now
     /// converted to follower, and false otherwise.
-    pub async fn check_term(
+    pub(super) async fn check_term(
         &mut self,
         peer: ReplicaId,
         term: Term,
@@ -56,14 +56,16 @@ impl RaftReplica {
             } = result
             {
             } else {
-                return logged_err!(self.id; "unexpected log result type or failed write");
+                return logged_err!(
+                    "unexpected log result type or failed write"
+                );
             }
 
             if self.role != Role::Follower {
                 self.role = Role::Follower;
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
-                pf_info!(self.id; "converted back to follower");
+                pf_info!("converted back to follower");
                 Ok(true)
             } else {
                 Ok(false)
@@ -74,7 +76,9 @@ impl RaftReplica {
     }
 
     /// Becomes a candidate and starts the election procedure.
-    pub async fn become_a_candidate(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_candidate(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         if self.role != Role::Follower {
             return Ok(());
         }
@@ -85,7 +89,7 @@ impl RaftReplica {
         self.curr_term += 1;
         self.voted_for = Some(self.id);
         self.votes_granted = HashSet::from([self.id]);
-        pf_info!(self.id; "starting election with term {}...", self.curr_term);
+        pf_info!("starting election with term {}...", self.curr_term);
 
         // reset election timeout timer
         self.heard_heartbeat(self.id, self.curr_term)?;
@@ -102,8 +106,12 @@ impl RaftReplica {
             },
             None,
         )?;
-        pf_trace!(self.id; "broadcast RequestVote with term {} last {} term {}",
-                           self.curr_term, last_slot, last_term);
+        pf_trace!(
+            "broadcast RequestVote with term {} last {} term {}",
+            self.curr_term,
+            last_slot,
+            last_term
+        );
 
         // also make the two critical fields durable, synchronously
         let (old_results, result) = self
@@ -129,15 +137,15 @@ impl RaftReplica {
         } = result
         {
         } else {
-            return logged_err!(self.id; "unexpected log result type or failed write");
+            return logged_err!("unexpected log result type or failed write");
         }
 
         Ok(())
     }
 
     /// Becomes the leader after enough votes granted for me.
-    pub fn become_the_leader(&mut self) -> Result<(), SummersetError> {
-        pf_info!(self.id; "elected to be leader with term {}", self.curr_term);
+    pub(super) fn become_the_leader(&mut self) -> Result<(), SummersetError> {
+        pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
@@ -172,7 +180,7 @@ impl RaftReplica {
     }
 
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
-    pub fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;
@@ -215,7 +223,7 @@ impl RaftReplica {
                     // past hbs sent from me; this peer is probably dead
                     if self.peer_alive.get(peer)? {
                         self.peer_alive.set(peer, false)?;
-                        pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
                     }
                     cnts.2 = 0;
                 }
@@ -225,13 +233,15 @@ impl RaftReplica {
         // I also heard this heartbeat from myself
         self.heard_heartbeat(self.id, self.curr_term)?;
 
-        // pf_trace!(self.id; "broadcast heartbeats term {}", self.curr_term);
+        // pf_trace!("broadcast heartbeats term {}", self.curr_term);
         Ok(())
     }
 
     /// Chooses a random hb_hear_timeout from the min-max range and kicks off
     /// the hb_hear_timer.
-    pub fn kickoff_hb_hear_timer(&mut self) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_hb_hear_timer(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.hb_hear_timer.cancel()?;
 
         if !self.config.disable_hb_timer {
@@ -239,7 +249,7 @@ impl RaftReplica {
                 self.config.hb_hear_timeout_min
                     ..=self.config.hb_hear_timeout_max,
             );
-            // pf_trace!(self.id; "kickoff hb_hear_timer @ {} ms", timeout_ms);
+            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
             self.hb_hear_timer
                 .kickoff(Duration::from_millis(timeout_ms))?;
         }
@@ -248,7 +258,7 @@ impl RaftReplica {
     }
 
     /// Heard a heartbeat from some other replica. Resets election timer.
-    pub fn heard_heartbeat(
+    pub(super) fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         _term: Term,
@@ -257,14 +267,14 @@ impl RaftReplica {
             self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
             if !self.peer_alive.get(peer)? {
                 self.peer_alive.set(peer, true)?;
-                pf_info!(self.id; "peer_alive updated: {:?}", self.peer_alive);
+                pf_info!("peer_alive updated: {:?}", self.peer_alive);
             }
         }
 
         // reset hearing timer
         self.kickoff_hb_hear_timer()?;
 
-        // pf_trace!(self.id; "heard heartbeat <- {} term {}", peer, term);
+        // pf_trace!("heard heartbeat <- {} term {}", peer, term);
         Ok(())
     }
 }

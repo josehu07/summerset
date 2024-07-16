@@ -3,32 +3,32 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
-mod request;
+mod control;
 mod durability;
 mod execution;
 mod recovery;
-mod control;
+mod request;
 
-use std::path::Path;
 use std::net::SocketAddr;
+use std::path::Path;
 
-use crate::utils::SummersetError;
-use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
-use crate::server::{
-    ReplicaId, ControlHub, StateMachine, CommandId, ExternalApi, ApiRequest,
-    ApiReply, StorageHub, GenericReplica,
-};
-use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
+use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
+use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
+use crate::server::{
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
+    ReplicaId, StateMachine, StorageHub,
+};
+use crate::utils::SummersetError;
 
 use async_trait::async_trait;
 
 use get_size::GetSize;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::time::Duration;
 use tokio::sync::watch;
+use tokio::time::Duration;
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -60,12 +60,12 @@ impl Default for ReplicaConfigRepNothing {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub struct WalEntry {
+pub(crate) struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
 
 /// In-memory instance containing a commands batch.
-pub struct Instance {
+pub(crate) struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     execed: Vec<bool>,
@@ -73,7 +73,7 @@ pub struct Instance {
 
 /// RepNothing server replica module.
 // TransportHub module not needed here.
-pub struct RepNothingReplica {
+pub(crate) struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -145,7 +145,6 @@ impl GenericReplica for RepNothingReplica {
                                     backer_path, logger_sync)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.batch_interval_ms '{}'",
                 config.batch_interval_ms
             );
@@ -207,43 +206,43 @@ impl GenericReplica for RepNothingReplica {
                 // client request batch
                 req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
-                        pf_error!(self.id; "error getting req batch: {}", e);
+                        pf_error!("error getting req batch: {}", e);
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
                     if let Err(e) = self.handle_req_batch(req_batch) {
-                        pf_error!(self.id; "error handling req batch: {}", e);
+                        pf_error!("error handling req batch: {}", e);
                     }
                 },
 
                 // durable logging result
                 log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
-                        pf_error!(self.id; "error getting log result: {}", e);
+                        pf_error!("error getting log result: {}", e);
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
                     if let Err(e) = self.handle_log_result(action_id, log_result) {
-                        pf_error!(self.id; "error handling log result {}: {}", action_id, e);
+                        pf_error!("error handling log result {}: {}", action_id, e);
                     }
                 },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
-                        pf_error!(self.id; "error getting cmd result: {}", e);
+                        pf_error!("error getting cmd result: {}", e);
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
                     if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
-                        pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
+                        pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
                     if let Err(e) = ctrl_msg {
-                        pf_error!(self.id; "error getting ctrl msg: {}", e);
+                        pf_error!("error getting ctrl msg: {}", e);
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
@@ -251,21 +250,20 @@ impl GenericReplica for RepNothingReplica {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {
                                 pf_warn!(
-                                    self.id;
                                     "server got {} req",
                                     if restart { "restart" } else { "shutdown" });
                                 return Ok(restart);
                             }
                         },
                         Err(e) => {
-                            pf_error!(self.id; "error handling ctrl msg: {}", e);
+                            pf_error!("error handling ctrl msg: {}", e);
                         }
                     }
                 },
 
                 // receiving termination signal
                 _ = rx_term.changed() => {
-                    pf_warn!(self.id; "server caught termination signal");
+                    pf_warn!("server caught termination signal");
                     return Ok(false);
                 }
             }
@@ -292,7 +290,7 @@ impl Default for ClientConfigRepNothing {
 }
 
 /// RepNothing client-side module.
-pub struct RepNothingClient {
+pub(crate) struct RepNothingClient {
     /// Client ID.
     id: ClientId,
 
@@ -318,7 +316,7 @@ impl GenericEndpoint for RepNothingClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("connecting to manager '{}'...", manager);
         let ctrl_stub =
             ClientCtrlStub::new_by_connect(ctrl_base, manager).await?;
         let id = ctrl_stub.id;
@@ -339,7 +337,7 @@ impl GenericEndpoint for RepNothingClient {
     async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
         if self.api_stub.is_some() {
-            return logged_err!(self.id; "reconnecting without leaving");
+            return logged_err!("reconnecting without leaving");
         }
 
         // ask the manager about the list of active servers
@@ -362,9 +360,11 @@ impl GenericEndpoint for RepNothingClient {
                         (self.config.server_id + 1) % population;
                 }
                 // connect to that server
-                pf_debug!(self.id; "connecting to server {} '{}'...",
-                                   self.config.server_id,
-                                   servers_info[&self.config.server_id].api_addr);
+                pf_debug!(
+                    "connecting to server {} '{}'...",
+                    self.config.server_id,
+                    servers_info[&self.config.server_id].api_addr
+                );
                 let bind_addr = SocketAddr::new(
                     self.api_bind_base.ip(),
                     self.api_bind_base.port() + self.config.server_id as u16,
@@ -378,7 +378,7 @@ impl GenericEndpoint for RepNothingClient {
                 self.api_stub = Some(api_stub);
                 Ok(())
             }
-            _ => logged_err!(self.id; "unexpected reply type received"),
+            _ => logged_err!("unexpected reply type received"),
         }
     }
 
@@ -391,7 +391,7 @@ impl GenericEndpoint for RepNothingClient {
             }
 
             while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_debug!(self.id; "left current server connection");
+            pf_debug!("left current server connection");
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -403,7 +403,7 @@ impl GenericEndpoint for RepNothingClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_debug!(self.id; "left manager connection");
+            pf_debug!("left manager connection");
         }
 
         Ok(())
@@ -415,14 +415,14 @@ impl GenericEndpoint for RepNothingClient {
     ) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.recv_reply().await,
-            None => Err(SummersetError("client not set up".into())),
+            None => Err(SummersetError::msg("client not set up")),
         }
     }
 

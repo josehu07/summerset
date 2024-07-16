@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::str::SplitWhitespace;
 
-use crate::drivers::{DriverReply, DriverClosedLoop};
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 use color_print::{cprint, cprintln};
 
 use tokio::time::Duration;
 
 use summerset::{
-    ReplicaId, GenericEndpoint, Command, CtrlRequest, CtrlReply, SummersetError,
+    Command, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -39,7 +39,7 @@ enum ReplCommand {
 }
 
 /// Interactive REPL-style client struct.
-pub struct ClientRepl {
+pub(crate) struct ClientRepl {
     /// Closed-loop request driver.
     driver: DriverClosedLoop,
 
@@ -52,7 +52,10 @@ pub struct ClientRepl {
 
 impl ClientRepl {
     /// Creates a new REPL-style client.
-    pub fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
+    pub(crate) fn new(
+        endpoint: Box<dyn GenericEndpoint>,
+        timeout: Duration,
+    ) -> Self {
         ClientRepl {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
@@ -97,7 +100,7 @@ impl ClientRepl {
         if let Some(seg) = segs.next() {
             Ok(seg)
         } else {
-            let err = SummersetError("not enough args".into());
+            let err = SummersetError::msg("not enough args");
             Self::print_help(Some(&err));
             Err(err)
         }
@@ -183,7 +186,7 @@ impl ClientRepl {
             "exit" => Ok(ReplCommand::Exit),
 
             _ => {
-                let err = SummersetError(format!(
+                let err = SummersetError::msg(format!(
                     "unrecognized command: {}",
                     cmd_type.unwrap()
                 ));
@@ -322,7 +325,7 @@ impl ClientRepl {
     }
 
     /// Runs the infinite REPL loop.
-    pub async fn run(&mut self) -> Result<(), SummersetError> {
+    pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
 
         loop {

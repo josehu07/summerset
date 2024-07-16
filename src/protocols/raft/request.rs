@@ -2,19 +2,19 @@
 
 use super::*;
 
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
 use crate::utils::SummersetError;
-use crate::server::{ApiRequest, ApiReply, LogAction, Command, CommandResult};
 
 // RaftReplica client requests entrance
 impl RaftReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!(self.id; "got request batch of size {}", batch_size);
+        pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not a leader, ignore client requests
         if self.role != Role::Leader {
@@ -35,8 +35,11 @@ impl RaftReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(self.id; "redirected client {} to replica {}",
-                                       client, target);
+                    pf_trace!(
+                        "redirected client {} to replica {}",
+                        client,
+                        target
+                    );
                 }
             }
             return Ok(());
@@ -60,7 +63,7 @@ impl RaftReplica {
                         },
                         *client,
                     )?;
-                    pf_trace!(self.id; "replied -> client {} for read-only cmd", client);
+                    pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
@@ -96,7 +99,7 @@ impl RaftReplica {
                 sync: self.config.logger_sync,
             },
         )?;
-        pf_trace!(self.id; "submitted leader append log action for slot {}", slot);
+        pf_trace!("submitted leader append log action for slot {}", slot);
 
         Ok(())
     }

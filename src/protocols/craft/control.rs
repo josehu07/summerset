@@ -2,9 +2,9 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // CRaftReplica control messages handling
 impl CRaftReplica {
@@ -13,7 +13,7 @@ impl CRaftReplica {
         &mut self,
         durable: bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got restart req");
+        pf_warn!("server got restart req");
 
         // send leave notification to peers and wait for their replies
         self.transport_hub.leave().await?;
@@ -38,7 +38,7 @@ impl CRaftReplica {
                     now_size: 0,
                 })
         {
-            return logged_err!(self.id; "failed to truncate log to 0");
+            return logged_err!("failed to truncate log to 0");
         }
 
         Ok(())
@@ -49,7 +49,7 @@ impl CRaftReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got pause req");
+        pf_warn!("server got pause req");
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
         Ok(())
@@ -60,7 +60,7 @@ impl CRaftReplica {
         &mut self,
         paused: &mut bool,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server got resume req");
+        pf_warn!("server got resume req");
 
         // reset leader heartbeat timer
         self.kickoff_hb_hear_timer()?;
@@ -74,7 +74,7 @@ impl CRaftReplica {
     async fn handle_ctrl_take_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
-        pf_warn!(self.id; "server told to take snapshot");
+        pf_warn!("server told to take snapshot");
         self.take_new_snapshot().await?;
 
         self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
@@ -86,7 +86,7 @@ impl CRaftReplica {
     /// Synthesized handler of manager control messages. If ok, returns
     /// `Some(true)` if decides to terminate and reboot, `Some(false)` if
     /// decides to shutdown completely, and `None` if not terminating.
-    pub async fn handle_ctrl_msg(
+    pub(super) async fn handle_ctrl_msg(
         &mut self,
         msg: CtrlMsg,
         paused: &mut bool,

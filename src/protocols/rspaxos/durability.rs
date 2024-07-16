@@ -2,8 +2,8 @@
 
 use super::*;
 
+use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
-use crate::server::{ApiRequest, LogResult, LogActionId};
 
 // RSPaxosReplica durable WAL logging
 impl RSPaxosReplica {
@@ -15,8 +15,11 @@ impl RSPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "finished PrepareBal logging for slot {} bal {}",
-                           slot, self.insts[slot - self.start_slot].bal);
+        pf_trace!(
+            "finished PrepareBal logging for slot {} bal {}",
+            slot,
+            self.insts[slot - self.start_slot].bal
+        );
         let inst = &self.insts[slot - self.start_slot];
         let voted = if inst.voted.0 > 0 {
             Some(inst.voted.clone())
@@ -64,8 +67,13 @@ impl RSPaxosReplica {
                     },
                     source,
                 )?;
-                pf_trace!(self.id; "sent PrepareReply -> {} for slot {} / {} bal {}",
-                                   source, slot, endprep_slot, inst.bal);
+                pf_trace!(
+                    "sent PrepareReply -> {} for slot {} / {} bal {}",
+                    source,
+                    slot,
+                    endprep_slot,
+                    inst.bal
+                );
             }
         }
 
@@ -80,8 +88,11 @@ impl RSPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "finished AcceptData logging for slot {} bal {}",
-                           slot, self.insts[slot - self.start_slot].bal);
+        pf_trace!(
+            "finished AcceptData logging for slot {} bal {}",
+            slot,
+            self.insts[slot - self.start_slot].bal
+        );
         let inst = &self.insts[slot - self.start_slot];
 
         if self.is_leader() {
@@ -100,8 +111,12 @@ impl RSPaxosReplica {
                     },
                     source,
                 )?;
-                pf_trace!(self.id; "sent AcceptReply -> {} for slot {} bal {}",
-                                   source, slot, inst.bal);
+                pf_trace!(
+                    "sent AcceptReply -> {} for slot {} bal {}",
+                    source,
+                    slot,
+                    inst.bal
+                );
             }
         }
 
@@ -116,8 +131,11 @@ impl RSPaxosReplica {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(self.id; "finished CommitSlot logging for slot {} bal {}",
-                           slot, self.insts[slot - self.start_slot].bal);
+        pf_trace!(
+            "finished CommitSlot logging for slot {} bal {}",
+            slot,
+            self.insts[slot - self.start_slot].bal
+        );
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
@@ -129,8 +147,12 @@ impl RSPaxosReplica {
 
                 if inst.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
-                    pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                       slot, inst.reqs_cw.avail_shards(), self.majority);
+                    pf_debug!(
+                        "postponing execution for slot {} (shards {}/{})",
+                        slot,
+                        inst.reqs_cw.avail_shards(),
+                        self.majority
+                    );
                     break;
                 } else if inst.reqs_cw.avail_data_shards() < self.majority {
                     // have enough shards but need reconstruction
@@ -153,8 +175,11 @@ impl RSPaxosReplica {
                             continue; // ignore other types of requests
                         }
                     }
-                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), self.commit_bar);
+                    pf_trace!(
+                        "submitted {} exec commands for slot {}",
+                        reqs.len(),
+                        self.commit_bar
+                    );
                 }
 
                 self.commit_bar += 1;
@@ -165,7 +190,7 @@ impl RSPaxosReplica {
     }
 
     /// Synthesized handler of durable logging result chan recv.
-    pub fn handle_log_result(
+    pub(super) fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,
@@ -187,7 +212,7 @@ impl RSPaxosReplica {
             // then update self.wal_offset
             self.wal_offset = now_size;
         } else {
-            return logged_err!(self.id; "unexpected log result type: {:?}", log_result);
+            return logged_err!("unexpected log result type: {:?}", log_result);
         }
 
         match entry_type {
@@ -195,7 +220,7 @@ impl RSPaxosReplica {
             Status::Accepting => self.handle_logged_accept_data(slot),
             Status::Committed => self.handle_logged_commit_slot(slot),
             _ => {
-                logged_err!(self.id; "unexpected log entry type: {:?}", entry_type)
+                logged_err!("unexpected log entry type: {:?}", entry_type)
             }
         }
     }

@@ -540,7 +540,7 @@ macro TakeNewReadRequestLocally(r) begin
           /\ node[r].commitUpTo >= node[r].commitPrev
           /\ Len(UnseenPending(r)) > 0
           /\ Head(UnseenPending(r)) \in Reads;
-    \* find the next empty slot and pick a pending request
+    \* find the latest committed slot and pick a pending request
     with s = node[r].commitUpTo,
          v = IF s = 0 THEN "nil" ELSE node[r].insts[s].write,
          c = Head(UnseenPending(r))

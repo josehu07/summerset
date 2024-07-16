@@ -2,14 +2,14 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
-use crate::server::{ApiRequest, LogAction, LogActionId};
 use crate::client::ClientId;
+use crate::server::{ApiRequest, LogAction, LogActionId};
+use crate::utils::SummersetError;
 
 // RepNothingReplica client requests entrance
 impl RepNothingReplica {
     /// Handler of client request batch chan recv.
-    pub fn handle_req_batch(
+    pub(super) fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {

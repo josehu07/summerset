@@ -3,15 +3,15 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use crate::utils::SummersetError;
-use crate::manager::{
-    CtrlMsg, ServerReigner, CtrlRequest, CtrlReply, ClientReactor,
-};
-use crate::server::ReplicaId;
 use crate::client::ClientId;
+use crate::manager::{
+    ClientReactor, CtrlMsg, CtrlReply, CtrlRequest, ServerReigner,
+};
 use crate::protocols::SmrProtocol;
+use crate::server::ReplicaId;
+use crate::utils::{SummersetError, ME};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use tokio::sync::{mpsc, watch};
 use tokio::time::{self, Duration};
@@ -78,8 +78,10 @@ impl ClusterManager {
         population: u8,
     ) -> Result<Self, SummersetError> {
         if population == 0 {
-            return logged_err!("m"; "invalid population {}", population);
+            return logged_err!("invalid population {}", population);
         }
+
+        ME.get_or_init(|| "m".into());
 
         let (tx_id_assign, rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
@@ -113,7 +115,7 @@ impl ClusterManager {
             }
         }
 
-        logged_err!("m"; "no server ID < population left available")
+        logged_err!("no server ID < population left available")
     }
 
     /// Main event loop logic of the cluster manager. Breaks out of the loop
@@ -127,7 +129,7 @@ impl ClusterManager {
                 // receiving server ID assignment request
                 _ = self.rx_id_assign.recv() => {
                     if let Err(e) = self.assign_server_id() {
-                        pf_error!("m"; "error assigning new server ID: {}", e);
+                        pf_error!("error assigning new server ID: {}", e);
                     }
                 },
 
@@ -136,12 +138,12 @@ impl ClusterManager {
                     if let Err(_e) = ctrl_msg {
                         // NOTE: commented out to prevent console lags
                         // during benchmarking
-                        // pf_error!("m"; "error receiving ctrl msg: {}", e);
+                        // pf_error!("error receiving ctrl msg: {}", e);
                         continue;
                     }
                     let (server, msg) = ctrl_msg.unwrap();
                     if let Err(e) = self.handle_ctrl_msg(server, msg).await {
-                        pf_error!("m"; "error handling ctrl msg <- {}: {}",
+                        pf_error!("error handling ctrl msg <- {}: {}",
                                        server, e);
                     }
                 },
@@ -151,19 +153,19 @@ impl ClusterManager {
                     if let Err(_e) = ctrl_req {
                         // NOTE: commented out to prevent console lags
                         // during benchmarking
-                        // pf_error!("m"; "error receiving ctrl req: {}", e);
+                        // pf_error!("error receiving ctrl req: {}", e);
                         continue;
                     }
                     let (client, req) = ctrl_req.unwrap();
                     if let Err(e) = self.handle_ctrl_req(client, req).await {
-                        pf_error!("m"; "error handling ctrl req <- {}: {}",
+                        pf_error!("error handling ctrl req <- {}: {}",
                                        client, e);
                     }
                 },
 
                 // receiving termination signal
                 _ = rx_term.changed() => {
-                    pf_warn!("m"; "manager caught termination signal");
+                    pf_warn!("manager caught termination signal");
                     break;
                 }
             }
@@ -184,12 +186,13 @@ impl ClusterManager {
         p2p_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         if self.servers_info.contains_key(&server) {
-            return logged_err!("m"; "server join got duplicate ID: {}",
-                                    server);
+            return logged_err!("server join got duplicate ID: {}", server);
         }
         if protocol != self.protocol {
-            return logged_err!("m"; "server join with mismatch protocol: {}",
-                                    protocol);
+            return logged_err!(
+                "server join with mismatch protocol: {}",
+                protocol
+            );
         }
 
         // gather the list of all existing known servers
@@ -229,15 +232,15 @@ impl ClusterManager {
         step_up: bool,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("m"; "leader status got unknown ID: {}", server);
+            return logged_err!("leader status got unknown ID: {}", server);
         }
 
         // update this server's info
         let info = self.servers_info.get_mut(&server).unwrap();
         if step_up && info.is_leader {
-            logged_err!("m"; "server {} is already marked as leader", server)
+            logged_err!("server {} is already marked as leader", server)
         } else if !step_up && !info.is_leader {
-            logged_err!("m"; "server {} is already marked as non-leader", server)
+            logged_err!("server {} is already marked as non-leader", server)
         } else {
             info.is_leader = step_up;
             Ok(())
@@ -251,15 +254,18 @@ impl ClusterManager {
         new_start: usize,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("m"; "snapshot up to got unknown ID: {}", server);
+            return logged_err!("snapshot up to got unknown ID: {}", server);
         }
 
         // update this server's info
         let info = self.servers_info.get_mut(&server).unwrap();
         if new_start < info.start_slot {
-            logged_err!("m"; "server {} snapshot up to {} < {}",
-                             server, new_start,
-                             self.servers_info[&server].start_slot)
+            logged_err!(
+                "server {} snapshot up to {} < {}",
+                server,
+                new_start,
+                self.servers_info[&server].start_slot
+            )
         } else {
             info.start_slot = new_start;
             Ok(())
@@ -280,8 +286,11 @@ impl ClusterManager {
                 p2p_addr,
             } => {
                 if id != server {
-                    return logged_err!("m"; "server join with mismatch ID: {} != {}",
-                                            id, server);
+                    return logged_err!(
+                        "server join with mismatch ID: {} != {}",
+                        id,
+                        server
+                    );
                 }
                 self.handle_new_server_join(
                     server, protocol, api_addr, p2p_addr,
@@ -350,7 +359,7 @@ impl ClusterManager {
             // wait for the new server ID assignment request from it
             self.rx_id_assign.recv().await;
             if let Err(e) = self.assign_server_id() {
-                return logged_err!("m"; "error assigning new server ID: {}", e);
+                return logged_err!("error assigning new server ID: {}", e);
             }
 
             // wait a while to ensure the server's transport hub is setup
@@ -364,7 +373,7 @@ impl ClusterManager {
         while self.servers_info.len() < num_replicas {
             let (s, msg) = self.server_reigner.recv_ctrl().await?;
             if let Err(e) = self.handle_ctrl_msg(s, msg).await {
-                pf_error!("m"; "error handling ctrl msg <- {}: {}", s, e);
+                pf_error!("error handling ctrl msg <- {}: {}", s, e);
             }
         }
 
@@ -491,9 +500,12 @@ impl ClusterManager {
                         // update the log start index info
                         debug_assert!(self.servers_info.contains_key(&s));
                         if new_start < self.servers_info[&s].start_slot {
-                            return logged_err!("m"; "server {} snapshot up to {} < {}",
-                                                    s, new_start,
-                                                    self.servers_info[&s].start_slot);
+                            return logged_err!(
+                                "server {} snapshot up to {} < {}",
+                                s,
+                                new_start,
+                                self.servers_info[&s].start_slot
+                            );
                         } else {
                             self.servers_info.get_mut(&s).unwrap().start_slot =
                                 new_start;

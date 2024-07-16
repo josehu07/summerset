@@ -3,9 +3,9 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::SummersetError;
-use crate::server::{ApiRequest, ApiReply};
 use crate::client::ClientCtrlStub;
+use crate::server::{ApiReply, ApiRequest};
+use crate::utils::SummersetError;
 
 use async_trait::async_trait;
 

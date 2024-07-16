@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use super::*;
 
-use crate::utils::{SummersetError, Bitmap, RSCodeword};
-use crate::server::{ReplicaId, ApiRequest, LogAction, LogResult};
+use crate::server::{ApiRequest, LogAction, LogResult, ReplicaId};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CRaftReplica peer-peer messages handling
 impl CRaftReplica {
@@ -23,8 +23,13 @@ impl CRaftReplica {
         last_snap: usize,
     ) -> Result<(), SummersetError> {
         if !entries.is_empty() {
-            pf_trace!(self.id; "received AcceptEntries <- {} for slots {} - {} term {}",
-                               leader, prev_slot + 1, prev_slot + entries.len(), term);
+            pf_trace!(
+                "received AcceptEntries <- {} for slots {} - {} term {}",
+                leader,
+                prev_slot + 1,
+                prev_slot + entries.len(),
+                term
+            );
         }
         if self.check_term(leader, term).await? || self.role != Role::Follower {
             if term == self.curr_term && self.role == Role::Candidate {
@@ -72,8 +77,12 @@ impl CRaftReplica {
                 },
                 leader,
             )?;
-            pf_trace!(self.id; "sent AcceptEntriesReply -> {} term {} end_slot {} fail",
-                               leader, self.curr_term, prev_slot);
+            pf_trace!(
+                "sent AcceptEntriesReply -> {} term {} end_slot {} fail",
+                leader,
+                self.curr_term,
+                prev_slot
+            );
 
             if term >= self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
@@ -123,7 +132,6 @@ impl CRaftReplica {
                     self.log_offset = cut_offset;
                 } else {
                     return logged_err!(
-                        self.id;
                         "unexpected log result type or failed truncate"
                     );
                 }
@@ -171,7 +179,7 @@ impl CRaftReplica {
                     sync: self.config.logger_sync,
                 },
             )?;
-            pf_trace!(self.id; "submitted follower append log action for slot {}", slot);
+            pf_trace!("submitted follower append log action for slot {}", slot);
 
             num_appended += 1;
         }
@@ -204,8 +212,12 @@ impl CRaftReplica {
                 if entry.reqs_cw.avail_shards() < self.majority {
                     // can't execute if I don't have the complete request batch
                     if !entries.is_empty() {
-                        pf_debug!(self.id; "postponing execution for slot {} (shards {}/{})",
-                                           slot, entry.reqs_cw.avail_shards(), self.majority);
+                        pf_debug!(
+                            "postponing execution for slot {} (shards {}/{})",
+                            slot,
+                            entry.reqs_cw.avail_shards(),
+                            self.majority
+                        );
                     }
                     break;
                 } else if entry.reqs_cw.avail_data_shards() < self.majority {
@@ -224,8 +236,11 @@ impl CRaftReplica {
                         continue; // ignore other types of requests
                     }
                 }
-                pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                   reqs.len(), slot);
+                pf_trace!(
+                    "submitted {} exec commands for slot {}",
+                    reqs.len(),
+                    slot
+                );
 
                 // last_commit update stops at the last slot successfully
                 // submitted for execution
@@ -250,9 +265,13 @@ impl CRaftReplica {
         conflict: Option<(Term, usize)>,
     ) -> Result<(), SummersetError> {
         if conflict.is_some() || self.match_slot[&peer] != end_slot {
-            pf_trace!(self.id; "received AcceptEntriesReply <- {} term {} end_slot {} {}",
-                               peer, term, end_slot,
-                               if conflict.is_none() { "ok" } else { "fail" });
+            pf_trace!(
+                "received AcceptEntriesReply <- {} term {} end_slot {} {}",
+                peer,
+                term,
+                end_slot,
+                if conflict.is_none() { "ok" } else { "fail" }
+            );
         }
         if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
@@ -332,8 +351,11 @@ impl CRaftReplica {
                             continue; // ignore other types of requests
                         }
                     }
-                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), slot);
+                    pf_trace!(
+                        "submitted {} exec commands for slot {}",
+                        reqs.len(),
+                        slot
+                    );
 
                     // last_commit update stops at the last slot successfully
                     // submitted for execution
@@ -347,8 +369,10 @@ impl CRaftReplica {
                 let num_slots = slots.len();
                 self.transport_hub
                     .bcast_msg(PeerMsg::Reconstruct { slots }, None)?;
-                pf_trace!(self.id; "broadcast Reconstruct messages for {} slots",
-                                   num_slots);
+                pf_trace!(
+                    "broadcast Reconstruct messages for {} slots",
+                    num_slots
+                );
             }
 
             // also check if any additional entries are safe to snapshot
@@ -388,7 +412,7 @@ impl CRaftReplica {
 
             let prev_slot = self.next_slot[&peer] - 1;
             if prev_slot < self.start_slot {
-                return logged_err!(self.id; "snapshotted slot {} queried", prev_slot);
+                return logged_err!("snapshotted slot {} queried", prev_slot);
             }
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
@@ -455,8 +479,12 @@ impl CRaftReplica {
                     },
                     peer,
                 )?;
-                pf_trace!(self.id; "sent AppendEntries -> {} with slots {} - {}",
-                                   peer, now_prev_slot + 1, now_prev_slot + end);
+                pf_trace!(
+                    "sent AppendEntries -> {} with slots {} - {}",
+                    peer,
+                    now_prev_slot + 1,
+                    now_prev_slot + end
+                );
 
                 now_prev_slot += end;
             }
@@ -477,8 +505,13 @@ impl CRaftReplica {
         last_slot: usize,
         last_term: Term,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received RequestVote <- {} with term {} last {} term {}",
-                           candidate, term, last_slot, last_term);
+        pf_trace!(
+            "received RequestVote <- {} with term {} last {} term {}",
+            candidate,
+            term,
+            last_slot,
+            last_term
+        );
         self.check_term(candidate, term).await?;
 
         // if the given term is smaller than mine, reply false
@@ -490,8 +523,11 @@ impl CRaftReplica {
                 },
                 candidate,
             )?;
-            pf_trace!(self.id; "sent RequestVoteReply -> {} term {} false",
-                               candidate, self.curr_term);
+            pf_trace!(
+                "sent RequestVoteReply -> {} term {} false",
+                candidate,
+                self.curr_term
+            );
             return Ok(());
         }
 
@@ -510,8 +546,11 @@ impl CRaftReplica {
                     },
                     candidate,
                 )?;
-                pf_trace!(self.id; "sent RequestVoteReply -> {} term {} granted",
-                                   candidate, self.curr_term);
+                pf_trace!(
+                    "sent RequestVoteReply -> {} term {} granted",
+                    candidate,
+                    self.curr_term
+                );
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
@@ -542,7 +581,9 @@ impl CRaftReplica {
                 } = result
                 {
                 } else {
-                    return logged_err!(self.id; "unexpected log result type or failed write");
+                    return logged_err!(
+                        "unexpected log result type or failed write"
+                    );
                 }
             }
         }
@@ -557,8 +598,12 @@ impl CRaftReplica {
         term: Term,
         granted: bool,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received RequestVoteReply <- {} with term {} {}",
-                           peer, term, if granted { "granted" } else { "false" });
+        pf_trace!(
+            "received RequestVoteReply <- {} with term {} {}",
+            peer,
+            term,
+            if granted { "granted" } else { "false" }
+        );
         if self.check_term(peer, term).await? || self.role != Role::Candidate {
             return Ok(());
         }
@@ -580,7 +625,7 @@ impl CRaftReplica {
         peer: ReplicaId,
         slots: Vec<(usize, Term)>,
     ) -> Result<(), SummersetError> {
-        pf_trace!(self.id; "received Reconstruct <- {} for slots {:?}", peer, slots);
+        pf_trace!("received Reconstruct <- {} for slots {:?}", peer, slots);
         let mut slots_data = HashMap::new();
 
         // reconstruction messages also count as heartbeats
@@ -608,8 +653,11 @@ impl CRaftReplica {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(self.id; "sent ReconstructReply -> {} for {} slots",
-                               peer, num_slots);
+            pf_trace!(
+                "sent ReconstructReply -> {} for {} slots",
+                peer,
+                num_slots
+            );
         }
         Ok(())
     }
@@ -642,8 +690,12 @@ impl CRaftReplica {
             if slot < self.start_slot {
                 continue; // ignore if slot index outdated
             }
-            pf_trace!(self.id; "in ReconstructReply <- {} for slot {} shards {:?}",
-                               peer, slot, reqs_cw.avail_shards_map());
+            pf_trace!(
+                "in ReconstructReply <- {} for slot {} shards {:?}",
+                peer,
+                slot,
+                reqs_cw.avail_shards_map()
+            );
             debug_assert!(slot < self.start_slot + self.log.len());
             let entry = &mut self.log[slot - self.start_slot];
 
@@ -680,8 +732,11 @@ impl CRaftReplica {
                             continue; // ignore other types of requests
                         }
                     }
-                    pf_trace!(self.id; "submitted {} exec commands for slot {}",
-                                       reqs.len(), self.last_commit + 1);
+                    pf_trace!(
+                        "submitted {} exec commands for slot {}",
+                        reqs.len(),
+                        self.last_commit + 1
+                    );
 
                     self.last_commit += 1;
                 }
@@ -692,7 +747,7 @@ impl CRaftReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub async fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

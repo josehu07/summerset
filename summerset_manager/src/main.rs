@@ -1,18 +1,16 @@
 //! Summerset cluster manager oracle.
 
-use std::net::{SocketAddr, Ipv4Addr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
 
 use clap::Parser;
 
 use log::{self, LevelFilter};
 
-use env_logger::Env;
-
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 
-use summerset::{SmrProtocol, SummersetError, pf_error};
+use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
@@ -50,32 +48,32 @@ impl CliArgs {
     /// or `Err(SummersetError)` on any error.
     fn sanitize(&self) -> Result<SmrProtocol, SummersetError> {
         if self.srv_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid srv_port {}",
                 self.srv_port
             )))
         } else if self.cli_port <= 1024 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid cli_port {}",
                 self.cli_port
             )))
         } else if self.srv_port == self.cli_port {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "srv_port == cli_port {}",
                 self.srv_port
             )))
         } else if self.population == 0 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid population {}",
                 self.population
             )))
         } else if self.threads < 2 {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError(
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
                 format!("protocol name '{}' unrecognized", self.protocol),
             ))
         }
@@ -92,7 +90,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let srv_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.srv_port)
         .parse()
         .map_err(|e| {
-            SummersetError(format!(
+            SummersetError::msg(format!(
                 "failed to parse srv_addr: bind_ip {} port {}: {}",
                 args.bind_ip, args.srv_port, e
             ))
@@ -102,7 +100,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let cli_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.cli_port)
         .parse()
         .map_err(|e| {
-            SummersetError(format!(
+            SummersetError::msg(format!(
                 "failed to parse cli_addr: bind_ip {} port {}: {}",
                 args.bind_ip, args.cli_port, e
             ))
@@ -112,7 +110,7 @@ fn manager_main() -> Result<(), SummersetError> {
     let (tx_term, rx_term) = watch::channel(false);
     ctrlc::set_handler(move || {
         if let Err(e) = tx_term.send(true) {
-            pf_error!("m"; "error sending to term channel: {}", e);
+            pf_error!("error sending to term channel: {}", e);
         }
     })?;
 
@@ -148,23 +146,19 @@ fn manager_main() -> Result<(), SummersetError> {
 
 /// Main function of Summerset manager oracle.
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .format_module_path(false)
-        .format_target(false)
-        .init();
+    logger_init();
 
     if let Err(ref e) = manager_main() {
-        pf_error!("m"; "manager_main exitted: {}", e);
+        pf_error!("manager_main exitted: {}", e);
         ExitCode::FAILURE
     } else {
-        // pf_warn!("m"; "manager_main exitted successfully");
+        // pf_warn!("manager_main exitted successfully");
         ExitCode::SUCCESS
     }
 }
 
 #[cfg(test)]
-mod manager_args_tests {
+mod arg_tests {
     use super::*;
 
     #[test]

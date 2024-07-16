@@ -9,14 +9,14 @@ import utils
 
 SERVER_LOOP_IP = "127.0.0.1"
 SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
-SERVER_API_PORT = lambda r: 40100 + r
-SERVER_P2P_PORT = lambda r: 40200 + r
-SERVER_BIND_BASE_PORT = lambda r: 41000 + r * 10
+SERVER_API_PORT = lambda r: 30100 + r
+SERVER_P2P_PORT = lambda r: 30200 + r
+SERVER_BIND_BASE_PORT = lambda r: 31000 + r * 10
 
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
-MANAGER_SRV_PORT = 40000
-MANAGER_CLI_PORT = 40001
+MANAGER_SRV_PORT = 30000
+MANAGER_CLI_PORT = 30001
 
 
 PROTOCOL_BACKER_PATH = (
@@ -26,19 +26,22 @@ PROTOCOL_SNAPSHOT_PATH = (
     lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
 )
 
-PROTOCOL_MAY_SNAPSHOT = {
-    "RepNothing": False,
-    "SimplePush": False,
-    "ChainRep": False,
-    "MultiPaxos": True,
-    "Raft": True,
-    "RSPaxos": True,
-    "CRaft": True,
-}
 
-PROTOCOL_EXTRA_DEFAULTS = {
-    "RSPaxos": lambda n, _: f"fault_tolerance={(n//2)//2}",
-    "CRaft": lambda n, _: f"fault_tolerance={(n//2)//2}",
+class ProtoFeats:
+    def __init__(self, may_snapshot, has_heartbeats, extra_defaults):
+        self.may_snapshot = may_snapshot
+        self.has_heartbeats = has_heartbeats
+        self.extra_defaults = extra_defaults
+
+
+PROTOCOL_FEATURES = {
+    "RepNothing": ProtoFeats(False, False, None),
+    "SimplePush": ProtoFeats(False, False, None),
+    "ChainRep": ProtoFeats(False, False, None),
+    "MultiPaxos": ProtoFeats(True, True, None),
+    "Raft": ProtoFeats(True, True, None),
+    "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
 }
 
 
@@ -84,7 +87,7 @@ def config_with_defaults(
         print(f"Delete: {backer_path}")
         os.remove(backer_path)
 
-    if PROTOCOL_MAY_SNAPSHOT[protocol]:
+    if PROTOCOL_FEATURES[protocol].may_snapshot:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(
             protocol, file_prefix, file_midfix, replica_id
         )
@@ -93,17 +96,17 @@ def config_with_defaults(
             print(f"Delete: {snapshot_path}")
             os.remove(snapshot_path)
 
-    if protocol in PROTOCOL_EXTRA_DEFAULTS:
+    if PROTOCOL_FEATURES[protocol].extra_defaults is not None:
         config_dict.update(
             config_str_to_dict(
-                PROTOCOL_EXTRA_DEFAULTS[protocol](num_replicas, replica_id)
+                PROTOCOL_FEATURES[protocol].extra_defaults(num_replicas, replica_id)
             )
         )
 
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
 
-    if hb_timer_off:
+    if PROTOCOL_FEATURES[protocol].has_heartbeats and hb_timer_off:
         config_dict["disable_hb_timer"] = "true"
 
     return config_dict_to_str(config_dict)
@@ -291,7 +294,7 @@ if __name__ == "__main__":
         raise ValueError("#replicas > 9 not supported yet (as ports are hardcoded)")
 
     # check protocol name
-    if args.protocol not in PROTOCOL_MAY_SNAPSHOT:
+    if args.protocol not in PROTOCOL_FEATURES:
         print(f"ERROR: unrecognized protocol name '{args.protocol}'")
 
     # check that the prefix folder path exists, or create it if not

@@ -2,31 +2,45 @@
 
 use super::*;
 
+use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
-use crate::server::{CommandResult, CommandId, ApiRequest, ApiReply};
 
 // RepNothingReplica state machine execution
 impl RepNothingReplica {
     /// Handler of state machine exec result chan recv.
-    pub fn handle_cmd_result(
+    pub(super) fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
         let (inst_idx, cmd_idx) = Self::split_command_id(cmd_id);
         if inst_idx >= self.insts.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+            return logged_err!(
+                "invalid command ID {} ({}|{}) seen",
+                cmd_id,
+                inst_idx,
+                cmd_idx
+            );
         }
 
         let inst = &mut self.insts[inst_idx];
         if cmd_idx >= inst.reqs.len() {
-            return logged_err!(self.id; "invalid command ID {} ({}|{}) seen", cmd_id, inst_idx, cmd_idx);
+            return logged_err!(
+                "invalid command ID {} ({}|{}) seen",
+                cmd_id,
+                inst_idx,
+                cmd_idx
+            );
         }
         if inst.execed[cmd_idx] {
-            return logged_err!(self.id; "duplicate command index {}|{}", inst_idx, cmd_idx);
+            return logged_err!(
+                "duplicate command index {}|{}",
+                inst_idx,
+                cmd_idx
+            );
         }
         if !inst.durable {
-            return logged_err!(self.id; "instance {} is not durable yet", inst_idx);
+            return logged_err!("instance {} is not durable yet", inst_idx);
         }
         inst.execed[cmd_idx] = true;
 
@@ -46,7 +60,11 @@ impl RepNothingReplica {
                 }
             }
             _ => {
-                return logged_err!(self.id; "unknown request type at {}|{}", inst_idx, cmd_idx)
+                return logged_err!(
+                    "unknown request type at {}|{}",
+                    inst_idx,
+                    cmd_idx
+                )
             }
         }
 

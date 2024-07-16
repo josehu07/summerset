@@ -1,20 +1,20 @@
 //! Safe TCP bind/connect/read/write helper functions.
 
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 
 use crate::utils::SummersetError;
 
 use bytes::{Bytes, BytesMut};
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 
-use rmp_serde::encode::to_vec as encode_to_vec;
 use rmp_serde::decode::from_read as decode_from_read;
+use rmp_serde::encode::to_vec as encode_to_vec;
 
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpSocket, TcpStream, TcpListener};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
@@ -29,7 +29,7 @@ use tokio::time::{self, Duration};
 /// such cancellation can only happen at `.await` points), bytes already read
 /// are stored in the read buffer and will continue to be appended by future
 /// invocations until successful returning.
-pub async fn safe_tcp_read<T, Conn>(
+pub(crate) async fn safe_tcp_read<T, Conn>(
     read_buf: &mut BytesMut,
     conn_read: &mut Conn,
 ) -> Result<T, SummersetError>
@@ -88,7 +88,7 @@ where
 /// because, in the case of TCP buffers being full, if both ends of the
 /// connection are trying to write, they may both be blocking on either of
 /// these two methods, resulting in a circular deadlock.
-pub fn safe_tcp_write<T, Conn>(
+pub(crate) fn safe_tcp_write<T, Conn>(
     write_buf: &mut BytesMut,
     write_buf_cursor: &mut usize,
     conn_write: &Conn,
@@ -100,12 +100,12 @@ where
 {
     // if last write was not successful, cannot send a new object
     if obj.is_some() && !write_buf.is_empty() {
-        return Err(SummersetError(
-            "attempting new object while should retry".into(),
+        return Err(SummersetError::msg(
+            "attempting new object while should retry",
         ));
     } else if obj.is_none() && write_buf.is_empty() {
-        return Err(SummersetError(
-            "attempting to retry while buffer is empty".into(),
+        return Err(SummersetError::msg(
+            "attempting to retry while buffer is empty",
         ));
     } else if obj.is_some() {
         // sending a new object, fill write_buf
@@ -144,7 +144,7 @@ where
 }
 
 /// Wrapper over tokio `TcpListener::bind()` that provides a retrying logic.
-pub async fn tcp_bind_with_retry(
+pub(crate) async fn tcp_bind_with_retry(
     bind_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
@@ -154,6 +154,8 @@ pub async fn tcp_bind_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
+
+        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
         if let Err(e) = socket.bind(bind_addr) {
             eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
@@ -176,7 +178,7 @@ pub async fn tcp_bind_with_retry(
 
 /// Wrapper over tokio `TcpStream::connect()` that binds the socket to a
 /// specific address and provides a retrying logic.
-pub async fn tcp_connect_with_retry(
+pub(crate) async fn tcp_connect_with_retry(
     bind_addr: SocketAddr,
     conn_addr: SocketAddr,
     mut retries: u8,
@@ -187,6 +189,8 @@ pub async fn tcp_connect_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
+
+        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
         if let Err(e) = socket.bind(bind_addr) {
             eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
@@ -214,7 +218,7 @@ fn get_ss_cmd_output() -> Result<String, SummersetError> {
 }
 
 #[cfg(test)]
-mod safetcp_tests {
+mod tests {
     use super::*;
 
     #[test]

@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::utils::SummersetError;
 use crate::server::{ApiRequest, LogAction, LogResult};
+use crate::utils::SummersetError;
 
 // RSPaxosReplica recovery from WAL log
 impl RSPaxosReplica {
@@ -120,7 +120,9 @@ impl RSPaxosReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self
@@ -147,7 +149,7 @@ impl RSPaxosReplica {
                     break;
                 }
                 _ => {
-                    return logged_err!(self.id; "unexpected log result type");
+                    return logged_err!("unexpected log result type");
                 }
             }
         }
@@ -167,12 +169,15 @@ impl RSPaxosReplica {
             .1
         {
             if self.wal_offset > 0 {
-                pf_info!(self.id; "recovered from wal log: commit {} exec {}",
-                                  self.commit_bar, self.exec_bar);
+                pf_info!(
+                    "recovered from wal log: commit {} exec {}",
+                    self.commit_bar,
+                    self.exec_bar
+                );
             }
             Ok(())
         } else {
-            logged_err!(self.id; "unexpected log result type or failed truncate")
+            logged_err!("unexpected log result type or failed truncate")
         }
     }
 }

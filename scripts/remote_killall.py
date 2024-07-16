@@ -9,8 +9,10 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-def killall_on_targets(destinations, cd_dir):
+def killall_on_targets(destinations, cd_dir, chain=False):
     cmd = ["./scripts/kill_all_procs.sh", "incl_distr"]
+    if chain:
+        pass  # placeholder line
 
     print("Running kill commands in parallel...")
     procs = []
@@ -43,6 +45,9 @@ if __name__ == "__main__":
         default="all",
         help="comma-separated remote hosts' nicknames, or 'all'",
     )
+    parser.add_argument(
+        "--chain", action="store_true", help="if set, kill ChainPaxos processes"
+    )
     args = parser.parse_args()
 
     base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
@@ -61,4 +66,4 @@ if __name__ == "__main__":
     if len(destinations) == 0:
         raise ValueError(f"targets list is empty")
 
-    killall_on_targets(destinations, f"{base}/{repo}")
+    killall_on_targets(destinations, f"{base}/{repo}", args.chain)

@@ -7,38 +7,38 @@
 //!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
 //!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 
-mod request;
+mod control;
 mod durability;
-mod messages;
 mod execution;
 mod leadership;
+mod messages;
 mod recovery;
+mod request;
 mod snapshot;
-mod control;
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::time::SystemTime;
 
-use crate::utils::{SummersetError, Bitmap, Timer, Stopwatch};
-use crate::manager::{CtrlMsg, CtrlRequest, CtrlReply};
-use crate::server::{
-    ReplicaId, ControlHub, StateMachine, Command, CommandResult, CommandId,
-    ExternalApi, ApiRequest, ApiReply, StorageHub, LogActionId, TransportHub,
-    GenericReplica,
-};
-use crate::client::{ClientId, ClientApiStub, ClientCtrlStub, GenericEndpoint};
+use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
+use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
+use crate::server::{
+    ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
+    ExternalApi, GenericReplica, LogActionId, ReplicaId, StateMachine,
+    StorageHub, TransportHub,
+};
+use crate::utils::{Bitmap, Stopwatch, SummersetError, Timer};
 
 use async_trait::async_trait;
 
 use get_size::GetSize;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use tokio::time::{self, Instant, Duration, Interval, MissedTickBehavior};
 use tokio::sync::watch;
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -112,13 +112,13 @@ impl Default for ReplicaConfigMultiPaxos {
 }
 
 /// Ballot number type. Use 0 as a null ballot number.
-pub type Ballot = u64;
+pub(crate) type Ballot = u64;
 
 /// Instance status enum.
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub enum Status {
+pub(crate) enum Status {
     Null = 0,
     Preparing = 1,
     Accepting = 2,
@@ -127,11 +127,11 @@ pub enum Status {
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
-pub type ReqBatch = Vec<(ClientId, ApiRequest)>;
+pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
-pub struct LeaderBookkeeping {
+pub(crate) struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
     trigger_slot: usize,
 
@@ -151,7 +151,7 @@ pub struct LeaderBookkeeping {
 
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
-pub struct ReplicaBookkeeping {
+pub(crate) struct ReplicaBookkeeping {
     /// Source leader replica ID for replying to Prepares and Accepts.
     source: ReplicaId,
 
@@ -164,7 +164,7 @@ pub struct ReplicaBookkeeping {
 
 /// In-memory instance containing a commands batch.
 #[derive(Debug, Clone)]
-pub struct Instance {
+pub(crate) struct Instance {
     /// Ballot number.
     bal: Ballot,
 
@@ -192,7 +192,7 @@ pub struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum WalEntry {
+pub(crate) enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -213,7 +213,7 @@ pub enum WalEntry {
 /// end of the snapshot file for simplicity. In production, the snapshot
 /// file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub enum SnapEntry {
+pub(crate) enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log instances covered
@@ -227,7 +227,7 @@ pub enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub enum PeerMsg {
+pub(crate) enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
         /// Slot index in Prepare message is the triggering slot of this
@@ -287,7 +287,7 @@ pub enum PeerMsg {
 }
 
 /// MultiPaxos server replica module.
-pub struct MultiPaxosReplica {
+pub(crate) struct MultiPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
@@ -508,35 +508,30 @@ impl GenericReplica for MultiPaxosReplica {
                                     record_value_ver, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.batch_interval_ms '{}'",
                 config.batch_interval_ms
             );
         }
         if config.hb_hear_timeout_min < 100 {
             return logged_err!(
-                id;
                 "invalid config.hb_hear_timeout_min '{}'",
                 config.hb_hear_timeout_min
             );
         }
         if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
             return logged_err!(
-                id;
                 "invalid config.hb_hear_timeout_max '{}'",
                 config.hb_hear_timeout_max
             );
         }
         if config.hb_send_interval_ms == 0 {
             return logged_err!(
-                id;
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
             );
         }
         if config.msg_chunk_size == 0 {
             return logged_err!(
-                id;
                 "invalid config.msg_chunk_size '{}'",
                 config.msg_chunk_size
             );
@@ -568,7 +563,7 @@ impl GenericReplica for MultiPaxosReplica {
         {
             to_peers
         } else {
-            return logged_err!(id; "unexpected ctrl msg type received");
+            return logged_err!("unexpected ctrl msg type received");
         };
 
         // proactively connect to some peers, then wait for all population
@@ -681,24 +676,24 @@ impl GenericReplica for MultiPaxosReplica {
                 // client request batch
                 req_batch = self.external_api.get_req_batch(), if !paused => {
                     if let Err(e) = req_batch {
-                        pf_error!(self.id; "error getting req batch: {}", e);
+                        pf_error!("error getting req batch: {}", e);
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
                     if let Err(e) = self.handle_req_batch(req_batch) {
-                        pf_error!(self.id; "error handling req batch: {}", e);
+                        pf_error!("error handling req batch: {}", e);
                     }
                 },
 
                 // durable logging result
                 log_result = self.storage_hub.get_result(), if !paused => {
                     if let Err(e) = log_result {
-                        pf_error!(self.id; "error getting log result: {}", e);
+                        pf_error!("error getting log result: {}", e);
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
                     if let Err(e) = self.handle_log_result(action_id, log_result) {
-                        pf_error!(self.id; "error handling log result {}: {}",
+                        pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
                 },
@@ -708,38 +703,38 @@ impl GenericReplica for MultiPaxosReplica {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
                         // during benchmarking
-                        // pf_error!(self.id; "error receiving peer msg: {}", e);
+                        // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
                     if let Err(e) = self.handle_msg_recv(peer, msg) {
-                        pf_error!(self.id; "error handling msg recv <- {}: {}", peer, e);
+                        pf_error!("error handling msg recv <- {}: {}", peer, e);
                     }
                 },
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
                     if let Err(e) = cmd_result {
-                        pf_error!(self.id; "error getting cmd result: {}", e);
+                        pf_error!("error getting cmd result: {}", e);
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
                     if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
-                        pf_error!(self.id; "error handling cmd result {}: {}", cmd_id, e);
+                        pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
 
                 // leader inactivity timeout
                 _ = self.hb_hear_timer.timeout(), if !paused => {
                     if let Err(e) = self.become_a_leader() {
-                        pf_error!(self.id; "error becoming a leader: {}", e);
+                        pf_error!("error becoming a leader: {}", e);
                     }
                 },
 
                 // leader sending heartbeat
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.bcast_heartbeats() {
-                        pf_error!(self.id; "error broadcasting heartbeats: {}", e);
+                        pf_error!("error broadcasting heartbeats: {}", e);
                     }
                 },
 
@@ -747,7 +742,7 @@ impl GenericReplica for MultiPaxosReplica {
                 _ = self.snapshot_interval.tick(), if !paused
                                                       && self.config.snapshot_interval_s > 0 => {
                     if let Err(e) = self.take_new_snapshot().await {
-                        pf_error!(self.id; "error taking a new snapshot: {}", e);
+                        pf_error!("error taking a new snapshot: {}", e);
                     } else {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
@@ -760,7 +755,7 @@ impl GenericReplica for MultiPaxosReplica {
                     if self.is_leader() {
                         if let Some(sw) = self.bd_stopwatch.as_mut() {
                             let (cnt, stats) = sw.summarize(4);
-                            pf_info!(self.id; "bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
+                            pf_info!("bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
                                                          qrum {:.2} {:.2} exec {:.2} {:.2}",
                                               cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
                                                    stats[2].0, stats[2].1, stats[3].0, stats[3].1);
@@ -769,7 +764,7 @@ impl GenericReplica for MultiPaxosReplica {
                     }
                     if self.config.record_value_ver {
                         if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
-                            pf_info!(self.id; "ver of {} @ {} ms is {}",
+                            pf_info!("ver of {} @ {} ms is {}",
                                               key,
                                               Instant::now()
                                                 .duration_since(self.startup_time)
@@ -782,7 +777,7 @@ impl GenericReplica for MultiPaxosReplica {
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
                     if let Err(e) = ctrl_msg {
-                        pf_error!(self.id; "error getting ctrl msg: {}", e);
+                        pf_error!("error getting ctrl msg: {}", e);
                         continue;
                     }
                     let ctrl_msg = ctrl_msg.unwrap();
@@ -793,14 +788,14 @@ impl GenericReplica for MultiPaxosReplica {
                             }
                         },
                         Err(e) => {
-                            pf_error!(self.id; "error handling ctrl msg: {}", e);
+                            pf_error!("error handling ctrl msg: {}", e);
                         }
                     }
                 },
 
                 // receiving termination signal
                 _ = rx_term.changed() => {
-                    pf_warn!(self.id; "server caught termination signal");
+                    pf_warn!("server caught termination signal");
                     return Ok(false);
                 }
             }
@@ -827,7 +822,7 @@ impl Default for ClientConfigMultiPaxos {
 }
 
 /// MultiPaxos client-side module.
-pub struct MultiPaxosClient {
+pub(crate) struct MultiPaxosClient {
     /// Client ID.
     id: ClientId,
 
@@ -859,7 +854,7 @@ impl GenericEndpoint for MultiPaxosClient {
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a client ID
-        pf_debug!("c"; "connecting to manager '{}'...", manager);
+        pf_debug!("connecting to manager '{}'...", manager);
         let ctrl_stub =
             ClientCtrlStub::new_by_connect(ctrl_bind, manager).await?;
         let id = ctrl_stub.id;
@@ -883,7 +878,7 @@ impl GenericEndpoint for MultiPaxosClient {
     async fn connect(&mut self) -> Result<(), SummersetError> {
         // disallow reconnection without leaving
         if !self.api_stubs.is_empty() {
-            return logged_err!(self.id; "reconnecting without leaving");
+            return logged_err!("reconnecting without leaving");
         }
 
         // ask the manager about the list of active servers
@@ -912,7 +907,7 @@ impl GenericEndpoint for MultiPaxosClient {
                     .map(|(id, info)| (id, info.api_addr))
                     .collect();
                 for (&id, &server) in &self.servers {
-                    pf_debug!(self.id; "connecting to server {} '{}'...", id, server);
+                    pf_debug!("connecting to server {} '{}'...", id, server);
                     let bind_addr = SocketAddr::new(
                         self.api_bind_base.ip(),
                         self.api_bind_base.port() + id as u16,
@@ -925,7 +920,7 @@ impl GenericEndpoint for MultiPaxosClient {
                 }
                 Ok(())
             }
-            _ => logged_err!(self.id; "unexpected reply type received"),
+            _ => logged_err!("unexpected reply type received"),
         }
     }
 
@@ -940,7 +935,7 @@ impl GenericEndpoint for MultiPaxosClient {
             // NOTE: commented out the following wait to avoid accidental
             // hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
-            pf_debug!(self.id; "left server connection {}", id);
+            pf_debug!("left server connection {}", id);
         }
 
         // if permanently leaving, send leave notification to the manager
@@ -952,7 +947,7 @@ impl GenericEndpoint for MultiPaxosClient {
             }
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
-            pf_debug!(self.id; "left manager connection");
+            pf_debug!("left manager connection");
         }
 
         Ok(())
@@ -968,7 +963,7 @@ impl GenericEndpoint for MultiPaxosClient {
                 .unwrap()
                 .send_req(req)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))
@@ -995,14 +990,17 @@ impl GenericEndpoint for MultiPaxosClient {
                     let redirect_id = redirect.unwrap();
                     debug_assert!(self.servers.contains_key(&redirect_id));
                     self.server_id = redirect_id;
-                    pf_debug!(self.id; "redirected to replica {} '{}'",
-                                       redirect_id, self.servers[&redirect_id]);
+                    pf_debug!(
+                        "redirected to replica {} '{}'",
+                        redirect_id,
+                        self.servers[&redirect_id]
+                    );
                 }
             }
 
             Ok(reply)
         } else {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
                 self.server_id
             )))

@@ -23,6 +23,7 @@ pub struct Stopwatch {
 
 impl Stopwatch {
     /// Creates a new stopwatch utility.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Stopwatch {
             records: HashMap::new(),
@@ -38,13 +39,16 @@ impl Stopwatch {
         now: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if !self.records.contains_key(&id) && step != 0 {
-            return Err(SummersetError(format!("record {} not found", id)));
+            return Err(SummersetError::msg(format!(
+                "record {} not found",
+                id
+            )));
         }
         self.records.entry(id).or_default();
         let record = self.records.get_mut(&id).unwrap();
 
         if step != record.len() {
-            Err(SummersetError(format!(
+            Err(SummersetError::msg(format!(
                 "step mismatch: expect {} got {}",
                 record.len(),
                 step
@@ -124,7 +128,7 @@ impl Stopwatch {
 }
 
 #[cfg(test)]
-mod stopwatch_tests {
+mod tests {
     use super::*;
     use tokio::time::{self, Duration};
 
