@@ -53,8 +53,11 @@ def num_leading_spaces(line):
 
 
 def remove_path(path):
-    if os.path.exists(path):
+    if os.path.isdir(path):
         shutil.rmtree(path)
+        print(f"  RM  {path}/")
+    elif os.path.isfile(path):
+        os.unlink(path)
         print(f"  RM  {path}")
     else:
         print(f"  RM  {path}  NOT FOUND!")
