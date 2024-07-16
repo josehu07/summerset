@@ -22,7 +22,8 @@ SIMPLE_TRIMS = [
     "src/lib.rs",
 ]
 README = "README.md"
-PROTOCOL_MOD = "src/protocols/mod.rs"
+PROTOCOLS_MOD = "src/protocols/mod.rs"
+REMOTE_HOSTS = "scripts/remote_hosts.toml"
 
 
 def path_get_last_segment(path):
@@ -122,6 +123,16 @@ def trim_protocols_mod(path):
             file.write(line)
 
 
+def trim_remote_hosts(path):
+    lines, file = lines_and_fresh(path)
+    with file:
+        for line in lines:
+            if line.count("=") == 1 and "@" in line:
+                name = line[: line.index("=")].strip()
+                line = f'{name} = "username@domain.com"'
+            file.write(line)
+
+
 if __name__ == "__main__":
     print("Removing...")
     for path in REMOVE_PATHS:
@@ -131,7 +142,8 @@ if __name__ == "__main__":
     for path in SIMPLE_TRIMS:
         simple_trim(path)
     trim_readme(README)
-    trim_protocols_mod(PROTOCOL_MOD)
+    trim_protocols_mod(PROTOCOLS_MOD)
+    trim_remote_hosts(REMOTE_HOSTS)
 
     print("Cargo fmt...")
     os.system("cargo fmt --all")
