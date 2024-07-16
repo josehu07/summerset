@@ -9,6 +9,8 @@ REMOVE_PATHS = [
     "scripts/crossword",
     "tla+/crossword",
     "src/protocols/crossword",
+    "src/utils/linreg.rs",
+    "src/utils/qdisc.rs",
     "publish/bodega",
     "scripts/bodega",
     "tla+/bodega",
@@ -23,6 +25,7 @@ SIMPLE_TRIMS = [
 ]
 README = "README.md"
 PROTOCOLS_MOD = "src/protocols/mod.rs"
+UTILS_MOD = "src/utils/mod.rs"
 REMOTE_HOSTS = "scripts/remote_hosts.toml"
 
 
@@ -123,6 +126,16 @@ def trim_protocols_mod(path):
             file.write(line)
 
 
+def trim_utils_mod(path):
+    lines, file = lines_and_fresh(path)
+    with file:
+        for line in lines:
+            line_lower = line.lower()
+            if "linreg" in line_lower or "qdisc" in line_lower:
+                continue
+            file.write(line)
+
+
 def trim_remote_hosts(path):
     lines, file = lines_and_fresh(path)
     with file:
@@ -143,10 +156,16 @@ if __name__ == "__main__":
         simple_trim(path)
     trim_readme(README)
     trim_protocols_mod(PROTOCOLS_MOD)
+    trim_utils_mod(UTILS_MOD)
     trim_remote_hosts(REMOTE_HOSTS)
 
     print("Cargo fmt...")
     os.system("cargo fmt --all")
     print("  Done")
 
-    print(f"REMEMBER to delete {sys.argv[0]} as well!")
+    print("Cargo build...")
+    os.system("cargo build --workspace")
+    print("  Done")
+
+    print()
+    print(f"REMEMBER to delete {sys.argv[0]} as well!!!")
