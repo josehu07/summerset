@@ -30,9 +30,10 @@ To create a pull request on the public repo to make batched contributions from p
 git remote add private git@github.com:josehu07/summerset-private.git
 git config --add --local checkout.defaultRemote origin
 # skip the above for later times
-git checkout -b <PR_name>
-git branch --set-upstream-to=private/main <PR_name>
+git checkout -b <PR_name> private/main
 git pull private
+python3 publish/public_repo_trim.py
+# double check the trim and commit
 git push origin <PR_name>
 # then, on GitHub, make a squashing PR from <PR_name> branch to main
 ```

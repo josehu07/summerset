@@ -13,6 +13,7 @@ def killall_on_targets(destinations, cd_dir, chain=False):
     cmd = ["./scripts/kill_all_procs.sh", "incl_distr"]
     if chain:
         cmd = ["./scripts/crossword/kill_chain_procs.sh", "incl_distr"]
+        pass  # placeholder line
 
     print("Running kill commands in parallel...")
     procs = []
