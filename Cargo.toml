@@ -10,19 +10,19 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]
 async-trait = "0.1"
-fixedbitset = { version = "0.4", features = ["serde"] }
-rangemap = "1.4"
+fixedbitset = { version = "0.5", features = ["serde"] }
+rangemap = "1.5"
 flashmap = "0.1"
-bytes = { version = "1.4", features = ["serde"] }
+bytes = { version = "1.7", features = ["serde"] }
 futures = "0.3"
-tokio = { version = "1.29", features = ["full"] }
+tokio = { version = "1.39", features = ["full"] }
 rand = "0.8"
-lazy_static = "1.4"
+lazy_static = "1.5"
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
-toml = { version = "0.7", features = ["parse"] }
+toml = { version = "0.8", features = ["parse"] }
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
 reed-solomon-erasure = { version = "6.0" }
 ctrlc = { version = "3.4", features = ["termination"] }
 get-size = { version = "0.1", features = ["derive"] }

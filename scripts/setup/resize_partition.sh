@@ -3,6 +3,7 @@
 
 TARGET_DEV=/dev/sda
 PART_NUMBER=3
+PART_SIZE=240G
 
 
 echo
@@ -13,8 +14,7 @@ sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOF | sudo fdisk ${TARGET_DEV}
     n               # new partition
     ${PART_NUMBER}  # use partition number
                     # default start sec
-    +240G           # default end sec
-    N               # not removing ext3 signature
+    +${PART_SIZE}   # default end sec
     p               # print the resulting table
     w               # sync to disk
     q               # done, quit
