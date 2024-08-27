@@ -173,10 +173,8 @@ pub(crate) async fn tcp_bind_with_retry(
     }
 }
 
-/// Wrapper over tokio `TcpStream::connect()` that binds the socket to a
-/// specific address and provides a retrying logic.
+/// Wrapper over tokio `TcpStream::connect()` that provides a retrying logic.
 pub(crate) async fn tcp_connect_with_retry(
-    bind_addr: SocketAddr,
     conn_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpStream, SummersetError> {
@@ -186,14 +184,6 @@ pub(crate) async fn tcp_connect_with_retry(
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
-
-        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
-        if let Err(e) = socket.bind(bind_addr) {
-            eprintln!("Binding {} failed!", bind_addr);
-            eprintln!("Output of `ss` command:");
-            eprintln!("{}", get_ss_cmd_output()?);
-            return Err(SummersetError::from(e));
-        }
 
         match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),

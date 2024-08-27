@@ -536,7 +536,7 @@ mod tests {
             // server-side
             let mut api = ExternalApi::new_and_setup(
                 0,
-                "127.0.0.1:30110".parse()?,
+                "127.0.0.1:30000".parse()?,
                 Duration::from_millis(1),
                 0,
             )
@@ -606,12 +606,9 @@ mod tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub = ClientApiStub::new_by_connect(
-            2857,
-            "127.0.0.1:33170".parse()?,
-            "127.0.0.1:30110".parse()?,
-        )
-        .await?;
+        let mut api_stub =
+            ClientApiStub::new_by_connect(2857, "127.0.0.1:30000".parse()?)
+                .await?;
         // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -666,7 +663,7 @@ mod tests {
             // server-side
             let mut api = ExternalApi::new_and_setup(
                 0,
-                "127.0.0.1:30120".parse()?,
+                "127.0.0.1:30100".parse()?,
                 Duration::from_millis(1),
                 0,
             )
@@ -736,12 +733,9 @@ mod tests {
         // client-side
         {
             barrier.wait().await;
-            let mut api_stub = ClientApiStub::new_by_connect(
-                2857,
-                "127.0.0.1:34170".parse()?,
-                "127.0.0.1:30120".parse()?,
-            )
-            .await?;
+            let mut api_stub =
+                ClientApiStub::new_by_connect(2857, "127.0.0.1:30100".parse()?)
+                    .await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,
@@ -766,12 +760,9 @@ mod tests {
         }
         {
             // come back as new client
-            let mut api_stub = ClientApiStub::new_by_connect(
-                2858,
-                "127.0.0.1:34170".parse()?,
-                "127.0.0.1:30120".parse()?,
-            )
-            .await?;
+            let mut api_stub =
+                ClientApiStub::new_by_connect(2858, "127.0.0.1:30100".parse()?)
+                    .await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,

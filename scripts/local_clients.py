@@ -8,13 +8,9 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import utils
 
 
-CLIENT_LOOP_IP = "127.0.0.1"
-CLIENT_VETH_IP = lambda c: f"10.0.2.{c}"
-CLIENT_BIND_BASE_PORT = lambda c: 32000 + c * 10
-
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
-MANAGER_CLI_PORT = 30001
+MANAGER_CLI_PORT = 30009  # NOTE: assuming at most 9 servers
 
 
 CLIENT_OUTPUT_PATH = (
@@ -82,15 +78,11 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(
-    protocol, bind_base, manager, config, utility, timeout_ms, params, release
-):
+def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
         protocol,
-        "-b",
-        bind_base,
         "-m",
         manager,
         "--timeout-ms",
@@ -128,16 +120,11 @@ def run_clients(
 
     client_procs = []
     for i in range(num_clients):
-        client = base_idx + i
-        bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(client)}"
         manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_CLI_PORT}"
         if use_veth:
-            bind_base = f"{CLIENT_VETH_IP(client)}:{CLIENT_BIND_BASE_PORT(client)}"
             manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_CLI_PORT}"
-
         cmd = compose_client_cmd(
             protocol,
-            bind_base,
             manager_addr,
             config,
             utility,
