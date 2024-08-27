@@ -37,10 +37,9 @@ pub struct ClientCtrlStub {
 impl ClientCtrlStub {
     /// Creates a new control API stub and connects to the manager.
     pub(crate) async fn new_by_connect(
-        bind_addr: SocketAddr,
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        let mut stream = tcp_connect_with_retry(bind_addr, manager, 10).await?;
+        let mut stream = tcp_connect_with_retry(manager, 10).await?;
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 

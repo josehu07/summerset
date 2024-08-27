@@ -1,6 +1,6 @@
 //! Summerset server replica executable.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,6 +27,10 @@ struct CliArgs {
     #[arg(long, default_value_t = String::from(""))]
     config: String,
 
+    /// Local IP to use for binding the listening sockets.
+    #[arg(short, long, default_value_t = Ipv4Addr::UNSPECIFIED)]
+    bind_ip: Ipv4Addr,
+
     /// Key-value API port open to clients.
     /// This port must be available at process launch.
     #[arg(short, long, default_value_t = 52700)]
@@ -36,12 +40,6 @@ struct CliArgs {
     /// This port must be available at process launch.
     #[arg(short = 'i', long, default_value_t = 52800)]
     p2p_port: u16,
-
-    /// Base address 'localip:port' to use in bind addresses for sockets
-    /// that communicate with peers.
-    /// Ports [port, port + N] must be available at process launch.
-    #[arg(short, long)]
-    bind_base: SocketAddr,
 
     /// Cluster manager oracle's server-facing address.
     #[arg(short, long)]
@@ -91,30 +89,24 @@ fn server_main() -> Result<(), SummersetError> {
     let protocol = args.sanitize()?;
 
     // parse key-value API port
-    let api_addr: SocketAddr =
-        format!("{}:{}", args.bind_base.ip(), args.api_port)
-            .parse()
-            .map_err(|e| {
-                SummersetError::msg(format!(
-                    "failed to parse api_addr: bind_ip {} port {}: {}",
-                    args.bind_base.ip(),
-                    args.api_port,
-                    e
-                ))
-            })?;
+    let api_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.api_port)
+        .parse()
+        .map_err(|e| {
+            SummersetError::msg(format!(
+                "failed to parse api_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.api_port, e
+            ))
+        })?;
 
     // parse internal peer-peer API port
-    let p2p_addr: SocketAddr =
-        format!("{}:{}", args.bind_base.ip(), args.p2p_port)
-            .parse()
-            .map_err(|e| {
-                SummersetError::msg(format!(
-                    "failed to parse p2p_addr: bind_ip {} port {}: {}",
-                    args.bind_base.ip(),
-                    args.p2p_port,
-                    e
-                ))
-            })?;
+    let p2p_addr: SocketAddr = format!("{}:{}", args.bind_ip, args.p2p_port)
+        .parse()
+        .map_err(|e| {
+            SummersetError::msg(format!(
+                "failed to parse p2p_addr: bind_ip {} port {}: {}",
+                args.bind_ip, args.p2p_port, e
+            ))
+        })?;
 
     // parse optional config string if given
     let config_str = if args.config.is_empty() {
@@ -150,17 +142,10 @@ fn server_main() -> Result<(), SummersetError> {
         // enter tokio runtime, setup the server replica, and start the main
         // event loop logic
         runtime.block_on(async move {
-            // NOTE: currently only supports <= 9 servers due to the hardcoded
-            // binding ports
-            let ctrl_bind =
-                SocketAddr::new(args.bind_base.ip(), args.bind_base.port() + 9);
-            let p2p_bind_base = args.bind_base;
             let mut replica = protocol
                 .new_server_replica_setup(
                     api_addr,
                     p2p_addr,
-                    ctrl_bind,
-                    p2p_bind_base,
                     args.manager,
                     config_str,
                 )
@@ -209,9 +194,9 @@ mod arg_tests {
     fn sanitize_valid() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 40103,
             p2p_port: 40203,
-            bind_base: "127.0.0.1:41030".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 2,
             config: "".into(),
@@ -224,9 +209,9 @@ mod arg_tests {
     fn sanitize_invalid_api_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 1023,
             p2p_port: 40200,
-            bind_base: "127.0.0.1:41000".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 2,
             config: "".into(),
@@ -239,9 +224,9 @@ mod arg_tests {
     fn sanitize_invalid_p2p_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 40100,
             p2p_port: 1023,
-            bind_base: "127.0.0.1:41000".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 2,
             config: "".into(),
@@ -254,9 +239,9 @@ mod arg_tests {
     fn sanitize_same_api_p2p_port() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 40100,
             p2p_port: 40100,
-            bind_base: "127.0.0.1:41000".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 2,
             config: "".into(),
@@ -269,9 +254,9 @@ mod arg_tests {
     fn sanitize_invalid_protocol() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 40100,
             p2p_port: 40200,
-            bind_base: "127.0.0.1:41000".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 2,
             config: "".into(),
@@ -284,9 +269,9 @@ mod arg_tests {
     fn sanitize_invalid_threads() -> Result<(), SummersetError> {
         let args = CliArgs {
             protocol: "RepNothing".into(),
+            bind_ip: "127.0.0.1".parse()?,
             api_port: 40100,
             p2p_port: 40200,
-            bind_base: "127.0.0.1:41000".parse()?,
             manager: "127.0.0.1:40000".parse()?,
             threads: 1,
             config: "".into(),

@@ -12,9 +12,6 @@ use bytes::{BufMut, BytesMut};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use rmp_serde::decode::from_read as decode_from_read;
-use rmp_serde::encode::write as encode_write;
-
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 /// A Reed-Solomon codeword with original data of type `T`.
@@ -130,7 +127,7 @@ where
     ) -> Result<Self, SummersetError> {
         // serialize original data into bytes
         let mut data_writer = BytesMut::new().writer();
-        encode_write(&mut data_writer, &data)?;
+        bincode::serialize_into(&mut data_writer, &data)?;
         let data_len = data_writer.get_ref().len();
         Self::internal_new(
             Some(data),
@@ -490,7 +487,7 @@ where
                 self.num_data_shards,
                 self.shard_len,
             )?;
-            self.data_copy = Some(decode_from_read(reader)?);
+            self.data_copy = Some(bincode::deserialize_from(reader)?);
         }
 
         Ok(self.data_copy.as_ref().unwrap())
@@ -585,7 +582,7 @@ mod tests {
     fn new_from_data() -> Result<(), SummersetError> {
         let data = TestData("interesting_value".into());
         let mut data_writer = BytesMut::new().writer();
-        encode_write(&mut data_writer, &data)?;
+        bincode::serialize_into(&mut data_writer, &data)?;
         let data_len = data_writer.get_ref().len();
         let shard_len = if data_len % 3 == 0 {
             data_len / 3

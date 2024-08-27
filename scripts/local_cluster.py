@@ -9,14 +9,13 @@ import utils
 
 SERVER_LOOP_IP = "127.0.0.1"
 SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
-SERVER_API_PORT = lambda r: 30100 + r
-SERVER_P2P_PORT = lambda r: 30200 + r
-SERVER_BIND_BASE_PORT = lambda r: 31000 + r * 10
+SERVER_API_PORT = lambda r: 30000 + r
+SERVER_P2P_PORT = lambda r: 30010 + r
 
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
-MANAGER_SRV_PORT = 30000
-MANAGER_CLI_PORT = 30001
+MANAGER_CLI_PORT = 30009  # NOTE: assuming at most 9 servers
+MANAGER_SRV_PORT = 30019
 
 
 PROTOCOL_BACKER_PATH = (
@@ -119,10 +118,10 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
         protocol,
         "-b",
         bind_ip,
-        "-s",
-        str(srv_port),
         "-c",
         str(cli_port),
+        "-s",
+        str(srv_port),
         "-n",
         str(num_replicas),
     ]
@@ -133,7 +132,6 @@ def launch_manager(protocol, num_replicas, release, use_veth):
     bind_ip = MANAGER_LOOP_IP
     if use_veth:
         bind_ip = MANAGER_VETH_IP
-
     cmd = compose_manager_cmd(
         protocol,
         bind_ip,
@@ -164,15 +162,13 @@ def wait_manager_setup(proc):
             break
 
 
-def compose_server_cmd(
-    protocol, bind_base, api_port, p2p_port, manager, config, release
-):
+def compose_server_cmd(protocol, bind_ip, api_port, p2p_port, manager, config, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
         protocol,
         "-b",
-        bind_base,
+        bind_ip,
         "-a",
         str(api_port),
         "-i",
@@ -202,15 +198,14 @@ def launch_servers(
 
     server_procs = []
     for replica in range(num_replicas):
-        bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(replica)}"
+        bind_ip = SERVER_LOOP_IP
         manager_addr = f"{MANAGER_LOOP_IP}:{MANAGER_SRV_PORT}"
         if use_veth:
-            bind_base = f"{SERVER_VETH_IP(replica)}:{SERVER_BIND_BASE_PORT(replica)}"
+            bind_ip = SERVER_VETH_IP
             manager_addr = f"{MANAGER_VETH_IP}:{MANAGER_SRV_PORT}"
-
         cmd = compose_server_cmd(
             protocol,
-            bind_base,
+            bind_ip,
             SERVER_API_PORT(replica),
             SERVER_P2P_PORT(replica),
             manager_addr,

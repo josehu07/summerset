@@ -39,12 +39,6 @@ struct CliArgs {
     #[arg(long, default_value_t = String::from(""))]
     params: String,
 
-    /// Base address 'localip:port' to use in bind addresses for sockets
-    /// that communicate with server nodes.
-    /// Ports [port, port + N] must be available at process launch.
-    #[arg(short, long)]
-    bind_base: SocketAddr,
-
     /// Cluster manager oracle's client-facing address.
     #[arg(short, long)]
     manager: SocketAddr,
@@ -121,18 +115,8 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        // NOTE: currently only supports <= 9 servers due to the hardcoded
-        // binding ports
-        let ctrl_bind =
-            SocketAddr::new(args.bind_base.ip(), args.bind_base.port() + 9);
-        let api_bind_base = args.bind_base;
         let endpoint = protocol
-            .new_client_endpoint(
-                ctrl_bind,
-                api_bind_base,
-                args.manager,
-                config_str,
-            )
+            .new_client_endpoint(args.manager, config_str)
             .await?;
 
         match mode {
@@ -199,7 +183,6 @@ mod arg_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:42170".parse()?,
             manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
@@ -218,7 +201,6 @@ mod arg_tests {
         let args = CliArgs {
             protocol: "InvalidProtocol".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:42170".parse()?,
             manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
@@ -234,7 +216,6 @@ mod arg_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "invalid_mode".into(),
-            bind_base: "127.0.0.1:42170".parse()?,
             manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 5000,
@@ -250,7 +231,6 @@ mod arg_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:42170".parse()?,
             manager: "127.0.0.1:40001".parse()?,
             threads: 1,
             timeout_ms: 5000,
@@ -266,7 +246,6 @@ mod arg_tests {
         let args = CliArgs {
             protocol: "RepNothing".into(),
             utility: "repl".into(),
-            bind_base: "127.0.0.1:42170".parse()?,
             manager: "127.0.0.1:40001".parse()?,
             threads: 2,
             timeout_ms: 0,

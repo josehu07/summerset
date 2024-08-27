@@ -33,7 +33,7 @@ java -XX:+UseParallelGC \
      -cleanup \
      -noGenerateSpecTE \
      -difftrace \
-     -fpmem 0.95 \
+     -fpmem 0.25 \
      -workers auto \
      -metadir "/tmp/tlc-${SPEC_DIR}/states" \
      -config "${SPEC_NAME}_MC${CFG_SUFFIX}.cfg" \
