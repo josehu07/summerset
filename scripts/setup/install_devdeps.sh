@@ -17,13 +17,13 @@ sudo apt -y upgrade
 
 echo
 echo "Installing necessary apt packages..."
-sudo apt -y install htop
-sudo apt -y install tree
-sudo apt -y install cloc
-sudo apt -y install python3-pip
-sudo apt -y install iperf3
-sudo apt -y install iptables-persistent
-sudo apt -y install screen
+sudo apt -y install htop \
+                    tree \
+                    cloc \
+                    python3-pip \
+                    iperf3 \
+                    iptables-persistent \
+                    screen
 
 
 echo
@@ -38,9 +38,9 @@ sudo chown -R ${USER} /usr/local/cargo
 
 echo
 echo "Installing necessary pip packages..."
-sudo -H pip3 install numpy
-sudo -H pip3 install matplotlib
-sudo -H pip3 install toml
+sudo -H pip3 install numpy \
+                     matplotlib \
+                     toml
 
 
 echo

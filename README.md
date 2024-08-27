@@ -31,6 +31,7 @@ git remote add private git@github.com:josehu07/summerset-private.git
 git config --add --local checkout.defaultRemote origin
 # skip the above for later times
 git checkout -b <PR_name> private/main
+git merge -s ours main
 git pull private
 python3 publish/public_repo_trim.py
 # double check the trim and commit

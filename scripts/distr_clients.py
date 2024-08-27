@@ -11,10 +11,7 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-CLIENT_LOOP_IP = "0.0.0.0"
-CLIENT_BIND_BASE_PORT = lambda p, c: 42000 + (p * 100 + c) * 10
-
-MANAGER_CLI_PORT = lambda p: 40001 + p * 10
+MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
 
 
 CLIENT_OUTPUT_PATH = (
@@ -91,15 +88,11 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(
-    protocol, bind_base, manager, config, utility, timeout_ms, params, release
-):
+def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
         protocol,
-        "-b",
-        bind_base,
         "-m",
         manager,
         "--timeout-ms",
@@ -153,13 +146,9 @@ def run_clients(
 
     client_procs = []
     for i in range(num_clients):
-        client = base_idx + i
-        bind_base = f"{CLIENT_LOOP_IP}:{CLIENT_BIND_BASE_PORT(partition, client)}"
         manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT(partition)}"
-
         cmd = compose_client_cmd(
             protocol,
-            bind_base,
             manager_addr,
             config,
             utility,

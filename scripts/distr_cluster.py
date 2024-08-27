@@ -11,13 +11,12 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
 SERVER_LOOP_IP = "0.0.0.0"
-SERVER_API_PORT = lambda p, r: 40100 + (p * 10 + r)
-SERVER_P2P_PORT = lambda p, r: 40200 + (p * 10 + r)
-SERVER_BIND_BASE_PORT = lambda p, r: 41000 + (p * 10 + r) * 10
+SERVER_API_PORT = lambda p, r: 40000 + (p * 20 + r)
+SERVER_P2P_PORT = lambda p, r: 40010 + (p * 20 + r)
 
 MANAGER_LOOP_IP = "0.0.0.0"
-MANAGER_SRV_PORT = lambda p: 40000 + p * 10
-MANAGER_CLI_PORT = lambda p: 40001 + p * 10
+MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
+MANAGER_SRV_PORT = lambda p: 40019 + p * 20
 
 
 PROTOCOL_BACKER_PATH = (
@@ -128,17 +127,17 @@ def config_with_defaults(
     return config_dict_to_str(config_dict)
 
 
-def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, release):
+def compose_manager_cmd(protocol, srv_port, cli_port, num_replicas, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_manager"]
     cmd += [
         "-p",
         protocol,
         "-b",
-        bind_ip,
-        "-s",
-        str(srv_port),
+        MANAGER_LOOP_IP,
         "-c",
         str(cli_port),
+        "-s",
+        str(srv_port),
         "-n",
         str(num_replicas),
     ]
@@ -146,11 +145,8 @@ def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, rel
 
 
 def launch_manager(protocol, partition, num_replicas, release):
-    bind_ip = MANAGER_LOOP_IP
-
     cmd = compose_manager_cmd(
         protocol,
-        bind_ip,
         MANAGER_SRV_PORT(partition),
         MANAGER_CLI_PORT(partition),
         num_replicas,
@@ -178,15 +174,13 @@ def wait_manager_setup(proc):
             break
 
 
-def compose_server_cmd(
-    protocol, bind_base, api_port, p2p_port, manager, config, release
-):
+def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
         protocol,
         "-b",
-        bind_base,
+        SERVER_LOOP_IP,
         "-a",
         str(api_port),
         "-i",
@@ -225,13 +219,10 @@ def launch_servers(
     server_procs = []
     for replica in range(num_replicas):
         host = hosts[replica]
-
-        bind_base = f"{SERVER_LOOP_IP}:{SERVER_BIND_BASE_PORT(partition, replica)}"
         manager_addr = f"{manager_pub_ip}:{MANAGER_SRV_PORT(partition)}"
 
         cmd = compose_server_cmd(
             protocol,
-            bind_base,
             SERVER_API_PORT(partition, replica),
             SERVER_P2P_PORT(partition, replica),
             manager_addr,

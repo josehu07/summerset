@@ -11,9 +11,6 @@ use get_size::GetSize;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-use rmp_serde::decode::from_slice as decode_from_slice;
-use rmp_serde::encode::to_vec as encode_to_vec;
-
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -231,7 +228,7 @@ where
         // read entry content
         let mut entry_buf: Vec<u8> = vec![0; entry_len];
         backer.read_exact(&mut entry_buf[..]).await?;
-        let entry = decode_from_slice(&entry_buf)?;
+        let entry = bincode::deserialize(&entry_buf)?;
         backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
         Ok((Some(entry), offset_e))
     }
@@ -254,7 +251,7 @@ where
             return Ok((false, file_size));
         }
 
-        let entry_bytes = encode_to_vec(entry)?;
+        let entry_bytes = bincode::serialize(entry)?;
         let entry_len = entry_bytes.len();
 
         // write entry length header first
@@ -285,7 +282,7 @@ where
         entry: &Ent,
         sync: bool,
     ) -> Result<usize, SummersetError> {
-        let entry_bytes = encode_to_vec(entry)?;
+        let entry_bytes = bincode::serialize(entry)?;
         let entry_len = entry_bytes.len();
 
         // write entry length header first
@@ -460,7 +457,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rmp_serde::encode::to_vec as encode_to_vec;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
     struct TestEntry(String);
@@ -520,7 +516,7 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-1.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let entry_bytes = encode_to_vec(&entry)?;
+        let entry_bytes = bincode::serialize(&entry)?;
         let mid_size =
             StorageHub::append_entry(&mut backer_file, 0, &entry, false)
                 .await?;
@@ -699,7 +695,7 @@ mod tests {
         let path = Path::new("/tmp/test-backer-6.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
-        let entry_bytes = encode_to_vec(&entry)?;
+        let entry_bytes = bincode::serialize(&entry)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         hub.submit_action(2, LogAction::Truncate { offset: 0 })?;
@@ -740,7 +736,7 @@ mod tests {
         let path = Path::new("/tmp/test-backer-7.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
-        let entry_bytes = encode_to_vec(&entry)?;
+        let entry_bytes = bincode::serialize(&entry)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         assert_eq!(

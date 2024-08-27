@@ -96,8 +96,6 @@ impl SmrProtocol {
         &self,
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
-        ctrl_bind: SocketAddr,
-        p2p_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericReplica>, SummersetError> {
@@ -105,12 +103,7 @@ impl SmrProtocol {
             Self::RepNothing => {
                 box_if_ok!(
                     RepNothingReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -118,12 +111,7 @@ impl SmrProtocol {
             Self::SimplePush => {
                 box_if_ok!(
                     SimplePushReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -131,12 +119,7 @@ impl SmrProtocol {
             Self::ChainRep => {
                 box_if_ok!(
                     ChainRepReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -144,12 +127,7 @@ impl SmrProtocol {
             Self::MultiPaxos => {
                 box_if_ok!(
                     MultiPaxosReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -157,12 +135,7 @@ impl SmrProtocol {
             Self::Raft => {
                 box_if_ok!(
                     RaftReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -170,12 +143,7 @@ impl SmrProtocol {
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -183,12 +151,7 @@ impl SmrProtocol {
             Self::CRaft => {
                 box_if_ok!(
                     CRaftReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -196,12 +159,7 @@ impl SmrProtocol {
             Self::Crossword => {
                 box_if_ok!(
                     CrosswordReplica::new_and_setup(
-                        api_addr,
-                        p2p_addr,
-                        ctrl_bind,
-                        p2p_bind_base,
-                        manager,
-                        config_str
+                        api_addr, p2p_addr, manager, config_str
                     )
                     .await
                 )
@@ -212,98 +170,46 @@ impl SmrProtocol {
     /// Create a client endpoint instance of this protocol on heap.
     pub async fn new_client_endpoint(
         &self,
-        ctrl_bind: SocketAddr,
-        api_bind_base: SocketAddr,
         manager: SocketAddr,
         config_str: Option<&str>,
     ) -> Result<Box<dyn GenericEndpoint>, SummersetError> {
         match self {
             Self::RepNothing => {
                 box_if_ok!(
-                    RepNothingClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    RepNothingClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::SimplePush => {
                 box_if_ok!(
-                    SimplePushClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    SimplePushClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::ChainRep => {
                 box_if_ok!(
-                    ChainRepClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    ChainRepClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::MultiPaxos => {
                 box_if_ok!(
-                    MultiPaxosClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    MultiPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::Raft => {
-                box_if_ok!(
-                    RaftClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
-                )
+                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
             }
             Self::RSPaxos => {
                 box_if_ok!(
-                    RSPaxosClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    RSPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::CRaft => {
                 box_if_ok!(
-                    CRaftClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    CRaftClient::new_and_setup(manager, config_str).await
                 )
             }
             Self::Crossword => {
                 box_if_ok!(
-                    CrosswordClient::new_and_setup(
-                        ctrl_bind,
-                        api_bind_base,
-                        manager,
-                        config_str
-                    )
-                    .await
+                    CrosswordClient::new_and_setup(manager, config_str).await
                 )
             }
         }
