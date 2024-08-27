@@ -10,9 +10,6 @@ use bytes::{Bytes, BytesMut};
 
 use serde::{de::DeserializeOwned, Serialize};
 
-use rmp_serde::decode::from_read as decode_from_read;
-use rmp_serde::encode::to_vec as encode_to_vec;
-
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
@@ -56,7 +53,7 @@ where
     while read_buf.len() < obj_end {
         conn_read.read_buf(read_buf).await?;
     }
-    let obj = decode_from_read(&read_buf[8..obj_end])?;
+    let obj = bincode::deserialize(&read_buf[8..obj_end])?;
 
     // if reached this point, no further cancellation to this call is
     // possible (because there are no more awaits ahead); discard bytes
@@ -110,7 +107,7 @@ where
     } else if obj.is_some() {
         // sending a new object, fill write_buf
         debug_assert_eq!(*write_buf_cursor, 0);
-        let write_bytes = encode_to_vec(obj.unwrap())?;
+        let write_bytes = bincode::serialize(obj.unwrap())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
         debug_assert_eq!(write_buf.len(), 8);
