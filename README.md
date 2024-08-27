@@ -1,44 +1,3 @@
-This is a private mirror of [Summerset](https://github.com/josehu07/summerset).
-
-[![Format check](https://github.com/josehu07/summerset-private/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Aformat)
-[![Build status](https://github.com/josehu07/summerset-private/actions/workflows/build.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Abuild)
-[![Unit tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_unit.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_unit)
-[![Proc tests status](https://github.com/josehu07/summerset-private/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset-private/actions?query=josehu07%3Atests_proc)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-
-## Private-Public Sync Commands
-
-To create a branch to track public repo `main`, pull new things from it, and merge into the private `main`:
-
-```bash
-# in the private repo:
-git remote add public git@github.com:josehu07/summerset.git
-git config --add --local checkout.defaultRemote origin
-git checkout -b public-main
-git branch --set-upstream-to=public/main public-main
-git checkout main
-# skip the above for later times
-git pull public
-git merge public-main
-git push
-```
-
-To create a pull request on the public repo to make batched contributions from private repo `main`:
-
-```bash
-# in the public repo:
-git remote add private git@github.com:josehu07/summerset-private.git
-git config --add --local checkout.defaultRemote origin
-# skip the above for later times
-git checkout -b <PR_name> private/main
-git merge -s ours main
-git pull private
-python3 publish/public_repo_trim.py
-# double check the trim and commit
-git push origin <PR_name>
-# then, on GitHub, make a squashing PR from <PR_name> branch to main
-```
-
 # Summerset
 
 [![Format check](https://github.com/josehu07/summerset/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Aformat)
@@ -165,34 +124,6 @@ python3 scripts/distr_clients.py -h
 ```
 
 Note that these scripts use `sudo` and assume specific ranges of available ports, so a Linux server machine environment is recommended.
-
-## TODO List
-
-- [x] async event-loop foundation
-- [x] implementation of Chain Replication
-  - [ ] failure detection & recovery
-  - [ ] TLA+ spec
-- [x] implementation of MultiPaxos
-  - [x] TLA+ spec
-- [x] implementation of RS-Paxos
-- [x] implementation of Raft
-  - [ ] TLA+ spec
-- [x] implementation of CRaft
-- [x] implementation of Crossword
-  - [x] TLA+ spec
-- [ ] long-term planned improvements
-  - [ ] use a sophisticated storage backend
-  - [ ] efficient state-transfer snapshotting
-  - [ ] more robust TCP msg infrastructure
-  - [ ] membership discovery & view change
-  - [ ] multi-versioning & stale reads
-  - [ ] partitioned groups service structure
-- [ ] client-side utilities
-  - [x] interactive REPL
-  - [x] benchmarking client
-  - [x] unit tester
-  - [ ] linearizability fuzzer
-- [ ] better README & documentation
 
 ---
 
