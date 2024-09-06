@@ -7,7 +7,7 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]
 summerset = { path = "../" }
-tokio = { version = "1.39", features = ["full"] }
+tokio = { version = "1.40", features = ["full"] }
 rand = "0.8"
 clap = { version = "4.0", features = ["derive"] }
 log = "0.4"

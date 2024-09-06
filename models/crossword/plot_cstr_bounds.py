@@ -111,7 +111,7 @@ def plot_cstr_bound(idx, cluster_size):
     plt.text(
         m + 0.3 if n <= 3 else m + 0.8 if n <= 5 else m + 0.8,
         n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
-        "if high\njitter" if n <= 3 else "if high jitter",
+        "if high RTT var.",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
