@@ -10,8 +10,8 @@ fi
 
 echo
 echo "Installing extra apt packages..."
-sudo apt -y install default-jre
-sudo apt -y install liblog4j2-java
+sudo apt -y install default-jre \
+                    liblog4j2-java
 
 
 echo
@@ -33,3 +33,8 @@ git clone https://github.com/pfouto/chain-client.git
 cd chain-client
 git checkout ce3a038
 echo
+
+
+echo
+echo "Fetching CockroachDB codebase..."
+# TODO: add me

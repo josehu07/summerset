@@ -143,9 +143,9 @@ def trim_remote_hosts(path):
     lines, file = lines_and_fresh(path)
     with file:
         for line in lines:
-            if line.count("=") == 1 and "@" in line:
+            if line.count("=") == 1 and line.strip().startswith("host"):
                 name = line[: line.index("=")].strip()
-                line = f'{name} = "username@domain.com"\n'
+                line = f'{name} = "domain.cloudlab.us"\n'
             file.write(line)
 
 

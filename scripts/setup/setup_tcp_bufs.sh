@@ -9,7 +9,7 @@ echo "  536870912 1073741824 1073741824" | sudo tee /proc/sys/net/ipv4/tcp_wmem
 
 
 echo
-echo "System-wide total buffer size:"
+echo "System-wide total buffer pages:"
 echo "  min      default   max"
 echo "  78643200 104857600 125829120" | sudo tee /proc/sys/net/ipv4/tcp_mem
 

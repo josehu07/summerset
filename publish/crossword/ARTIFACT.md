@@ -3,7 +3,8 @@
 For a shell command, `$` indicates running it on the local development machine, while `%` indicates running it on a CloudLab remote host.
 
 1. On you local dev machine, change into the repo's path
-    1. `$ cd path/to/summerset`
+    1. `$ python3 -m pip install toml`
+    2. `$ cd path/to/summerset`
 2. Create CloudLab machines and fill in `scripts/remote_hosts.toml`
 3. Add the following setting to your `~/.ssh/config` for skipping the SSH `known_hosts` check
 
@@ -14,21 +15,25 @@ For a shell command, `$` indicates running it on the local development machine, 
 
 4. For each of the hosts (examples below are for `host0`), do the following setup work
     1. SSH to it
-    2. Create `/eval` path and acquire its ownership:
-        1. `% sudo mkdir /eval`
-        2. `% sudo chown -R $USER /eval`
-    3. Back to the local machine, sync the repo folder to the remote host
-        1. `$ python3 scripts/remote_mirror.py -g 1dc`
-    4. On `host0`, you will find the mirrored repo at `/eval/summerset`
+    2. Add new user named `smr`
+        1. `% sudo adduser smr` (set password to `smr` as well)
+        2. `% sudo usermod -aG sudo smr`
+        3. `% sudo cp -r .ssh /home/smr/`
+        4. `% sudo chown -R smr /home/smr/.ssh`
+    3. Logout back to the local machine, sync the repo folder to the remote host
+        1. `% logout`
+        2. `$ python3 scripts/remote_mirror.py -g <group> -t host0`
+        3. `% python3 scripts/remote_ssh_to.py -g <group> -t host0`
+    4. Upon SSH using our helper script, you will find the mirrored repo at `/home/smr/summerset` which is automatically cd-ed into
     5. Resize the root partition to make more space
-        1. `% cd /eval/summerset`
+        1. `% cd summerset`
         2. `% ./scripts/setup/resize_partition.sh`
     6. Update Linux kernel version to v6.1.64, the one used for evaluations presented in the paper
         1. `% ./scripts/setup/install_kernel.sh`
-        2. `% sudo reboot`
-    7. After rebooting, double check the kernel version
-        1. `% uname -a`
-        2. `% cd /eval/summerset`
+        2. `% sudo reboot` (then wait a while until instance ready again)
+    7. After rebooting and logging in, double check the kernel version
+        1. `$ python3 scripts/remote_ssh_to.py -g <group> -t host0`
+        2. `% uname -a`
     8. Install necessary dependencies
         1. `% ./scripts/setup/install_devdeps.sh`
         2. `% ./scripts/crossword/install_devdeps.sh`

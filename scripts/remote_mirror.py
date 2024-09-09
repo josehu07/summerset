@@ -126,6 +126,13 @@ if __name__ == "__main__":
         help="comma-separated remote hosts' nicknames, or 'all'",
     )
     parser.add_argument(
+        "-f",
+        "--folder",
+        type=str,
+        default="",
+        help="if non-empty, sync '../<folder>' instead of './'",
+    )
+    parser.add_argument(
         "-b",
         "--build",
         action="store_true",
@@ -160,8 +167,12 @@ if __name__ == "__main__":
 
     SRC_PATH = "./"
     DST_PATH = f"{base}/{repo}"
+    if len(args.folder) > 0:
+        SRC_PATH = f"../{args.folder}"
+        DST_PATH = f"{base}/{args.folder}"
+        repo = args.folder
 
     mirror_folder(destinations, SRC_PATH, DST_PATH, repo, args.sequential)
 
-    if args.build:
+    if len(args.folder) == 0 and args.build:
         build_on_targets(destinations, DST_PATH, args.release, args.sequential)

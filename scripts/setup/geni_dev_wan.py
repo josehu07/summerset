@@ -1,8 +1,9 @@
 """Running Summerset on a variable number of nodes across multiple sites.
 """
 
-# Import the Portal object.
+# Import the Portal object and ProtoGENI lib.
 import geni.portal as portal  # type: ignore
+import geni.rspec.pg as rspec  # type: ignore
 
 # Primary partition's disk image.
 DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:summerset.dev"
@@ -48,6 +49,10 @@ for i in range(params.nodeCount):
     node = request.RawPC(name)
     node.hardware_type = NODE_TYPES_POOL[j]
     node.disk_image = DISK_IMAGE
+    # Copy backup home directory back to '/home/smr'.
+    node.addService(
+        rspec.Execute(shell="bash", command="cp -r /opt/home-backup/. /home/smr/")
+    )
 
 # Print the RSpec to the enclosing page.
 pc.printRequestRSpec(request)
