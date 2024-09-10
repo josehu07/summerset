@@ -11,7 +11,8 @@ fi
 echo
 echo "Installing extra apt packages..."
 sudo apt -y install default-jre \
-                    liblog4j2-java
+                    liblog4j2-java \
+                    libresolv-wrapper
 
 
 echo
@@ -32,9 +33,27 @@ cd ..
 git clone https://github.com/pfouto/chain-client.git
 cd chain-client
 git checkout ce3a038
-echo
 
 
 echo
-echo "Fetching CockroachDB codebase..."
-# TODO: add me
+echo "Installing bazel build system..."
+cd ..
+sudo wget https://github.com/bazelbuild/bazelisk/releases/download/v1.21.0/bazelisk-linux-amd64 -O /usr/local/bin/bazel
+sudo chmod +x /usr/local/bin/bazel
+bazel
+
+
+echo
+echo "Fetching & building our CockroachDB fork..."
+git clone https://github.com/josehu07/cockroach-cw.git
+cd cockroach-cw
+tee -a .bazelrc.user <<EOF
+build --config=dev
+build --config=lintonbuild
+test --test_tmpdir=/tmp/cockroach
+test --sandbox_add_mount_pair=/tmp
+build --remote_cache=http://127.0.0.1:9867
+EOF
+./dev doctor --interactive=false
+bazel clean --expunge
+./dev build

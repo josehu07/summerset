@@ -26,11 +26,17 @@ sudo apt -y install wget \
                     iptables-persistent \
                     screen \
                     build-essential \
+                    cmake \
+                    autoconf \
+                    flex \
+                    bison \
+                    patch \
                     libssl-dev \
                     zlib1g-dev \
                     libbz2-dev \
                     libreadline-dev \
                     libsqlite3-dev \
+                    libncurses-dev \
                     libncursesw5-dev \
                     xz-utils \
                     tk-dev \

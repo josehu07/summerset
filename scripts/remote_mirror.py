@@ -19,10 +19,15 @@ EXCLUDE_NAMES = [
 ]
 
 
-def compose_rsync_cmd(src_path, dst_path, remote):
-    rsync_cmd = ["rsync", "-aP", "--delete"]
+def compose_rsync_cmd(src_path, dst_path, remote, is_summerset=True):
+    rsync_cmd = ["rsync", "-aP"]
+    if is_summerset:
+        rsync_cmd.append("--delete")
+
     for name in EXCLUDE_NAMES:
-        rsync_cmd += ["--exclude", f"{name}"]
+        if is_summerset or ".git" not in name:
+            rsync_cmd += ["--exclude", f"{name}"]
+
     rsync_cmd += [src_path, f"{remote}:{dst_path}"]
     return rsync_cmd
 
@@ -56,7 +61,9 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     # compose rsync commands
     cmds = []
     for remote in remotes:
-        cmd = compose_rsync_cmd(src_path, dst_path, remote)
+        cmd = compose_rsync_cmd(
+            src_path, dst_path, remote, is_summerset="summerset" in repo_name
+        )
         cmds.append(cmd)
 
     # execute
