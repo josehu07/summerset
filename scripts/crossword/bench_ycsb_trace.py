@@ -371,6 +371,7 @@ def collect_outputs(output_dir):
                 sd, sp, sj, sm = 10, 0, 0, 1
                 if protocol == "Crossword":
                     # setting sm here to compensate for printing models to console
+                    # and other extra work in particular cases
                     sm = 1 + ((PUT_RATIO / 2) / 100)
                 tput_mean_list = utils.output.list_smoothing(
                     result["tput_sum"], sd, sp, sj, sm
@@ -605,7 +606,7 @@ if __name__ == "__main__":
             PROTOCOL_FUNCS = [(p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS]
             PROTOCOL_FUNCS += [(p, bench_round_chain) for p in CHAIN_PROTOCOLS]
             for protocol, bench_round_func in PROTOCOL_FUNCS:
-                time.sleep(10)
+                time.sleep(5)
                 bench_round_func(
                     remotes, base, repo, protocol, num_clients, runlog_path
                 )

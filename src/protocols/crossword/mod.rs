@@ -88,6 +88,9 @@ pub struct ReplicaConfigCrossword {
     /// Disable gossiping timer (to force more deterministic perf behavior)?
     pub disable_gossip_timer: bool,
 
+    /// Disable gossiping batching (for experiments only)?
+    pub disable_gossip_batch: bool,
+
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
 
@@ -125,6 +128,10 @@ pub struct ReplicaConfigCrossword {
     /// Only effective if record_breakdown is set to true.
     pub record_value_ver: bool,
 
+    /// Recording total payload size received from per peer?
+    /// Only effective if record_breakdown is set to true.
+    pub record_size_recv: bool,
+
     /// Simulate local read lease implementation?
     // TODO: actual read lease impl later? (won't affect anything about
     // evalutaion results though)
@@ -149,6 +156,7 @@ impl Default for ReplicaConfigCrossword {
             gossip_timeout_max: 30,
             gossip_tail_ignores: 100,
             disable_gossip_timer: false,
+            disable_gossip_batch: false,
             fault_tolerance: 0,
             msg_chunk_size: 10,
             rs_total_shards: 0,
@@ -162,6 +170,7 @@ impl Default for ReplicaConfigCrossword {
             b_to_d_threshold: 0.0,
             record_breakdown: false,
             record_value_ver: false,
+            record_size_recv: false,
             sim_read_lease: false,
         }
     }
@@ -529,6 +538,9 @@ pub(crate) struct CrosswordReplica {
 
     /// Performance breakdown printing interval.
     bd_print_interval: Interval,
+
+    /// Bandwidth utilization total bytes accumulators.
+    bw_accumulators: HashMap<ReplicaId, usize>,
 }
 
 // CrosswordReplica common helpers
@@ -653,13 +665,14 @@ impl GenericReplica for CrosswordReplica {
                                     snapshot_path, snapshot_interval_s,
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores, disable_gossip_timer,
-                                    fault_tolerance, msg_chunk_size,
-                                    rs_total_shards, rs_data_shards,
+                                    disable_gossip_batch, fault_tolerance,
+                                    msg_chunk_size, rs_total_shards, rs_data_shards,
                                     init_assignment, linreg_interval_ms,
                                     linreg_keep_ms, linreg_outlier_ratio,
                                     linreg_init_a, linreg_init_b,
                                     b_to_d_threshold, record_breakdown,
-                                    record_value_ver, sim_read_lease)?;
+                                    record_value_ver, record_size_recv,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -984,6 +997,9 @@ impl GenericReplica for CrosswordReplica {
             },
             bd_stopwatch,
             bd_print_interval,
+            bw_accumulators: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
+                .collect(),
         })
     }
 
@@ -1123,6 +1139,12 @@ impl GenericReplica for CrosswordReplica {
                                                 .duration_since(self.startup_time)
                                                 .as_millis(),
                                               ver);
+                        }
+                    }
+                    if self.config.record_size_recv {
+                        for (peer, recv) in &mut self.bw_accumulators {
+                            pf_info!("bw period bytes recv <- {} : {}", peer, recv);
+                            *recv = 0;
                         }
                     }
                 },

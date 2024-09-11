@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt  # type: ignore
 TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
-EXPER_NAME = "breakdown"
+EXPER_NAME = "bw_utils"
 PROTOCOLS = ["MultiPaxos", "Crossword"]
 
 MIN_HOST0_CPUS = 30
@@ -24,7 +24,7 @@ SERVER_PIN_CORES = 20
 CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 15
+NUM_CLIENTS = 30
 BATCH_INTERVAL = 1
 VALUE_SIZE = 64 * 1024
 PUT_RATIO = 100
@@ -123,8 +123,8 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
+    config += f"+record_size_recv=true"
     if protocol == "Crossword":
-        config += f"+disable_gossip_timer=true"
         config += f"+init_assignment='1'"
 
     # launch service cluster
@@ -153,7 +153,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
         print("    Done!")
 
 
-def collect_bd_stats(runlog_dir):
+def collect_bw_utils(runlog_dir):
     raw_stats = dict()
     for protocol in PROTOCOLS:
         raw_stats[protocol] = dict()
@@ -232,7 +232,7 @@ def print_results(bd_stats, space_usage=None):
             print(f"  usage {space_usage[protocol]:7.2f} MB")
 
 
-def plot_breakdown(bd_stats, plots_dir):
+def plot_bw_utils(bd_stats, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (3, 1.6),
@@ -453,11 +453,8 @@ if __name__ == "__main__":
         if not os.path.isdir(plots_dir):
             os.system(f"mkdir -p {plots_dir}")
 
-        bd_stats = collect_bd_stats(runlog_dir)
-        # space_usage = collect_space_usage(states_dir)
-        # print_results(bd_stats, space_usage)
-        print_results(bd_stats)
+        bw_utils = collect_bw_utils(runlog_dir)
+        print_results(bw_utils)
 
-        handles, labels = plot_breakdown(bd_stats, plots_dir)
+        handles, labels = plot_bw_utils(bw_utils, plots_dir)
         plot_legend(handles, labels, plots_dir)
-        # save_space_usage(space_usage, plots_dir)

@@ -446,7 +446,7 @@ if __name__ == "__main__":
 
         print("Running experiments...")
         for protocol in PROTOCOLS:
-            time.sleep(10)
+            time.sleep(5)
             bench_round(remotes, base, repo, protocol, runlog_path)
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
             utils.file.remove_files_in_dir(  # to free up storage space

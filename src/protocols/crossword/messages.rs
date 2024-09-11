@@ -439,6 +439,14 @@ impl CrosswordReplica {
                 endprep_slot: 0,
             });
 
+            if self.config.record_breakdown && self.config.record_size_recv {
+                (*self
+                    .bw_accumulators
+                    .get_mut(&peer)
+                    .expect("peer should exist in experiments")) +=
+                    inst.reqs_cw.get_size();
+            }
+
             // record update to instance ballot & data
             inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
@@ -638,6 +646,14 @@ impl CrosswordReplica {
                 self.insts[slot - self.start_slot].status >= Status::Committed
             );
             let inst = &mut self.insts[slot - self.start_slot];
+
+            if self.config.record_breakdown && self.config.record_size_recv {
+                (*self
+                    .bw_accumulators
+                    .get_mut(&peer)
+                    .expect("peer should exist in experiments")) +=
+                    reqs_cw.get_size();
+            }
 
             // if reply not outdated and ballot is up-to-date
             if inst.status < Status::Executed && ballot >= inst.bal {

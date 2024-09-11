@@ -20,6 +20,7 @@ For a shell command, `$` indicates running it on the local development machine, 
         2. `% sudo usermod -aG sudo smr`
         3. `% sudo cp -r .ssh /home/smr/`
         4. `% sudo chown -R smr /home/smr/.ssh`
+        5. `% echo "smr ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/smr-pass` (for password-less `sudo`)
     3. Logout back to the local machine, sync the repo folder to the remote host
         1. `% logout`
         2. `$ python3 scripts/remote_mirror.py -g <group> -t host0`

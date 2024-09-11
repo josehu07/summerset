@@ -26,9 +26,9 @@ CLIENT_PIN_CORES = 2
 NUM_CLIENTS = 15
 BATCH_INTERVAL = 1
 
-LENGTH_SECS = 60
+LENGTH_SECS = 30
 RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 55
+RESULT_SECS_END = 25
 
 
 class EnvSetting:
@@ -255,7 +255,7 @@ def collect_outputs(output_dir):
 
             sd, sp, sj, sm = 10, 0, 0, 1
             # setting sm here to compensate for unstabilities of printing
-            # models to console
+            # models to console and other extra work in particular cases
             if (
                 round_params.value_size == SIZE_S
                 and (
@@ -412,9 +412,10 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
             linewidth=1.4,
             label=label,
             hatch=hatch,
-            yerr=result["stdev"],
+            yerr=2.0 * result["stdev"],
             ecolor="black",
-            capsize=1,
+            capsize=2,
+            error_kw={"lolims": True},
         )
 
     ax2.spines["top"].set_visible(False)
@@ -430,7 +431,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     else:
         ytickmax = math.ceil(ymaxl / 10) * 10
         plt.yticks([0, ytickmax // 2, ytickmax])
-        plt.ylim(0.0, ytickmax * 1.2)
+        plt.ylim(0.0, ytickmax * 1.25)
 
     fig.subplots_adjust(left=0.5)
     # plt.tight_layout()
@@ -485,7 +486,7 @@ def plot_single_rounds_results(results, rounds_params, plots_dir):
 def plot_cluster_size_results(results, rounds_params, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.5, 2),
+            "figure.figsize": (3.5, 1.5),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -538,7 +539,7 @@ def plot_cluster_size_results(results, rounds_params, plots_dir):
     plt.tick_params(bottom=False)
 
     plt.xticks([2, 6, 10, 14], [f"n={3}", f"n={5}", f"n={7}", f"n={9}"])
-    plt.ylabel("Throughput (reqs/s)")
+    plt.ylabel("Tput. (reqs/s)")
 
     plt.tight_layout()
 
@@ -553,7 +554,7 @@ def plot_cluster_size_results(results, rounds_params, plots_dir):
 def plot_write_ratio_results(results, rounds_params, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.8, 2),
+            "figure.figsize": (2.8, 1.5),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -781,7 +782,7 @@ if __name__ == "__main__":
             for protocol in PROTOCOLS:
                 if round_params.paxos_only and "Raft" in protocol:
                     continue
-                time.sleep(10)
+                time.sleep(5)
                 bench_round(
                     remotes[this_env.group]["host0"],
                     base,

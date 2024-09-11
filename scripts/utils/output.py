@@ -40,7 +40,10 @@ def gather_outputs(
     while t + tb < te:
         tputs, lats = [], []
         for c in range(num_clients):
-            while t + tb > outputs[c]["time"][cidxs[c]]:
+            while (
+                cidxs[c] < len(outputs[c]["time"]) - 1
+                and t + tb > outputs[c]["time"][cidxs[c]]
+            ):
                 cidxs[c] += 1
             if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
                 tputs.append(0.0)

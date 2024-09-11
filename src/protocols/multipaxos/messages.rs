@@ -306,6 +306,14 @@ impl MultiPaxosReplica {
                 });
             }
 
+            if self.config.record_breakdown && self.config.record_size_recv {
+                (*self
+                    .bw_accumulators
+                    .get_mut(&peer)
+                    .expect("peer should exist in experiments")) +=
+                    inst.reqs.get_size();
+            }
+
             // record update to instance ballot & data
             inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(

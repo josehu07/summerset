@@ -491,7 +491,7 @@ if __name__ == "__main__":
             print(f"Running experiments {num_keys}...")
 
             for protocol, gossip_gap in PROTOCOL_GAPS:
-                time.sleep(10)
+                time.sleep(5)
                 bench_round(
                     remotes["host0"],
                     base,

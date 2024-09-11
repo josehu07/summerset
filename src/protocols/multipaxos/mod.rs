@@ -83,6 +83,10 @@ pub struct ReplicaConfigMultiPaxos {
     /// Only effective if record_breakdown is set to true.
     pub record_value_ver: bool,
 
+    /// Recording total payload size received from per peer?
+    /// Only effective if record_breakdown is set to true.
+    pub record_size_recv: bool,
+
     /// Simulate local read lease implementation?
     // TODO: actual read lease impl later? (won't affect anything about
     // evalutaion results though)
@@ -106,6 +110,7 @@ impl Default for ReplicaConfigMultiPaxos {
             msg_chunk_size: 10,
             record_breakdown: false,
             record_value_ver: false,
+            record_size_recv: false,
             sim_read_lease: false,
         }
     }
@@ -389,6 +394,9 @@ pub(crate) struct MultiPaxosReplica {
 
     /// Performance breakdown printing interval.
     bd_print_interval: Interval,
+
+    /// Bandwidth utilization total bytes accumulators.
+    bw_accumulators: HashMap<ReplicaId, usize>,
 }
 
 // MultiPaxosReplica common helpers
@@ -502,7 +510,8 @@ impl GenericReplica for MultiPaxosReplica {
                                     hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
                                     msg_chunk_size, record_breakdown,
-                                    record_value_ver, sim_read_lease)?;
+                                    record_value_ver, record_size_recv,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -644,6 +653,9 @@ impl GenericReplica for MultiPaxosReplica {
             startup_time: Instant::now(),
             bd_stopwatch,
             bd_print_interval,
+            bw_accumulators: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
+                .collect(),
         })
     }
 
@@ -747,9 +759,9 @@ impl GenericReplica for MultiPaxosReplica {
                         if let Some(sw) = self.bd_stopwatch.as_mut() {
                             let (cnt, stats) = sw.summarize(4);
                             pf_info!("bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
-                                                         qrum {:.2} {:.2} exec {:.2} {:.2}",
-                                              cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
-                                                   stats[2].0, stats[2].1, stats[3].0, stats[3].1);
+                                                qrum {:.2} {:.2} exec {:.2} {:.2}",
+                                      cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
+                                           stats[2].0, stats[2].1, stats[3].0, stats[3].1);
                             sw.remove_all();
                         }
                     }
@@ -761,6 +773,12 @@ impl GenericReplica for MultiPaxosReplica {
                                                 .duration_since(self.startup_time)
                                                 .as_millis(),
                                               ver);
+                        }
+                    }
+                    if self.config.record_size_recv {
+                        for (peer, recv) in &mut self.bw_accumulators {
+                            pf_info!("bw period bytes recv <- {} : {}", peer, recv);
+                            *recv = 0;
                         }
                     }
                 },

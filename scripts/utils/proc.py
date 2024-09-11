@@ -95,9 +95,9 @@ def run_process_over_ssh(
             config_seg = False
 
     if cd_dir is None or len(cd_dir) == 0:
-        cmd = ["ssh", remote, f". /etc/profile; {' '.join(cmd)}"]
+        cmd = ["ssh", remote, f". ~/.profile; {' '.join(cmd)}"]
     else:
-        cmd = ["ssh", remote, f". /etc/profile; cd {cd_dir}; {' '.join(cmd)}"]
+        cmd = ["ssh", remote, f". ~/.profile; cd {cd_dir}; {' '.join(cmd)}"]
 
     proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
     return proc
@@ -121,6 +121,7 @@ def wait_parallel_procs(procs, names=None, check_rc=True):
 def get_cpu_count(remote=None):
     cpus = multiprocessing.cpu_count()
     if remote is not None:
+        print(remote)
         cpus = int(
             run_process_over_ssh(
                 remote,

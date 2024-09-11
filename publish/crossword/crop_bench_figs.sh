@@ -34,6 +34,8 @@ PLOT_FILES=("models/cstr_bounds"
             "plots/critical/exper-critical-write_ratio"
             "plots/critical/legend-critical"
             "plots/critical/legend-critical-minor"
+            "plots/load_sizes/exper-load_sizes"
+            "plots/load_sizes/legend-load_sizes"
             "plots/staleness/exper-staleness"
             "plots/ycsb_trace/exper-ycsb_trace")
 PLOT_FILES_BOTTOM_MORE=("intros/legend-motiv_profile"

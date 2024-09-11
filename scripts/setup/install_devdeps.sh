@@ -49,6 +49,21 @@ sudo apt -y install wget \
 echo
 echo "Installing Rust toolchain..."
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+sudo tee -a $HOME/.bashrc <<EOF
+
+# cargo
+export RUSTUP_HOME=\$HOME/.rustup
+export CARGO_HOME=\$HOME/.cargo
+export PATH=\$HOME/.cargo/bin:\$PATH
+EOF
+sudo tee -a $HOME/.profile <<EOF
+
+# cargo
+export RUSTUP_HOME=\$HOME/.rustup
+export CARGO_HOME=\$HOME/.cargo
+export PATH=\$HOME/.cargo/bin:\$PATH
+EOF
+source $HOME/.profile
 
 
 echo

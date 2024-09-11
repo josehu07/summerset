@@ -3,7 +3,7 @@
 
 TARGET_DEV=/dev/sda
 PART_NUMBER=3
-PART_SIZE=240G
+PART_SIZE=200G
 
 
 echo
