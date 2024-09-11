@@ -139,7 +139,12 @@ impl CrosswordReplica {
                     recon_slots.get_mut(&peer).unwrap().push((slot, exclude));
 
                     // send reconstruction read messages in chunks
-                    if recon_slots[&peer].len() == self.config.msg_chunk_size {
+                    let batch_size = if self.config.gossip_batch_size == 0 {
+                        self.config.msg_chunk_size
+                    } else {
+                        self.config.gossip_batch_size
+                    };
+                    if recon_slots[&peer].len() == batch_size {
                         self.transport_hub.send_msg(
                             PeerMsg::Reconstruct {
                                 slots_excl: mem::take(
@@ -151,7 +156,7 @@ impl CrosswordReplica {
                         pf_trace!(
                             "sent Reconstruct -> {} for {} slots",
                             peer,
-                            self.config.msg_chunk_size
+                            batch_size
                         );
                     }
                 }

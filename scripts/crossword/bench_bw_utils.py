@@ -17,7 +17,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "bw_utils"
-PROTOCOLS = ["MultiPaxos", "Crossword"]
+PROTOCOLS = ["MultiPaxos", "Crossword", "CrosswordNoBatch"]
 
 MIN_HOST0_CPUS = 30
 SERVER_PIN_CORES = 20
@@ -26,7 +26,7 @@ CLIENT_PIN_CORES = 2
 NUM_REPLICAS = 5
 NUM_CLIENTS = 30
 BATCH_INTERVAL = 1
-VALUE_SIZE = 64 * 1024
+VALUE_SIZE = 4 * 1024
 PUT_RATIO = 100
 
 LENGTH_SECS = 30
@@ -121,18 +121,28 @@ def run_bench_clients(remote0, base, repo, protocol):
 def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
+    real_protocol = protocol
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
     config += f"+record_size_recv=true"
     if protocol == "Crossword":
         config += f"+init_assignment='1'"
+        config += f"+gossip_batch_size=100"
+        # config += f"+gossip_timeout_min=150"
+        # config += f"+gossip_timeout_max=250"
+    elif protocol == "CrosswordNoBatch":
+        real_protocol = "Crossword"
+        config += f"+init_assignment='1'"
+        config += f"+gossip_batch_size=1"
+        # config += f"+gossip_timeout_min=150"
+        # config += f"+gossip_timeout_max=250"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
+    proc_cluster = launch_cluster(remote0, base, repo, real_protocol, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol)
+    proc_clients = run_bench_clients(remote0, base, repo, real_protocol)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()

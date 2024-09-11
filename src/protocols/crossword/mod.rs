@@ -85,11 +85,11 @@ pub struct ReplicaConfigCrossword {
     /// How many slots at the end should we ignore when gossiping is triggered.
     pub gossip_tail_ignores: usize,
 
+    /// Batch size for Reconstruct messages; 0 means use `msg_chunk_size`.
+    pub gossip_batch_size: usize,
+
     /// Disable gossiping timer (to force more deterministic perf behavior)?
     pub disable_gossip_timer: bool,
-
-    /// Disable gossiping batching (for experiments only)?
-    pub disable_gossip_batch: bool,
 
     /// Fault-tolerance level.
     pub fault_tolerance: u8,
@@ -155,8 +155,8 @@ impl Default for ReplicaConfigCrossword {
             gossip_timeout_min: 10,
             gossip_timeout_max: 30,
             gossip_tail_ignores: 100,
+            gossip_batch_size: 0,
             disable_gossip_timer: false,
-            disable_gossip_batch: false,
             fault_tolerance: 0,
             msg_chunk_size: 10,
             rs_total_shards: 0,
@@ -665,7 +665,7 @@ impl GenericReplica for CrosswordReplica {
                                     snapshot_path, snapshot_interval_s,
                                     gossip_timeout_min, gossip_timeout_max,
                                     gossip_tail_ignores, disable_gossip_timer,
-                                    disable_gossip_batch, fault_tolerance,
+                                    gossip_batch_size, fault_tolerance,
                                     msg_chunk_size, rs_total_shards, rs_data_shards,
                                     init_assignment, linreg_interval_ms,
                                     linreg_keep_ms, linreg_outlier_ratio,
@@ -695,6 +695,12 @@ impl GenericReplica for CrosswordReplica {
             return logged_err!(
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.gossip_timeout_max < config.gossip_timeout_min {
+            return logged_err!(
+                "invalid config.gossip_timeout_max '{}'",
+                config.gossip_timeout_max
             );
         }
         if config.msg_chunk_size == 0 {
