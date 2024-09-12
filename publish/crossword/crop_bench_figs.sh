@@ -17,7 +17,8 @@ then
 fi
 
 
-PLOT_FILES=("models/cstr_bounds"
+PLOT_FILES=("intros/motiv_profile_cdf"
+            "models/cstr_bounds"
             "plots/breakdown/exper-breakdown"
             "plots/breakdown/legend-breakdown"
             "plots/adaptive/exper-adaptive"
@@ -46,7 +47,6 @@ PLOT_FILES_BOTTOM_MORE=("intros/legend-motiv_profile"
                         "plots/staleness/legend-staleness"
                         "plots/bw_utils/legend-bw_utils"
                         "plots/ycsb_trace/legend-ycsb_trace")
-PLOT_FILES_RIGHT_MORE=("intros/motiv_profile_cdf")
 
 
 echo
@@ -54,7 +54,7 @@ echo "Cropping bench plots..."
 for FILE_NAME in ${PLOT_FILES[@]};
 do
     echo "    cropping results/${FILE_NAME}.pdf"
-    pdfcropmargins -p 0 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
+    pdfcropmargins -p 5 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
 done
 
 
@@ -63,16 +63,7 @@ echo "Cropping plots with more space at the bottom..."
 for FILE_NAME in ${PLOT_FILES_BOTTOM_MORE[@]};
 do
     echo "    cropping results/${FILE_NAME}.pdf"
-    pdfcropmargins -p4 0 50 0 0 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
-done
-
-
-echo
-echo "Cropping plots with more space to the right..."
-for FILE_NAME in ${PLOT_FILES_RIGHT_MORE[@]};
-do
-    echo "    cropping results/${FILE_NAME}.pdf"
-    pdfcropmargins -p4 0 0 5 0 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
+    pdfcropmargins -p4 5 50 5 5 -t 255 -mo -o results "results/${FILE_NAME}.pdf"
 done
 
 

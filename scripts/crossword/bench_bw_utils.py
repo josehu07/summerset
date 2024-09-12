@@ -234,15 +234,15 @@ def plot_bw_utils(bw_utils, plots_dir):
 
     PROTOCOLS_ORDER = [
         "MultiPaxos",
-        "Crossword",
-        "CrosswordNoBatch",
         # "CrosswordShards2",
+        "CrosswordNoBatch",
+        "Crossword",
     ]
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos": ("MultiPaxos", "darkgray", None),
-        "Crossword": ("Cw (default)", "lightsteelblue", "xx"),
-        "CrosswordNoBatch": ("Cw (no batch)", "steelblue", ".."),
         # "CrosswordShards2": ("Cw (c=2)", "lightgreen", "//"),
+        "CrosswordNoBatch": ("Cw (no batch)", "steelblue", ".."),
+        "Crossword": ("Cw (default)", "lightsteelblue", "xx"),
     }
 
     # L-F
@@ -269,8 +269,8 @@ def plot_bw_utils(bw_utils, plots_dir):
     ax1.spines["top"].set_visible(False)
     ax1.spines["right"].set_visible(False)
 
-    plt.ylim((0, 100))
-    plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
+    plt.ylim((0, 60))
+    plt.yticks([0, 30, 60], ["0%", "30%", "60%"])
     plt.tick_params(bottom=False, labelbottom=False)
     
     plt.xlabel("L-F")
@@ -299,8 +299,8 @@ def plot_bw_utils(bw_utils, plots_dir):
     ax2.spines["top"].set_visible(False)
     ax2.spines["right"].set_visible(False)
 
-    plt.ylim((0, 100))
-    plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
+    plt.ylim((0, 60))
+    plt.yticks([0, 30, 60], ["0%", "30%", "60%"])
     plt.tick_params(bottom=False, labelbottom=False)
     
     plt.xlabel("F-F")
