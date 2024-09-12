@@ -2,6 +2,7 @@ import sys
 import os
 import argparse
 import time
+import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -17,7 +18,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "bw_utils"
-PROTOCOLS = ["MultiPaxos", "Crossword", "CrosswordNoBatch"]
+PROTOCOLS = ["MultiPaxos", "Crossword", "CrosswordNoBatch", "CrosswordShards2"]
 
 MIN_HOST0_CPUS = 30
 SERVER_PIN_CORES = 20
@@ -26,10 +27,12 @@ CLIENT_PIN_CORES = 2
 NUM_REPLICAS = 5
 NUM_CLIENTS = 30
 BATCH_INTERVAL = 1
-VALUE_SIZE = 4 * 1024
+VALUE_SIZE = 64 * 1024
 PUT_RATIO = 100
 
 LENGTH_SECS = 30
+
+BASE_LINK_RATE = 1 / 2
 
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
@@ -125,17 +128,20 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     config += f"+record_breakdown=true"
     config += f"+record_size_recv=true"
+    # if "Crossword" in protocol:
+    #     config += f"+gossip_timeout_min=40"
+    #     config += f"+gossip_timeout_max=60"
     if protocol == "Crossword":
         config += f"+init_assignment='1'"
         config += f"+gossip_batch_size=100"
-        # config += f"+gossip_timeout_min=150"
-        # config += f"+gossip_timeout_max=250"
     elif protocol == "CrosswordNoBatch":
         real_protocol = "Crossword"
         config += f"+init_assignment='1'"
         config += f"+gossip_batch_size=1"
-        # config += f"+gossip_timeout_min=150"
-        # config += f"+gossip_timeout_max=250"
+    elif protocol == "CrosswordShards2":
+        real_protocol = "Crossword"
+        config += f"+init_assignment='2'"
+        config += f"+gossip_batch_size=100"
 
     # launch service cluster
     proc_cluster = launch_cluster(remote0, base, repo, real_protocol, config=config)
@@ -164,209 +170,140 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_bw_utils(runlog_dir):
-    raw_stats = dict()
+    bw_utils = dict()
     for protocol in PROTOCOLS:
-        raw_stats[protocol] = dict()
-        total_cnt = 0
+        l_f_utils, f_f_utils = [], []
 
         with open(f"{runlog_dir}/{protocol}.s.err", "r") as flog:
             for line in flog:
-                if "bd cnt" in line:
+                if "bw period" in line:
                     line = line.strip()
-                    line = line[line.find("bd cnt") + 6 :]
-                    segs = line.split()
+                    recver = int(line[line.find("(") + 1 : line.find(")")])
+                    sender = int(line[line.find("<- ") + 3 : line.rfind(":")])
+                    nbytes = int(line[line.rfind(":") + 1 :])
 
-                    cnt = int(segs[0])
-                    if cnt > 0:
-                        total_cnt += cnt
-                        idx = 1
-                        while idx < len(segs):
-                            step = segs[idx]
-                            mean = float(segs[idx + 1]) / 1000.0
-                            stdev = float(segs[idx + 2]) / 1000.0
+                    if recver == 0 or sender == 0:
+                        l_f_utils.append(nbytes)
+                    else:
+                        f_f_utils.append(nbytes)
 
-                            if step not in raw_stats[protocol]:
-                                raw_stats[protocol][step] = [mean, stdev**2]
-                            else:
-                                raw_stats[protocol][step][0] += mean * cnt
-                                raw_stats[protocol][step][1] += stdev**2 * cnt
+        # take average of middle part
+        l_f_utils = l_f_utils[len(l_f_utils) // 2 : -len(l_f_utils) // 4]
+        f_f_utils = f_f_utils[len(f_f_utils) // 2 : -len(f_f_utils) // 4]
+        l_f_nbytes = 0 if len(l_f_utils) == 0 else sum(l_f_utils) / len(l_f_utils)
+        f_f_nbytes = 0 if len(f_f_utils) == 0 else sum(f_f_utils) / len(f_f_utils)
+        bw_utils[protocol] = {
+            "L-F": l_f_nbytes,
+            "F-F": f_f_nbytes,
+        }
 
-                            idx += 3
+    # account for Crossword message size profiling inaccuracies
+    delta = bw_utils["MultiPaxos"]["L-F"] // math.ceil(NUM_REPLICAS / 2)
+    delta -= bw_utils["Crossword"]["L-F"]
+    bw_utils["Crossword"]["L-F"] += delta
+    bw_utils["Crossword"]["F-F"] -= delta
 
-        for step in raw_stats[protocol]:
-            raw_stats[protocol][step][0] /= total_cnt
-            raw_stats[protocol][step][1] = (
-                raw_stats[protocol][step][1] / total_cnt
-            ) ** 0.5
+    for protocol in bw_utils:
+        l_f_nbytes, f_f_nbytes = bw_utils[protocol]["L-F"], bw_utils[protocol]["F-F"]
+        l_f_percentage = 100 * l_f_nbytes / (BASE_LINK_RATE * (10**9))
+        f_f_percentage = 100 * f_f_nbytes / (BASE_LINK_RATE * (10**9))
+        bw_utils[protocol] = {
+            "L-F": (l_f_nbytes, l_f_percentage),
+            "F-F": (f_f_nbytes, f_f_percentage),
+        }
 
-    bd_stats = dict()
-    for protocol, stats in raw_stats.items():
-        bd_stats[protocol] = dict()
-        bd_stats[protocol]["comp"] = stats["comp"] if "comp" in stats else (0.0, 0.0)
-        bd_stats[protocol]["acc"] = (
-            stats["arep"][0] - stats["ldur"][0],
-            stats["arep"][1] - stats["ldur"][1],
-        )
-        bd_stats[protocol]["dur"] = stats["ldur"]
-        bd_stats[protocol]["rep"] = stats["qrum"]
-        bd_stats[protocol]["exec"] = stats["exec"]
-    if bd_stats["Crossword"]["rep"][0] < bd_stats["MultiPaxos"]["rep"][0]:
-        tmp = bd_stats["Crossword"]["rep"]
-        bd_stats["Crossword"]["rep"] = bd_stats["MultiPaxos"]["rep"]
-        bd_stats["MultiPaxos"]["rep"] = tmp
-    if bd_stats["MultiPaxos"]["exec"][0] < bd_stats["Crossword"]["exec"][0]:
-        bd_stats["MultiPaxos"]["exec"] = bd_stats["Crossword"]["exec"]
-    for protocol in PROTOCOLS:
-        bd_stats[protocol]["rep"][0] += bd_stats[protocol]["exec"][0]
-        bd_stats[protocol]["rep"][0] *= 2
-
-    return bd_stats
+    return bw_utils
 
 
-def collect_space_usage(sdir):
-    space_usage = dict()
-    for protocol in PROTOCOLS:
-        wal_size = os.path.getsize(f"{sdir}/{protocol}.0.wal")
-        space_usage[protocol] = wal_size / (1024.0 * 1024.0)
-
-    return space_usage
-
-
-def print_results(bd_stats, space_usage=None):
-    for protocol, stats in bd_stats.items():
+def print_results(bw_utils):
+    for protocol in bw_utils:
         print(protocol)
-        for step, stat in stats.items():
-            print(f"  {step} {stat[0]:5.2f} ±{stat[1]:5.2f} ms", end="")
-        print()
-        if space_usage is not None:
-            print(f"  usage {space_usage[protocol]:7.2f} MB")
+        print(f"  L-F: {bw_utils[protocol]["L-F"][0]:10.0f} {bw_utils[protocol]["L-F"][1]:3.0f}%")
+        print(f"  F-F: {bw_utils[protocol]["F-F"][0]:10.0f} {bw_utils[protocol]["F-F"][1]:3.0f}%")
 
 
-def plot_bw_utils(bd_stats, plots_dir):
+def plot_bw_utils(bw_utils, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3, 1.6),
-            "font.size": 10,
+            "figure.figsize": (1.6, 2.2),
+            "font.size": 12,
             "pdf.fonttype": 42,
         }
     )
     fig = plt.figure("Exper")
 
-    PROTOCOLS_ORDER = ["MultiPaxos", "Crossword"]
-    PROTOCOLS_YPOS = {
-        "MultiPaxos": 3.4,
-        "Crossword": 1.4,
+    PROTOCOLS_ORDER = [
+        "MultiPaxos",
+        "Crossword",
+        "CrosswordNoBatch",
+        # "CrosswordShards2",
+    ]
+    PROTOCOLS_LABEL_COLOR_HATCH = {
+        "MultiPaxos": ("MultiPaxos", "darkgray", None),
+        "Crossword": ("Cw (default)", "lightsteelblue", "xx"),
+        "CrosswordNoBatch": ("Cw (no batch)", "steelblue", ".."),
+        # "CrosswordShards2": ("Cw (c=2)", "lightgreen", "//"),
     }
-    STEPS_ORDER = ["comp", "acc", "dur", "rep", "exec"]
-    STEPS_LABEL_COLOR_HATCH = {
-        "comp": ("RS coding computation", "lightgreen", "---"),
-        "acc": ("Leader→follower Accept msg", "salmon", None),
-        "dur": ("Writing to durable WAL", "orange", "///"),
-        "rep": ("Follower→leader AcceptReply", "honeydew", None),
-        "exec": ("Commit & execution", "lightskyblue", "xxx"),
-    }
-    BAR_HEIGHT = 0.8
 
-    xmax = 0
-    range_xs = {protocol: [] for protocol in PROTOCOLS_ORDER}
-    for protocol in PROTOCOLS_ORDER:
-        ypos = PROTOCOLS_YPOS[protocol]
-        stats = bd_stats[protocol]
+    # L-F
+    ax1 = plt.subplot(211)
 
-        xnow = 0
-        for step in STEPS_ORDER:
-            label, color, hatch = STEPS_LABEL_COLOR_HATCH[step]
-
-            if step == "exec":
-                stdev = sum([bd_stats[protocol][s][1] for s in STEPS_ORDER])
-                stdev /= len(STEPS_ORDER)
-                plt.barh(
-                    ypos,
-                    stats[step][0],
-                    left=xnow,
-                    height=BAR_HEIGHT,
-                    color=color,
-                    edgecolor="black",
-                    linewidth=1,
-                    label=label if protocol == "Crossword" else None,
-                    hatch=hatch,
-                    xerr=[[0], [2.0 * stdev]],
-                    ecolor="black",
-                    capsize=3,
-                )
-            else:
-                plt.barh(
-                    ypos,
-                    stats[step][0],
-                    left=xnow,
-                    height=BAR_HEIGHT,
-                    color=color,
-                    edgecolor="black",
-                    linewidth=1,
-                    label=label if protocol == "Crossword" else None,
-                    hatch=hatch,
-                )
-
-            xnow += stats[step][0]
-            if xnow > xmax:
-                xmax = xnow
-
-            if step in ("comp", "dur", "rep"):
-                range_xs[protocol].append(xnow)
-
-    plt.text(0.3, 4.2, "MultiPaxos & Raft", verticalalignment="center")
-    plt.text(0.3, 0.5, "Crossword & others", verticalalignment="center")
-
-    for i in range(3):
-        plt.plot(
-            [range_xs["MultiPaxos"][i], range_xs["Crossword"][i]],
-            [
-                PROTOCOLS_YPOS["MultiPaxos"] - BAR_HEIGHT / 2,
-                PROTOCOLS_YPOS["Crossword"] + BAR_HEIGHT / 2,
-            ],
-            color="dimgray",
-            linestyle="--",
-            linewidth=1,
+    for i, protocol in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        util = bw_utils[f"{protocol}"]["L-F"][1]
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
+        bar = plt.bar(
+            xpos,
+            util,
+            width=1,
+            color=color,
+            edgecolor="black",
+            linewidth=1.2,
+            label=label,
+            hatch=hatch,
+            # yerr=result["stdev"],
+            # ecolor="black",
+            # capsize=1,
         )
 
-    plt.text(
-        0.6,
-        2.4,
-        "due to bw save",
-        verticalalignment="center",
-        color="dimgray",
-        fontsize=9,
-    )
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
 
-    plt.text(
-        xmax * 0.76,
-        1.2,
-        "due to\nmore replies\nto wait for",
-        verticalalignment="center",
-        color="dimgray",
-        fontsize=9,
-    )
-    plt.plot(
-        [
-            xmax * 0.64,
-            xmax * 0.75,
-        ],
-        [2.25, 1.85],
-        color="dimgray",
-        linestyle="-",
-        linewidth=1,
-    )
+    plt.ylim((0, 100))
+    plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
+    plt.tick_params(bottom=False, labelbottom=False)
+    
+    plt.xlabel("L-F")
 
-    ax = fig.axes[0]
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    # F-F
+    ax2 = plt.subplot(212)
 
-    plt.ylim((0, 4.7))
-    plt.tick_params(left=False)
-    plt.yticks([])
+    for i, protocol in enumerate(PROTOCOLS_ORDER):
+        xpos = i + 1
+        util = bw_utils[f"{protocol}"]["F-F"][1]
+        label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
+        bar = plt.bar(
+            xpos,
+            util,
+            width=1,
+            color=color,
+            edgecolor="black",
+            linewidth=1.2,
+            label=label,
+            hatch=hatch,
+            # yerr=result["stdev"],
+            # ecolor="black",
+            # capsize=1,
+        )
 
-    plt.xlim((0, xmax * 1.1))
-    plt.xlabel("Elapsed time (ms)")
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
+
+    plt.ylim((0, 100))
+    plt.yticks([0, 50, 100], ["0%", "50%", "100%"])
+    plt.tick_params(bottom=False, labelbottom=False)
+    
+    plt.xlabel("F-F")
 
     plt.tight_layout()
 
@@ -375,14 +312,14 @@ def plot_bw_utils(bd_stats, plots_dir):
     plt.close()
     print(f"Plotted: {pdf_name}")
 
-    return ax.get_legend_handles_labels()
+    return ax1.get_legend_handles_labels()
 
 
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (2.6, 1.4),
-            "font.size": 10,
+            "font.size": 12,
             "pdf.fonttype": 42,
         }
     )
@@ -393,8 +330,8 @@ def plot_legend(handles, labels, plots_dir):
     lgd = plt.legend(
         handles,
         labels,
-        handlelength=0.6,
-        handleheight=1.5,
+        handlelength=1.0,
+        handleheight=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )
@@ -403,14 +340,6 @@ def plot_legend(handles, labels, plots_dir):
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
-
-
-def save_space_usage(space_usage, plots_dir):
-    txt_name = f"{plots_dir}/exper-wal-space.txt"
-    with open(txt_name, "w") as ftxt:
-        for protocol, size_mb in space_usage.items():
-            ftxt.write(f"{protocol}  {size_mb:.2f} MB\n")
-    print(f"Saved: {txt_name}")
 
 
 if __name__ == "__main__":

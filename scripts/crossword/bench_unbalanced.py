@@ -225,7 +225,7 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.2, 2),
+            "figure.figsize": (3.0, 2.0),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -255,10 +255,10 @@ def plot_results(results, plots_dir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
         "Raft.2.b": ("Raft", "lightgreen", None),
-        "Crossword.2.b": ("Crossword (balanced)", "lightsteelblue", "xx"),
-        "Crossword.2.u": ("Crossword (unbalanced)", "cornflowerblue", ".."),
-        "RSPaxos.2.b": ("RSPaxos (q=5 forced)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 forced)", "wheat", "\\\\"),
+        "Crossword.2.b": ("Crossword (bal.)", "lightsteelblue", "xx"),
+        "Crossword.2.u": ("Crossword (unbal.)", "cornflowerblue", ".."),
+        "RSPaxos.2.b": ("RSPaxos (q=5 set)", "salmon", "//"),
+        "CRaft.2.b": ("CRaft (q=5 set)", "wheat", "\\\\"),
         "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
         "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
     }
@@ -318,8 +318,8 @@ def plot_legend(handles, labels, plots_dir):
     lgd = plt.legend(
         handles,
         labels,
-        handleheight=0.9,
-        handlelength=1.3,
+        handlelength=1.0,
+        handleheight=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
     )

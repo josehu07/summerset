@@ -121,7 +121,6 @@ def wait_parallel_procs(procs, names=None, check_rc=True):
 def get_cpu_count(remote=None):
     cpus = multiprocessing.cpu_count()
     if remote is not None:
-        print(remote)
         cpus = int(
             run_process_over_ssh(
                 remote,

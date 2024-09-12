@@ -620,7 +620,7 @@ def plot_write_ratio_results(results, rounds_params, plots_dir):
 def plot_major_ylabels(ylabels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (1.5, 2.2),
+            "figure.figsize": (1.5, 2.5),
             "font.size": 12,
             "pdf.fonttype": 42,
         }

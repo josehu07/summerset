@@ -296,7 +296,7 @@ def print_results(ver_stats, diff_stats):
 def plot_staleness(diff_stats, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.5, 1.7),
+            "figure.figsize": (2.4, 2.0),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -312,9 +312,9 @@ def plot_staleness(diff_stats, plots_dir):
     ]
     PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
         "MultiPaxos.None": ("MultiPaxos", "dimgray", "v", 0),
-        "Crossword.200": ("Crossword, 200", "royalblue", "p", 5),
-        "Crossword.100": ("Crossword, 100", "steelblue", "o", 10),
-        "Crossword.0": ("Crossword, 0", "lightsteelblue", "2", 5),
+        "Crossword.200": ("Cw (200)", "royalblue", "p", 5),
+        "Crossword.100": ("Cw (100)", "steelblue", "o", 10),
+        "Crossword.0": ("Cw (0)", "lightsteelblue", "2", 5),
         "RSPaxos.None": ("RSPaxos", "red", "x", 0),
     }
     TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
@@ -393,7 +393,7 @@ def plot_staleness(diff_stats, plots_dir):
 
     plt.xscale("log")
     plt.xlim(left=xmin)
-    plt.xlabel("Time between writes (ms, log-scale)")
+    plt.xlabel("Time between writes\n(ms, log-scale)")
 
     xticks = [TIME_INTERVAL_UNIT, 10, 100]  # TODO: currently hardcoded
     xticklabels = [str(x) for x in xticks]
@@ -401,7 +401,7 @@ def plot_staleness(diff_stats, plots_dir):
 
     plt.ylim(bottom=-3)
     plt.ylabel("Staleness (#ver.)")
-    ax.yaxis.set_label_coords(-0.15, 0.4)
+    ax.yaxis.set_label_coords(-0.3, 0.4)
 
     max_ytick = int((ymax // 50) * 50)
     yticks = list(range(0, max_ytick + 1, 50))

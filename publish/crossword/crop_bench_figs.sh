@@ -37,12 +37,14 @@ PLOT_FILES=("models/cstr_bounds"
             "plots/load_sizes/exper-load_sizes"
             "plots/load_sizes/legend-load_sizes"
             "plots/staleness/exper-staleness"
+            "plots/bw_utils/exper-bw_utils"
             "plots/ycsb_trace/exper-ycsb_trace")
 PLOT_FILES_BOTTOM_MORE=("intros/legend-motiv_profile"
                         "plots/critical/ylabels-critical"
                         "plots/failover/legend-failover"
                         "plots/adaptive/legend-adaptive"
                         "plots/staleness/legend-staleness"
+                        "plots/bw_utils/legend-bw_utils"
                         "plots/ycsb_trace/legend-ycsb_trace")
 PLOT_FILES_RIGHT_MORE=("intros/motiv_profile_cdf")
 
