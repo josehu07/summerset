@@ -54,7 +54,7 @@ def run_process_pinned(
 
 def compose_client_cmd(
     ipaddrs,
-    partition,
+    app_port,
     num_threads,
     value_size,
     put_ratio,
@@ -84,7 +84,7 @@ def compose_client_cmd(
         "-p",
         f"updateproportion={put_ratio}",
         "-p",
-        f"app_server_port={SERVER_APP_PORT(partition)}",
+        f"app_server_port={app_port}",
         "-p",
         f"maxexecutiontime={length_s}",
     ]
@@ -107,7 +107,7 @@ def run_clients(
 
     cmd = compose_client_cmd(
         ipaddrs,
-        partition,
+        SERVER_APP_PORT(partition),
         num_threads,
         value_size,
         put_ratio,
@@ -187,6 +187,8 @@ if __name__ == "__main__":
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
     # check that number of replicas is valid
+    if args.num_replicas <= 0:
+        raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(ipaddrs):
         raise ValueError("#replicas exceeds #hosts in the config file")
     hosts = hosts[: args.num_replicas]

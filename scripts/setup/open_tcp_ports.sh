@@ -1,24 +1,18 @@
 #! /bin/bash
 
 
-PORT_RANGE_MIN=40000
+PORT_RANGE_MIN=20000
 PORT_RANGE_MAX=49999
 
 
 echo
 echo "Deleting old conflicting rules..."
 sudo iptables -D INPUT -p tcp --match multiport --dports "${PORT_RANGE_MIN}:${PORT_RANGE_MAX}" -j ACCEPT
-sudo iptables -D INPUT -p tcp --dport "37777" -j ACCEPT
 
 
 echo
-echo "Allowing required TCP ports..."
+echo "Allowing may-use TCP ports..."
 sudo iptables -A INPUT -p tcp --match multiport --dports "${PORT_RANGE_MIN}:${PORT_RANGE_MAX}" -j ACCEPT
-
-
-echo
-echo "Allowing required iperf port..."
-sudo iptables -A INPUT -p tcp --dport "37777" -j ACCEPT
 
 
 echo

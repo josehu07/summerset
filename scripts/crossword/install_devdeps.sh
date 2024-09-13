@@ -24,15 +24,15 @@ rm ycsb-0.17.0.tar.gz
 mv ycsb-0.17.0 ycsb
 
 
-echo
-echo "Fetching ChainPaxos codebase..."
-git clone https://github.com/pfouto/chain.git
-cd chain
-git checkout aa4878d
-cd ..
-git clone https://github.com/pfouto/chain-client.git
-cd chain-client
-git checkout ce3a038
+# echo
+# echo "Fetching ChainPaxos codebase..."
+# git clone https://github.com/pfouto/chain.git
+# cd chain
+# git checkout aa4878d
+# cd ..
+# git clone https://github.com/pfouto/chain-client.git
+# cd chain-client
+# git checkout ce3a038
 
 
 echo
@@ -45,8 +45,9 @@ bazel
 
 echo
 echo "Fetching & building our CockroachDB fork..."
-git clone https://github.com/josehu07/cockroach-cw.git
-cd cockroach-cw
+git clone https://github.com/josehu07/cockroach.git
+cd cockroach
+git checkout crossword
 tee -a .bazelrc.user <<EOF
 build --config=dev
 build --config=lintonbuild

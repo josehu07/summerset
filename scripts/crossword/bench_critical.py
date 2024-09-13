@@ -144,9 +144,9 @@ def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
 
 def wait_cluster_setup():
     # print("Waiting for cluster setup...")
-    # wait for 30 seconds to safely allow all nodes up
+    # wait for 20 seconds to safely allow all nodes up
     # not relying on SSH-piped outputs here
-    time.sleep(30)
+    time.sleep(20)
 
 
 def run_bench_clients(remote0, base, repo, protocol, round_params):
