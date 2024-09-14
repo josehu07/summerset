@@ -82,7 +82,7 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
         utils.proc.wait_parallel_procs(procs)
 
 
-def compose_build_cmd(release):
+def compose_summerset_build_cmd(release):
     cmd = ["cargo", "build", "--workspace"]
     if release:
         cmd.append("-r")
@@ -90,30 +90,53 @@ def compose_build_cmd(release):
     return cmd
 
 
-def build_on_targets(destinations, dst_path, release, sequential):
-    # compose build command over SSH
-    cmd = compose_build_cmd(release)
+def compose_cockroach_build_cmd():
+    cmd = ["./dev", "build"]
+    return cmd
 
-    # execute
+
+def build_on_targets(destinations, dst_path, release, sequential):
+    # compose build command
+    if "cockroach" in dst_path:
+        print("Using build command for: cockroach")
+        cmd = compose_cockroach_build_cmd()
+    elif "summerset" in dst_path:
+        print("Using build command for: summerset")
+        cmd = compose_summerset_build_cmd(release)
+    else:
+        raise RuntimeError(f"don't know what build command to use for '{dst_path}'")
+
+    # execute over SSH
     if sequential:
         for remote in destinations:
-            proc = utils.proc.run_process_over_ssh(remote, cmd, cd_dir=dst_path)
+            # ugly hack to opt-out AVX2 instructions dependency
+            # on UMass datacenter machines
+            build_cmd = cmd
+            if "summerset" in dst_path and "mass" in remote:
+                build_cmd = cmd[:-2]
+
+            proc = utils.proc.run_process_over_ssh(remote, build_cmd, cd_dir=dst_path)
             proc.wait()
     else:
         print("Running build commands in parallel...")
         procs = []
         for remote in destinations:
+            # ugly hack to opt-out AVX2 instructions dependency
+            # on UMass datacenter machines
+            build_cmd = cmd
+            if "summerset" in dst_path and "mass" in remote:
+                build_cmd = cmd[:-2]
+
             procs.append(
                 utils.proc.run_process_over_ssh(
                     remote,
-                    # ugly hack to opt-out AVX2 instructions dependency
-                    # on UMass datacenter machines
-                    cmd if "mass" not in remote else cmd[:-2],
+                    build_cmd,
                     cd_dir=dst_path,
                     capture_stdout=True,
                     capture_stderr=True,
                 )
             )
+
         print("Waiting for command results...")
         utils.proc.wait_parallel_procs(procs)
 
@@ -181,5 +204,5 @@ if __name__ == "__main__":
 
     mirror_folder(destinations, SRC_PATH, DST_PATH, repo, args.sequential)
 
-    if len(args.folder) == 0 and args.build:
+    if args.build:
         build_on_targets(destinations, DST_PATH, args.release, args.sequential)

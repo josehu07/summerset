@@ -22,16 +22,34 @@ WORKLOAD_OUTPUT_PATH = (
 
 WORKLOAD_SETTINGS = {
     "kv": {
-        "init": ["--drop"],
-        "run": [
-            "--min-block-bytes=100000",
-            "--max-block-bytes=100000",
+        "init": lambda c, v, h: [
+            "--drop",
+        ],
+        "run": lambda c, v, h: [
+            f"--min-block-bytes={v}",
+            f"--max-block-bytes={v}",
             "--read-percent=50",
         ],
     },
+    "bank": {
+        "init": lambda c, v, h: [
+            "--drop",
+            f"--payload-bytes={v}",
+        ],
+        "run": lambda c, v, h: [
+            f"--payload-bytes={v}",
+        ],
+    },
     "tpcc": {
-        "init": ["--warehouses=10", "--drop"],
-        "run": ["--warehouses=10", "--wait=false", "--workers=30"],
+        "init": lambda c, v, h: [
+            "--drop",
+            f"--warehouses={h}",
+        ],
+        "run": lambda c, v, h: [
+            f"--warehouses={h}",
+            f"--workers={c}",
+            "--wait=false",
+        ],
     },
 }
 
@@ -66,6 +84,8 @@ def run_process_pinned(cmd, capture_stdout=False, cores_per_proc=0, cd_dir=None)
 def compose_init_cmd(
     workload,
     concurrency,
+    value_size,
+    warehouses,
     sql_addr,
 ):
     cmd = [
@@ -75,7 +95,7 @@ def compose_init_cmd(
         workload,
         f"--concurrency={concurrency}",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["init"]
+    cmd += WORKLOAD_SETTINGS[workload]["init"](concurrency, value_size, warehouses)
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -86,12 +106,14 @@ def init_workload(
     hosts,
     partition,
     concurrency,
+    value_size,
+    warehouses,
     cd_dir,
     capture_stdout,
     pin_cores,
 ):
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
-    cmd = compose_init_cmd(workload, concurrency, sql_addr)
+    cmd = compose_init_cmd(workload, concurrency, value_size, warehouses, sql_addr)
 
     client_proc = run_process_pinned(
         cmd,
@@ -105,6 +127,8 @@ def init_workload(
 def compose_run_cmd(
     workload,
     concurrency,
+    value_size,
+    warehouses,
     length_s,
     sql_addr,
 ):
@@ -116,7 +140,7 @@ def compose_run_cmd(
         f"--concurrency={concurrency}",
         f"--duration={length_s}s",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["run"]
+    cmd += WORKLOAD_SETTINGS[workload]["run"](concurrency, value_size, warehouses)
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -127,13 +151,17 @@ def run_workload(
     hosts,
     partition,
     concurrency,
+    value_size,
+    warehouses,
     length_s,
     cd_dir,
     capture_stdout,
     pin_cores,
 ):
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
-    cmd = compose_run_cmd(workload, concurrency, length_s, sql_addr)
+    cmd = compose_run_cmd(
+        workload, concurrency, value_size, warehouses, length_s, sql_addr
+    )
 
     client_proc = run_process_pinned(
         cmd,
@@ -175,6 +203,16 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "-c", "--concurrency", type=int, default=16, help="number of concurrent workers"
+    )
+    parser.add_argument(
+        "-v", "--value_size", type=int, default=4096, help="payload size in bytes"
+    )
+    parser.add_argument(
+        "-s",
+        "--warehouses",
+        type=int,
+        default=100,
+        help="number of warehouses (tpcc only)",
     )
     parser.add_argument(
         "-l", "--length_s", type=int, default=60, help="run length in secs"
@@ -238,6 +276,8 @@ if __name__ == "__main__":
             hosts,
             partition,
             args.concurrency,
+            args.value_size,
+            args.warehouses,
             cd_dir_cockroach,
             capture_stdout,
             args.pin_cores,
@@ -267,6 +307,8 @@ if __name__ == "__main__":
             hosts,
             partition,
             args.concurrency,
+            args.value_size,
+            args.warehouses,
             args.length_s,
             cd_dir_cockroach,
             capture_stdout,
