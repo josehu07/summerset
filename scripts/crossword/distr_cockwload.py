@@ -22,12 +22,16 @@ WORKLOAD_OUTPUT_PATH = (
 
 WORKLOAD_SETTINGS = {
     "kv": {
-        "init": [],
-        "run": ["--max-block-bytes=1024", "--read-percent=50"],
+        "init": ["--drop"],
+        "run": [
+            "--min-block-bytes=100000",
+            "--max-block-bytes=100000",
+            "--read-percent=50",
+        ],
     },
     "tpcc": {
-        "init": [],
-        "run": [],
+        "init": ["--warehouses=10", "--drop"],
+        "run": ["--warehouses=10", "--wait=false", "--workers=30"],
     },
 }
 
@@ -170,7 +174,7 @@ if __name__ == "__main__":
         help="if set, do the init phase; else do the run phase",
     )
     parser.add_argument(
-        "-c", "--concurrency", type=int, default=8, help="number of concurrent workers"
+        "-c", "--concurrency", type=int, default=16, help="number of concurrent workers"
     )
     parser.add_argument(
         "-l", "--length_s", type=int, default=60, help="run length in secs"

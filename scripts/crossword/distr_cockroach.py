@@ -186,6 +186,17 @@ def wait_init_finish():
     time.sleep(10)
 
 
+def compose_setting_cmd(init_sql_addr):
+    cmd = [
+        "./cockroach",
+        "sql",
+        "--insecure",
+        f"--host={init_sql_addr}",
+        f"--execute=SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
+    ]
+    return cmd
+
+
 def compose_alter_cmd(init_sql_addr, num_replicas):
     cmd = [
         "./cockroach",
@@ -197,15 +208,20 @@ def compose_alter_cmd(init_sql_addr, num_replicas):
     return cmd
 
 
-def set_num_replicas(ipaddrs, hosts, cd_dir, partition, num_replicas):
+def set_proper_settings(ipaddrs, hosts, cd_dir, partition, num_replicas):
     if num_replicas != len(ipaddrs):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
     init_ip = ipaddrs[hosts[0]]
     init_sql_addr = f"{init_ip}:{SERVER_SQL_PORT(partition)}"
 
-    cmd = compose_alter_cmd(init_sql_addr, num_replicas)
+    cmd = compose_setting_cmd(init_sql_addr)
+    proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
+    rc = proc.wait()
+    if rc != 0:
+        raise RuntimeError(f"failed to set proper cluster settings: rc {rc}")
 
+    cmd = compose_alter_cmd(init_sql_addr, num_replicas)
     proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
     rc = proc.wait()
     if rc != 0:
@@ -360,9 +376,9 @@ if __name__ == "__main__":
     wait_servers_setup()
     do_init_action(ipaddrs, hosts, cd_dir_cockroach, partition)
 
-    # set default replication factor
+    # set default replication factor & other cluster settings
     wait_init_finish()
-    set_num_replicas(ipaddrs, hosts, cd_dir_cockroach, partition, args.num_replicas)
+    set_proper_settings(ipaddrs, hosts, cd_dir_cockroach, partition, args.num_replicas)
 
     for proc in server_procs:
         proc.wait()
