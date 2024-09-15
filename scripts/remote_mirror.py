@@ -12,13 +12,15 @@ EXCLUDE_NAMES = [
     # output folders
     "results/",
     "backups/",
-    # bazel build
+    # rust cargo build
+    "Cargo.lock",
+    "target/",
+    # go bazel build
     "_bazel/",
     "bin/",
     ".bazelrc.user",
-    # cargo build
-    "Cargo.lock",
-    "target/",
+    "*.pb.go",
+    "*.pb.gw.go",
     # git metadata
     ".git/",
     # tla+ states
