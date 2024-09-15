@@ -9,13 +9,26 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 EXCLUDE_NAMES = [
+    # output folders
     "results/",
     "backups/",
+    # bazel build
+    "_bazel/",
+    "bin/",
+    ".bazelrc.user",
+    # cargo build
+    "Cargo.lock",
     "target/",
+    # git metadata
     ".git/",
-    ".vscode/",
+    # tla+ states
     "tla+/*/states/",
+    # python caches
     "*/__pycache__/",
+    # OS & editors
+    ".DS_Store",
+    ".vscode/",
+    ".idea/",
 ]
 
 
@@ -26,6 +39,7 @@ def compose_rsync_cmd(src_path, dst_path, remote, is_summerset=True):
 
     for name in EXCLUDE_NAMES:
         if is_summerset or ".git" not in name:
+            # keep .git folder for non-Summerset repos
             rsync_cmd += ["--exclude", f"{name}"]
 
     rsync_cmd += [src_path, f"{remote}:{dst_path}"]

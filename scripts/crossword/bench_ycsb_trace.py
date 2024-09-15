@@ -158,8 +158,8 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
     if protocol == "RSPaxos" or protocol == "CRaft":
         config += f"+fault_tolerance=2"
     if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
-        config += f"+disable_gossip_timer=true"  # TODO: maybe?
+        config += f"+b_to_d_threshold={0.08}"
+        config += f"+disable_gossip_timer=true"
 
     # launch service clusters for each partition
     procs_cluster = []

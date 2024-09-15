@@ -136,7 +136,7 @@ def bench_round(remote0, base, repo, protocol, value_size, runlog_path):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
+        config += f"+b_to_d_threshold={0.08}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster

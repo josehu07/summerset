@@ -70,7 +70,7 @@ class World1DRing(World):
 
 class World2DRect(World):
     def __init__(self, width, height, num_servers):
-        assert num_servers == 5  # TODO: complete this
+        assert num_servers == 5  # TODO: general #servers
 
         self.name = f"2DRect.{width}x{height}.{num_servers}"
         self.width = width

@@ -205,7 +205,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
     if round_params.read_lease:
         config += f"+sim_read_lease=true"
     if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.08}"  # TODO: tune this
+        config += f"+b_to_d_threshold={0.08}"
         config += f"+disable_gossip_timer=true"
 
     # launch service cluster
