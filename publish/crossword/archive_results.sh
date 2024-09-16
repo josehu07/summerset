@@ -39,7 +39,7 @@ else
     echo
     echo "Archiving results/ -> backups/${TAR_NAME}..."
     cd results/
-    tar -Jcf ${TAR_NAME} *
+    COPYFILE_DISABLE=1 tar -Jcf ${TAR_NAME} *
     cd ..
     mv results/${TAR_NAME} backups/
 
