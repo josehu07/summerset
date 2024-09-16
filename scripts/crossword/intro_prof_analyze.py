@@ -132,11 +132,18 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     for db, (len_cnts, color, zorder, endx) in DBS_DATA_COLOR_ZORDER_ENDX.items():
         x, xmax, xmin = [], 0, float("inf")
         for l, c in len_cnts.items():
-            x += [l for _ in range(c)]
             if l > xmax:
                 xmax = l
             if l < xmin:
                 xmin = l
+
+            # account for manually drawn axis breaks
+            draw_l = l
+            if db == "TiDB" and l > 95 * 1024 and l < 280 * 1024:
+                draw_l = 100 * 1024
+            if db == "CockroachDB" and l > 300 * 1024 and l < 60 * 1024 * 1024:
+                draw_l = 131 * 1024
+            x += [draw_l for _ in range(c)]
 
         xright = 150 * 1024
         step = int(endx / 8192)
@@ -154,7 +161,7 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
             label=db,
             zorder=zorder,
         )
-        endx_label = "290KB" if db == "TiDB" else "63MB"  # TODO: hardcoded!
+        endx_label = "290KB" if db == "TiDB" else "63MB"
         plt.vlines(
             endx,
             ymin=0.92,
@@ -192,43 +199,7 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     plt.vlines(
         4096, ymin=0, ymax=1.05, colors="dimgray", linestyles="dashed", zorder=20
     )
-    # plt.arrow(
-    #     7500,
-    #     0.84,
-    #     0,
-    #     0.17,
-    #     color="dimgray",
-    #     width=220,
-    #     length_includes_head=True,
-    #     head_width=1500,
-    #     head_length=0.07,
-    #     zorder=20,
-    # )
-    # plt.arrow(
-    #     7500,
-    #     0.84,
-    #     0,
-    #     -0.16,
-    #     color="dimgray",
-    #     width=220,
-    #     length_includes_head=True,
-    #     head_width=1500,
-    #     head_length=0.07,
-    #     zorder=20,
-    # )
-    plt.text(
-        16000, 0.22, "~45% are ≥ 4KB", color="dimgray", fontsize=9.5
-    )  # TODO: hardcoded!
-
-    # arrow = patches.FancyArrowPatch(
-    #     (96 * 1024, 0.45),
-    #     (xright, 0.25),
-    #     connectionstyle="arc3,rad=.12",
-    #     arrowstyle="Simple, tail_width=0.1, head_width=2.5, head_length=4",
-    #     color="dimgray",
-    # )
-    # ax.add_patch(arrow)
-    # plt.text(89000, 0.55, "max 290KB", color="dimgray")
+    plt.text(16000, 0.22, "~45% are ≥ 4KB", color="dimgray", fontsize=9.5)
 
     def draw_xaxis_break(xloc):
         xpl, xpr = xloc - 3.5, xloc + 3.5
