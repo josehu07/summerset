@@ -39,6 +39,7 @@ def run_process(
     print_cmd=True,
     cpu_list=None,
     in_netns=None,
+    extra_env=None,
 ):
     stdout, stderr = None, None
     if capture_stdout:
@@ -53,10 +54,14 @@ def run_process(
         cmd = [s for s in cmd if s != "sudo"]
         cmd = ["sudo", "ip", "netns", "exec", in_netns] + cmd
 
+    env_vars = os.environ.copy()
+    if extra_env is not None:
+        env_vars.update(extra_env)
+
     if print_cmd:
         print("Run:", " ".join(cmd))
 
-    proc = subprocess.Popen(cmd, cwd=cd_dir, stdout=stdout, stderr=stderr)
+    proc = subprocess.Popen(cmd, cwd=cd_dir, stdout=stdout, stderr=stderr, env=env_vars)
     return proc
 
 
@@ -68,6 +73,7 @@ def run_process_over_ssh(
     capture_stderr=False,
     print_cmd=True,
     cpu_list=None,
+    extra_env=None,
 ):
     stdout, stderr = None, None
     if capture_stdout:
@@ -94,12 +100,18 @@ def run_process_over_ssh(
             cmd[i] = new_seg
             config_seg = False
 
-    if cd_dir is None or len(cd_dir) == 0:
-        cmd = ["ssh", remote, f". ~/.profile; {' '.join(cmd)}"]
-    else:
-        cmd = ["ssh", remote, f". ~/.profile; cd {cd_dir}; {' '.join(cmd)}"]
+    str_cmd = " ".join(cmd)
+    if extra_env is not None:
+        extra_env_assigns = [f"{k}={v}" for k, v in extra_env.items()]
+        str_cmd = f"{' '.join(extra_env_assigns)} {str_cmd}"
 
-    proc = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+    if cd_dir is None or len(cd_dir) == 0:
+        wrapped_cmd = f". ~/.profile; {str_cmd}"
+    else:
+        wrapped_cmd = f". ~/.profile; cd {cd_dir}; {str_cmd}"
+
+    ssh_exec_cmd = ["ssh", remote, wrapped_cmd]
+    proc = subprocess.Popen(ssh_exec_cmd, stdout=stdout, stderr=stderr)
     return proc
 
 

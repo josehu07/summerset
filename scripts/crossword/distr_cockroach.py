@@ -26,7 +26,12 @@ PROTOCOLS = {"Raft", "Crossword"}
 
 
 def run_process_pinned(
-    cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
+    cmd,
+    capture_stderr=False,
+    cores_per_proc=0,
+    remote=None,
+    cd_dir=None,
+    extra_env=None,
 ):
     cpu_list = None
     if cores_per_proc > 0:
@@ -39,11 +44,20 @@ def run_process_pinned(
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
         return utils.proc.run_process(
-            cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+            cmd,
+            capture_stderr=capture_stderr,
+            cd_dir=cd_dir,
+            cpu_list=cpu_list,
+            extra_env=extra_env,
         )
     else:
         return utils.proc.run_process_over_ssh(
-            remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+            remote,
+            cmd,
+            capture_stderr=capture_stderr,
+            cd_dir=cd_dir,
+            cpu_list=cpu_list,
+            extra_env=extra_env,
         )
 
 
@@ -100,6 +114,7 @@ def launch_servers(
     file_midfix,
     fresh_files,
     pin_cores,
+    size_profiling,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -108,6 +123,10 @@ def launch_servers(
         f"{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT(partition)}"
         for r in range(num_replicas)
     ]
+
+    extra_env = dict()
+    if size_profiling:
+        extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
 
     server_procs = []
     for replica in range(num_replicas):
@@ -135,6 +154,7 @@ def launch_servers(
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
                 cd_dir=cd_dir,
+                extra_env=extra_env,
             )
         else:
             # spawn server process on remote server through ssh
@@ -144,6 +164,7 @@ def launch_servers(
                 cores_per_proc=pin_cores,
                 remote=remotes[host],
                 cd_dir=cd_dir,
+                extra_env=extra_env,
             )
         server_procs.append(proc)
 
@@ -269,6 +290,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
     )
+    parser.add_argument(
+        "--size_profiling",
+        action="store_true",
+        help="if set, turn on Raft msg size profiling",
+    )
     args = parser.parse_args()
 
     # parse hosts config file
@@ -332,6 +358,34 @@ if __name__ == "__main__":
         )
     utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
+    # msg size profiling assumes '/tmp/cockroach/size-profiles/' exists
+    if args.size_profiling:
+        if "/tmp/cockroach" not in args.file_prefix:
+            raise ValueError(
+                f"msg size profiling requires '/tmp/cockroach' in `file_prefix`"
+            )
+        print("Preparing size-profiles folder...")
+        prepare_procs.clear()
+        for host in hosts:
+            prepare_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["rm", "-rf", "/tmp/cockroach/size-profiles"],
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
+        prepare_procs.clear()
+        for host in hosts:
+            prepare_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["mkdir", "-p", "/tmp/cockroach/size-profiles"],
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
+
     # launch server replicas
     server_procs = launch_servers(
         remotes,
@@ -346,6 +400,7 @@ if __name__ == "__main__":
         file_midfix,
         not args.keep_files,
         args.pin_cores,
+        args.size_profiling,
     )
 
     # register termination signals handler
