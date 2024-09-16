@@ -49,12 +49,20 @@ WORKLOAD_SETTINGS = {
             f"--warehouses={h}",
             f"--workers={c}",
             "--wait=false",
+            "--replicate-static-columns=true",
+            "--mix=newOrder=100,payment=1,orderStatus=1,delivery=1,stockLevel=1",
         ],
     },
 }
 
 
-def run_process_pinned(cmd, capture_stdout=False, cores_per_proc=0, cd_dir=None):
+def run_process_pinned(
+    cmd,
+    capture_stdout=False,
+    cores_per_proc=0,
+    cd_dir=None,
+    extra_env=None,
+):
     cpu_list = None
     if cores_per_proc != 0:
         # get number of processors
@@ -77,7 +85,11 @@ def run_process_pinned(cmd, capture_stdout=False, cores_per_proc=0, cd_dir=None)
             assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
     return utils.proc.run_process(
-        cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
+        cmd,
+        capture_stdout=capture_stdout,
+        cd_dir=cd_dir,
+        cpu_list=cpu_list,
+        extra_env=extra_env,
     )
 
 
@@ -112,6 +124,15 @@ def init_workload(
     capture_stdout,
     pin_cores,
 ):
+    extra_env = None
+    if workload == "tpcc" and value_size > 0:
+        if value_size > 4096:
+            raise ValueError(
+                f"textScale {value_size} too large: expect in range [1, 4096]"
+            )
+        extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
+        warehouses //= max(value_size // 8, 1)
+
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
     cmd = compose_init_cmd(workload, concurrency, value_size, warehouses, sql_addr)
 
@@ -120,6 +141,7 @@ def init_workload(
         capture_stdout=capture_stdout,
         cores_per_proc=pin_cores,
         cd_dir=cd_dir,
+        extra_env=extra_env,
     )
     return client_proc
 
@@ -158,6 +180,15 @@ def run_workload(
     capture_stdout,
     pin_cores,
 ):
+    extra_env = None
+    if workload == "tpcc" and value_size > 0:
+        if value_size > 4096:
+            raise ValueError(
+                f"textScale {value_size} too large: expect in range [1, 4096]"
+            )
+        extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
+        warehouses //= max(value_size // 8, 1)
+
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
     cmd = compose_run_cmd(
         workload, concurrency, value_size, warehouses, length_s, sql_addr
@@ -168,6 +199,7 @@ def run_workload(
         capture_stdout=capture_stdout,
         cores_per_proc=pin_cores,
         cd_dir=cd_dir,
+        extra_env=extra_env,
     )
     return client_proc
 
@@ -205,13 +237,17 @@ if __name__ == "__main__":
         "-c", "--concurrency", type=int, default=16, help="number of concurrent workers"
     )
     parser.add_argument(
-        "-v", "--value_size", type=int, default=4096, help="payload size in bytes"
+        "-v",
+        "--value_size",
+        type=int,
+        default=4096,
+        help="payload size (meaning differs per workload)",
     )
     parser.add_argument(
         "-s",
         "--warehouses",
         type=int,
-        default=100,
+        default=200,
         help="number of warehouses (tpcc only)",
     )
     parser.add_argument(

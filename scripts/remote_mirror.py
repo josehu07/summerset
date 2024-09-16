@@ -21,6 +21,8 @@ EXCLUDE_NAMES = [
     ".bazelrc.user",
     "*.pb.go",
     "*.pb.gw.go",
+    "cockroach",
+    "cockroach-short",
     # git metadata
     ".git/",
     # tla+ states

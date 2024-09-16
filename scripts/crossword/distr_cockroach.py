@@ -207,15 +207,24 @@ def wait_init_finish():
     time.sleep(10)
 
 
-def compose_setting_cmd(init_sql_addr):
-    cmd = [
-        "./cockroach",
-        "sql",
-        "--insecure",
-        f"--host={init_sql_addr}",
-        f"--execute=SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
-    ]
-    return cmd
+def compose_setting_cmds(init_sql_addr):
+    cmds = []
+    for setting in (
+        "SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
+        "SET CLUSTER SETTING admission.kv.enabled=false;",
+        "SET CLUSTER SETTING admission.sql_kv_response.enabled=false;",
+        "SET CLUSTER SETTING admission.sql_sql_response.enabled=false;",
+    ):
+        cmds.append(
+            [
+                "./cockroach",
+                "sql",
+                "--insecure",
+                f"--host={init_sql_addr}",
+                f"--execute={setting}",
+            ]
+        )
+    return cmds
 
 
 def compose_alter_cmd(init_sql_addr, num_replicas):
@@ -236,11 +245,11 @@ def set_proper_settings(ipaddrs, hosts, cd_dir, partition, num_replicas):
     init_ip = ipaddrs[hosts[0]]
     init_sql_addr = f"{init_ip}:{SERVER_SQL_PORT(partition)}"
 
-    cmd = compose_setting_cmd(init_sql_addr)
-    proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
-    rc = proc.wait()
-    if rc != 0:
-        raise RuntimeError(f"failed to set proper cluster settings: rc {rc}")
+    for cmd in compose_setting_cmds(init_sql_addr):
+        proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
+        rc = proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"failed to set proper cluster settings: rc {rc}")
 
     cmd = compose_alter_cmd(init_sql_addr, num_replicas)
     proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)

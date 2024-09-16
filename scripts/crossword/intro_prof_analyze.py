@@ -26,10 +26,16 @@ def collect_profile_logs(remotes, remote_logs_path, saved_logs_path):
         utils.file.fetch_files_of_dir(remote, remote_logs_path, saved_logs_path)
 
 
-def parse_profile_results(collect_path):
+def parse_profile_results(saved_logs_path):
     profile = dict()
-    for log in os.listdir(collect_path):
-        with open(f"{collect_path}/{log}", "r") as f:
+    for log_file in os.listdir(saved_logs_path):
+        # the first bunch of ranges are 'system' db ranges and should be excluded!
+        # otherwise, small non-tpcc replication messages will dominate the profile
+        range_id = int(log_file.split("-")[0])
+        if range_id < 70:  # TODO: currently hardcoded for our profile setup
+            continue
+
+        with open(f"{saved_logs_path}/{log_file}", "r") as f:
             for line in f:
                 line = line.strip()
                 if len(line) == 0:
@@ -51,6 +57,7 @@ def parse_profile_results(collect_path):
 
 
 def dump_profile_len_cnts(profile, pickle_path):
+    print()
     print("Profile results summary:")
 
     total_samples = sum(profile.values())
@@ -79,7 +86,7 @@ def dump_profile_len_cnts(profile, pickle_path):
         pickle.dump(len_cnts, fpkl)
 
 
-def preprocess_len_cnts(len_cnts, excludes=5):
+def preprocess_len_cnts(len_cnts, excludes=1):
     print("  Distinct lengths:", len(len_cnts))
     print("  Min & Max:", min(len_cnts.keys()), max(len_cnts.keys()))
 
@@ -104,6 +111,170 @@ def preprocess_len_cnts(len_cnts, excludes=5):
         if l >= 4 * 1024:
             large += c
     print(f"  Fraction >= 4K: {large / total:.2f}")
+    print()
+
+
+def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (3.6, 1.05),
+            "font.size": 10,
+        }
+    )
+    fig = plt.figure("cdf")
+
+    DBS_DATA_COLOR_ZORDER_ENDX = {
+        "TiDB": (len_cnts_tidb, "steelblue", 10, 116 * 1024),
+        "CockroachDB": (len_cnts_crdb, "lightcoral", 5, 148 * 1024),
+    }
+
+    append_xticks, append_xticklabels = [], []
+    for db, (len_cnts, color, zorder, endx) in DBS_DATA_COLOR_ZORDER_ENDX.items():
+        x, xmax, xmin = [], 0, float("inf")
+        for l, c in len_cnts.items():
+            x += [l for _ in range(c)]
+            if l > xmax:
+                xmax = l
+            if l < xmin:
+                xmin = l
+
+        xright = 150 * 1024
+        step = int(endx / 8192)
+        bins = [i * step for i in range(8192)] + [endx, float("inf")]
+
+        plt.hist(
+            x,
+            bins=bins,
+            range=(0, endx),
+            density=True,
+            cumulative=True,
+            histtype="step",
+            linewidth=2,
+            color=color,
+            label=db,
+            zorder=zorder,
+        )
+        endx_label = "290KB" if db == "TiDB" else "63MB"  # TODO: hardcoded!
+        plt.vlines(
+            endx,
+            ymin=0.92,
+            ymax=1.05,
+            colors=color,
+            linestyles="solid",
+            zorder=zorder,
+            linewidth=2,
+        )
+        plt.vlines(
+            endx,
+            ymin=0,
+            ymax=0.92,
+            colors="gray",
+            linestyles="dashed",
+            linewidth=1,
+        )
+
+        append_xticks.append(endx)
+        append_xticklabels.append(endx_label)
+
+    ax = fig.axes[0]
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.xlim(0, xright)
+    plt.xticks(
+        [4096, 32 * 1024, 64 * 1024] + append_xticks,
+        ["4KB", "32KB", "64KB"] + append_xticklabels,
+    )
+
+    plt.ylim(0, 1.05)
+    plt.yticks([0.5, 1.0])
+
+    plt.vlines(
+        4096, ymin=0, ymax=1.05, colors="dimgray", linestyles="dashed", zorder=20
+    )
+    # plt.arrow(
+    #     7500,
+    #     0.84,
+    #     0,
+    #     0.17,
+    #     color="dimgray",
+    #     width=220,
+    #     length_includes_head=True,
+    #     head_width=1500,
+    #     head_length=0.07,
+    #     zorder=20,
+    # )
+    # plt.arrow(
+    #     7500,
+    #     0.84,
+    #     0,
+    #     -0.16,
+    #     color="dimgray",
+    #     width=220,
+    #     length_includes_head=True,
+    #     head_width=1500,
+    #     head_length=0.07,
+    #     zorder=20,
+    # )
+    plt.text(
+        16000, 0.22, "~45% are ≥ 4KB", color="dimgray", fontsize=9.5
+    )  # TODO: hardcoded!
+
+    # arrow = patches.FancyArrowPatch(
+    #     (96 * 1024, 0.45),
+    #     (xright, 0.25),
+    #     connectionstyle="arc3,rad=.12",
+    #     arrowstyle="Simple, tail_width=0.1, head_width=2.5, head_length=4",
+    #     color="dimgray",
+    # )
+    # ax.add_patch(arrow)
+    # plt.text(89000, 0.55, "max 290KB", color="dimgray")
+
+    def draw_xaxis_break(xloc):
+        xpl, xpr = xloc - 3.5, xloc + 3.5
+        xs = [xpl * 1024, xpl * 1024, xpr * 1024, xpr * 1024]
+        ys = [-0.1, 0.1, 0.1, -0.1]
+        plt.fill(xs, ys, "w", fill=True, linewidth=0, zorder=10, clip_on=False)
+        plt.plot(
+            [(xpl - 1) * 1024, (xpl + 1) * 1024],
+            [-0.1, 0.1],
+            color="k",
+            linewidth=1,
+            zorder=20,
+            clip_on=False,
+        )
+        plt.plot(
+            [(xpr - 1) * 1024, (xpr + 1) * 1024],
+            [-0.1, 0.1],
+            color="k",
+            linewidth=1,
+            zorder=20,
+            clip_on=False,
+        )
+        plt.text(
+            xloc * 1024,
+            0,
+            "~",
+            fontsize=8,
+            zorder=30,
+            clip_on=False,
+            ha="center",
+            va="center",
+        )
+
+    draw_xaxis_break(100)
+    draw_xaxis_break(131)
+
+    plt.ylabel("CDF")
+
+    plt.tight_layout()
+
+    pdf_name = f"{output_dir}/motiv_profile_cdf.pdf"
+    plt.savefig(pdf_name, bbox_inches=0)
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
+    return ax.get_legend_handles_labels()
 
 
 if __name__ == "__main__":
@@ -128,9 +299,7 @@ if __name__ == "__main__":
 
     if not args.plot:
         # downloading raw profiled logs
-        os.system(f"rm -rf {collect_path}")
         os.system(f"mkdir -p {collect_path}")
-
         _, _, _, remotes, _, _ = utils.config.parse_toml_file(
             TOML_FILENAME, PHYS_ENV_GROUP
         )
@@ -138,6 +307,7 @@ if __name__ == "__main__":
         for db_sys in ("cockroach",):
             saved_logs_path = f"{collect_path}/{db_sys}"
             pickle_path = f"{collect_path}/length_counts-{db_sys}.pkl"
+            os.system(f"rm -rf {saved_logs_path}")
             os.system(f"mkdir -p {saved_logs_path}")
 
             collect_profile_logs(remotes, PROFILE_LOGS_DIR(db_sys), saved_logs_path)
@@ -149,12 +319,16 @@ if __name__ == "__main__":
         if not os.path.isdir(collect_path):
             raise RuntimeError(f"collect directory {collect_path} does not exist")
 
-        # for db_sys in ("tidb", "cockroach"):
-        for db_sys in ("cockroach",):
+        all_len_cnts = dict()
+        for db_sys in ("tidb", "cockroach"):
             pickle_path = f"{collect_path}/length_counts-{db_sys}.pkl"
             with open(pickle_path, "rb") as fpkl:
                 len_cnts = pickle.load(fpkl)
 
             print(f"{db_sys} --")
-            preprocess_len_cnts(len_cnts)
-            print()
+            preprocess_len_cnts(len_cnts, excludes=5 if db_sys == "tidb" else 1)
+            all_len_cnts[db_sys] = len_cnts
+
+        plot_len_cnts_cdfs(
+            all_len_cnts["tidb"], all_len_cnts["cockroach"], collect_path
+        )
