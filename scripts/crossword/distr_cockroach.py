@@ -127,6 +127,10 @@ def launch_servers(
     extra_env = dict()
     if size_profiling:
         extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
+    if protocol == "Crossword":
+        extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
+    elif protocol != "Raft":
+        raise ValueError(f"invalid protocol name: {protocol}")
 
     server_procs = []
     for replica in range(num_replicas):
