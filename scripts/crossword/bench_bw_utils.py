@@ -218,14 +218,18 @@ def collect_bw_utils(runlog_dir):
 def print_results(bw_utils):
     for protocol in bw_utils:
         print(protocol)
-        print(f"  L-F: {bw_utils[protocol]["L-F"][0]:10.0f} {bw_utils[protocol]["L-F"][1]:3.0f}%")
-        print(f"  F-F: {bw_utils[protocol]["F-F"][0]:10.0f} {bw_utils[protocol]["F-F"][1]:3.0f}%")
+        print(
+            f"  L-F: {bw_utils[protocol]['L-F'][0]:10.0f} {bw_utils[protocol]['L-F'][1]:3.0f}%"
+        )
+        print(
+            f"  F-F: {bw_utils[protocol]['F-F'][0]:10.0f} {bw_utils[protocol]['F-F'][1]:3.0f}%"
+        )
 
 
 def plot_bw_utils(bw_utils, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (1.6, 2.2),
+            "figure.figsize": (1.6, 1.7),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -272,7 +276,8 @@ def plot_bw_utils(bw_utils, plots_dir):
     plt.ylim((0, 60))
     plt.yticks([0, 30, 60], ["0%", "30%", "60%"])
     plt.tick_params(bottom=False, labelbottom=False)
-    
+
+    plt.xlim((0, len(PROTOCOLS_ORDER) + 1))
     plt.xlabel("L-F")
 
     # F-F
@@ -302,10 +307,11 @@ def plot_bw_utils(bw_utils, plots_dir):
     plt.ylim((0, 60))
     plt.yticks([0, 30, 60], ["0%", "30%", "60%"])
     plt.tick_params(bottom=False, labelbottom=False)
-    
+
+    plt.xlim((0, len(PROTOCOLS_ORDER) + 1))
     plt.xlabel("F-F")
 
-    plt.tight_layout()
+    plt.tight_layout(h_pad=0.0)
 
     pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
@@ -318,7 +324,7 @@ def plot_bw_utils(bw_utils, plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.6, 1.4),
+            "figure.figsize": (2.6, 1.6),
             "font.size": 12,
             "pdf.fonttype": 42,
         }

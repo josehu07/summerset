@@ -225,7 +225,7 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.0, 2.0),
+            "figure.figsize": (2.5, 1.8),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
@@ -255,12 +255,12 @@ def plot_results(results, plots_dir):
     PROTOCOLS_LABEL_COLOR_HATCH = {
         "MultiPaxos.2.b": ("MultiPaxos", "darkgray", None),
         "Raft.2.b": ("Raft", "lightgreen", None),
-        "Crossword.2.b": ("Crossword (bal.)", "lightsteelblue", "xx"),
-        "Crossword.2.u": ("Crossword (unbal.)", "cornflowerblue", ".."),
-        "RSPaxos.2.b": ("RSPaxos (q=5 set)", "salmon", "//"),
-        "CRaft.2.b": ("CRaft (q=5 set)", "wheat", "\\\\"),
-        "RSPaxos.1.b": ("RSPaxos (q=4, f=1)", "pink", "//"),
-        "CRaft.1.b": ("CRaft (q=4, f=1)", "cornsilk", "\\\\"),
+        "Crossword.2.b": ("Cw (bal.)", "lightsteelblue", "xx"),
+        "Crossword.2.u": ("Cw (unbal.)", "cornflowerblue", ".."),
+        "RSPaxos.2.b": ("RSPaxos*", "salmon", "//"),
+        "CRaft.2.b": ("CRaft*", "wheat", "\\\\"),
+        "RSPaxos.1.b": ("RSPaxos", "pink", "//"),
+        "CRaft.1.b": ("CRaft", "cornsilk", "\\\\"),
     }
 
     for protocol_with_midfix in PROTOCOLS_ORDER:
@@ -289,7 +289,7 @@ def plot_results(results, plots_dir):
     plt.xticks([3.5, 8.5], ["f=2", "f=1"])
     plt.tick_params(bottom=False)
 
-    plt.ylabel("Throughput (reqs/s)")
+    plt.ylabel("Tput. (reqs/s)")
 
     plt.tight_layout()
 
@@ -304,7 +304,7 @@ def plot_results(results, plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.4, 2),
+            "figure.figsize": (2.6, 1.6),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -313,8 +313,8 @@ def plot_legend(handles, labels, plots_dir):
 
     plt.axis("off")
 
-    # handles.insert(-2, matplotlib.lines.Line2D([], [], linestyle=""))
-    # labels.insert(-2, "")  # insert spacing between groups
+    # handles.insert(2, matplotlib.lines.Line2D([], [], linestyle=""))
+    # labels.insert(2, "")
     lgd = plt.legend(
         handles,
         labels,
@@ -322,9 +322,11 @@ def plot_legend(handles, labels, plots_dir):
         handleheight=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
+        ncol=2,
+        columnspacing=0.6,
     )
     for rec in lgd.get_texts():
-        if "f=1" in rec.get_text():
+        if rec.get_text() == "RSPaxos" or rec.get_text() == "CRaft":
             rec.set_fontstyle("italic")
         # if "Crossword" in rec.get_text():
         #     rec.set_fontweight("bold")

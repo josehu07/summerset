@@ -296,7 +296,7 @@ def print_results(ver_stats, diff_stats):
 def plot_staleness(diff_stats, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.4, 2.0),
+            "figure.figsize": (2.4, 1.6),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -317,7 +317,7 @@ def plot_staleness(diff_stats, plots_dir):
         "Crossword.0": ("Cw (0)", "lightsteelblue", "2", 5),
         "RSPaxos.None": ("RSPaxos", "red", "x", 0),
     }
-    TIME_INTERVAL_UNIT = 3  # TODO: currently hardcoded
+    TIME_INTERVAL_UNIT = 3
     MARKER_SIZE = 4
 
     xmin = TIME_INTERVAL_UNIT - 0.5
@@ -395,12 +395,12 @@ def plot_staleness(diff_stats, plots_dir):
     plt.xlim(left=xmin)
     plt.xlabel("Time between writes\n(ms, log-scale)")
 
-    xticks = [TIME_INTERVAL_UNIT, 10, 100]  # TODO: currently hardcoded
+    xticks = [TIME_INTERVAL_UNIT, 10, 100]
     xticklabels = [str(x) for x in xticks]
     plt.xticks(xticks, xticklabels)
 
     plt.ylim(bottom=-3)
-    plt.ylabel("Staleness (#ver.)")
+    plt.ylabel("Δ #ver.")
     ax.yaxis.set_label_coords(-0.3, 0.4)
 
     max_ytick = int((ymax // 50) * 50)
@@ -423,7 +423,7 @@ def plot_staleness(diff_stats, plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2, 2),
+            "figure.figsize": (2, 1.6),
             "font.size": 10,
             "pdf.fonttype": 42,
         }

@@ -32,7 +32,7 @@ def parse_profile_results(saved_logs_path):
         # the first bunch of ranges are 'system' db ranges and should be excluded!
         # otherwise, small non-tpcc replication messages will dominate the profile
         range_id = int(log_file.split("-")[0])
-        if range_id < 70:  # TODO: currently hardcoded for our profile setup
+        if range_id < 70:  # NOTE: currently hardcoded for our profile setup
             continue
 
         with open(f"{saved_logs_path}/{log_file}", "r") as f:
