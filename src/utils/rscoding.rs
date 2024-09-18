@@ -398,7 +398,7 @@ where
                 return Ok(());
             }
             return Err(SummersetError::msg(format!(
-                "insufficient data shards: {}/ {}",
+                "insufficient data shards: {} / {}",
                 self.avail_data_shards(),
                 self.num_data_shards
             )));
@@ -445,7 +445,15 @@ where
             return Err(SummersetError::msg("codeword is null"));
         }
         if self.num_parity_shards == 0 {
-            return Ok(self.avail_data_shards() == self.num_data_shards);
+            if self.avail_data_shards() == self.num_data_shards {
+                return Ok(true);
+            } else {
+                return Err(SummersetError::msg(format!(
+                    "not all shards present: {} / {}",
+                    self.avail_data_shards(),
+                    self.num_data_shards()
+                )));
+            }
         }
         if let Some(rs) = rs {
             self.shard_splits_match(rs)?;
