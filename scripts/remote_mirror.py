@@ -109,6 +109,7 @@ def compose_summerset_build_cmd(release):
 
 
 def compose_cockroach_build_cmd():
+    # cmd = ["./dev", "gen", "protobuf;", "./dev", "build"]
     cmd = ["./dev", "build"]
     return cmd
 
