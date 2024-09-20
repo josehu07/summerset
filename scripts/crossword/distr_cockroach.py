@@ -116,6 +116,9 @@ def launch_servers(
     pin_cores,
     size_profiling,
     rscoding_timing,
+    min_range_id,
+    min_payload,
+    fixed_num_voters,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -132,6 +135,9 @@ def launch_servers(
         extra_env["COCKROACH_RAFT_RSCODING_TIMING"] = "true"
     if protocol == "Crossword":
         extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
+        extra_env["COCKROACH_RAFT_CW_MIN_RANGE_ID"] = str(min_range_id)
+        extra_env["COCKROACH_RAFT_CW_MIN_PAYLOAD"] = str(min_payload)
+        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
     elif protocol != "Raft":
         raise ValueError(f"invalid protocol name: {protocol}")
 
@@ -316,6 +322,24 @@ if __name__ == "__main__":
         action="store_true",
         help="if set, turn on RS coding timing logging",
     )
+    parser.add_argument(
+        "--min_range_id",
+        type=int,
+        default=70,
+        help="when using Crossword, minimum range ID to enable on (to avoid system db ranges)",
+    )
+    parser.add_argument(
+        "--min_payload",
+        type=int,
+        default=4096,
+        help="when using Crossword, minimum payload size in bytes to enable on",
+    )
+    parser.add_argument(
+        "--fixed_num_voters",
+        type=int,
+        default=5,
+        help="when using Crossword, fixed voters cardinality as a predicate to enable on",
+    )
     args = parser.parse_args()
 
     # parse hosts config file
@@ -423,6 +447,9 @@ if __name__ == "__main__":
         args.pin_cores,
         args.size_profiling,
         args.rscoding_timing,
+        args.min_range_id,
+        args.min_payload,
+        args.fixed_num_voters,
     )
 
     # register termination signals handler
