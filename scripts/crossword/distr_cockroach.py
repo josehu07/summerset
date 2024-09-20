@@ -115,6 +115,7 @@ def launch_servers(
     fresh_files,
     pin_cores,
     size_profiling,
+    rscoding_timing,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -127,6 +128,8 @@ def launch_servers(
     extra_env = dict()
     if size_profiling:
         extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
+    if rscoding_timing:
+        extra_env["COCKROACH_RAFT_RSCODING_TIMING"] = "true"
     if protocol == "Crossword":
         extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
     elif protocol != "Raft":
@@ -308,6 +311,11 @@ if __name__ == "__main__":
         action="store_true",
         help="if set, turn on Raft msg size profiling",
     )
+    parser.add_argument(
+        "--rscoding_timing",
+        action="store_true",
+        help="if set, turn on RS coding timing logging",
+    )
     args = parser.parse_args()
 
     # parse hosts config file
@@ -414,6 +422,7 @@ if __name__ == "__main__":
         not args.keep_files,
         args.pin_cores,
         args.size_profiling,
+        args.rscoding_timing,
     )
 
     # register termination signals handler
