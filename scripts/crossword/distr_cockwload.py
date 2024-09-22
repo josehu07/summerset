@@ -28,7 +28,7 @@ WORKLOAD_SETTINGS = {
         "run": lambda c, v, h: [
             f"--min-block-bytes={v}",
             f"--max-block-bytes={v}",
-            "--read-percent=50",
+            "--read-percent=0",
         ],
     },
     "bank": {

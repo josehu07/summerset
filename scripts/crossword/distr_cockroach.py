@@ -227,9 +227,11 @@ def compose_setting_cmds(init_sql_addr):
     cmds = []
     for setting in (
         "SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
+        "SET CLUSTER SETTING kv.allocator.load_based_lease_rebalancing.enabled=false;",
         "SET CLUSTER SETTING admission.kv.enabled=false;",
         "SET CLUSTER SETTING admission.sql_kv_response.enabled=false;",
         "SET CLUSTER SETTING admission.sql_sql_response.enabled=false;",
+        "SET CLUSTER SETTING server.consistency_check.interval='0';",
     ):
         cmds.append(
             [
