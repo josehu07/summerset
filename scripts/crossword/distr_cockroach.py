@@ -116,6 +116,7 @@ def launch_servers(
     pin_cores,
     size_profiling,
     rscoding_timing,
+    force_leader,
     min_range_id,
     min_payload,
     fixed_num_voters,
@@ -133,11 +134,13 @@ def launch_servers(
         extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
     if rscoding_timing:
         extra_env["COCKROACH_RAFT_RSCODING_TIMING"] = "true"
+    if protocol == "Crossword" or force_leader:
+        extra_env["COCKROACH_DISABLE_LEADER_FOLLOWS_LEASEHOLDER"] = "true"
+        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
     if protocol == "Crossword":
         extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
         extra_env["COCKROACH_RAFT_CW_MIN_RANGE_ID"] = str(min_range_id)
         extra_env["COCKROACH_RAFT_CW_MIN_PAYLOAD"] = str(min_payload)
-        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
     elif protocol != "Raft":
         raise ValueError(f"invalid protocol name: {protocol}")
 
@@ -323,6 +326,11 @@ if __name__ == "__main__":
         help="if set, turn on RS coding timing logging",
     )
     parser.add_argument(
+        "--force_leader",
+        action="store_true",
+        help="if set, try to force leader to be nodeID 1",
+    )
+    parser.add_argument(
         "--min_range_id",
         type=int,
         default=70,
@@ -447,6 +455,7 @@ if __name__ == "__main__":
         args.pin_cores,
         args.size_profiling,
         args.rscoding_timing,
+        args.force_leader,
         args.min_range_id,
         args.min_payload,
         args.fixed_num_voters,
