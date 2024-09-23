@@ -258,8 +258,8 @@ def compose_setting_cmds(init_sql_addr, try_force_leader):
 
 def compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader):
     alter_sql = f"ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas}"
-    if try_force_leader:
-        alter_sql += ",lease_preferences ='[[+node=n0]]'"
+    # if try_force_leader:  # putting all leaseholders on n0 is not accurate for evaluation
+    #     alter_sql += ",lease_preferences ='[[+node=n0]]'"
     alter_sql += ";"
     cmd = [
         "./cockroach",
@@ -352,9 +352,9 @@ if __name__ == "__main__":
         help="if set, turn on RS coding timing logging",
     )
     parser.add_argument(
-        "--try_force_leader",
+        "--no_force_leader",
         action="store_true",
-        help="if set, try to force leaseholder & leader to be 'n0' (NodeID 1)",
+        help="if set, don't desire leader-leaseholder colocation and don't prevent transfers",
     )
     parser.add_argument(
         "--min_range_id",
@@ -405,7 +405,7 @@ if __name__ == "__main__":
     if args.protocol not in PROTOCOLS:
         raise ValueError(f"unrecognized protocol name '{args.protocol}'")
     if args.protocol == "Crossword":
-        args.try_force_leader = True  # current implementation assumes this
+        args.no_force_leader = False  # current implementation assumes this
 
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
@@ -484,7 +484,7 @@ if __name__ == "__main__":
         args.pin_cores,
         args.size_profiling,
         args.rscoding_timing,
-        args.try_force_leader,
+        not args.no_force_leader,
         args.min_range_id,
         args.min_payload,
         args.fixed_num_voters,
@@ -526,7 +526,7 @@ if __name__ == "__main__":
         cd_dir_cockroach,
         partition,
         args.num_replicas,
-        args.try_force_leader,
+        not args.no_force_leader,
     )
 
     for proc in server_procs:

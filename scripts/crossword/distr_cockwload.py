@@ -230,12 +230,6 @@ if __name__ == "__main__":
         "-w", "--workload", type=str, required=True, help="name of workload"
     )
     parser.add_argument(
-        "-i",
-        "--init",
-        action="store_true",
-        help="if set, do the init phase; else do the run phase",
-    )
-    parser.add_argument(
         "-c", "--concurrency", type=int, default=16, help="number of concurrent workers"
     )
     parser.add_argument(
@@ -251,6 +245,12 @@ if __name__ == "__main__":
         type=int,
         default=200,
         help="number of warehouses (tpcc only)",
+    )
+    parser.add_argument(
+        "-i",
+        "--init",
+        action="store_true",
+        help="if set, do the init phase; else do the run phase",
     )
     parser.add_argument(
         "-l", "--length_s", type=int, default=60, help="run length in secs"
