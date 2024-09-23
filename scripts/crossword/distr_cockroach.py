@@ -110,13 +110,14 @@ def launch_servers(
     protocol,
     partition,
     num_replicas,
+    value_size,
     file_prefix,
     file_midfix,
     fresh_files,
     pin_cores,
     size_profiling,
     rscoding_timing,
-    force_leader,
+    try_force_leader,
     min_range_id,
     min_payload,
     fixed_num_voters,
@@ -129,15 +130,18 @@ def launch_servers(
         for r in range(num_replicas)
     ]
 
-    extra_env = dict()
+    extra_env = {"COCKROACH_RAFT_ENABLE_CHECKQUORUM": "false"}
+    if value_size < 1 or value_size > 4096:
+        raise ValueError(f"textScale {value_size} too large: expect in range [1, 4096]")
+    extra_env["COCKROACH_TPCC_TEXT_SCALE"] = str(value_size)
     if size_profiling:
         extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
     if rscoding_timing:
         extra_env["COCKROACH_RAFT_RSCODING_TIMING"] = "true"
-    if protocol == "Crossword" or force_leader:
-        extra_env["COCKROACH_DISABLE_LEADER_FOLLOWS_LEASEHOLDER"] = "true"
-        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
+    if try_force_leader:
+        extra_env["COCKROACH_RAFT_TRY_FORCE_LEADER"] = "true"
     if protocol == "Crossword":
+        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
         extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
         extra_env["COCKROACH_RAFT_CW_MIN_RANGE_ID"] = str(min_range_id)
         extra_env["COCKROACH_RAFT_CW_MIN_PAYLOAD"] = str(min_payload)
@@ -223,16 +227,23 @@ def wait_init_finish():
     time.sleep(10)
 
 
-def compose_setting_cmds(init_sql_addr):
-    cmds = []
-    for setting in (
+def compose_setting_cmds(init_sql_addr, try_force_leader):
+    settings = [
         "SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
-        "SET CLUSTER SETTING kv.allocator.load_based_lease_rebalancing.enabled=false;",
         "SET CLUSTER SETTING admission.kv.enabled=false;",
         "SET CLUSTER SETTING admission.sql_kv_response.enabled=false;",
         "SET CLUSTER SETTING admission.sql_sql_response.enabled=false;",
         "SET CLUSTER SETTING server.consistency_check.interval='0';",
-    ):
+    ]
+    if try_force_leader:
+        settings += [
+            "SET CLUSTER SETTING kv.allocator.lease_rebalance_threshold=1.0;",
+            "SET CLUSTER SETTING kv.allocator.load_based_lease_rebalancing.enabled=false;",
+            "SET CLUSTER SETTING kv.allocator.load_based_rebalancing=0;",
+        ]
+
+    cmds = []
+    for setting in settings:
         cmds.append(
             [
                 "./cockroach",
@@ -245,31 +256,37 @@ def compose_setting_cmds(init_sql_addr):
     return cmds
 
 
-def compose_alter_cmd(init_sql_addr, num_replicas):
+def compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader):
+    alter_sql = f"ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas}"
+    if try_force_leader:
+        alter_sql += ",lease_preferences ='[[+node=n0]]'"
+    alter_sql += ";"
     cmd = [
         "./cockroach",
         "sql",
         "--insecure",
         f"--host={init_sql_addr}",
-        f"--execute=ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas};",
+        f"--execute={alter_sql}",
     ]
     return cmd
 
 
-def set_proper_settings(ipaddrs, hosts, cd_dir, partition, num_replicas):
+def set_proper_settings(
+    ipaddrs, hosts, cd_dir, partition, num_replicas, try_force_leader
+):
     if num_replicas != len(ipaddrs):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
     init_ip = ipaddrs[hosts[0]]
     init_sql_addr = f"{init_ip}:{SERVER_SQL_PORT(partition)}"
 
-    for cmd in compose_setting_cmds(init_sql_addr):
+    for cmd in compose_setting_cmds(init_sql_addr, try_force_leader):
         proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
         rc = proc.wait()
         if rc != 0:
             raise RuntimeError(f"failed to set proper cluster settings: rc {rc}")
 
-    cmd = compose_alter_cmd(init_sql_addr, num_replicas)
+    cmd = compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader)
     proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
     rc = proc.wait()
     if rc != 0:
@@ -300,6 +317,13 @@ if __name__ == "__main__":
         "--me", type=str, default="host0", help="main script runner's host nickname"
     )
     parser.add_argument(
+        "-v",
+        "--value_size",
+        type=int,
+        default=256,
+        help="payload size scale (should to be in sync with workloads client)",
+    )
+    parser.add_argument(
         "--file_prefix",
         type=str,
         default="/tmp/cockroach",
@@ -328,9 +352,9 @@ if __name__ == "__main__":
         help="if set, turn on RS coding timing logging",
     )
     parser.add_argument(
-        "--force_leader",
+        "--try_force_leader",
         action="store_true",
-        help="if set, try to force leader to be nodeID 1",
+        help="if set, try to force leaseholder & leader to be 'n0' (NodeID 1)",
     )
     parser.add_argument(
         "--min_range_id",
@@ -380,6 +404,8 @@ if __name__ == "__main__":
     # check protocol name
     if args.protocol not in PROTOCOLS:
         raise ValueError(f"unrecognized protocol name '{args.protocol}'")
+    if args.protocol == "Crossword":
+        args.try_force_leader = True  # current implementation assumes this
 
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
@@ -451,13 +477,14 @@ if __name__ == "__main__":
         args.protocol,
         partition,
         args.num_replicas,
+        args.value_size,
         args.file_prefix,
         file_midfix,
         not args.keep_files,
         args.pin_cores,
         args.size_profiling,
         args.rscoding_timing,
-        args.force_leader,
+        args.try_force_leader,
         args.min_range_id,
         args.min_payload,
         args.fixed_num_voters,
@@ -493,7 +520,14 @@ if __name__ == "__main__":
 
     # set default replication factor & other cluster settings
     wait_init_finish()
-    set_proper_settings(ipaddrs, hosts, cd_dir_cockroach, partition, args.num_replicas)
+    set_proper_settings(
+        ipaddrs,
+        hosts,
+        cd_dir_cockroach,
+        partition,
+        args.num_replicas,
+        args.try_force_leader,
+    )
 
     for proc in server_procs:
         proc.wait()

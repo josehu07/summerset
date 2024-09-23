@@ -50,7 +50,9 @@ WORKLOAD_SETTINGS = {
             f"--workers={c}",
             "--wait=false",
             "--replicate-static-columns=true",
-            "--mix=newOrder=100,payment=1,orderStatus=1,delivery=1,stockLevel=1",
+            "--mix=newOrder=10,payment=10,orderStatus=1,delivery=1,stockLevel=1",
+            # below was used for more accurate newOrder msg size profiling
+            # "--mix=newOrder=100,payment=1,orderStatus=1,delivery=1,stockLevel=1",
         ],
     },
 }
@@ -126,7 +128,7 @@ def init_workload(
 ):
     extra_env = None
     if workload == "tpcc" and value_size > 0:
-        if value_size > 4096:
+        if value_size < 1 or value_size > 4096:
             raise ValueError(
                 f"textScale {value_size} too large: expect in range [1, 4096]"
             )
@@ -182,7 +184,7 @@ def run_workload(
 ):
     extra_env = None
     if workload == "tpcc" and value_size > 0:
-        if value_size > 4096:
+        if value_size < 1 or value_size > 4096:
             raise ValueError(
                 f"textScale {value_size} too large: expect in range [1, 4096]"
             )
@@ -240,7 +242,7 @@ if __name__ == "__main__":
         "-v",
         "--value_size",
         type=int,
-        default=4096,
+        default=256,
         help="payload size (meaning differs per workload)",
     )
     parser.add_argument(
