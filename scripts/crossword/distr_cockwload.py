@@ -332,7 +332,7 @@ if __name__ == "__main__":
                     args.file_prefix,
                     file_midfix,
                     args.workload,
-                    "init",
+                    "load",
                 ),
                 "w+",
             ) as fout:

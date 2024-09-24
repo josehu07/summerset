@@ -16,7 +16,7 @@ def kill_all_local_procs():
     os.system(cmd)
 
 
-def kill_all_distr_procs(group, targets="all", chain=False):
+def kill_all_distr_procs(group, targets="all", chain=False, cockroach=False):
     # print(f"Killing all procs on {group} {targets}...")
     cmd = [
         "python3",
@@ -28,6 +28,8 @@ def kill_all_distr_procs(group, targets="all", chain=False):
     ]
     if chain:
         cmd.append("--chain")
+    if cockroach:
+        cmd.append("--cockroach")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
 
 

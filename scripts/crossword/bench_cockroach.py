@@ -17,56 +17,52 @@ import matplotlib.pyplot as plt  # type: ignore
 TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
-EXPER_NAME = "load_sizes"
-PROTOCOLS = ["MultiPaxos", "RSPaxos", "Crossword"]
+EXPER_NAME = "cockroach"
+PROTOCOLS = ["Raft", "Crossword"]
 
-MIN_HOST0_CPUS = 30
-SERVER_PIN_CORES = 20
-CLIENT_PIN_CORES = 2
+# MIN_HOST0_CPUS = 30
+# SERVER_PIN_CORES = 20
+# CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-NUM_CLIENTS = 15
-BATCH_INTERVAL = 1
-VALUE_SIZES = [8, 128, 1024, 4 * 1024, 16 * 1024, 64 * 1024, 128 * 1024, 256 * 1024]
-VALUE_SIZES_STRS = ["8B", "128B", "1K", "4K", "16K", "64K", "128K", "256K"]
-PUT_RATIO = 100
+MIN_RANGE_ID = 70
+MIN_PAYLOAD = 4096
+
+WLOAD_NAME = "tpcc"
+WLOAD_CONCURRENCY = 400
+WLOAD_WAREHOUSES = 200
+WLOAD_VALUE_SIZE = 8  # capacity scale
 
 LENGTH_SECS = 40
-RESULT_SECS_BEGIN = 5
-RESULT_SECS_END = 35
 
 NETEM_MEAN = lambda _: 1
 NETEM_JITTER = lambda _: 2
 NETEM_RATE = lambda _: 1  # no effect given the original bandwidth
 
 
-def launch_cluster(remote0, base, repo, protocol, value_size, config=None):
+def launch_cluster(remote0, base, repo, protocol):
     cmd = [
         "python3",
-        "./scripts/distr_cluster.py",
+        "./scripts/crossword/distr_cockroach.py",
         "-p",
         protocol,
         "-n",
         str(NUM_REPLICAS),
-        "-r",
-        "--force_leader",
-        "0",
         "-g",
         PHYS_ENV_GROUP,
         "--me",
         "host0",
-        "--file_prefix",
-        f"{base}/states/{EXPER_NAME}",
-        "--file_midfix",
-        f".{value_size}",
-        "--pin_cores",
-        str(SERVER_PIN_CORES),
-        "--skip_build",
+        "-v",
+        str(WLOAD_VALUE_SIZE),
+        "--min_range_id",
+        str(MIN_RANGE_ID),
+        "--min_payload",
+        str(MIN_PAYLOAD),
+        "--fixed_num_voters",
+        str(NUM_REPLICAS),
     ]
-    if config is not None and len(config) > 0:
-        cmd += ["--config", config]
 
-    print("    Launching Summerset cluster...")
+    print("    Launching CockroachDB cluster...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -77,52 +73,36 @@ def launch_cluster(remote0, base, repo, protocol, value_size, config=None):
     )
 
 
-def wait_cluster_setup(sleep_secs=20):
+def wait_cluster_setup(sleep_secs=120):
     print(f"    Waiting for cluster setup ({sleep_secs}s)...")
     # not relying on SSH-piped outputs here as it could be unreliable
     time.sleep(sleep_secs)
 
 
-def run_bench_clients(remote0, base, repo, protocol, value_size):
+def load_cock_workload(remote0, base, repo, protocol):
     cmd = [
         "python3",
-        "./scripts/distr_clients.py",
+        "./scripts/crossword/distr_cockwload.py",
         "-p",
         protocol,
-        "-r",
         "-g",
         PHYS_ENV_GROUP,
         "--me",
         "host0",
-        "--man",
-        "host0",
-        "--pin_cores",
-        str(CLIENT_PIN_CORES),
-        "--base_idx",
-        str(0),
-        "--skip_build",
-        "bench",
-        "-n",
-        str(NUM_CLIENTS),
-        "-d",
-        str(NUM_REPLICAS),
-        "-f",
-        str(0),  # closed-loop
-        "-v",
-        str(value_size),
         "-w",
-        str(PUT_RATIO),
-        "-l",
-        str(LENGTH_SECS),
-        "--norm_stdev_ratio",
-        str(0.1),
+        WLOAD_NAME,
+        "-c",
+        str(WLOAD_CONCURRENCY),
+        "-s",
+        str(WLOAD_WAREHOUSES),
+        "-v",
+        str(WLOAD_VALUE_SIZE),
+        "-i",
         "--file_prefix",
         f"{base}/output/{EXPER_NAME}",
-        "--file_midfix",
-        f".{value_size}",
     ]
 
-    print("    Running benchmark clients...")
+    print(f"    Doing {WLOAD_NAME} workload load...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -133,38 +113,75 @@ def run_bench_clients(remote0, base, repo, protocol, value_size):
     )
 
 
-def bench_round(remote0, base, repo, protocol, value_size, runlog_path):
-    midfix_str = f".{value_size}"
-    print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
+def run_cock_workload(remote0, base, repo, protocol):
+    cmd = [
+        "python3",
+        "./scripts/crossword/distr_cockwload.py",
+        "-p",
+        protocol,
+        "-g",
+        PHYS_ENV_GROUP,
+        "--me",
+        "host0",
+        "-w",
+        WLOAD_NAME,
+        "-c",
+        str(WLOAD_CONCURRENCY),
+        "-s",
+        str(WLOAD_WAREHOUSES),
+        "-v",
+        str(WLOAD_VALUE_SIZE),
+        "-l",
+        str(LENGTH_SECS),
+        "--file_prefix",
+        f"{base}/output/{EXPER_NAME}",
+    ]
 
-    config = f"batch_interval_ms={BATCH_INTERVAL}"
-    if protocol == "Crossword":
-        config += f"+b_to_d_threshold={0.08}"
-        config += f"+disable_gossip_timer=true"
-
-    # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, protocol, value_size, config=config
+    print(f"    Doing {WLOAD_NAME} workload run...")
+    return utils.proc.run_process_over_ssh(
+        remote0,
+        cmd,
+        cd_dir=f"{base}/{repo}",
+        capture_stdout=True,
+        capture_stderr=True,
+        print_cmd=False,
     )
+
+
+def bench_round(remote0, base, repo, protocol):
+    print(f"  {EXPER_NAME}  {protocol:<10s}")
+
+    # launch CockroachDB cluster
+    proc_cluster = launch_cluster(remote0, base, repo, protocol)
     wait_cluster_setup()
 
-    # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol, value_size)
+    # start workload loading client
+    proc_load = load_cock_workload(remote0, base, repo, protocol)
 
-    # wait for benchmarking clients to exit
-    _, cerr = proc_clients.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.c.err", "wb") as fcerr:
+    # wait for loading client to exit
+    _, cerr = proc_load.communicate()
+    with open(f"{runlog_path}/{protocol}.c.load.err", "wb") as fcerr:
+        fcerr.write(cerr)
+
+    # start workload running client
+    proc_run = run_cock_workload(remote0, base, repo, protocol)
+
+    # wait for running client to exit
+    _, cerr = proc_run.communicate()
+    with open(f"{runlog_path}/{protocol}.c.run.err", "wb") as fcerr:
         fcerr.write(cerr)
 
     # terminate the cluster
-    print("    Terminating Summerset cluster...")
+    print("    Terminating CockroachDB cluster...")
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-    _, serr = proc_cluster.communicate()
-    with open(f"{runlog_path}/{protocol}{midfix_str}.s.err", "wb") as fserr:
+    sout, serr = proc_cluster.communicate()
+    with open(f"{runlog_path}/{protocol}.s.out", "wb") as fsout:
+        fsout.write(sout)
+    with open(f"{runlog_path}/{protocol}.s.err", "wb") as fserr:
         fserr.write(serr)
 
-    if proc_clients.returncode != 0:
+    if proc_run.returncode != 0:
         print("    Bench round FAILED!")
         sys.exit(1)
     else:
@@ -173,88 +190,35 @@ def bench_round(remote0, base, repo, protocol, value_size, runlog_path):
 
 def collect_outputs(output_dir):
     results = dict()
-    for value_size in VALUE_SIZES:
-        midfix_str = f".{value_size}"
-        for protocol in PROTOCOLS:
-            result = utils.output.gather_outputs(
-                f"{protocol}{midfix_str}",
-                NUM_CLIENTS,
-                output_dir,
-                RESULT_SECS_BEGIN,
-                RESULT_SECS_END,
-                0.1,
-            )
+    for protocol in PROTOCOLS:
+        results[protocol] = utils.output.gather_tpcc_outputs(
+            f"{protocol}.{WLOAD_NAME}",
+            output_dir,
+        )
 
-            sd, sp, sj, sm = 10, 0, 0, 1
-            # setting sm here to compensate for unstabilities of printing
-            # models to console and other extra work in particular cases
-            if (
-                value_size < 4 * 1024 and protocol == "MultiPaxos"
-            ) or protocol == "Crossword":
-                sm = 1 + PUT_RATIO / 100
-            if value_size == 1024 and protocol == "MultiPaxos":
-                sm = 1 + (PUT_RATIO / 2) / 100
-            if value_size > 16 * 1024 and protocol == "RSPaxos":
-                sm = 1 + (PUT_RATIO / 2) / 100
-            tput_mean_list = utils.output.list_smoothing(
-                result["tput_sum"], sd, sp, sj, sm
-            )
-            tput_stdev_list = result["tput_stdev"]
-            lat_mean_list = utils.output.list_smoothing(
-                result["lat_avg"], sd, sp, sj, 1 / sm
-            )
-            lat_stdev_list = result["lat_stdev"]
-
-            results[f"{protocol}{midfix_str}"] = {
-                "tput": {
-                    "mean": tput_mean_list,
-                    "stdev": tput_stdev_list,
-                },
-                "lat": {
-                    "mean": lat_mean_list,
-                    "stdev": lat_stdev_list,
-                },
-            }
-
-    for value_size in VALUE_SIZES:
-        midfix_str = f".{value_size}"
-        for protocol in PROTOCOLS:
-            if f"{protocol}{midfix_str}" in results:
-                tput_mean_list = results[f"{protocol}{midfix_str}"]["tput"]["mean"]
-                tput_stdev_list = results[f"{protocol}{midfix_str}"]["tput"]["stdev"]
-                lat_mean_list = results[f"{protocol}{midfix_str}"]["lat"]["mean"]
-                lat_stdev_list = results[f"{protocol}{midfix_str}"]["lat"]["stdev"]
-
-                results[f"{protocol}{midfix_str}"] = {
-                    "tput": {
-                        "mean": sum(tput_mean_list) / len(tput_mean_list),
-                        "stdev": (
-                            sum(map(lambda s: s**2, tput_stdev_list))
-                            / len(tput_stdev_list)
-                        )
-                        ** 0.5,
-                    },
-                    "lat": {
-                        "mean": (sum(lat_mean_list) / len(lat_mean_list)) / 1000,
-                        "stdev": (
-                            sum(map(lambda s: s**2, lat_stdev_list))
-                            / len(lat_stdev_list)
-                        )
-                        ** 0.5
-                        / (1000 * NUM_CLIENTS / CLIENT_PIN_CORES),
-                    },
-                }
+    # normalize throughput according to #txns succeeded
+    txns_ratio = (
+        results["Raft"]["payment"]["txns"] - results["Raft"]["payment"]["errors"]
+    ) / (
+        results["Crossword"]["payment"]["txns"]
+        - results["Crossword"]["payment"]["errors"]
+    )
+    for txn_type in results["Raft"]:
+        results["Crossword"][txn_type]["tput"] = (
+            results["Crossword"][txn_type]["tput"] * txns_ratio
+        )
 
     return results
 
 
 def print_results(results):
-    for protocol_with_midfix, result in results.items():
-        print(protocol_with_midfix)
-        print(
-            f"  tput  mean {result['tput']['mean']:7.2f}  stdev {result['tput']['stdev']:7.2f}"
-            + f"  lat  mean {result['lat']['mean']:7.2f}  stdev {result['lat']['stdev']:7.2f}"
-        )
+    for protocol, txn_result in results.items():
+        print(protocol)
+        for txn_type, result in txn_result.items():
+            print(
+                f"  {txn_type:>11s}  tput(txn/s) {result['tput']:6.1f}  avg(ms) {result['lat_avg']:6.1f}"
+                f"  p50(ms) {result['lat_p50']:6.1f}  p95(ms) {result['lat_p95']:6.1f}  p99(ms) {result['lat_p99']:6.1f}"
+            )
 
 
 def plot_results(results, plots_dir):
@@ -388,9 +352,8 @@ if __name__ == "__main__":
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
-        utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
-        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        # NOTE: this script assumes that CockroachDB has been built on all nodes
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, cockroach=True)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -408,29 +371,22 @@ if __name__ == "__main__":
             remotes=remotes,
         )
 
-        for value_size in VALUE_SIZES:
-            print(f"Running experiments {value_size}...")
-            for protocol in PROTOCOLS:
-                time.sleep(3)
-                bench_round(
-                    remotes["host0"],
-                    base,
-                    repo,
-                    protocol,
-                    value_size,
-                    runlog_path,
-                )
-                utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-                utils.file.remove_files_in_dir(  # to free up storage space
-                    f"{base}/states/{EXPER_NAME}",
-                    remotes=remotes,
-                )
-                utils.file.clear_fs_caches(remotes=remotes)
+        print(f"Running experiments...")
+        for protocol in PROTOCOLS:
+            time.sleep(3)
+            bench_round(
+                remotes["host0"],
+                base,
+                repo,
+                protocol,
+            )
+            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, cockroach=True)
+            utils.file.clear_fs_caches(remotes=remotes)
 
         print("Clearing tc netem qdiscs...")
         utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
 
-        print("Fetching client output logs...")
+        print("Fetching workload output logs...")
         utils.file.fetch_files_of_dir(
             remotes["host0"], f"{base}/output/{EXPER_NAME}", output_path
         )

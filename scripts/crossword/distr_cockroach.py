@@ -258,8 +258,8 @@ def compose_setting_cmds(init_sql_addr, try_force_leader):
 
 def compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader):
     alter_sql = f"ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas}"
-    # if try_force_leader:  # putting all leaseholders on n0 is not accurate for evaluation
-    #     alter_sql += ",lease_preferences ='[[+node=n0]]'"
+    if try_force_leader:
+        alter_sql += ",lease_preferences ='[[+node=n0]]'"
     alter_sql += ";"
     cmd = [
         "./cockroach",

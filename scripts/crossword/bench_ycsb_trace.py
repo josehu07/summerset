@@ -85,6 +85,8 @@ def launch_cluster_summerset(
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
+
+    print(f"    Launching Summerset cluster {partition}...")
     return utils.proc.run_process_over_ssh(
         remote,
         cmd,
@@ -95,11 +97,10 @@ def launch_cluster_summerset(
     )
 
 
-def wait_cluster_setup_summerset():
-    # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
-    # not relying on SSH-piped outputs here
-    time.sleep(20)
+def wait_cluster_setup_summerset(sleep_secs=30):
+    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
+    # not relying on SSH-piped outputs here as it could be unreliable
+    time.sleep(sleep_secs)
 
 
 def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
@@ -139,6 +140,8 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
         "--file_midfix",
         f".{num_clients}",
     ]
+
+    print(f"    Running benchmark clients {partition}...")
     return utils.proc.run_process_over_ssh(
         remote,
         cmd,
@@ -200,6 +203,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
             fcerr.write(cerr)
 
     # terminate the clusters
+    print("    Terminating Summerset clusters...")
     for partition in range(NUM_REPLICAS):
         procs_cluster[partition].terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
@@ -211,10 +215,10 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
             fserr.write(serr)
 
     if any(map(lambda p: p.returncode != 0, procs_clients)):
-        print("    Experiment FAILED!")
+        print("    Bench round FAILED!")
         sys.exit(1)
     else:
-        print("    Done!")
+        print("    Bench round done!")
 
 
 def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
@@ -237,6 +241,8 @@ def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
         f".{num_clients}",
         # NOTE: not pinning cores for this exper due to large #processes
     ]
+
+    print(f"    Launching ChainPaxos cluster {partition}...")
     return utils.proc.run_process_over_ssh(
         remote,
         cmd,
@@ -247,11 +253,10 @@ def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
     )
 
 
-def wait_cluster_setup_chain():
-    # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
-    # not relying on SSH-piped outputs here
-    time.sleep(20)
+def wait_cluster_setup_chain(sleep_secs=30):
+    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
+    # not relying on SSH-piped outputs here as it could be unreliable
+    time.sleep(sleep_secs)
 
 
 def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients):
@@ -282,6 +287,8 @@ def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients
         "--file_midfix",
         f".{num_clients}",
     ]
+
+    print(f"    Running benchmark clients {partition}...")
     return utils.proc.run_process_over_ssh(
         remote,
         cmd,
@@ -333,6 +340,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
             fcerr.write(cerr)
 
     # terminate the clusters
+    print("    Terminating ChainPaxos clusters...")
     for partition in range(NUM_REPLICAS):
         procs_cluster[partition].terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
@@ -344,10 +352,10 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
             fserr.write(serr)
 
     if any(map(lambda p: p.returncode != 0, procs_clients)):
-        print("    Experiment FAILED!")
+        print("    Bench round FAILED!")
         sys.exit(1)
     else:
-        print("    Done!")
+        print("    Bench round done!")
 
 
 def collect_outputs(output_dir):
@@ -391,7 +399,7 @@ def collect_outputs(output_dir):
         for num_clients in NUM_CLIENTS_LIST:
             part_tputs, part_lats = [], []
             for partition in range(NUM_REPLICAS):
-                result = utils.output.parse_ycsb_log(
+                result = utils.output.gather_ycsb_outputs(
                     f"{protocol}.{num_clients}",
                     output_dir,
                     1,
@@ -424,7 +432,7 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.6, 2),
+            "figure.figsize": (3.5, 1.6),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -606,7 +614,7 @@ if __name__ == "__main__":
             PROTOCOL_FUNCS = [(p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS]
             PROTOCOL_FUNCS += [(p, bench_round_chain) for p in CHAIN_PROTOCOLS]
             for protocol, bench_round_func in PROTOCOL_FUNCS:
-                time.sleep(5)
+                time.sleep(3)
                 bench_round_func(
                     remotes, base, repo, protocol, num_clients, runlog_path
                 )

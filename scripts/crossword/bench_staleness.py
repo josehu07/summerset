@@ -70,6 +70,8 @@ def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
+
+    print("    Launching Summerset cluster...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -80,11 +82,10 @@ def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     )
 
 
-def wait_cluster_setup():
-    # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
-    # not relying on SSH-piped outputs here
-    time.sleep(20)
+def wait_cluster_setup(sleep_secs=20):
+    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
+    # not relying on SSH-piped outputs here as it could be unreliable
+    time.sleep(sleep_secs)
 
 
 def run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str):
@@ -125,6 +126,8 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str):
         "--file_midfix",
         midfix_str,
     ]
+
+    print("    Running benchmark clients...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -163,6 +166,7 @@ def bench_round(remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path
         fcerr.write(cerr)
 
     # terminate the cluster
+    print("    Terminating Summerset cluster...")
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
     _, serr = proc_cluster.communicate()
@@ -170,10 +174,10 @@ def bench_round(remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
-        print("    Experiment FAILED!")
+        print("    Bench round FAILED!")
         sys.exit(1)
     else:
-        print("    Done!")
+        print("    Bench round done!")
 
 
 def collect_ver_stats(runlog_dir):
@@ -491,7 +495,7 @@ if __name__ == "__main__":
             print(f"Running experiments {num_keys}...")
 
             for protocol, gossip_gap in PROTOCOL_GAPS:
-                time.sleep(5)
+                time.sleep(3)
                 bench_round(
                     remotes["host0"],
                     base,

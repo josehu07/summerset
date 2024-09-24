@@ -132,6 +132,8 @@ def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
+
+    print("    Launching Summerset cluster...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -142,11 +144,10 @@ def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
     )
 
 
-def wait_cluster_setup():
-    # print("Waiting for cluster setup...")
-    # wait for 20 seconds to safely allow all nodes up
-    # not relying on SSH-piped outputs here
-    time.sleep(20)
+def wait_cluster_setup(sleep_secs=20):
+    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
+    # not relying on SSH-piped outputs here as it could be unreliable
+    time.sleep(sleep_secs)
 
 
 def run_bench_clients(remote0, base, repo, protocol, round_params):
@@ -187,6 +188,8 @@ def run_bench_clients(remote0, base, repo, protocol, round_params):
         "--file_midfix",
         str(round_params),
     ]
+
+    print("    Running benchmark clients...")
     return utils.proc.run_process_over_ssh(
         remote0,
         cmd,
@@ -223,6 +226,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
         fcerr.write(cerr)
 
     # terminate the cluster
+    print("    Terminating Summerset cluster...")
     proc_cluster.terminate()
     utils.proc.kill_all_distr_procs(round_params.env_setting.group)
     _, serr = proc_cluster.communicate()
@@ -230,10 +234,10 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
         fserr.write(serr)
 
     if proc_clients.returncode != 0:
-        print("    Experiment FAILED!")
+        print("    Bench round FAILED!")
         sys.exit(1)
     else:
-        print("    Done!")
+        print("    Bench round done!")
 
 
 def collect_outputs(output_dir):
@@ -382,6 +386,8 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
 
     plt.tick_params(bottom=False, labelbottom=False)
 
+    plt.xlim((-0.2, len(PROTOCOLS_ORDER) + 1.2))
+
     plt.ylabel(" \n ")
     ax1.yaxis.set_label_coords(-0.7, 0.5)
 
@@ -422,6 +428,8 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     ax2.spines["right"].set_visible(False)
 
     plt.tick_params(bottom=False, labelbottom=False)
+
+    plt.xlim((-0.2, len(PROTOCOLS_ORDER) + 1.2))
 
     plt.ylabel(" \n ")
     ax2.yaxis.set_label_coords(-0.7, 0.5)
@@ -782,7 +790,7 @@ if __name__ == "__main__":
             for protocol in PROTOCOLS:
                 if round_params.paxos_only and "Raft" in protocol:
                     continue
-                time.sleep(5)
+                time.sleep(3)
                 bench_round(
                     remotes[this_env.group]["host0"],
                     base,

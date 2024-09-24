@@ -9,27 +9,28 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-def killall_on_targets(destinations, cd_dir, chain=False):
-    cmd = ["./scripts/kill_all_procs.sh", "incl_distr"]
+def killall_on_targets(destinations, cd_dir, chain=False, cockroach=False):
+    cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
     if chain:
-        cmd = ["./scripts/crossword/kill_chain_procs.sh", "incl_distr"]
-        pass  # placeholder line
+        cmds.append(["./scripts/crossword/kill_chain_procs.sh", "incl_distr"])
+    if cockroach:
+        cmds.append(["./scripts/crossword/kill_cock_procs.sh", "incl_distr"])
 
-    print("Running kill commands in parallel...")
-    procs = []
-    for remote in destinations:
-        procs.append(
-            utils.proc.run_process_over_ssh(
-                remote,
-                cmd,
-                cd_dir=cd_dir,
-                capture_stdout=True,
-                capture_stderr=True,
+    for cmd in cmds:
+        print("Running kill commands in parallel...")
+        procs = []
+        for remote in destinations:
+            procs.append(
+                utils.proc.run_process_over_ssh(
+                    remote,
+                    cmd,
+                    cd_dir=cd_dir,
+                    capture_stdout=True,
+                    capture_stderr=True,
+                )
             )
-        )
-
-    print("Waiting for command results...")
-    utils.proc.wait_parallel_procs(procs)
+        print("Waiting for command results...")
+        utils.proc.wait_parallel_procs(procs)
 
 
 if __name__ == "__main__":
@@ -49,6 +50,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--chain", action="store_true", help="if set, kill ChainPaxos processes"
     )
+    parser.add_argument(
+        "--cockroach", action="store_true", help="if set, kill CockroachDB processes"
+    )
     args = parser.parse_args()
 
     base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
@@ -67,4 +71,4 @@ if __name__ == "__main__":
     if len(destinations) == 0:
         raise ValueError(f"targets list is empty")
 
-    killall_on_targets(destinations, f"{base}/{repo}", args.chain)
+    killall_on_targets(destinations, f"{base}/{repo}", args.chain, args.cockroach)
