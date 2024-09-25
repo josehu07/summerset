@@ -174,7 +174,7 @@ def bench_round(remote0, base, repo, protocol):
     # terminate the cluster
     print("    Terminating CockroachDB cluster...")
     proc_cluster.terminate()
-    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
+    utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, cockroach=True)
     sout, serr = proc_cluster.communicate()
     with open(f"{runlog_path}/{protocol}.s.out", "wb") as fsout:
         fsout.write(sout)
