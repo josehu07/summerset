@@ -204,8 +204,8 @@ def collect_outputs(output_dir):
         - results["Crossword"]["payment"]["errors"]
     )
     txns_ratio *= (
-        results["Raft"]["stockLevel"]["lat_p50"]
-        / results["Crossword"]["stockLevel"]["lat_p50"]
+        results["Raft"]["aggregate"]["lat_avg"]
+        / results["Crossword"]["aggregate"]["lat_avg"]
     )
     for txn_type in results["Raft"]:
         results["Crossword"][txn_type]["tput"] = (

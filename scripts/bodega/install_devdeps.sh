@@ -24,22 +24,12 @@ rm ycsb-0.17.0.tar.gz
 mv ycsb-0.17.0 ycsb
 
 
-# echo
-# echo "Fetching ChainPaxos codebase..."
-# git clone https://github.com/pfouto/chain.git
-# cd chain
-# git checkout aa4878d
-# cd ..
-# git clone https://github.com/pfouto/chain-client.git
-# cd chain-client
-# git checkout ce3a038
-
-
 echo
-echo "Installing bazel build system..."
-sudo wget https://github.com/bazelbuild/bazelisk/releases/download/v1.21.0/bazelisk-linux-amd64 -O /usr/local/bin/bazel
-sudo chmod +x /usr/local/bin/bazel
-bazel
+echo "Fetching Apache ZooKeeper..."
+curl -O --location https://dlcdn.apache.org/zookeeper/zookeeper-3.9.2/apache-zookeeper-3.9.2-bin.tar.gz
+tar xfvz apache-zookeeper-3.9.2-bin.tar.gz
+rm apache-zookeeper-3.9.2-bin.tar.gz
+mv apache-zookeeper-3.9.2-bin zookeeper
 
 
 echo
