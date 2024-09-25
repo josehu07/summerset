@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt  # type: ignore
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
-PHYS_ENV_GROUP = "1dc"
+PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "failover"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]

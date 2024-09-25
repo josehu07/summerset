@@ -3,7 +3,7 @@ base_path = "/home/smr"
 repo_name = "summerset"
 
 # (SET PROPERLY) for each group, its DNS domain names
-[1dc]
+[reg]
 host0 = "c220g5-111012.wisc.cloudlab.us"
 host1 = "c220g5-110912.wisc.cloudlab.us"
 host2 = "c220g5-110513.wisc.cloudlab.us"

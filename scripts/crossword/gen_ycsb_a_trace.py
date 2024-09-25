@@ -6,7 +6,7 @@ import utils
 
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
-PHYS_ENV_GROUP = "1dc"
+PHYS_ENV_GROUP = "reg"
 
 YCSB_DIR = lambda base: f"{base}/ycsb"
 YCSB_TRACE = "/tmp/ycsb_workloada.txt"

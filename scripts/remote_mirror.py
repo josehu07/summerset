@@ -165,7 +165,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+        "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
         "-t",

@@ -112,7 +112,7 @@ def run_process_over_ssh(
     else:
         wrapped_cmd = f". ~/.profile; cd {cd_dir}; {str_cmd}"
 
-    ssh_exec_cmd = ["ssh", remote, wrapped_cmd]
+    ssh_exec_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", remote, wrapped_cmd]
     proc = subprocess.Popen(ssh_exec_cmd, stdout=stdout, stderr=stderr)
     return proc
 

@@ -78,8 +78,8 @@ SIZE_MIXED = [
 ]
 SIZE_MIXED = '/'.join([f"{t}:{v}" for t, v in SIZE_MIXED])
 
-ENV_1DC = EnvSetting(
-    "1dc",
+ENV_REG = EnvSetting(
+    "reg",
     lambda _: 1,
     lambda _: 2,
     lambda _: 1,  # no effect given the original bandwidth
@@ -92,17 +92,17 @@ ENV_WAN = EnvSetting(
 )
 
 ROUNDS_PARAMS = [
-    RoundParams(5, SIZE_S,     50,  ENV_1DC, False, ["single"]),
-    RoundParams(5, SIZE_L,     50,  ENV_1DC, False, ["single"]),
-    RoundParams(5, SIZE_MIXED, 50,  ENV_1DC, False, ["single", "cluster-5", "ratio-50"]),
+    RoundParams(5, SIZE_S,     50,  ENV_REG, False, ["single"]),
+    RoundParams(5, SIZE_L,     50,  ENV_REG, False, ["single"]),
+    RoundParams(5, SIZE_MIXED, 50,  ENV_REG, False, ["single", "cluster-5", "ratio-50"]),
     RoundParams(5, SIZE_S,     50,  ENV_WAN, False, ["single"]),
     RoundParams(5, SIZE_L,     50,  ENV_WAN, False, ["single"]),
     RoundParams(5, SIZE_MIXED, 50,  ENV_WAN, False, ["single"]),
-    RoundParams(3, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-3"]),
-    RoundParams(7, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-7"]),
-    RoundParams(9, SIZE_MIXED, 50,  ENV_1DC, True,  ["cluster-9"]),
-    RoundParams(5, SIZE_MIXED, 10,  ENV_1DC, True,  ["ratio-10"]),
-    RoundParams(5, SIZE_MIXED, 100, ENV_1DC, True,  ["ratio-100"]),
+    RoundParams(3, SIZE_MIXED, 50,  ENV_REG, True,  ["cluster-3"]),
+    RoundParams(7, SIZE_MIXED, 50,  ENV_REG, True,  ["cluster-7"]),
+    RoundParams(9, SIZE_MIXED, 50,  ENV_REG, True,  ["cluster-9"]),
+    RoundParams(5, SIZE_MIXED, 10,  ENV_REG, True,  ["ratio-10"]),
+    RoundParams(5, SIZE_MIXED, 100, ENV_REG, True,  ["ratio-100"]),
 ]
 # fmt: on
 
@@ -752,12 +752,12 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes_1dc, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, "1dc"
+        base, repo, _, remotes_reg, _, _ = utils.config.parse_toml_file(
+            TOML_FILENAME, "reg"
         )
         _, _, _, remotes_wan, _, _ = utils.config.parse_toml_file(TOML_FILENAME, "wan")
-        remotes = {"1dc": remotes_1dc, "wan": remotes_wan}
-        for group in ("1dc", "wan"):
+        remotes = {"reg": remotes_reg, "wan": remotes_wan}
+        for group in ("reg", "wan"):
             utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes[group]["host0"])
             utils.proc.kill_all_distr_procs(group)
             utils.file.do_cargo_build(
@@ -807,11 +807,11 @@ if __name__ == "__main__":
                 utils.file.clear_fs_caches(remotes=remotes[this_env.group])
 
         print("Clearing tc netem qdiscs...")
-        for group in ("1dc", "wan"):
+        for group in ("reg", "wan"):
             utils.net.clear_tc_qdisc_netems_main(remotes=remotes[group])
 
         print("Fetching client output logs...")
-        for group in ("1dc", "wan"):
+        for group in ("reg", "wan"):
             utils.file.fetch_files_of_dir(
                 remotes[group]["host0"], f"{base}/output/{EXPER_NAME}", output_path
             )

@@ -31,7 +31,7 @@ For a shell command, `$` indicates running it on the local development machine, 
         2. `% uname -a`
     8. Install necessary dependencies
         1. `% ./scripts/setup/install_devdeps.sh`
-        2. `% ./scripts/crossword/install_devdeps.sh`
+        2. `% ./scripts/bodega/install_devdeps.sh`
     9. Set up network interfaces
         1. `% ./scripts/setup/setup_net_devs.sh`
     10. Set up TCP buffer sizes
