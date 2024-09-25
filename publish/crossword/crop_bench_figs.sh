@@ -39,7 +39,9 @@ PLOT_FILES=("intros/motiv_profile_cdf"
             "plots/load_sizes/legend-load_sizes"
             "plots/staleness/exper-staleness"
             "plots/bw_utils/exper-bw_utils"
-            "plots/ycsb_trace/exper-ycsb_trace")
+            "plots/ycsb_trace/exper-ycsb_trace"
+            "plots/cockroach/exper-cockroach"
+            "plots/cockroach/legend-cockroach")
 PLOT_FILES_BOTTOM_MORE=("intros/legend-motiv_profile"
                         "plots/critical/ylabels-critical"
                         "plots/failover/legend-failover"

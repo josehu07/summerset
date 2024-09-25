@@ -22,7 +22,7 @@ PROTOCOL_STORE_PATH = (
     lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 )
 
-PROTOCOLS = {"Raft", "Crossword"}
+PROTOCOLS = {"Raft", "Crossword", "CRaft"}
 
 
 def run_process_pinned(
@@ -145,6 +145,11 @@ def launch_servers(
         extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
         extra_env["COCKROACH_RAFT_CW_MIN_RANGE_ID"] = str(min_range_id)
         extra_env["COCKROACH_RAFT_CW_MIN_PAYLOAD"] = str(min_payload)
+    elif protocol == "CRaft":
+        extra_env["COCKROACH_RAFT_CW_NUM_VOTERS"] = str(fixed_num_voters)
+        extra_env["COCKROACH_RAFT_ENABLE_CROSSWORD"] = "true"
+        extra_env["COCKROACH_RAFT_CW_MIN_RANGE_ID"] = str(min_range_id)
+        extra_env["COCKROACH_RAFT_CW_MIN_PAYLOAD"] = str(0)
     elif protocol != "Raft":
         raise ValueError(f"invalid protocol name: {protocol}")
 
@@ -229,7 +234,7 @@ def wait_init_finish():
 
 def compose_setting_cmds(init_sql_addr, try_force_leader):
     settings = [
-        "SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
+        # "SET CLUSTER SETTING kv.transaction.write_pipelining.enabled=false;",
         "SET CLUSTER SETTING admission.kv.enabled=false;",
         "SET CLUSTER SETTING admission.sql_kv_response.enabled=false;",
         "SET CLUSTER SETTING admission.sql_sql_response.enabled=false;",

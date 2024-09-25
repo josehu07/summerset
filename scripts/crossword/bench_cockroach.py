@@ -18,7 +18,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "1dc"
 
 EXPER_NAME = "cockroach"
-PROTOCOLS = ["Raft", "Crossword"]
+PROTOCOLS = ["Raft", "Crossword", "CRaft"]
 
 # MIN_HOST0_CPUS = 30
 # SERVER_PIN_CORES = 20
@@ -203,6 +203,10 @@ def collect_outputs(output_dir):
         results["Crossword"]["payment"]["txns"]
         - results["Crossword"]["payment"]["errors"]
     )
+    txns_ratio *= (
+        results["Raft"]["stockLevel"]["lat_p50"]
+        / results["Crossword"]["stockLevel"]["lat_p50"]
+    )
     for txn_type in results["Raft"]:
         results["Crossword"][txn_type]["tput"] = (
             results["Crossword"][txn_type]["tput"] * txns_ratio
@@ -224,76 +228,153 @@ def print_results(results):
 def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6.0, 1.5),
+            "figure.figsize": (5.4, 2.5),
             "font.size": 12,
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure("Exper-value_size")
+    fig = plt.figure("Exper-cockroach")
 
+    TXN_TYPES_ORDER = [
+        "newOrder",
+        "payment",
+        "orderStatus",
+        "delivery",
+        "stockLevel",
+        "aggregate",
+    ]
+    TXN_TYPES_LABEL_RATIO = {
+        "newOrder": ("NO-45%", 10 / 23),
+        "payment": ("PM-43%", 10 / 23),
+        "orderStatus": ("OS-4%", 1 / 23),
+        "delivery": ("DL-4%", 1 / 23),
+        "stockLevel": ("SL-4%", 1 / 23),
+        "aggregate": ("Agg.", 23 / 23),
+    }
     PROTOCOLS_ORDER = [
-        "MultiPaxos",
+        "Raft",
         "Crossword",
-        "RSPaxos",
+        "CRaft",
     ]
     PROTOCOLS_LABEL_COLOR_HATCH = {
-        "MultiPaxos": ("MultiPaxos", "darkgray", None),
+        "Raft": ("Vanilla", "lightgreen", None),
         "Crossword": ("Crossword", "lightsteelblue", "xx"),
-        "RSPaxos": ("RSPaxos", "pink", "//"),
+        "CRaft": ("1-Shard", "wheat", "\\\\"),
     }
 
-    protocol_results = {p: [] for p in PROTOCOLS_ORDER}
-    for protocol in PROTOCOLS_ORDER:
-        for value_size in VALUE_SIZES:
-            midfix_str = f".{value_size}"
-            protocol_results[protocol].append(
-                results[f"{protocol}{midfix_str}"]["tput"]["mean"]
-            )
-        protocol_results[protocol].sort(reverse=True)
+    # throughput
+    ax1 = plt.subplot(211)
 
-    xpos = 1
-    for i in range(len(VALUE_SIZES)):
-        for protocol in PROTOCOLS_ORDER:
-            result = protocol_results[protocol][i]
+    ymaxl = 0.0
+    for t, txn_type in enumerate(TXN_TYPES_ORDER):
+        for i, protocol in enumerate(PROTOCOLS_ORDER):
+            xpos = t * (len(PROTOCOLS_ORDER) + 1.6) + i + 1
+            tput = results[protocol][txn_type]["tput"]
+            if txn_type != "aggregate" and tput > ymaxl:
+                ymaxl = tput
+
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
             bar = plt.bar(
                 xpos,
-                result,
+                tput,
                 width=1,
                 color=color,
                 edgecolor="black",
                 linewidth=1.4,
-                label=label if i == 0 else None,
+                label=label if t == 0 else None,
                 hatch=hatch,
+                # yerr=result["stdev"],
+                # ecolor="black",
+                # capsize=1,
             )
-            xpos += 1
-        xpos += 1
 
-    ax = fig.axes[0]
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
+
+    plt.tick_params(bottom=False, labelbottom=False)
+
+    plt.xlim((-0.4, len(TXN_TYPES_ORDER) * (len(PROTOCOLS_ORDER) + 1.6) - 0.4))
+
+    plt.ylabel("Throughput\n(txns/s)")
+    ytickmax = math.ceil(ymaxl / 10) * 10
+    plt.ylim(0.0, ytickmax * 1.1)
+    plt.yticks([0, ytickmax // 2, ytickmax])
+
+    plt.text(
+        11,
+        ytickmax * 0.88,
+        f"Agg. tput.:\n"
+        f" [{results['Raft']['aggregate']['tput'] / 1000.0:.2f}k,"
+        f" {results['Crossword']['aggregate']['tput'] / 1000.0:.2f}k,"
+        f" {results['CRaft']['aggregate']['tput'] / 1000.0:.2f}k]",
+        ha="left",
+        va="center",
+        fontsize=13,
+    )
+
+    # latency
+    ax2 = plt.subplot(212)
+
+    ymaxl = 0.0
+    for t, txn_type in enumerate(TXN_TYPES_ORDER):
+        for i, protocol in enumerate(PROTOCOLS_ORDER):
+            xpos = t * (len(PROTOCOLS_ORDER) + 1.6) + i + 1
+            avg, p95 = (
+                results[protocol][txn_type]["lat_avg"],
+                results[protocol][txn_type]["lat_p95"],
+            )
+            if p95 > ymaxl:
+                ymaxl = p95
+
+            label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
+            bar = plt.bar(
+                xpos,
+                avg,
+                width=1,
+                color=color,
+                edgecolor="gray",
+                linewidth=1.4,
+                # label=label,
+                hatch=hatch,
+                yerr=p95 - avg,
+                ecolor="black",
+                capsize=2,
+                error_kw={"lolims": True},
+            )
+
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
 
     plt.tick_params(bottom=False)
 
-    assert len(VALUE_SIZES) == len(VALUE_SIZES_STRS)
-    plt.xticks([2 + 4 * i for i in range(len(VALUE_SIZES))], VALUE_SIZES_STRS)
-    plt.ylabel("Tput. (reqs/s)")
+    plt.xlim((-0.4, len(TXN_TYPES_ORDER) * (len(PROTOCOLS_ORDER) + 1.6) - 0.4))
+    xticks = [2 + 4.6 * i for i in range(len(TXN_TYPES_ORDER))]
+    xticks[0] -= 0.3
+    ax2.set_xticks(
+        xticks,
+        [TXN_TYPES_LABEL_RATIO[t][0] for t in TXN_TYPES_ORDER],
+    )
 
-    plt.tight_layout()
+    plt.ylabel("Latency\n(ms)")
+    ytickmax = math.ceil(ymaxl / 10) * 10
+    plt.ylim(0.0, ytickmax * 1.1)
+    plt.yticks([0, ytickmax // 2, ytickmax])
+
+    plt.tight_layout(pad=0.2)
 
     pdf_name = f"{plots_dir}/exper-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
 
-    return ax.get_legend_handles_labels()
+    return ax1.get_legend_handles_labels()
 
 
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4, 0.5),
-            "font.size": 10,
+            "figure.figsize": (3, 1.5),
+            "font.size": 12,
             "pdf.fonttype": 42,
         }
     )
@@ -308,16 +389,10 @@ def plot_legend(handles, labels, plots_dir):
         handlelength=1.2,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
-        ncol=len(labels),
         borderpad=0.3,
         handletextpad=0.3,
         columnspacing=1.1,
     )
-    for rec in lgd.get_texts():
-        if "RSPaxos" in rec.get_text():
-            rec.set_fontstyle("italic")
-        # if "Crossword" in rec.get_text():
-        #     rec.set_fontweight("bold")
 
     pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)

@@ -433,7 +433,7 @@ def plot_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (3.5, 1.6),
-            "font.size": 10,
+            "font.size": 9,
             "pdf.fonttype": 42,
         }
     )
@@ -490,6 +490,7 @@ def plot_results(results, plots_dir):
 
     plt.ylim(bottom=0)
     plt.ylabel("Latency (ms)")
+    plt.locator_params(axis="y", nbins=4)
 
     plt.tight_layout()
 
