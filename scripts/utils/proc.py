@@ -42,6 +42,7 @@ def run_process(
     cpu_list=None,
     in_netns=None,
     extra_env=None,
+    shell=False,
 ):
     stdout, stderr = None, None
     if capture_stdout:
@@ -63,7 +64,9 @@ def run_process(
     if print_cmd:
         print("Run:", " ".join(cmd))
 
-    proc = subprocess.Popen(cmd, cwd=cd_dir, stdout=stdout, stderr=stderr, env=env_vars)
+    proc = subprocess.Popen(
+        cmd, cwd=cd_dir, stdout=stdout, stderr=stderr, env=env_vars, shell=shell
+    )
     return proc
 
 

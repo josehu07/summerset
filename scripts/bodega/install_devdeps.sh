@@ -30,20 +30,3 @@ curl -O --location https://dlcdn.apache.org/zookeeper/zookeeper-3.9.2/apache-zoo
 tar xfvz apache-zookeeper-3.9.2-bin.tar.gz
 rm apache-zookeeper-3.9.2-bin.tar.gz
 mv apache-zookeeper-3.9.2-bin zookeeper
-
-
-echo
-echo "Fetching & building our CockroachDB fork..."
-git clone https://github.com/josehu07/cockroach.git
-cd cockroach
-git checkout crossword
-tee -a .bazelrc.user <<EOF
-build --config=dev
-build --config=lintonbuild
-test --test_tmpdir=/tmp/cockroach
-test --sandbox_add_mount_pair=/tmp
-build --remote_cache=http://127.0.0.1:9867
-EOF
-./dev doctor --interactive=false
-bazel clean --expunge
-./dev build

@@ -96,6 +96,17 @@ def remove_files_in_dir(path, remotes=None):
         wait_parallel_procs(procs, list(remotes.keys()), check_rc=False)
 
 
+def copy_file_to_remote(remote, src_path, dst_path):
+    if not os.path.isfile(src_path):
+        raise RuntimeError(f"{src_path} is not a file")
+    cmd = ["scp", src_path, f"{remote}:{dst_path}"]
+    rc = run_process(
+        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
+    ).wait()
+    if rc != 0:
+        raise RuntimeError(f"failed to copy {src_path} to {remote}:{dst_path}")
+
+
 def fetch_files_of_dir(remote, src_path, dst_path):
     if not os.path.isdir(dst_path):
         raise RuntimeError(f"{dst_path} is not a directory")

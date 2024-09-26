@@ -423,7 +423,7 @@ if __name__ == "__main__":
             kill_procs.append(
                 utils.proc.run_process_over_ssh(
                     remotes[host],
-                    ["./scripts/crossword/kill_cock_procs.sh"],
+                    ["./scripts/crossword/kill_cockroach_procs.sh"],
                     cd_dir=cd_dir_summerset,
                     print_cmd=False,
                 )
@@ -505,7 +505,7 @@ if __name__ == "__main__":
             kill_procs.append(
                 utils.proc.run_process_over_ssh(
                     remotes[host],
-                    ["./scripts/crossword/kill_cock_procs.sh"],
+                    ["./scripts/crossword/kill_cockroach_procs.sh"],
                     cd_dir=cd_dir_summerset,
                     print_cmd=False,
                 )

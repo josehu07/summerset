@@ -9,13 +9,21 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-def killall_on_targets(destinations, cd_dir, chain=False, cockroach=False):
+def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False):
     cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
     if chain:
         cmds.append(["./scripts/crossword/kill_chain_procs.sh", "incl_distr"])
     if cockroach:
-        cmds.append(["./scripts/crossword/kill_cock_procs.sh", "incl_distr"])
+        cmds.append(["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"])
+    if zookeeper:
+        cmds.append(["./scripts/bodega/kill_zookeeper_procs.sh", "incl_distr"])
+    return cmds
 
+
+def killall_on_targets(
+    destinations, cd_dir, chain=False, cockroach=False, zookeeper=False
+):
+    cmds = compose_kill_cmds(chain=chain, cockroach=cockroach, zookeeper=zookeeper)
     for cmd in cmds:
         print("Running kill commands in parallel...")
         procs = []
@@ -53,6 +61,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cockroach", action="store_true", help="if set, kill CockroachDB processes"
     )
+    parser.add_argument(
+        "--zookeeper", action="store_true", help="if set, kill ZooKeeper processes"
+    )
     args = parser.parse_args()
 
     base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
@@ -71,4 +82,6 @@ if __name__ == "__main__":
     if len(destinations) == 0:
         raise ValueError(f"targets list is empty")
 
-    killall_on_targets(destinations, f"{base}/{repo}", args.chain, args.cockroach)
+    killall_on_targets(
+        destinations, f"{base}/{repo}", args.chain, args.cockroach, args.zookeeper
+    )
