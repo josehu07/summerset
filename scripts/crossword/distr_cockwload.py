@@ -13,7 +13,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 COCK_REPO_NAME = "cockroach"
 
 
-SERVER_SQL_PORT = lambda p: 26157 + p
+SERVER_SQL_PORT = 26157
 
 
 WORKLOAD_OUTPUT_PATH = (
@@ -118,7 +118,6 @@ def init_workload(
     workload,
     ipaddrs,
     hosts,
-    partition,
     concurrency,
     value_size,
     warehouses,
@@ -135,7 +134,7 @@ def init_workload(
         extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
         warehouses //= max(value_size // 8, 1)
 
-    sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
+    sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT}"
     cmd = compose_init_cmd(workload, concurrency, value_size, warehouses, sql_addr)
 
     client_proc = run_process_pinned(
@@ -173,7 +172,6 @@ def run_workload(
     workload,
     ipaddrs,
     hosts,
-    partition,
     concurrency,
     value_size,
     warehouses,
@@ -191,7 +189,7 @@ def run_workload(
         extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
         warehouses //= max(value_size // 8, 1)
 
-    sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT(partition)}"
+    sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT}"
     cmd = compose_run_cmd(
         workload, concurrency, value_size, warehouses, length_s, sql_addr
     )
@@ -218,13 +216,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
-    )
-    parser.add_argument(
-        "-a",
-        "--partition",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument(
         "-w", "--workload", type=str, required=True, help="name of workload"
@@ -281,16 +272,6 @@ if __name__ == "__main__":
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
 
-    # check that the partition index is valid
-    partition_in_args, partition = False, 0
-    partition_in_args = "partition" in args
-    if partition_in_args and args.partition != 0:
-        raise ValueError("currently only supports 1 partition")
-    partition = 0 if not partition_in_args else args.partition
-    file_midfix = (
-        args.file_midfix if not partition_in_args else f"{args.file_midfix}.{partition}"
-    )
-
     # check workload name
     if args.workload not in WORKLOAD_SETTINGS:
         raise ValueError(f"unrecognized workload name '{args.workload}'")
@@ -312,7 +293,6 @@ if __name__ == "__main__":
             args.workload,
             ipaddrs,
             hosts,
-            partition,
             args.concurrency,
             args.value_size,
             args.warehouses,
@@ -330,7 +310,7 @@ if __name__ == "__main__":
                 WORKLOAD_OUTPUT_PATH(
                     args.protocol,
                     args.file_prefix,
-                    file_midfix,
+                    args.file_midfix,
                     args.workload,
                     "load",
                 ),
@@ -343,7 +323,6 @@ if __name__ == "__main__":
             args.workload,
             ipaddrs,
             hosts,
-            partition,
             args.concurrency,
             args.value_size,
             args.warehouses,
@@ -365,7 +344,7 @@ if __name__ == "__main__":
                     WORKLOAD_OUTPUT_PATH(
                         args.protocol,
                         args.file_prefix,
-                        file_midfix,
+                        args.file_midfix,
                         args.workload,
                         "run",
                     ),

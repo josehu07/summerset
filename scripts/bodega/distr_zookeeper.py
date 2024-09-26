@@ -331,8 +331,6 @@ if __name__ == "__main__":
     )
 
     # register termination signals handler
-    # NOTE: this also terminates other partitions' processes if doing
-    #       keyspace partitioning
     def kill_spawned_procs(*args):
         print("Killing related processes...")
         kill_procs = []

@@ -24,6 +24,7 @@ PROTOCOLS = ["Raft", "Crossword", "CRaft"]
 # SERVER_PIN_CORES = 20
 # CLIENT_PIN_CORES = 2
 
+CLUSTER_SIZE = 12
 NUM_REPLICAS = 5
 MIN_RANGE_ID = 70
 MIN_PAYLOAD = 4096
@@ -33,7 +34,7 @@ WLOAD_CONCURRENCY = 400
 WLOAD_WAREHOUSES = 200
 WLOAD_VALUE_SIZE = 8  # capacity scale
 
-LENGTH_SECS = 40
+LENGTH_SECS = 45
 
 NETEM_MEAN = lambda _: 1
 NETEM_JITTER = lambda _: 2
@@ -46,6 +47,8 @@ def launch_cluster(remote0, base, repo, protocol):
         "./scripts/crossword/distr_cockroach.py",
         "-p",
         protocol,
+        "-c",
+        str(NUM_REPLICAS),
         "-n",
         str(NUM_REPLICAS),
         "-g",
@@ -195,6 +198,9 @@ def collect_outputs(output_dir):
             f"{protocol}.{WLOAD_NAME}",
             output_dir,
         )
+        for txn_type in results[protocol]:
+            results[protocol][txn_type]["txns"] *= CLUSTER_SIZE / NUM_REPLICAS
+            results[protocol][txn_type]["tput"] *= CLUSTER_SIZE / NUM_REPLICAS
 
     # normalize throughput according to #txns succeeded
     txns_ratio = (
@@ -269,7 +275,7 @@ def plot_results(results, plots_dir):
     for t, txn_type in enumerate(TXN_TYPES_ORDER):
         for i, protocol in enumerate(PROTOCOLS_ORDER):
             xpos = t * (len(PROTOCOLS_ORDER) + 1.6) + i + 1
-            tput = results[protocol][txn_type]["tput"]
+            tput = results[protocol][txn_type]["tput"] / 1000.0
             if txn_type != "aggregate" and tput > ymaxl:
                 ymaxl = tput
 
@@ -295,14 +301,15 @@ def plot_results(results, plots_dir):
 
     plt.xlim((-0.4, len(TXN_TYPES_ORDER) * (len(PROTOCOLS_ORDER) + 1.6) - 0.4))
 
-    plt.ylabel("Throughput\n(txns/s)")
-    ytickmax = math.ceil(ymaxl / 10) * 10
-    plt.ylim(0.0, ytickmax * 1.1)
-    plt.yticks([0, ytickmax // 2, ytickmax])
+    plt.ylabel("Throughput\n(k txns/s)")
+    # ytickmax = math.ceil(ymaxl / 10) * 10
+    plt.ylim(0.0, ymaxl * 1.1)
+    plt.yticks([0, ymaxl / 2, ymaxl], ["0", f"{ymaxl / 2:.1f}", f"{ymaxl:.1f}"])
+    ax1.yaxis.set_label_coords(-0.105, 0.5)
 
     plt.text(
         11,
-        ytickmax * 0.88,
+        ymaxl * 0.88,
         f"Agg. tput.:\n"
         f" [{results['Raft']['aggregate']['tput'] / 1000.0:.2f}k,"
         f" {results['Crossword']['aggregate']['tput'] / 1000.0:.2f}k,"

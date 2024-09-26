@@ -17,9 +17,9 @@ host9 = "c220g5-111220.wisc.cloudlab.us"
 host10 = "c220g5-111207.wisc.cloudlab.us"
 host11 = "c220g5-111226.wisc.cloudlab.us"
 
-# [wan]
-# host0 = "c220g5-111328.wisc.cloudlab.us"
-# host1 = "clnode116.clemson.cloudlab.us"
-# host2 = "hp065.utah.cloudlab.us"
-# host3 = "pc67.cloudlab.umass.edu"
-# host4 = "clnode122.clemson.cloudlab.us"
+[wan]
+host0 = "c220g5-111328.wisc.cloudlab.us"
+host1 = "clnode116.clemson.cloudlab.us"
+host2 = "hp065.utah.cloudlab.us"
+host3 = "pc67.cloudlab.umass.edu"
+host4 = "clnode122.clemson.cloudlab.us"

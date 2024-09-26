@@ -13,9 +13,9 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 COCK_REPO_NAME = "cockroach"
 
 
-SERVER_SQL_PORT = lambda p: 26157 + p
-SERVER_LISTEN_PORT = lambda p: 26257 + p
-SERVER_HTTP_PORT = lambda p: 28080 + p
+SERVER_SQL_PORT = 26157
+SERVER_LISTEN_PORT = 26257
+SERVER_HTTP_PORT = 28080
 
 
 PROTOCOL_STORE_PATH = (
@@ -108,8 +108,7 @@ def launch_servers(
     me,
     cd_dir,
     protocol,
-    partition,
-    num_replicas,
+    cluster_size,
     value_size,
     file_prefix,
     file_midfix,
@@ -122,12 +121,11 @@ def launch_servers(
     min_payload,
     fixed_num_voters,
 ):
-    if num_replicas != len(remotes):
-        raise ValueError(f"invalid num_replicas: {num_replicas}")
+    if cluster_size != len(remotes):
+        raise ValueError(f"invalid cluster_size: {cluster_size}")
 
     join_list = [
-        f"{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT(partition)}"
-        for r in range(num_replicas)
+        f"{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(cluster_size)
     ]
 
     extra_env = {"COCKROACH_RAFT_ENABLE_CHECKQUORUM": "false"}
@@ -154,15 +152,15 @@ def launch_servers(
         raise ValueError(f"invalid protocol name: {protocol}")
 
     server_procs = []
-    for replica in range(num_replicas):
+    for replica in range(cluster_size):
         host = hosts[replica]
 
         cmd = compose_server_cmd(
             protocol,
             ipaddrs[host],
-            SERVER_SQL_PORT(partition),
-            SERVER_LISTEN_PORT(partition),
-            SERVER_HTTP_PORT(partition),
+            SERVER_SQL_PORT,
+            SERVER_LISTEN_PORT,
+            SERVER_HTTP_PORT,
             join_list,
             replica,
             remotes[host],
@@ -198,9 +196,9 @@ def launch_servers(
 
 def wait_servers_setup():
     # print("Waiting for servers setup...")
-    # wait for 20 seconds to safely allow all nodes up
+    # wait for 25 seconds to safely allow all nodes up
     # not relying on SSH-piped outputs here
-    time.sleep(20)
+    time.sleep(25)
 
 
 def compose_init_cmd(init_listen_addr):
@@ -213,9 +211,9 @@ def compose_init_cmd(init_listen_addr):
     return cmd
 
 
-def do_init_action(ipaddrs, hosts, cd_dir, partition):
+def do_init_action(ipaddrs, hosts, cd_dir):
     init_ip = ipaddrs[hosts[0]]
-    init_listen_addr = f"{init_ip}:{SERVER_LISTEN_PORT(partition)}"
+    init_listen_addr = f"{init_ip}:{SERVER_LISTEN_PORT}"
 
     cmd = compose_init_cmd(init_listen_addr)
 
@@ -227,9 +225,9 @@ def do_init_action(ipaddrs, hosts, cd_dir, partition):
 
 def wait_init_finish():
     # print("Waiting for init finish...")
-    # wait for 10 seconds to safely allow init to fully finish
+    # wait for 20 seconds to safely allow init to fully finish
     # not relying on SSH-piped outputs here
-    time.sleep(10)
+    time.sleep(20)
 
 
 def compose_setting_cmds(init_sql_addr, try_force_leader):
@@ -276,14 +274,9 @@ def compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader):
     return cmd
 
 
-def set_proper_settings(
-    ipaddrs, hosts, cd_dir, partition, num_replicas, try_force_leader
-):
-    if num_replicas != len(ipaddrs):
-        raise ValueError(f"invalid num_replicas: {num_replicas}")
-
+def set_proper_settings(ipaddrs, hosts, cd_dir, num_replicas, try_force_leader):
     init_ip = ipaddrs[hosts[0]]
-    init_sql_addr = f"{init_ip}:{SERVER_SQL_PORT(partition)}"
+    init_sql_addr = f"{init_ip}:{SERVER_SQL_PORT}"
 
     for cmd in compose_setting_cmds(init_sql_addr, try_force_leader):
         proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
@@ -306,11 +299,7 @@ if __name__ == "__main__":
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument(
-        "-a",
-        "--partition",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="if doing keyspace partitioning, the partition idx",
+        "-c", "--cluster_size", type=int, required=True, help="total number of nodes"
     )
     parser.add_argument(
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"
@@ -388,21 +377,20 @@ if __name__ == "__main__":
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_cockroach = f"{base}/{COCK_REPO_NAME}"
 
-    # check that the partition index is valid
-    partition_in_args = "partition" in args
-    if partition_in_args and (args.partition < 0 or args.partition >= 5):
-        raise ValueError("currently only supports <= 5 partitions")
-    partition = 0 if not partition_in_args else args.partition
-    file_midfix = (
-        args.file_midfix if not partition_in_args else f"{args.file_midfix}.{partition}"
-    )
-
-    # check that number of replicas is valid
+    # check that cluster size and number of replicas are valid
+    if args.cluster_size <= 0:
+        raise ValueError(f"invalid cluster size {args.cluster_size}")
+    if args.cluster_size > len(remotes):
+        raise ValueError(f"#nodes {args.cluster_size} > #hosts in config file")
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
         raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
-    hosts = hosts[: args.num_replicas]
+    if args.num_replicas > args.cluster_size:
+        raise ValueError(
+            f"#replicas {args.num_replicas} > cluster size {args.cluster_size}"
+        )
+    hosts = hosts[: args.cluster_size]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
 
@@ -416,19 +404,18 @@ if __name__ == "__main__":
     utils.config.check_remote_is_me(remotes[args.me])
 
     # kill all existing server processes
-    if not partition_in_args:
-        print("Killing related processes...")
-        kill_procs = []
-        for host in hosts:
-            kill_procs.append(
-                utils.proc.run_process_over_ssh(
-                    remotes[host],
-                    ["./scripts/crossword/kill_cockroach_procs.sh"],
-                    cd_dir=cd_dir_summerset,
-                    print_cmd=False,
-                )
+    print("Killing related processes...")
+    kill_procs = []
+    for host in hosts:
+        kill_procs.append(
+            utils.proc.run_process_over_ssh(
+                remotes[host],
+                ["./scripts/crossword/kill_cockroach_procs.sh"],
+                cd_dir=cd_dir_summerset,
+                print_cmd=False,
             )
-        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
+        )
+    utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
     # check that the prefix folder path exists, or create it if not
     print("Preparing states folder...")
@@ -481,11 +468,10 @@ if __name__ == "__main__":
         args.me,
         cd_dir_cockroach,
         args.protocol,
-        partition,
-        args.num_replicas,
+        args.cluster_size,
         args.value_size,
         args.file_prefix,
-        file_midfix,
+        args.file_midfix,
         not args.keep_files,
         args.pin_cores,
         args.size_profiling,
@@ -497,8 +483,6 @@ if __name__ == "__main__":
     )
 
     # register termination signals handler
-    # NOTE: this also terminates other partitions' processes if doing
-    #       keyspace partitioning
     def kill_spawned_procs(*args):
         print("Killing related processes...")
         kill_procs = []
@@ -522,7 +506,7 @@ if __name__ == "__main__":
 
     # do the cockroach init action
     wait_servers_setup()
-    do_init_action(ipaddrs, hosts, cd_dir_cockroach, partition)
+    do_init_action(ipaddrs, hosts, cd_dir_cockroach)
 
     # set default replication factor & other cluster settings
     wait_init_finish()
@@ -530,7 +514,6 @@ if __name__ == "__main__":
         ipaddrs,
         hosts,
         cd_dir_cockroach,
-        partition,
         args.num_replicas,
         not args.no_force_leader,
     )
