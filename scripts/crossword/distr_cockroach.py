@@ -473,6 +473,7 @@ if __name__ == "__main__":
         utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # launch server replicas
+    print("Launching server processes...")
     server_procs = launch_servers(
         remotes,
         ipaddrs,

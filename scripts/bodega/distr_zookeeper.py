@@ -199,7 +199,6 @@ def launch_servers(
 
         extra_env = {
             "ZOO_LOG_DIR": f"{PROTOCOL_STORE_PATH(protocol, file_prefix, file_midfix, replica)}/logs",
-            "JVMFLAGS": "-Dzookeeper.console.threshold=ERROR",
         }
         cmd = ["./bin/zkServer.sh", "start-foreground"]
 
@@ -316,6 +315,7 @@ if __name__ == "__main__":
     utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # launch server replicas
+    print("Launching server processes...")
     server_procs = launch_servers(
         remotes,
         ipaddrs,

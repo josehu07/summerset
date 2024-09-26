@@ -270,6 +270,7 @@ if __name__ == "__main__":
         interfaces[host] = interface
 
     # launch server replicas
+    print("Launching server processes...")
     server_procs = launch_servers(
         remotes,
         ipaddrs,

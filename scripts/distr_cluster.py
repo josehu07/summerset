@@ -398,6 +398,7 @@ if __name__ == "__main__":
     # print_manager_t.start()
 
     # then launch server replicas
+    print("Launching server processes...")
     server_procs = launch_servers(
         remotes,
         ipaddrs,
