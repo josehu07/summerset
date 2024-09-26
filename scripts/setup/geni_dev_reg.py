@@ -64,10 +64,10 @@ for i in range(params.nodeCount):
         iface = node.addInterface("eth1")
         lan.addInterface(iface)
         pass
-    # Copy backup home directory back to '/home/smr'.
-    node.addService(
-        rspec.Execute(shell="bash", command="cp -r /opt/home-backup/. /home/smr/")
-    )
+    # Copy backup home directory back to '/home/smr'?
+    # node.addService(
+    #     rspec.Execute(shell="bash", command="cp -r /opt/home-backup/. /home/smr/")
+    # )
 
 # Print the RSpec to the enclosing page.
 pc.printRequestRSpec(request)
