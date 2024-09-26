@@ -34,8 +34,10 @@ pc.defineParameter(
 params = pc.bindParameters()
 
 # Check parameter validity.
-if params.nodeCount < 1 or params.nodeCount > 9:
-    pc.reportError(portal.ParameterError("#nodes must be >= 1 and <= 9", ["nodeCount"]))
+if params.nodeCount < 1 or params.nodeCount > 25:
+    pc.reportError(
+        portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"])
+    )
 
 if params.nodeType.strip() == "":
     pc.reportError(portal.ParameterError("Physical node type is empty", ["nodeType"]))
