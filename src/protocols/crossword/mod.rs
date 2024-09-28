@@ -142,7 +142,7 @@ pub struct ReplicaConfigCrossword {
 impl Default for ReplicaConfigCrossword {
     fn default() -> Self {
         ReplicaConfigCrossword {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.crossword.wal".into(),
             logger_sync: false,

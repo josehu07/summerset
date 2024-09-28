@@ -114,11 +114,19 @@ def compose_cockroach_build_cmd():
     return cmd
 
 
+def compose_etcd_build_cmd():
+    cmd = ["make", "build"]
+    return cmd
+
+
 def build_on_targets(destinations, dst_path, release, sequential):
     # compose build command
     if "cockroach" in dst_path:
         print("Using build command for: cockroach")
         cmd = compose_cockroach_build_cmd()
+    elif "etcd" in dst_path:
+        print("Using build command for: etcd")
+        cmd = compose_etcd_build_cmd()
     elif "summerset" in dst_path:
         print("Using build command for: summerset")
         cmd = compose_summerset_build_cmd(release)

@@ -50,7 +50,7 @@ pub struct ReplicaConfigRepNothing {
 impl Default for ReplicaConfigRepNothing {
     fn default() -> Self {
         ReplicaConfigRepNothing {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,

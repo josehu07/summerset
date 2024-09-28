@@ -85,7 +85,7 @@ pub struct ReplicaConfigCRaft {
 impl Default for ReplicaConfigCRaft {
     fn default() -> Self {
         ReplicaConfigCRaft {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.craft.wal".into(),
             logger_sync: false,

@@ -97,7 +97,7 @@ pub struct ReplicaConfigMultiPaxos {
 impl Default for ReplicaConfigMultiPaxos {
     fn default() -> Self {
         ReplicaConfigMultiPaxos {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.multipaxos.wal".into(),
             logger_sync: false,

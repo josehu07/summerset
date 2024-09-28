@@ -52,7 +52,7 @@ pub struct ReplicaConfigSimplePush {
 impl Default for ReplicaConfigSimplePush {
     fn default() -> Self {
         ReplicaConfigSimplePush {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.simple_push.wal".into(),
             rep_degree: 2,

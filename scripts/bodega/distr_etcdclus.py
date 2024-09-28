@@ -2,6 +2,7 @@ import sys
 import os
 import signal
 import argparse
+import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -9,19 +10,18 @@ import utils
 
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
-ZK_REPO_NAME = "zookeeper"
+ETCD_REPO_NAME = "etcd"
 
 
-SERVER_PEER_PORT = 20888
-SERVER_ELECT_PORT = 20988
-SERVER_CLI_PORT = 20181
+SERVER_LISTEN_PORT = 21380
+SERVER_CLIENT_PORT = 21379
 
 
 PROTOCOL_STORE_PATH = (
     lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 )
 
-PROTOCOLS = {"ZooKeeper"}  # not accepting other strings yet...
+PROTOCOLS = {"Raft"}  # not accepting other strings yet...
 
 
 def run_process_pinned(
@@ -60,60 +60,14 @@ def run_process_pinned(
         )
 
 
-def dump_server_configs(
+def compose_server_cmd(
     protocol,
-    peer_port,
-    elect_port,
-    cli_port,
-    node_ips,
-    replica_id,
-    zk_repo,
-    file_prefix,
-    file_midfix,
-    fresh_files,
-):
-    backer_dir = PROTOCOL_STORE_PATH(protocol, file_prefix, file_midfix, replica_id)
-    if fresh_files:
-        utils.proc.run_process(
-            ["sudo", "rm", "-rf", backer_dir],
-            print_cmd=False,
-        ).wait()
-
-    # write myid file under dataDir
-    utils.proc.run_process(
-        ["mkdir", "-p", f"{backer_dir}/data"],
-        print_cmd=False,
-    ).wait()
-    with open(f"{backer_dir}/data/myid", "w") as f:
-        f.write(f"{replica_id}")
-
-    # populate conf/zoo.cfg in zookeeper source root
-    for cfg_r in range(len(node_ips)):
-        configs = [
-            f"tickTime=100",
-            f"dataDir={PROTOCOL_STORE_PATH(protocol, file_prefix, file_midfix, cfg_r)}/data",
-            f"dataLogDir={PROTOCOL_STORE_PATH(protocol, file_prefix, file_midfix, cfg_r)}/dlog",
-            f"clientPort={cli_port}",
-            f"initLimit=100",
-            f"syncLimit=40",
-            f"snapCount=100000",
-        ]
-        for r, ip in enumerate(node_ips):
-            configs.append(f"server.{r}={ip}:{peer_port}:{elect_port}")
-
-        cfg_path = f"{zk_repo}/conf/zoo.{cfg_r}.cfg"
-        if cfg_r == replica_id:
-            cfg_path = f"{zk_repo}/conf/zoo.cfg"
-        with open(cfg_path, "w") as fcfg:
-            for cfg in configs:
-                fcfg.write(cfg + "\n")
-
-
-def copy_server_config(
-    protocol,
+    this_ip,
+    listen_port,
+    client_port,
+    join_list,
     replica_id,
     remote,
-    zk_repo,
     file_prefix,
     file_midfix,
     fresh_files,
@@ -126,28 +80,43 @@ def copy_server_config(
             print_cmd=False,
         ).wait()
 
-    # write myid file under dataDir over ssh
+    # make states directory
     utils.proc.run_process_over_ssh(
         remote,
-        [
-            "mkdir",
-            "-p",
-            f"{backer_dir}/data",
-            ";",
-            "echo",
-            str(replica_id),
-            ">",
-            f"{backer_dir}/data/myid",
-        ],
+        ["mkdir", "-p", f"{backer_dir}"],
         print_cmd=False,
     ).wait()
 
-    # copy conf/zoo.cfg to zookeeper source root over ssh
-    utils.file.copy_file_to_remote(
-        remote,
-        f"{zk_repo}/conf/zoo.{replica_id}.cfg",
-        f"{zk_repo}/conf/zoo.cfg",
-    )
+    cmd = [
+        "./bin/etcd",
+        "--name",
+        f"infra{replica_id}",
+        "--initial-advertise-peer-urls",
+        f"http://{this_ip}:{listen_port}",
+        "--listen-peer-urls",
+        f"http://0.0.0.0:{listen_port}",
+        "--advertise-client-urls",
+        f"http://{this_ip}:{client_port}",
+        "--listen-client-urls",
+        f"http://0.0.0.0:{client_port}",
+        "--initial-cluster",
+        f"{','.join([f'infra{r}={addr}' for r, addr in enumerate(join_list)])}",
+        "--initial-cluster-state",
+        "new",
+        "--snapshot-count",
+        "100000",
+        "--heartbeat-interval",
+        "100",
+        "--data-dir",
+        f"{backer_dir}/data",
+        "--wal-dir",
+        f"{backer_dir}/wal",
+        "--log-level",
+        "warn",
+        "--log-outputs",
+        f"stderr,{backer_dir}/etcd.log",
+    ]
+    return cmd
 
 
 def launch_servers(
@@ -166,40 +135,26 @@ def launch_servers(
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
-    node_ips = [ipaddrs[hosts[r]] for r in range(num_replicas)]
-    dump_server_configs(
-        protocol,
-        SERVER_PEER_PORT,
-        SERVER_ELECT_PORT,
-        SERVER_CLI_PORT,
-        node_ips,
-        hosts.index(me),
-        cd_dir,
-        file_prefix,
-        file_midfix,
-        fresh_files,
-    )
-    for replica in range(num_replicas):
-        host = hosts[replica]
-        if host != me:
-            copy_server_config(
-                protocol,
-                replica,
-                remotes[host],
-                cd_dir,
-                file_prefix,
-                file_midfix,
-                fresh_files,
-            )
+    join_list = [
+        f"http://{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(num_replicas)
+    ]
 
     server_procs = []
     for replica in range(num_replicas):
         host = hosts[replica]
 
-        extra_env = {
-            "ZOO_LOG_DIR": f"{PROTOCOL_STORE_PATH(protocol, file_prefix, file_midfix, replica)}/logs",
-        }
-        cmd = ["./bin/zkServer.sh", "start-foreground"]
+        cmd = compose_server_cmd(
+            protocol,
+            ipaddrs[host],
+            SERVER_LISTEN_PORT,
+            SERVER_CLIENT_PORT,
+            join_list,
+            replica,
+            remotes[host],
+            file_prefix,
+            file_midfix,
+            fresh_files,
+        )
 
         proc = None
         if host == me:
@@ -209,7 +164,6 @@ def launch_servers(
                 capture_stderr=False,
                 cores_per_proc=pin_cores,
                 cd_dir=cd_dir,
-                extra_env=extra_env,
             )
         else:
             # spawn server process on remote server through ssh
@@ -219,7 +173,6 @@ def launch_servers(
                 cores_per_proc=pin_cores,
                 remote=remotes[host],
                 cd_dir=cd_dir,
-                extra_env=extra_env,
             )
         server_procs.append(proc)
 
@@ -231,11 +184,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-p",
-        "--protocol",
-        type=str,
-        default="ZooKeeper",
-        help="protocol name (unused yet)",
+        "-p", "--protocol", type=str, default="Raft", help="protocol name (unused yet)"
     )
     parser.add_argument(
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"
@@ -249,7 +198,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--file_prefix",
         type=str,
-        default="/tmp/zookeeper",
+        default="/tmp/etcd",
         help="states file prefix folder path",
     )
     parser.add_argument(
@@ -271,9 +220,9 @@ if __name__ == "__main__":
         TOML_FILENAME, args.group
     )
     cd_dir_summerset = f"{base}/{repo}"
-    cd_dir_zookeeper = f"{base}/{ZK_REPO_NAME}"
+    cd_dir_etcd = f"{base}/{ETCD_REPO_NAME}"
 
-    # check that number of replicas is valid
+    # check that cluster size and number of replicas are valid
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
@@ -296,7 +245,7 @@ if __name__ == "__main__":
         kill_procs.append(
             utils.proc.run_process_over_ssh(
                 remotes[host],
-                ["./scripts/bodega/kill_zookeeper_procs.sh"],
+                ["./scripts/bodega/kill_etcd_procs.sh"],
                 cd_dir=cd_dir_summerset,
                 print_cmd=False,
             )
@@ -311,7 +260,7 @@ if __name__ == "__main__":
             utils.proc.run_process_over_ssh(
                 remotes[host],
                 ["mkdir", "-p", args.file_prefix],
-                cd_dir=cd_dir_zookeeper,
+                cd_dir=cd_dir_etcd,
                 print_cmd=False,
             )
         )
@@ -324,7 +273,7 @@ if __name__ == "__main__":
         ipaddrs,
         hosts,
         args.me,
-        cd_dir_zookeeper,
+        cd_dir_etcd,
         args.protocol,
         args.num_replicas,
         args.file_prefix,
@@ -341,7 +290,7 @@ if __name__ == "__main__":
             kill_procs.append(
                 utils.proc.run_process_over_ssh(
                     remotes[host],
-                    ["./scripts/bodega/kill_zookeeper_procs.sh"],
+                    ["./scripts/bodega/kill_etcd_procs.sh"],
                     cd_dir=cd_dir_summerset,
                     print_cmd=False,
                 )

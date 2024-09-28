@@ -91,7 +91,7 @@ pub struct ReplicaConfigRSPaxos {
 impl Default for ReplicaConfigRSPaxos {
     fn default() -> Self {
         ReplicaConfigRSPaxos {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
