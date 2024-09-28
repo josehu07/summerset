@@ -4,7 +4,7 @@ mod repl;
 pub(crate) use repl::ClientRepl;
 
 mod bench;
-pub(crate) use bench::ClientBench;
+pub(crate) use bench::{ClientBench, ModeParamsBench};
 
 mod tester;
 pub(crate) use tester::ClientTester;

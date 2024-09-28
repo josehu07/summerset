@@ -8,26 +8,44 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
-[dependencies]
-async-trait = "0.1"
-fixedbitset = { version = "0.5", features = ["serde"] }
-rangemap = "1.5"
-flashmap = "0.1"
-bytes = { version = "1.7", features = ["serde"] }
-futures = "0.3"
+[workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }
+tokio-zookeeper = "0.4"
 rand = "0.8"
+rand_distr = "0.4"
+rangemap = "1.5"
 lazy_static = "1.5"
+bytes = { version = "1.7", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"
 toml = { version = "0.8", features = ["parse"] }
 log = "0.4"
 env_logger = "0.11"
-reed-solomon-erasure = { version = "6.0" }
+clap = { version = "4.0", features = ["derive"] }
 ctrlc = { version = "3.4", features = ["termination"] }
+color-print = { version = "0.3", features = ["terminfo"] }
+
+[dependencies]
+tokio = { workspace = true }
+rand = { workspace = true }
+rangemap = { workspace = true }
+lazy_static = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+async-trait = "0.1"
+fixedbitset = { version = "0.5", features = ["serde"] }
+flashmap = "0.1"
+futures = "0.3"
+bincode = "1.3"
+reed-solomon-erasure = { version = "6.0" }
 get-size = { version = "0.1", features = ["derive"] }
 linreg = "0.2"
 statistical = "1.0"
+# these are just for error conversion; could do it in a better way
+ctrlc = { workspace = true }
+tokio-zookeeper = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"

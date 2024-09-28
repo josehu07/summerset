@@ -117,8 +117,6 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
         "--man",
         f"host{partition}",
         # NOTE: not pinning cores for this exper due to large #processes
-        "--base_idx",
-        str(0),
         "--skip_build",
         "bench",
         "-a",

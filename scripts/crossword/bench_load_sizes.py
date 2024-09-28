@@ -98,8 +98,6 @@ def run_bench_clients(remote0, base, repo, protocol, value_size):
         "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--base_idx",
-        str(0),
         "--skip_build",
         "bench",
         "-n",

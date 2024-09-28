@@ -112,7 +112,6 @@ def run_clients(
     capture_stdout,
     pin_cores,
     use_veth,
-    base_idx,
     timeout_ms,
 ):
     if num_clients < 1:
@@ -157,12 +156,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--use_veth", action="store_true", help="if set, use netns and veth setting"
-    )
-    parser.add_argument(
-        "--base_idx",
-        type=int,
-        default=0,
-        help="idx of the first client for calculating ports",
     )
     parser.add_argument(
         "--timeout_ms", type=int, default=5000, help="client-side request timeout"
@@ -281,7 +274,6 @@ if __name__ == "__main__":
         capture_stdout,
         args.pin_cores,
         args.use_veth,
-        args.base_idx,
         args.timeout_ms,
     )
 

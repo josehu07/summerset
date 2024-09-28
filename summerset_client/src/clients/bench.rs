@@ -29,7 +29,10 @@ use summerset::{
 const KEY_LEN: usize = 8;
 
 /// Max length in bytes of value.
-const MAX_VAL_LEN: usize = 16 * 1024 * 1024;
+const MAX_VAL_LEN: usize = 16 * 1024 * 1024; // 16 MB
+
+/// Statistics printing interval.
+const PRINT_INTERVAL: Duration = Duration::from_millis(100);
 
 lazy_static! {
     /// A very long pre-generated value string to get values from.
@@ -38,9 +41,6 @@ lazy_static! {
         .take(MAX_VAL_LEN)
         .map(char::from)
         .collect();
-
-    /// Statistics printing interval.
-    static ref PRINT_INTERVAL: Duration = Duration::from_millis(100);
 }
 
 /// Mode parameters struct.
@@ -113,8 +113,8 @@ pub(crate) struct ClientBench {
     /// List of randomly generated keys if in synthetic mode.
     keys_pool: Option<Vec<String>>,
 
-    /// Trace of (op, key) pairs to (repeatedly) replay.
-    trace_vec: Option<Vec<(bool, String)>>,
+    /// Trace of (op, key, vlen) pairs to (repeatedly) replay.
+    trace_vec: Option<Vec<(bool, String, usize)>>,
 
     /// Trace operation index to play next.
     trace_idx: usize,
@@ -294,9 +294,9 @@ impl ClientBench {
     }
 
     /// Loads in given input trace file. Expects it to be a cleaned YCSB trace.
-    fn load_trace_file(
+    pub(crate) fn load_trace_file(
         path: &str,
-    ) -> Result<Vec<(bool, String)>, SummersetError> {
+    ) -> Result<Vec<(bool, String, usize)>, SummersetError> {
         let file = File::open(path)?;
         let mut trace_vec = vec![];
         for line in BufReader::new(file).lines() {
@@ -304,14 +304,17 @@ impl ClientBench {
             if !(line.is_empty()) {
                 let mut seg_idx = 0;
                 let mut read = false;
+                let mut key = String::new();
+                let mut vlen = 0;
                 for seg in line.split(' ') {
                     if seg.is_empty() {
                         continue;
                     }
                     if seg_idx == 0 {
-                        read = if seg == "READ" {
+                        // opcode
+                        read = if seg == "READ" || seg == "SCAN" {
                             true
-                        } else if seg == "UPDATE" {
+                        } else if seg == "UPDATE" || seg == "INSERT" {
                             false
                         } else {
                             return logged_err!(
@@ -320,11 +323,17 @@ impl ClientBench {
                             );
                         }
                     } else if seg_idx == 1 {
-                        trace_vec.push((read, seg.into()));
+                        // key
+                        key = seg.into();
+                    } else if seg_idx == 2 {
+                        // vlen; if not present, will store 0 and the runner
+                        // will use the value size params instead
+                        vlen = seg.parse::<usize>()?;
                         break;
                     }
                     seg_idx += 1;
                 }
+                trace_vec.push((read, key, vlen));
             }
         }
         Ok(trace_vec)
@@ -332,7 +341,7 @@ impl ClientBench {
 
     /// Parses values sizes over time parameter into a rangemap of
     /// pre-generated values.
-    fn parse_value_sizes(
+    pub(crate) fn parse_value_sizes(
         length_s: u64,
         s: &str,
     ) -> Result<RangeMap<u64, usize>, SummersetError> {
@@ -450,7 +459,7 @@ impl ClientBench {
     /// Issues a request following the trace vec.
     fn issue_trace_cmd(&mut self) -> Result<Option<RequestId>, SummersetError> {
         debug_assert!(self.trace_vec.is_some());
-        let (read, key) = self
+        let (read, key, vlen) = self
             .trace_vec
             .as_ref()
             .unwrap()
@@ -464,9 +473,13 @@ impl ClientBench {
         }
         if read {
             self.driver.issue_get(&key)
-        } else {
+        } else if vlen == 0 {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
+            self.driver.issue_put(&key, val)
+        } else {
+            // use vlen in trace
+            let val = &MOM_VALUE[..vlen];
             self.driver.issue_put(&key, val)
         }
     }
@@ -624,9 +637,9 @@ impl ClientBench {
 
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
-            if print_elapsed >= *PRINT_INTERVAL
-                || (!printed_1_100 && elapsed >= *PRINT_INTERVAL / 100)
-                || (!printed_1_10 && elapsed >= *PRINT_INTERVAL / 10)
+            if print_elapsed >= PRINT_INTERVAL
+                || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
+                || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
             {
                 let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
                 let lat = if self.chunk_lats.is_empty() {
@@ -695,10 +708,10 @@ impl ClientBench {
 
                 // these two print triggers are for more effecitve adaptive
                 // adjustment of frequency
-                if !printed_1_100 && elapsed >= *PRINT_INTERVAL / 100 {
+                if !printed_1_100 && elapsed >= PRINT_INTERVAL / 100 {
                     printed_1_100 = true;
                 }
-                if !printed_1_10 && elapsed >= *PRINT_INTERVAL / 10 {
+                if !printed_1_10 && elapsed >= PRINT_INTERVAL / 10 {
                     printed_1_10 = true;
                 }
             }

@@ -11,7 +11,7 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
+SERVER_CLI_PORT = 20181
 
 
 CLIENT_OUTPUT_PATH = (
@@ -19,7 +19,7 @@ CLIENT_OUTPUT_PATH = (
 )
 
 UTILITY_PARAM_NAMES = {
-    "repl": [],
+    "repl": None,
     "bench": [
         "freq_target",
         "value_size",
@@ -31,8 +31,8 @@ UTILITY_PARAM_NAMES = {
         "unif_interval_ms",
         "unif_upper_bound",
     ],
-    "tester": ["test_name", "keep_going", "logger_on"],
-    "mess": ["pause", "resume"],
+    "tester": None,
+    "mess": None,
 }
 
 
@@ -145,7 +145,7 @@ def run_clients(
 
     client_procs = []
     for i in range(num_clients):
-        manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT(partition)}"
+        manager_addr = f"{manager_pub_ip}:{SERVER_CLI_PORT}"
         cmd = compose_client_cmd(
             protocol,
             manager_addr,
@@ -357,6 +357,8 @@ if __name__ == "__main__":
     num_clients = args.num_clients if args.utility == "bench" else 1
 
     # run client executable(s)
+    if UTILITY_PARAM_NAMES[args.utility] is None:
+        raise ValueError(f"utility mode '{args.utility}' not supported for ZooKeeper")
     client_procs = run_clients(
         remotes,
         ipaddrs,

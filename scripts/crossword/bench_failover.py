@@ -91,8 +91,6 @@ def run_bench_clients(remote0, base, repo, protocol):
         "host0",
         "--pin_cores",
         str(CLIENT_PIN_CORES),
-        "--base_idx",
-        str(0),
         "--timeout_ms",
         str(CLIENT_TIMEOUT_SECS * 1000),
         "--skip_build",
@@ -137,8 +135,6 @@ def run_mess_client(remote0, base, repo, protocol, pauses=None, resumes=None):
         PHYS_ENV_GROUP,
         "--me",
         "host0",
-        "--base_idx",
-        str(NUM_CLIENTS),
         "--skip_build",
         "mess",
     ]
