@@ -58,6 +58,9 @@ pub(crate) struct ZooKeeperBench {
     /// Total number of requests made.
     total_cnt: u64,
 
+    /// Total number of successful replies received.
+    valid_cnt: u64,
+
     /// Total number of replies received in last print interval.
     chunk_cnt: u64,
 
@@ -144,6 +147,7 @@ impl ZooKeeperBench {
             trace_idx: 0,
             value_size,
             total_cnt: 0,
+            valid_cnt: 0,
             chunk_cnt: 0,
             chunk_lats: vec![],
             start: Instant::now(),
@@ -209,14 +213,23 @@ impl ZooKeeperBench {
 
     /// Runs one iteration action of closed-loop style benchmark.
     async fn closed_loop_iter(&mut self) -> Result<(), SummersetError> {
-        // do next request
+        let ts = Instant::now();
+
+        // do the next request
+        self.total_cnt += 1;
         if self.trace_vec.is_some() {
             self.do_trace_cmd().await?;
         } else {
             self.do_rand_cmd().await?;
         };
 
-        self.total_cnt += 1;
+        self.valid_cnt += 1;
+        self.chunk_cnt += 1;
+
+        let lat_us =
+            Instant::now().duration_since(ts).as_secs_f64() * 1000000.0;
+        self.chunk_lats.push(lat_us);
+
         Ok(())
     }
 
@@ -224,16 +237,14 @@ impl ZooKeeperBench {
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.session.connect().await?;
         println!(
-            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
+            "{:^11} | {:^12} | {:^12} | {:>8}",
+            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Total"
         );
 
         self.start = Instant::now();
         self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
-
         let mut last_print = self.start;
-        let (mut printed_1_100, mut printed_1_10) = (false, false);
 
         self.total_cnt = 0;
         self.chunk_cnt = 0;
@@ -250,10 +261,7 @@ impl ZooKeeperBench {
 
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
-            if print_elapsed >= PRINT_INTERVAL
-                || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
-                || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
-            {
+            if print_elapsed >= PRINT_INTERVAL {
                 let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
                 let lat = if self.chunk_lats.is_empty() {
                     0.0
@@ -271,15 +279,6 @@ impl ZooKeeperBench {
                 last_print = self.now;
                 self.chunk_cnt = 0;
                 self.chunk_lats.clear();
-
-                // these two print triggers are for more effecitve adaptive
-                // adjustment of frequency
-                if !printed_1_100 && elapsed >= PRINT_INTERVAL / 100 {
-                    printed_1_100 = true;
-                }
-                if !printed_1_10 && elapsed >= PRINT_INTERVAL / 10 {
-                    printed_1_10 = true;
-                }
             }
         }
 

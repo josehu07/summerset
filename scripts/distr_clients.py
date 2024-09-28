@@ -133,7 +133,6 @@ def run_clients(
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
-    # assuming I am the machine to run manager
     manager_pub_ip = ipaddrs[man]
 
     # if dist_machs set, put clients round-robinly across this many machines

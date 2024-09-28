@@ -4,7 +4,7 @@ import argparse
 import subprocess
 import math
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
 
 
@@ -27,9 +27,7 @@ UTILITY_PARAM_NAMES = {
         "put_ratio",
         "ycsb_trace",
         "length_s",
-        "norm_stdev_ratio",
-        "unif_interval_ms",
-        "unif_upper_bound",
+        # others are unused for ZooKeeper
     ],
     "tester": None,
     "mess": None,
@@ -88,15 +86,13 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
+def compose_client_cmd(protocol, server, config, utility, params, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
         protocol,
         "-m",
-        manager,
-        "--timeout-ms",
-        str(timeout_ms),
+        server,
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
@@ -116,11 +112,10 @@ def run_clients(
     remotes,
     ipaddrs,
     me,
-    man,
+    server,
     cd_dir,
     protocol,
     utility,
-    partition,
     num_clients,
     dist_machs,
     params,
@@ -128,13 +123,11 @@ def run_clients(
     config,
     capture_stdout,
     pin_cores,
-    timeout_ms,
 ):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
-    # assuming I am the machine to run manager
-    manager_pub_ip = ipaddrs[man]
+    server_pub_ip = ipaddrs[server]
 
     # if dist_machs set, put clients round-robinly across this many machines
     # starting from me
@@ -145,13 +138,12 @@ def run_clients(
 
     client_procs = []
     for i in range(num_clients):
-        manager_addr = f"{manager_pub_ip}:{SERVER_CLI_PORT}"
+        server_addr = f"{server_pub_ip}:{SERVER_CLI_PORT}"
         cmd = compose_client_cmd(
             protocol,
-            manager_addr,
+            server_addr,
             config,
             utility,
-            timeout_ms,
             params,
             release,
         )
@@ -192,7 +184,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
+        "-p",
+        "--protocol",
+        type=str,
+        default="ZooKeeper",
+        help="system name (now only accepts ZooKeeper)",
     )
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
     parser.add_argument(
@@ -205,13 +201,14 @@ if __name__ == "__main__":
         "--me", type=str, default="host0", help="main script runner's host nickname"
     )
     parser.add_argument(
-        "--man", type=str, default="host0", help="manager oracle's host nickname"
+        "-s",
+        "--server",
+        type=str,
+        default="host0",
+        help="connecting server's host nickname",
     )
     parser.add_argument(
         "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
-    )
-    parser.add_argument(
-        "--timeout_ms", type=int, default=5000, help="client-side request timeout"
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -220,19 +217,10 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(
         required=True,
         dest="utility",
-        description="client utility mode: repl|bench|tester|mess",
+        description="client utility mode (now only accepts bench)",
     )
-
-    parser_repl = subparsers.add_parser("repl", help="REPL mode")
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
-    parser_bench.add_argument(
-        "-a",
-        "--partition",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="if doing keyspace partitioning, the partition idx",
-    )
     parser_bench.add_argument(
         "-n",
         "--num_clients",
@@ -265,15 +253,6 @@ if __name__ == "__main__":
         help="if set, expect there'll be a service halt",
     )
     parser_bench.add_argument(
-        "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
-    )
-    parser_bench.add_argument(
-        "--unif_interval_ms", type=int, help="uniform dist usage interval"
-    )
-    parser_bench.add_argument(
-        "--unif_upper_bound", type=int, help="uniform dist upper bound"
-    )
-    parser_bench.add_argument(
         "--file_prefix",
         type=str,
         default="",
@@ -284,25 +263,6 @@ if __name__ == "__main__":
         type=str,
         default="",
         help="output file extra identifier after protocol name",
-    )
-
-    parser_tester = subparsers.add_parser("tester", help="testing mode")
-    parser_tester.add_argument(
-        "-t", "--test_name", type=str, required=True, help="<test_name>|basic|all"
-    )
-    parser_tester.add_argument(
-        "-k", "--keep_going", action="store_true", help="continue upon failed test"
-    )
-    parser_tester.add_argument(
-        "--logger_on", action="store_true", help="do not suppress logger output"
-    )
-
-    parser_mess = subparsers.add_parser("mess", help="one-shot control mode")
-    parser_mess.add_argument(
-        "--pause", type=str, help="comma-separated list of servers to pause"
-    )
-    parser_mess.add_argument(
-        "--resume", type=str, help="comma-separated list of servers to resume"
     )
 
     args = parser.parse_args()
@@ -316,22 +276,9 @@ if __name__ == "__main__":
     # check that I am indeed the "me" host
     utils.config.check_remote_is_me(remotes[args.me])
 
-    # check that the manager host is valid
-    if args.man not in remotes:
-        raise ValueError(f"invalid manager oracle's host {args.man}")
-
-    # check that the partition index is valid
-    partition_in_args, partition, file_midfix = False, 0, ""
-    if args.utility == "bench":
-        partition_in_args = "partition" in args
-        if partition_in_args and (args.partition < 0 or args.partition >= 5):
-            raise ValueError("currently only supports <= 5 partitions")
-        partition = 0 if not partition_in_args else args.partition
-        file_midfix = (
-            args.file_midfix
-            if not partition_in_args
-            else f"{args.file_midfix}.{partition}"
-        )
+    # check that the server host is valid
+    if args.server not in remotes:
+        raise ValueError(f"invalid connecting server's host {args.server}")
 
     # check that number of clients does not exceed 99
     if args.utility == "bench":
@@ -349,25 +296,26 @@ if __name__ == "__main__":
         os.system(f"mkdir -p {args.file_prefix}")
 
     # build everything
-    if not partition_in_args and not args.skip_build:
+    if not args.skip_build:
         print("Building everything...")
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
     capture_stdout = args.utility == "bench" and len(args.file_prefix) > 0
     num_clients = args.num_clients if args.utility == "bench" else 1
 
-    # run client executable(s)
+    # check that the utility mode is supported
     if UTILITY_PARAM_NAMES[args.utility] is None:
         raise ValueError(f"utility mode '{args.utility}' not supported for ZooKeeper")
+
+    # run client executable(s)
     client_procs = run_clients(
         remotes,
         ipaddrs,
         args.me,
-        args.man,
+        args.server,
         cd_dir,
         args.protocol,
         args.utility,
-        partition,
         num_clients,
         0 if args.utility != "bench" else args.dist_machs,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
@@ -375,7 +323,6 @@ if __name__ == "__main__":
         args.config,
         capture_stdout,
         args.pin_cores,
-        args.timeout_ms,
     )
 
     # if running bench client, add proper timeout on wait
@@ -394,7 +341,9 @@ if __name__ == "__main__":
                 # doing automated experiments, so capture output
                 out, _ = client_proc.communicate(timeout=timeout)
                 with open(
-                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, file_midfix, i),
+                    CLIENT_OUTPUT_PATH(
+                        args.protocol, args.file_prefix, args.file_midfix, i
+                    ),
                     "w+",
                 ) as fout:
                     fout.write(out.decode())

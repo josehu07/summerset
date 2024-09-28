@@ -26,6 +26,10 @@ pub(crate) struct ZooKeeperSession {
 
     /// Current connected ZooKeeper session.
     session: Option<ZooKeeper>,
+
+    /// Do a `sync` before every `get` for stricter consistency (though still
+    /// not linearizability).
+    sync_on_get: bool,
 }
 
 impl ZooKeeperSession {
@@ -47,6 +51,7 @@ impl ZooKeeperSession {
             server_addr: server,
             builder,
             session: None,
+            sync_on_get: config.sync_on_get,
         })
     }
 
@@ -90,6 +95,10 @@ impl ZooKeeperSession {
             .session
             .as_ref()
             .ok_or(SummersetError::msg("no active session"))?;
+
+        if self.sync_on_get {
+            // NOTE: rust binding libraries do not support sync() yet...
+        }
         let data = session.get_data(&path).await?;
 
         if let Some((data, _)) = data {

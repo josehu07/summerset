@@ -2,7 +2,6 @@ import sys
 import os
 import signal
 import argparse
-import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils

@@ -25,8 +25,7 @@ mv ycsb-0.17.0 ycsb
 
 
 echo
-echo "Fetching Apache ZooKeeper..."
-curl -O --location https://dlcdn.apache.org/zookeeper/zookeeper-3.9.2/apache-zookeeper-3.9.2-bin.tar.gz
-tar xfvz apache-zookeeper-3.9.2-bin.tar.gz
-rm apache-zookeeper-3.9.2-bin.tar.gz
-mv apache-zookeeper-3.9.2-bin zookeeper
+echo "Fetching our Apache ZooKeeper fork..."
+git clone https://github.com/josehu07/zookeeper.git
+cd zookeeper
+git checkout bodega
