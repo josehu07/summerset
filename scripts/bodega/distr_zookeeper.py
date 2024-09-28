@@ -21,7 +21,7 @@ PROTOCOL_STORE_PATH = (
     lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 )
 
-PROTOCOLS = {"Zab"}  # not modifying ZooKeeper yet...
+PROTOCOLS = {"ZooKeeper"}  # not accepting other strings yet...
 
 
 def run_process_pinned(
@@ -231,7 +231,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-p", "--protocol", type=str, default="Zab", help="protocol name (unused yet)"
+        "-p",
+        "--protocol",
+        type=str,
+        default="ZooKeeper",
+        help="protocol name (unused yet)",
     )
     parser.add_argument(
         "-n", "--num_replicas", type=int, required=True, help="number of replicas"

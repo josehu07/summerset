@@ -6,9 +6,7 @@ use crate::zookeeper::ClientConfigZooKeeper;
 
 use tokio::time::Duration;
 
-use tokio_zookeeper::{
-    error as zk_error, Acl, CreateMode, ZooKeeper, ZooKeeperBuilder,
-};
+use zookeeper_client as zkcli;
 
 use summerset::{parsed_config, SummersetError};
 
@@ -22,10 +20,10 @@ pub(crate) struct ZooKeeperSession {
     server_addr: SocketAddr,
 
     /// Session client builder.
-    builder: ZooKeeperBuilder,
+    builder: zkcli::Connector,
 
     /// Current connected ZooKeeper session.
-    session: Option<ZooKeeper>,
+    session: Option<zkcli::Client>,
 
     /// Do a `sync` before every `get` for stricter consistency (though still
     /// not linearizability).
@@ -40,11 +38,11 @@ impl ZooKeeperSession {
     ) -> Result<Self, SummersetError> {
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ClientConfigZooKeeper;
-                                    expiry_ms)?;
+                                    expiry_ms, sync_on_get)?;
 
-        let mut builder = ZooKeeperBuilder::default();
+        let mut builder = zkcli::Client::connector();
         if config.expiry_ms > 0 {
-            builder.set_timeout(Duration::from_millis(config.expiry_ms));
+            builder.session_timeout(Duration::from_millis(config.expiry_ms));
         }
 
         Ok(ZooKeeperSession {
@@ -57,23 +55,25 @@ impl ZooKeeperSession {
 
     /// Connect to ZooKeeper server, get an active session.
     pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
-        let (zk, _) = self.builder.connect(&self.server_addr).await?;
+        let zk = self
+            .builder
+            .connect(&self.server_addr.to_string()[..])
+            .await?;
 
         // create Summerset Znode if not present
-        zk.create(
-            PARENT_ZNODE,
-            b"",
-            Acl::open_unsafe(),
-            CreateMode::Persistent,
-        )
-        .await?
-        .or_else(|e| {
-            if let zk_error::Create::NodeExists = e {
-                Ok(PARENT_ZNODE.into())
-            } else {
-                Err(e)
-            }
-        })?;
+        let creaete_result = zk
+            .create(
+                PARENT_ZNODE,
+                b"",
+                &zkcli::CreateMode::Persistent
+                    .with_acls(zkcli::Acls::anyone_all()),
+            )
+            .await;
+        if let Err(zkcli::Error::NodeExists) = creaete_result {
+            // if it already exists, all good
+        } else {
+            creaete_result?;
+        }
 
         self.session = Some(zk);
         Ok(())
@@ -97,15 +97,25 @@ impl ZooKeeperSession {
             .ok_or(SummersetError::msg("no active session"))?;
 
         if self.sync_on_get {
-            // NOTE: rust binding libraries do not support sync() yet...
+            // sync still does not guarantee linearizability:
+            // https://zookeeper.apache.org/doc/r3.8.4/zookeeperInternals.html
+            let sync_result = session.sync(&path).await;
+            if let Err(zkcli::Error::NoNode) = sync_result {
+                // node does not exist
+                return Ok(None);
+            } else {
+                sync_result?;
+            }
         }
-        let data = session.get_data(&path).await?;
 
-        if let Some((data, _)) = data {
-            // stat ignored
-            Ok(Some(String::from_utf8(data)?))
-        } else {
-            Ok(None)
+        let get_result = session.get_data(&path).await;
+        match get_result {
+            // node exists and success
+            Ok((data, _)) => Ok(Some(String::from_utf8(data)?)),
+            // node does not exist
+            Err(zkcli::Error::NoNode) => Ok(None),
+            // error
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -120,32 +130,29 @@ impl ZooKeeperSession {
             .session
             .as_ref()
             .ok_or(SummersetError::msg("no active session"))?;
-        let result = session
-            .set_data(&path, None, value.as_bytes().to_owned()) // any version allowed
-            .await?;
 
-        if let Err(zk_error::SetData::NoNode) = result {
+        let set_result = session
+            .set_data(&path, value.as_bytes(), None) // any version allowed
+            .await;
+        if let Err(zkcli::Error::NoNode) = set_result {
             // Znode does not exist yet, create with value as initial data
-            session
+            let create_result = session
                 .create(
                     &path,
-                    value.as_bytes().to_owned(),
-                    Acl::open_unsafe(),
-                    CreateMode::Persistent,
+                    value.as_bytes(),
+                    &zkcli::CreateMode::Persistent
+                        .with_acls(zkcli::Acls::anyone_all()),
                 )
-                .await?
-                .or_else(|e| {
-                    if let zk_error::Create::NodeExists = e {
-                        // it could be that a concurrent client has created
-                        // the Znode before my call, so consider it a success
-                        Ok(path)
-                    } else {
-                        Err(e)
-                    }
-                })?;
+                .await;
+            if let Err(zkcli::Error::NodeExists) = create_result {
+                // it could be that a concurrent client has created the Znode
+                // before my call, so consider it a success
+            } else {
+                create_result?;
+            }
         } else {
-            // all other errors are returned directly
-            result?;
+            // other errors are returned directly
+            set_result?;
         }
         Ok(())
     }

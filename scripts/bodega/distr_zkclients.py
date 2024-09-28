@@ -188,7 +188,7 @@ if __name__ == "__main__":
         "--protocol",
         type=str,
         default="ZooKeeper",
-        help="system name (now only accepts ZooKeeper)",
+        help="protocol name (unused yet)",
     )
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
     parser.add_argument(

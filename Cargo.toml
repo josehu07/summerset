@@ -10,7 +10,6 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }
-tokio-zookeeper = "0.4"
 rand = "0.8"
 rand_distr = "0.4"
 rangemap = "1.5"
@@ -23,6 +22,7 @@ env_logger = "0.11"
 clap = { version = "4.0", features = ["derive"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 color-print = { version = "0.3", features = ["terminfo"] }
+zookeeper-client = "0.8"
 
 [dependencies]
 tokio = { workspace = true }
@@ -45,7 +45,7 @@ linreg = "0.2"
 statistical = "1.0"
 # these are just for error conversion; could do it in a better way
 ctrlc = { workspace = true }
-tokio-zookeeper = { workspace = true }
+zookeeper-client = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"

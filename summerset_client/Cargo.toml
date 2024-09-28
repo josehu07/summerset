@@ -8,7 +8,6 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 [dependencies]
 summerset = { path = "../" }
 tokio = { workspace = true }
-tokio-zookeeper = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 rangemap = { workspace = true }
@@ -19,3 +18,4 @@ log = { workspace = true }
 env_logger = { workspace = true }
 clap = { workspace = true }
 color-print = { workspace = true }
+zookeeper-client = { workspace = true }

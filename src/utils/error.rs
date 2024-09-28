@@ -62,9 +62,7 @@ impl_from_error!(reed_solomon_erasure::Error);
 impl_from_error!(ctrlc::Error);
 impl_from_error!(linreg::Error);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
-impl_from_error!(tokio_zookeeper::error::Error);
-impl_from_error!(tokio_zookeeper::error::Create);
-impl_from_error!(tokio_zookeeper::error::SetData);
+impl_from_error!(zookeeper_client::Error);
 
 impl_from_error_generic!(tokio::sync::SetError<T>);
 impl_from_error_generic!(tokio::sync::watch::error::SendError<T>);
