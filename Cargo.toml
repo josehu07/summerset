@@ -23,6 +23,7 @@ clap = { version = "4.0", features = ["derive"] }
 ctrlc = { version = "3.4", features = ["termination"] }
 color-print = { version = "0.3", features = ["terminfo"] }
 zookeeper-client = "0.8"
+etcd-client = "0.14"
 
 [dependencies]
 tokio = { workspace = true }
@@ -46,6 +47,7 @@ statistical = "1.0"
 # these are just for error conversion; could do it in a better way
 ctrlc = { workspace = true }
 zookeeper-client = { workspace = true }
+etcd-client = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"

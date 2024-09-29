@@ -53,7 +53,7 @@ impl ZooKeeperSession {
         })
     }
 
-    /// Connect to ZooKeeper server, get an active session.
+    /// Connect to given ZooKeeper server, get an active session.
     pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
         let zk = self
             .builder
@@ -61,7 +61,7 @@ impl ZooKeeperSession {
             .await?;
 
         // create Summerset Znode if not present
-        let creaete_result = zk
+        let create_result = zk
             .create(
                 PARENT_ZNODE,
                 b"",
@@ -69,10 +69,10 @@ impl ZooKeeperSession {
                     .with_acls(zkcli::Acls::anyone_all()),
             )
             .await;
-        if let Err(zkcli::Error::NodeExists) = creaete_result {
+        if let Err(zkcli::Error::NodeExists) = create_result {
             // if it already exists, all good
         } else {
-            creaete_result?;
+            create_result?;
         }
 
         self.session = Some(zk);
@@ -80,9 +80,8 @@ impl ZooKeeperSession {
     }
 
     /// Leave the current ZooKeeper session.
-    pub(crate) async fn leave(&mut self) -> Result<(), SummersetError> {
+    pub(crate) fn leave(&mut self) {
         self.session = None;
-        Ok(())
     }
 
     /// Make a getData request to ZooKeeper.
@@ -131,6 +130,8 @@ impl ZooKeeperSession {
             .as_ref()
             .ok_or(SummersetError::msg("no active session"))?;
 
+        // NOTE: should've returned previous value to match Summerset's
+        // behavior, but ZooKeeper does not offer this
         let set_result = session
             .set_data(&path, value.as_bytes(), None) // any version allowed
             .await;

@@ -12,7 +12,8 @@ echo
 echo "Installing extra apt packages..."
 sudo apt -y install default-jre \
                     liblog4j2-java \
-                    libresolv-wrapper
+                    libresolv-wrapper \
+                    protobuf-compiler
 
 
 echo

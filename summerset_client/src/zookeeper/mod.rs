@@ -2,11 +2,11 @@
 
 use serde::Deserialize;
 
-mod bench;
 mod session;
-
-pub(crate) use bench::ZooKeeperBench;
 pub(crate) use session::ZooKeeperSession;
+
+mod bench;
+pub(crate) use bench::ZooKeeperBench;
 
 /// ZooKeeper-specific configuration parameters.
 #[derive(Debug, Deserialize)]

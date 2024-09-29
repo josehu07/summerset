@@ -1,6 +1,6 @@
-//! Benchmarking client for ZooKeeper.
+//! Benchmarking client for etcd.
 
-use crate::{ClientBench, ModeParamsBench, ZooKeeperSession};
+use crate::{ClientBench, EtcdKvClient, ModeParamsBench};
 
 use lazy_static::lazy_static;
 
@@ -18,7 +18,7 @@ use summerset::{logged_err, parsed_config, pf_error, SummersetError};
 const KEY_LEN: usize = 8;
 
 /// Max length in bytes of value.
-const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MB as of ZooKeeper limit
+const MAX_VAL_LEN: usize = 1536 * 1024; // 1.5 MB as of etcd limit
 
 /// Statistics printing interval.
 const PRINT_INTERVAL: Duration = Duration::from_millis(100);
@@ -33,9 +33,9 @@ lazy_static! {
 }
 
 /// Benchmarking client struct (only supports closed-loop).
-pub(crate) struct ZooKeeperBench {
-    /// ZooKeeper session client.
-    session: ZooKeeperSession,
+pub(crate) struct EtcdBench {
+    /// etcd KV client.
+    kv_client: EtcdKvClient,
 
     /// Mode parameters struct.
     params: ModeParamsBench,
@@ -74,10 +74,10 @@ pub(crate) struct ZooKeeperBench {
     now: Instant,
 }
 
-impl ZooKeeperBench {
+impl EtcdBench {
     /// Create a new benchmarking client.
     pub fn new(
-        session: ZooKeeperSession,
+        kv_client: EtcdKvClient,
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
@@ -88,7 +88,7 @@ impl ZooKeeperBench {
                                     unif_interval_ms, unif_upper_bound)?;
         if params.freq_target > 0 {
             return logged_err!(
-                "params.freq_target '{}' > 0; ZooKeeperBench only supports closed-loop",
+                "params.freq_target '{}' > 0; EtcdBench only supports closed-loop",
                 params.freq_target
             );
         }
@@ -138,8 +138,8 @@ impl ZooKeeperBench {
             &params.value_size,
         )?;
 
-        Ok(ZooKeeperBench {
-            session,
+        Ok(EtcdBench {
+            kv_client,
             params,
             rng: rand::thread_rng(),
             keys_pool,
@@ -177,9 +177,9 @@ impl ZooKeeperBench {
         if self.rng.gen_range(0..=100) <= self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
-            self.session.set(&key, val).await
+            self.kv_client.put(&key, val).await.map(|_| ())
         } else {
-            self.session.get(&key).await.map(|_| ())
+            self.kv_client.get(&key).await.map(|_| ())
         }
     }
 
@@ -199,15 +199,15 @@ impl ZooKeeperBench {
             self.trace_idx = 0;
         }
         if read {
-            self.session.get(&key).await.map(|_| ())
+            self.kv_client.get(&key).await.map(|_| ())
         } else if vlen == 0 {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
-            self.session.set(&key, val).await
+            self.kv_client.put(&key, val).await.map(|_| ())
         } else {
             // use vlen in trace
             let val = &MOM_VALUE[..vlen];
-            self.session.set(&key, val).await
+            self.kv_client.put(&key, val).await.map(|_| ())
         }
     }
 
@@ -235,7 +235,7 @@ impl ZooKeeperBench {
 
     /// Run the benchmark for given time length.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
-        self.session.connect().await?;
+        self.kv_client.connect().await?;
         println!(
             "{:^11} | {:^12} | {:^12} | {:>8}",
             "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Total"
@@ -282,7 +282,7 @@ impl ZooKeeperBench {
             }
         }
 
-        self.session.leave();
+        self.kv_client.leave();
         Ok(())
     }
 }

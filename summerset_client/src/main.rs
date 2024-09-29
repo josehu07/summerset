@@ -20,11 +20,15 @@ use crate::clients::{
 mod zookeeper;
 use crate::zookeeper::{ZooKeeperBench, ZooKeeperSession};
 
+mod etcd;
+use crate::etcd::{EtcdBench, EtcdKvClient};
+
 /// Enum selecting a Summerset-implemented protocol or an external system.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SmrProtocolOrSystem {
     Protocol(SmrProtocol),
     ZooKeeper,
+    Etcd,
 }
 
 impl SmrProtocolOrSystem {
@@ -34,6 +38,7 @@ impl SmrProtocolOrSystem {
             .map(SmrProtocolOrSystem::Protocol)
             .or(match name {
                 "ZooKeeper" => Some(Self::ZooKeeper),
+                "Etcd" => Some(Self::Etcd),
                 _ => None,
             })
     }
@@ -200,6 +205,25 @@ fn client_main() -> Result<(), SummersetError> {
                         // unsupported
                         return Err(SummersetError::msg(format!(
                             "utility mode '{}' not supported for ZooKeeper",
+                            args.utility
+                        )));
+                    }
+                }
+            }
+
+            // etcd
+            SmrProtocolOrSystem::Etcd => {
+                let kv_client = EtcdKvClient::new(args.manager, config_str)?;
+                match mode {
+                    ClientMode::Bench => {
+                        // run benchmarking client
+                        let mut bench = EtcdBench::new(kv_client, params_str)?;
+                        bench.run().await?;
+                    }
+                    _ => {
+                        // unsupported
+                        return Err(SummersetError::msg(format!(
+                            "utility mode '{}' not supported for etcd",
                             args.utility
                         )));
                     }

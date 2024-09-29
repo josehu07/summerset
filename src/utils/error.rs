@@ -63,6 +63,7 @@ impl_from_error!(ctrlc::Error);
 impl_from_error!(linreg::Error);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(zookeeper_client::Error);
+impl_from_error!(etcd_client::Error);
 
 impl_from_error_generic!(tokio::sync::SetError<T>);
 impl_from_error_generic!(tokio::sync::watch::error::SendError<T>);
