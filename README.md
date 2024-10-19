@@ -187,11 +187,12 @@ Note that these scripts use `sudo` and assume specific ranges of available ports
   - [ ] membership discovery & view change
   - [ ] multi-versioning & stale reads
   - [ ] partitioned groups service structure
+  - [ ] others: see in-code TODO comments
 - [ ] client-side utilities
   - [x] interactive REPL
   - [x] benchmarking client
   - [x] unit tester
-  - [ ] linearizability fuzzer
+  - [ ] linearizability fuzzer integration
 - [ ] better README & documentation
 
 ---

@@ -26,8 +26,8 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
-    ExternalApi, GenericReplica, LogActionId, ReplicaId, StateMachine,
-    StorageHub, TransportHub,
+    ExternalApi, GenericReplica, LeaseManager, LogActionId, ReplicaId,
+    StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError, Timer};
 
@@ -88,8 +88,7 @@ pub struct ReplicaConfigMultiPaxos {
     pub record_size_recv: bool,
 
     /// Simulate local read lease implementation?
-    // TODO: actual read lease impl later? (won't affect anything about
-    // evalutaion results though)
+    // TODO: only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 

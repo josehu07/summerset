@@ -74,7 +74,7 @@ pub enum ApiReply {
 }
 
 /// The external client-facing API module.
-pub struct ExternalApi {
+pub(crate) struct ExternalApi {
     /// My replica ID.
     _me: ReplicaId,
 
