@@ -613,8 +613,6 @@ mod tests {
     async fn api_do_sync() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        let term_bar = Arc::new(Barrier::new(2));
-        let term_bar2 = term_bar.clone();
         tokio::spawn(async move {
             // replica
             barrier2.wait().await;
@@ -635,7 +633,7 @@ mod tests {
                     .await?,
                 CtrlMsg::LeaveReply
             );
-            term_bar2.wait().await;
+            barrier2.wait().await;
             Ok::<(), SummersetError>(())
         });
         // manager
@@ -673,7 +671,7 @@ mod tests {
         )?;
         // recv second message (which is a Leave) from server; reply is sent
         // directly from the controller thread's event loop
-        term_bar.wait().await;
+        barrier.wait().await;
         Ok(())
     }
 
