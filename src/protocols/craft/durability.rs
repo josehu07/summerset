@@ -54,10 +54,10 @@ impl CRaftReplica {
                             reqs_cw: e
                                 .reqs_cw
                                 .subset_copy(
-                                    &Bitmap::from(
+                                    &Bitmap::from((
                                         self.population,
-                                        (0..self.majority).collect(),
-                                    ),
+                                        0..self.majority,
+                                    )),
                                     false,
                                 )
                                 .unwrap(),
@@ -70,7 +70,10 @@ impl CRaftReplica {
                             reqs_cw: e
                                 .reqs_cw
                                 .subset_copy(
-                                    &Bitmap::from(self.population, vec![peer]),
+                                    &Bitmap::from((
+                                        self.population,
+                                        vec![peer],
+                                    )),
                                     false,
                                 )
                                 .unwrap(),

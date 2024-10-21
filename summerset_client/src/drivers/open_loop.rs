@@ -49,7 +49,7 @@ impl DriverOpenLoop {
             next_req: 0,
             pending_reqs: HashMap::new(),
             should_retry: false,
-            timer: Timer::new(),
+            timer: Timer::default(),
             timeout,
         }
     }

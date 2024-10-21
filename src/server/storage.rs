@@ -690,7 +690,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_log_ack() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-6.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
@@ -731,7 +731,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_do_sync() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-7.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;

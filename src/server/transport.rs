@@ -699,7 +699,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
     struct TestMsg(String);
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn api_send_recv() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(3));
         let barrier1 = barrier.clone();

@@ -3,6 +3,7 @@
 //! `tokio::sync::Notify` channels. This is suitable only for coarse-grained
 //! timeout intervals.
 
+use std::marker::Send;
 use std::sync::Arc;
 
 use crate::utils::SummersetError;
@@ -22,14 +23,24 @@ pub struct Timer {
     deadline_tx: watch::Sender<Option<Instant>>,
 
     /// Timeout notification channel (caller side receiver).
-    notify: Arc<Notify>,
+    notify: Option<Arc<Notify>>,
 }
 
 impl Timer {
-    /// Creates a new timer utility.
-    pub fn new() -> Self {
+    /// Creates a new timer utility. If `use_notify` is true, will create a
+    /// `sync::Notify` which gets notified once every timeout. If `explode_fn`
+    /// is not `None`, this closure is called once every timeout.
+    pub fn new<F>(use_notify: bool, explode_fn: Option<F>) -> Self
+    where
+        F: Fn() + Send + 'static,
+    {
         let (deadline_tx, mut deadline_rx) = watch::channel(None);
-        let notify = Arc::new(Notify::new());
+
+        let notify = if use_notify {
+            Some(Arc::new(Notify::new()))
+        } else {
+            None
+        };
         let notify_ref = notify.clone();
 
         // spawn the background sleeper task
@@ -44,10 +55,14 @@ impl Timer {
                     sleep.as_mut().reset(ddl);
                     (&mut sleep).await;
 
-                    // only send notification if deadline has not changed since
-                    // last wakeup
+                    // explode only if deadline not changed since last wakeup
                     if let Ok(false) = deadline_rx.has_changed() {
-                        notify_ref.notify_one();
+                        if let Some(ref explode_fn) = explode_fn {
+                            explode_fn();
+                        }
+                        if let Some(notify_ref) = notify_ref.as_ref() {
+                            notify_ref.notify_one();
+                        }
                     }
                 }
             }
@@ -82,7 +97,9 @@ impl Timer {
         self.deadline_tx.send(None)?;
 
         // consume all existing timeout notifications
-        while self.notify.notified().now_or_never().is_some() {}
+        if let Some(notify) = self.notify.as_ref() {
+            while notify.notified().now_or_never().is_some() {}
+        }
 
         Ok(())
     }
@@ -90,24 +107,30 @@ impl Timer {
     /// Waits for a timeout notification. Typically, this should be used as a
     /// branch of a `tokio::select!`.
     pub async fn timeout(&self) {
-        self.notify.notified().await;
+        if let Some(notify) = self.notify.as_ref() {
+            notify.notified().await;
+        } else {
+            panic!("timer `.timeout()` called but notify not in use")
+        }
     }
 }
 
 impl Default for Timer {
     fn default() -> Self {
-        Self::new()
+        // by default uses notify and has no explode function
+        Self::new::<fn()>(true, None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
     use tokio::time::{Duration, Instant};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn timer_timeout() -> Result<(), SummersetError> {
-        let timer = Arc::new(Timer::new());
+        let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
         timer_ref.kickoff(Duration::from_millis(100))?;
@@ -122,7 +145,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn timer_restart() -> Result<(), SummersetError> {
-        let timer = Arc::new(Timer::new());
+        let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
         tokio::spawn(async move {
@@ -142,9 +165,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn timer_cancel() -> Result<(), SummersetError> {
-        let timer = Arc::new(Timer::new());
+        let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
         timer_ref.kickoff(Duration::from_millis(50))?;
@@ -155,6 +178,38 @@ mod tests {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(300));
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn call_explode_fn() -> Result<(), SummersetError> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let timer = Arc::new(Timer::new(
+            true,
+            Some(move || {
+                tx.send(7).expect("explode_fn send should succeed");
+            }),
+        ));
+        let timer_ref = timer.clone();
+        // once
+        let start = Instant::now();
+        timer_ref.kickoff(Duration::from_millis(100))?;
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(100));
+                assert_eq!(rx.recv().await, Some(7));
+            }
+        }
+        // twice
+        timer_ref.kickoff(Duration::from_millis(100))?;
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(200));
+                assert_eq!(rx.recv().await, Some(7));
             }
         }
         Ok(())

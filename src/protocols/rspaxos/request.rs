@@ -114,7 +114,7 @@ impl RSPaxosReplica {
 
         // record update to largest accepted ballot and corresponding data
         let subset_copy = inst.reqs_cw.subset_copy(
-            &Bitmap::from(self.population, vec![self.id]),
+            &Bitmap::from((self.population, vec![self.id])),
             false,
         )?;
         inst.voted = (inst.bal, subset_copy.clone());
@@ -146,7 +146,7 @@ impl RSPaxosReplica {
                     slot,
                     ballot: inst.bal,
                     reqs_cw: inst.reqs_cw.subset_copy(
-                        &Bitmap::from(self.population, vec![peer]),
+                        &Bitmap::from((self.population, vec![peer])),
                         false,
                     )?,
                 },

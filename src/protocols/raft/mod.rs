@@ -495,7 +495,7 @@ impl GenericReplica for RaftReplica {
             transport_hub,
             role: Role::Follower,
             leader: None,
-            hb_hear_timer: Timer::new(),
+            hb_hear_timer: Timer::default(),
             hb_send_interval,
             hb_reply_cnts,
             peer_alive: Bitmap::new(population, true),

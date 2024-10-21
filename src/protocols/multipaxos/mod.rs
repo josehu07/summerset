@@ -631,7 +631,7 @@ impl GenericReplica for MultiPaxosReplica {
             snapshot_hub,
             transport_hub,
             leader: None,
-            hb_hear_timer: Timer::new(),
+            hb_hear_timer: Timer::default(),
             hb_send_interval,
             hb_reply_cnts,
             peer_alive: Bitmap::new(population, true),

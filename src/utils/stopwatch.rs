@@ -132,7 +132,7 @@ mod tests {
     use super::*;
     use tokio::time::{self, Duration};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn stopwatch_records() -> Result<(), SummersetError> {
         let mut sw = Stopwatch::new();
         sw.record_now(0, 0, None)?;
@@ -158,7 +158,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn stopwatch_summary() -> Result<(), SummersetError> {
         let mut sw = Stopwatch::new();
         for id in 0..3 {

@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(cw.avail_data_shards(), 3);
         assert_eq!(cw.avail_parity_shards(), 0);
         assert_eq!(cw.avail_shards(), 3);
-        assert_eq!(cw.avail_shards_map(), Bitmap::from(3, vec![0, 1, 2]));
+        assert_eq!(cw.avail_shards_map(), Bitmap::from((3, vec![0, 1, 2])));
         assert_eq!(cw.data_len(), data_len);
         assert_eq!(cw.shard_len(), shard_len);
         // valid with num_parity_shards > 0
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(cw.avail_data_shards(), 3);
         assert_eq!(cw.avail_parity_shards(), 0);
         assert_eq!(cw.avail_shards(), 3);
-        assert_eq!(cw.avail_shards_map(), Bitmap::from(5, vec![0, 1, 2]));
+        assert_eq!(cw.avail_shards_map(), Bitmap::from((5, vec![0, 1, 2])));
         assert_eq!(cw.data_len(), data_len);
         assert_eq!(cw.shard_len(), shard_len);
         Ok(())
@@ -648,22 +648,22 @@ mod tests {
         let cwa = RSCodeword::from_data(data.clone(), 3, 2)?;
         // invalid subset
         assert!(cwa
-            .subset_copy(&Bitmap::from(6, vec![0, 5]), false)
+            .subset_copy(&Bitmap::from((6, vec![0, 5])), false)
             .is_err());
         // valid subsets
-        let cw01 = cwa.subset_copy(&Bitmap::from(5, vec![0, 1]), false)?;
+        let cw01 = cwa.subset_copy(&Bitmap::from((5, vec![0, 1])), false)?;
         assert_eq!(cw01.avail_data_shards(), 2);
-        let cw02 = cwa.subset_copy(&Bitmap::from(5, vec![0, 2]), true)?;
+        let cw02 = cwa.subset_copy(&Bitmap::from((5, vec![0, 2])), true)?;
         assert_eq!(cw02.avail_data_shards(), 2);
         assert!(cw02.data_copy.is_some());
         // valid absorbing
         let mut cwb = RSCodeword::<TestData>::from_null(3, 2)?;
         cwb.absorb_other(cw02)?;
         assert_eq!(cwb.avail_shards(), 2);
-        assert_eq!(cwb.avail_shards_map(), Bitmap::from(5, vec![0, 2]));
+        assert_eq!(cwb.avail_shards_map(), Bitmap::from((5, vec![0, 2])));
         cwb.absorb_other(cw01)?;
         assert_eq!(cwb.avail_shards(), 3);
-        assert_eq!(cwb.avail_shards_map(), Bitmap::from(5, vec![0, 1, 2]));
+        assert_eq!(cwb.avail_shards_map(), Bitmap::from((5, vec![0, 1, 2])));
         assert_eq!(*cwb.get_data()?, data);
         // invalid absorbing
         assert!(cwb

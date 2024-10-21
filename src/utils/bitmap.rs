@@ -1,6 +1,7 @@
 //! Bitmap data structure helper.
 
 use std::fmt;
+use std::ops::Range;
 
 use crate::utils::SummersetError;
 
@@ -36,20 +37,6 @@ impl Bitmap {
         }
 
         Bitmap(bitset)
-    }
-
-    /// Creates a new bitmap of given size from vec literal. Indices in the
-    /// vec are bits to be set as true.
-    pub fn from(size: u8, ones: Vec<u8>) -> Self {
-        let mut bitmap = Self::new(size, false);
-
-        for idx in ones {
-            if let Err(e) = bitmap.set(idx, true) {
-                panic!("{}", e);
-            }
-        }
-
-        bitmap
     }
 
     /// Sets bit at index to given flag.
@@ -100,18 +87,71 @@ impl Bitmap {
     pub fn iter(&self) -> BitmapIter {
         BitmapIter { map: self, idx: 0 }
     }
+}
 
-    /// Convenience method for converting the bitmap to a vec of indexes where
-    /// the flag is true.
-    #[inline]
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.iter()
+// Convert <- (size, range of contiguous indexes where the flag is true).
+impl From<(u8, Range<u8>)> for Bitmap {
+    fn from(tup: (u8, Range<u8>)) -> Self {
+        let (size, ones) = tup;
+        let mut bitmap = Self::new(size, false);
+        for idx in ones {
+            if let Err(e) = bitmap.set(idx, true) {
+                panic!("{}", e);
+            }
+        }
+        bitmap
+    }
+}
+
+// Convert <- (size, vec of indexes where the flag is true).
+impl From<(u8, Vec<u8>)> for Bitmap {
+    fn from(tup: (u8, Vec<u8>)) -> Self {
+        let (size, ones) = tup;
+        let mut bitmap = Self::new(size, false);
+        for idx in ones {
+            if let Err(e) = bitmap.set(idx, true) {
+                panic!("{}", e);
+            }
+        }
+        bitmap
+    }
+}
+
+// Convert <- (size, vec of indexes where the flag is true).
+impl From<(u8, &Vec<u8>)> for Bitmap {
+    fn from(tup: (u8, &Vec<u8>)) -> Self {
+        let (size, ones) = tup;
+        let mut bitmap = Self::new(size, false);
+        for &idx in ones {
+            if let Err(e) = bitmap.set(idx, true) {
+                panic!("{}", e);
+            }
+        }
+        bitmap
+    }
+}
+
+// Convert -> vec of indexes where the flag is true.
+impl From<Bitmap> for Vec<u8> {
+    fn from(bitmap: Bitmap) -> Self {
+        bitmap
+            .iter()
             .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
             .collect()
     }
 }
 
-/// Iterator over `Bitmap`, yielding `(id, bit)` pairs.
+// Convert -> vec of indexes where the flag is true.
+impl From<&Bitmap> for Vec<u8> {
+    fn from(bitmap: &Bitmap) -> Self {
+        bitmap
+            .iter()
+            .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
+            .collect()
+    }
+}
+
+/// Immutable iterator over `Bitmap`, yielding `(id, bit)` pairs.
 #[derive(Debug, Clone)]
 pub struct BitmapIter<'m> {
     map: &'m Bitmap,
@@ -156,7 +196,7 @@ impl fmt::Debug for Bitmap {
 impl Bitmap {
     #[inline]
     pub fn compact_str(&self) -> String {
-        self.to_vec()
+        Vec::<u8>::from(self)
             .into_iter()
             .map(|i| i.to_string())
             .collect::<Vec<String>>()
@@ -170,7 +210,7 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn bitmap_new_panic() {
+    fn new_invalid() {
         Bitmap::new(0, true);
     }
 
@@ -193,7 +233,7 @@ mod tests {
         let mut map = Bitmap::new(5, false);
         assert!(map.set(1, true).is_ok());
         map.flip();
-        assert_eq!(map, Bitmap::from(5, vec![0, 2, 3, 4]));
+        assert_eq!(map, Bitmap::from((5, vec![0, 2, 3, 4])));
     }
 
     #[test]
@@ -214,6 +254,6 @@ mod tests {
         for (id, flag) in map.iter() {
             assert_eq!(ref_map[id as usize], flag);
         }
-        assert_eq!(map.to_vec(), [0, 1, 3, 4]);
+        assert_eq!(Vec::<u8>::from(map), [0, 1, 3, 4]);
     }
 }

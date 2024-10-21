@@ -292,7 +292,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_exec_ack() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new_and_setup(0).await?;
         sm.submit_cmd(
@@ -325,7 +325,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_do_sync() -> Result<(), SummersetError> {
         let mut sm = StateMachine::new_and_setup(0).await?;
         sm.submit_cmd(

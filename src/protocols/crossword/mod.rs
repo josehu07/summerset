@@ -842,12 +842,12 @@ impl GenericReplica for CrosswordReplica {
                         spr,
                         (0..population)
                             .map(|r| {
-                                Bitmap::from(
+                                Bitmap::from((
                                     rs_total_shards,
                                     ((r * dj_spr)..(r * dj_spr + spr))
                                         .map(|i| i % rs_total_shards)
-                                        .collect(),
-                                )
+                                        .collect::<Vec<u8>>(),
+                                ))
                             })
                             .collect(),
                     )
@@ -927,7 +927,7 @@ impl GenericReplica for CrosswordReplica {
             snapshot_hub,
             transport_hub,
             leader: None,
-            hb_hear_timer: Timer::new(),
+            hb_hear_timer: Timer::default(),
             hb_send_interval,
             hb_reply_cnts,
             peer_alive: Bitmap::new(population, true),
@@ -935,7 +935,7 @@ impl GenericReplica for CrosswordReplica {
             start_slot: 0,
             snapshot_interval,
             linreg_interval,
-            gossip_timer: Timer::new(),
+            gossip_timer: Timer::default(),
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,

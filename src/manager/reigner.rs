@@ -497,7 +497,7 @@ mod tests {
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn api_send_recv() -> Result<(), SummersetError> {
         let setup_bar = Arc::new(Barrier::new(3));
         let setup_bar0 = setup_bar.clone();
@@ -629,12 +629,13 @@ mod tests {
                 p2p_addr: "127.0.0.1:30110".parse()?,
             })?;
             // send a message to manager and wait for reply blockingly
+            barrier2.wait().await;
             assert_eq!(
                 hub.do_sync_ctrl(CtrlMsg::Leave, |m| m == &CtrlMsg::LeaveReply)
                     .await?,
                 CtrlMsg::LeaveReply
             );
-            term_bar.wait().await;
+            term_bar2.wait().await;
             Ok::<(), SummersetError>(())
         });
         // manager
@@ -662,6 +663,7 @@ mod tests {
             }
         );
         // send reply to server 0
+        barrier.wait().await;
         reigner.send_ctrl(
             CtrlMsg::ConnectToPeers {
                 population: 1,
@@ -671,7 +673,7 @@ mod tests {
         )?;
         // recv second message (which is a Leave) from server; reply is sent
         // directly from the controller thread's event loop
-        term_bar2.wait().await;
+        term_bar.wait().await;
         Ok(())
     }
 

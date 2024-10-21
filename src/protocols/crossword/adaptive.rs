@@ -44,10 +44,10 @@ impl CrosswordReplica {
         if s.is_empty() {
             // default to start with bandwidth-optimal diagonal assignment
             for r in 0..population {
-                assignment.push(Bitmap::from(
+                assignment.push(Bitmap::from((
                     rs_total_shards,
-                    ((r * dj_spr)..((r + 1) * dj_spr)).collect(),
-                ));
+                    (r * dj_spr)..((r + 1) * dj_spr),
+                )));
             }
         } else if let Ok(spr) = s.parse::<u8>() {
             // a single number: the same #shards per replica round-robinly
@@ -58,12 +58,12 @@ impl CrosswordReplica {
                 )));
             }
             for r in 0..population {
-                assignment.push(Bitmap::from(
+                assignment.push(Bitmap::from((
                     rs_total_shards,
                     ((r * dj_spr)..(r * dj_spr + spr))
                         .map(|i| i % rs_total_shards)
-                        .collect(),
-                ));
+                        .collect::<Vec<u8>>(),
+                )));
             }
         } else {
             // string in format of something like 0:0,1/1:2/3:3,4 ...
