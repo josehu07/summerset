@@ -61,6 +61,7 @@ impl_from_error!(toml::de::Error);
 impl_from_error!(reed_solomon_erasure::Error);
 impl_from_error!(ctrlc::Error);
 impl_from_error!(linreg::Error);
+impl_from_error!(tokio::task::JoinError);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(zookeeper_client::Error);
 impl_from_error!(etcd_client::Error);

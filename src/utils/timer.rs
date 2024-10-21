@@ -4,6 +4,7 @@
 //! timeout intervals.
 
 use std::marker::Send;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::utils::SummersetError;
@@ -24,17 +25,27 @@ pub struct Timer {
 
     /// Timeout notification channel (caller side receiver).
     notify: Option<Arc<Notify>>,
+
+    /// True if the timer has exploded since last kickoff; false otherwise.
+    exploded: Arc<AtomicBool>,
 }
 
 impl Timer {
     /// Creates a new timer utility. If `use_notify` is true, will create a
     /// `sync::Notify` which gets notified once every timeout. If `explode_fn`
     /// is not `None`, this closure is called once every timeout.
-    pub fn new<F>(use_notify: bool, explode_fn: Option<F>) -> Self
+    /// If `allow_backwards` is true, the timer will allow kicking off to a
+    /// deadline that's earlier than previously kicked off deadline (doing
+    /// so adds a slight `tokio::select!` overhead).
+    pub fn new<F>(
+        use_notify: bool,
+        explode_fn: Option<F>,
+        allow_backwards: bool,
+    ) -> Self
     where
         F: Fn() + Send + 'static,
     {
-        let (deadline_tx, mut deadline_rx) = watch::channel(None);
+        let (deadline_tx, deadline_rx) = watch::channel(None);
 
         let notify = if use_notify {
             Some(Arc::new(Notify::new()))
@@ -43,36 +54,78 @@ impl Timer {
         };
         let notify_ref = notify.clone();
 
+        let exploded = Arc::new(AtomicBool::new(false));
+        let exploded_ref = exploded.clone();
+
         // spawn the background sleeper task
-        tokio::spawn(async move {
-            let sleep = time::sleep(Duration::ZERO);
-            tokio::pin!(sleep);
-
-            while deadline_rx.changed().await.is_ok() {
-                // received a new deadline
-                let deadline = *deadline_rx.borrow();
-                if let Some(ddl) = deadline {
-                    sleep.as_mut().reset(ddl);
-                    (&mut sleep).await;
-
-                    // explode only if deadline not changed since last wakeup
-                    if let Ok(false) = deadline_rx.has_changed() {
-                        if let Some(ref explode_fn) = explode_fn {
-                            explode_fn();
-                        }
-                        if let Some(notify_ref) = notify_ref.as_ref() {
-                            notify_ref.notify_one();
-                        }
-                    }
-                }
-            }
-            // sender has been dropped, terminate
-        });
+        tokio::spawn(Self::sleeper_task(
+            deadline_rx,
+            notify_ref,
+            explode_fn,
+            exploded_ref,
+            allow_backwards,
+        ));
 
         Timer {
             deadline_tx,
             notify,
+            exploded,
         }
+    }
+
+    /// Background sleeper task function associated with this timer.
+    async fn sleeper_task<F>(
+        mut deadline_rx: watch::Receiver<Option<Instant>>,
+        notify: Option<Arc<Notify>>,
+        explode_fn: Option<F>,
+        exploded: Arc<AtomicBool>,
+        allow_backwards: bool,
+    ) -> Result<(), SummersetError>
+    where
+        F: Fn() + Send + 'static,
+    {
+        let sleep = time::sleep(Duration::ZERO);
+        tokio::pin!(sleep);
+
+        while deadline_rx.changed().await.is_ok() {
+            // received a new deadline
+            let deadline = *deadline_rx.borrow();
+            if let Some(ddl) = deadline {
+                sleep.as_mut().reset(ddl);
+
+                if !allow_backwards {
+                    (&mut sleep).await;
+                } else {
+                    tokio::select! {
+                        () = (&mut sleep) => {
+                            // deadline reached and no newer deadline set
+                        }
+                        res = deadline_rx.changed() => {
+                            // newer deadline set, try to use that instead
+                            if res.is_err() {
+                                break;
+                            }
+                            deadline_rx.mark_changed();
+                            continue;
+                        }
+                    }
+                }
+
+                // explode only if deadline not changed since last wakeup
+                if let Ok(false) = deadline_rx.has_changed() {
+                    exploded.store(true, Ordering::Release);
+                    if let Some(ref explode_fn) = explode_fn {
+                        explode_fn();
+                    }
+                    if let Some(notify) = notify.as_ref() {
+                        notify.notify_one();
+                    }
+                }
+            }
+        }
+
+        // sender has been dropped, terminate
+        Ok(())
     }
 
     /// Kicks-off the timer with the given duration. Every call to `kickoff()`
@@ -82,12 +135,40 @@ impl Timer {
     pub fn kickoff(&self, dur: Duration) -> Result<(), SummersetError> {
         if dur.is_zero() {
             return Err(SummersetError::msg(format!(
-                "invalid timeout duration {} ns",
-                dur.as_nanos()
+                "invalid timeout duration {:?}",
+                dur
             )));
         }
 
         self.deadline_tx.send(Some(Instant::now() + dur))?;
+
+        self.exploded.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    /// Extends the timer with the given duration beyond current deadline (or
+    /// beyond now if current deadline already in the past). Behaves similarly
+    /// to `kickoff()`.
+    pub fn extend(&self, dur: Duration) -> Result<(), SummersetError> {
+        if dur.is_zero() {
+            return Err(SummersetError::msg(format!(
+                "invalid timeout duration {:?}",
+                dur
+            )));
+        }
+
+        self.deadline_tx.send_modify(|ddl| {
+            if let Some(ddl) = ddl.as_mut() {
+                if *ddl < Instant::now() {
+                    *ddl = Instant::now();
+                }
+                *ddl += dur;
+            } else {
+                *ddl = Some(Instant::now() + dur);
+            }
+        });
+
+        self.exploded.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -101,6 +182,7 @@ impl Timer {
             while notify.notified().now_or_never().is_some() {}
         }
 
+        self.exploded.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -113,12 +195,17 @@ impl Timer {
             panic!("timer `.timeout()` called but notify not in use")
         }
     }
+
+    /// Checks if the timer has exploded since last kickoff.
+    pub fn exploded(&self) -> bool {
+        self.exploded.load(Ordering::Acquire)
+    }
 }
 
 impl Default for Timer {
     fn default() -> Self {
         // by default uses notify and has no explode function
-        Self::new::<fn()>(true, None)
+        Self::new::<fn()>(true, None, false)
     }
 }
 
@@ -133,11 +220,36 @@ mod tests {
         let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
+        // once
         timer_ref.kickoff(Duration::from_millis(100))?;
+        assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(100));
+                assert!(timer.exploded());
+            }
+        }
+        // twice
+        timer_ref.kickoff(Duration::from_millis(100))?;
+        assert!(!timer.exploded());
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(200));
+                assert!(timer.exploded());
+            }
+        }
+        // extend
+        timer_ref.kickoff(Duration::from_millis(120))?;
+        assert!(!timer.exploded());
+        time::sleep(Duration::from_millis(40)).await;
+        timer_ref.extend(Duration::from_millis(60))?;
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(380));
+                assert!(timer.exploded());
             }
         }
         Ok(())
@@ -173,11 +285,13 @@ mod tests {
         timer_ref.kickoff(Duration::from_millis(50))?;
         time::sleep(Duration::from_millis(100)).await;
         timer_ref.cancel()?;
+        assert!(!timer.exploded());
         timer_ref.kickoff(Duration::from_millis(200))?;
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(300));
+                assert!(timer.exploded());
             }
         }
         Ok(())
@@ -191,25 +305,53 @@ mod tests {
             Some(move || {
                 tx.send(7).expect("explode_fn send should succeed");
             }),
+            false,
         ));
         let timer_ref = timer.clone();
         // once
         let start = Instant::now();
         timer_ref.kickoff(Duration::from_millis(100))?;
+        assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(100));
                 assert_eq!(rx.recv().await, Some(7));
+                assert!(timer.exploded());
             }
         }
         // twice
         timer_ref.kickoff(Duration::from_millis(100))?;
+        assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
                 assert!(finish.duration_since(start) >= Duration::from_millis(200));
                 assert_eq!(rx.recv().await, Some(7));
+                assert!(timer.exploded());
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn set_backwards() -> Result<(), SummersetError> {
+        let timer = Arc::new(Timer::new::<fn()>(true, None, true));
+        let timer_ref = timer.clone();
+        let start = Instant::now();
+        // set long
+        timer_ref.kickoff(Duration::from_millis(200))?;
+        assert!(!timer.exploded());
+        time::sleep(Duration::from_millis(60)).await;
+        // set short
+        timer_ref.kickoff(Duration::from_millis(60))?;
+        assert!(!timer.exploded());
+        tokio::select! {
+            () = timer.timeout() => {
+                let finish = Instant::now();
+                assert!(finish.duration_since(start) >= Duration::from_millis(120));
+                assert!(finish.duration_since(start) < Duration::from_millis(200));
+                assert!(timer.exploded());
             }
         }
         Ok(())
