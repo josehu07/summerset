@@ -4,7 +4,7 @@ mod replica;
 
 mod control;
 mod external;
-mod leasing;
+mod leaseman;
 mod statemach;
 mod storage;
 mod transport;
@@ -15,7 +15,9 @@ pub use statemach::{Command, CommandId, CommandResult};
 
 pub(crate) use control::ControlHub;
 pub(crate) use external::ExternalApi;
-pub(crate) use leasing::LeaseManager;
+pub(crate) use leaseman::{
+    LeaseAction, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum,
+};
 pub(crate) use statemach::StateMachine;
 pub(crate) use storage::{LogAction, LogActionId, LogResult, StorageHub};
 pub(crate) use transport::TransportHub;

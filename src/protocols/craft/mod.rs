@@ -76,7 +76,7 @@ pub struct ReplicaConfigCRaft {
     pub msg_chunk_size: usize,
 
     /// Simulate local read lease implementation?
-    // TODO: only for benchmarking purposes
+    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 

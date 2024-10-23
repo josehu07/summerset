@@ -449,6 +449,10 @@ impl MultiPaxosReplica {
                 snap_bar,
             } => self
                 .heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar),
+            PeerMsg::LeaseMsg {
+                lease_num,
+                lease_msg,
+            } => self.handle_lease_msg(peer, lease_num, lease_msg),
         }
     }
 }

@@ -47,7 +47,7 @@ impl RSPaxosReplica {
 
         // if simulating read leases, extract all the reads and immediately
         // reply to them with a dummy value
-        // TODO: only for benchmarking purposes
+        // NOTE: this is only for benchmarking purposes
         if self.config.sim_read_lease {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {

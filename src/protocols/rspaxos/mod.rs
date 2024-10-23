@@ -82,7 +82,7 @@ pub struct ReplicaConfigRSPaxos {
     pub perf_network_b: u64,
 
     /// Simulate local read lease implementation?
-    // TODO: only for benchmarking purposes
+    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 

@@ -51,11 +51,22 @@ pub(crate) enum LeaseAction {
     BcastLeaseMsgs { peers: Bitmap, msg: LeaseMsg },
 
     /// To mark next heartbeat as a promise refresh.
-    NextRefresh { peer: ReplicaId },
+    ScheduleRefresh { peer: ReplicaId },
+
+    /// In case the protocol logic needs it:
+    /// Timed-out as a grantor (either in guard phase or in repeated promise).
+    GrantTimeout { peer: ReplicaId },
+
+    /// In case the protocol logic needs it:
+    /// Timed-out as a lease holder (promise not received/refreshed in time).
+    LeaseTimeout { peer: ReplicaId },
+
+    /// Special: used only by `do_sync_notice()`.
+    SyncBarrier,
 }
 
-/// Wrapper type for lease-related notifications sent by the protocol module
-/// aiming to trigger something to happen in this module.
+/// Wrapper type for lease-related notifications to trigger something to happen
+/// in this module.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub(crate) enum LeaseNotice {
     /// Want to grant a new set of leases with given lease number to replicas,
@@ -67,20 +78,20 @@ pub(crate) enum LeaseNotice {
 
     /// Received a lease-related message from a peer.
     RecvLeaseMsg { peer: ReplicaId, msg: LeaseMsg },
-}
 
-/// Wrapper type for lease-related notifications sent by the protocol module
-/// unioned with internal lease-related timer timeouts.
-#[derive(Debug, PartialEq, Eq, Clone)]
-enum LeaseNoticeOrTimeout {
-    /// Notice from the protocol module.
-    Notice(LeaseNotice),
+    /// To tell leaseman that the next heartbeat promise is going to be sent.
+    SendingRefresh { peer: ReplicaId },
 
+    /// By internal timers ONLY:
     /// Timed-out as a grantor (either in guard phase or in repeated promise).
     GrantTimeout { peer: ReplicaId },
 
+    /// By internal timers ONLY:
     /// Timed-out as a lease holder (promise not received/refreshed in time).
     LeaseTimeout { peer: ReplicaId },
+
+    /// Special: used only by `do_sync_notice()`.
+    SyncBarrier,
 }
 
 /// The time-based lease manager module.
@@ -107,7 +118,7 @@ pub(crate) struct LeaseManager {
     rx_action: mpsc::UnboundedReceiver<(LeaseNum, LeaseAction)>,
 
     /// Sender side of the notice channel.
-    tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNoticeOrTimeout)>,
+    tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
 
     /// Map from replica ID I've grant lease to on current lease number -> T_guard
     /// timer; shared with the lease manager thread.
@@ -193,6 +204,18 @@ impl LeaseManager {
         self.promises_held.guard().len() as u8
     }
 
+    /// Adds a lease notice to be taken care of by the lease manager by sending
+    /// to the notice channel.
+    pub(crate) fn add_notice(
+        &mut self,
+        lease_num: LeaseNum,
+        notice: LeaseNotice,
+    ) -> Result<(), SummersetError> {
+        self.tx_notice
+            .send((lease_num, notice))
+            .map_err(SummersetError::msg)
+    }
+
     /// Waits for a lease action to be treated by the protocol implementation,
     /// probably leading to sending some messages.
     pub(crate) async fn get_action(
@@ -204,31 +227,36 @@ impl LeaseManager {
         }
     }
 
-    /// Adds a lease notice to be taken care of by the lease manager by sending
-    /// to the notice channel.
-    pub(crate) fn add_notice(
+    /// Try to get the next lease action to be treated by the protocol
+    /// implementation using `try_recv()`.
+    pub(crate) fn try_get_action(
+        &mut self,
+    ) -> Result<(LeaseNum, LeaseAction), SummersetError> {
+        match self.rx_action.try_recv() {
+            Ok((lease_num, action)) => Ok((lease_num, action)),
+            Err(e) => Err(SummersetError::msg(e)),
+        }
+    }
+
+    /// Submits a lease notice and waits for it to be processed blockingly.
+    /// Returns a vec of actions triggered by any previously submitted notices
+    /// followed by those triggered by this sync notice.
+    pub(crate) async fn do_sync_notice(
         &mut self,
         lease_num: LeaseNum,
         notice: LeaseNotice,
-    ) -> Result<(), SummersetError> {
-        self.tx_notice
-            .send((lease_num, LeaseNoticeOrTimeout::Notice(notice)))
-            .map_err(SummersetError::msg)
-    }
-
-    /// Extends the promise_sent timer for a peer by T_lease. This "synchronous"
-    /// version method is needed only because lease refreshes are delegated to
-    /// protocol module's heartbeats mechanism, and it will need a way to tell
-    /// the leasing module to extend the grant timer whenever sending a refresh.
-    pub(crate) fn extend_grant_timer(
-        &mut self,
-        peer: ReplicaId,
-    ) -> Result<(), SummersetError> {
-        let promises_sent = self.promises_sent.guard();
-        if let Some(timer) = promises_sent.get(&peer) {
-            timer.extend(self.expire_timeout)?;
+    ) -> Result<Vec<(LeaseNum, LeaseAction)>, SummersetError> {
+        self.add_notice(lease_num, notice)?;
+        self.add_notice(lease_num, LeaseNotice::SyncBarrier)?;
+        let mut actions = vec![];
+        loop {
+            let (this_num, action) = self.get_action().await?;
+            if matches!(action, LeaseAction::SyncBarrier) {
+                debug_assert_eq!(this_num, lease_num);
+                return Ok(actions);
+            }
+            actions.push((this_num, action));
         }
-        Ok(())
     }
 }
 
@@ -241,7 +269,7 @@ impl LeaseManager {
         peers: Bitmap,
         me: ReplicaId,
         tx_action: &mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
-        tx_notice: Arc<mpsc::UnboundedSender<(LeaseNum, LeaseNoticeOrTimeout)>>,
+        tx_notice: Arc<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
         guards_sent: &mut HashMap<ReplicaId, Timer>,
         promises_sent: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
@@ -263,10 +291,7 @@ impl LeaseManager {
                 false,
                 Some(move || {
                     tx_notice_ref
-                        .send((
-                            lease_num,
-                            LeaseNoticeOrTimeout::GrantTimeout { peer },
-                        ))
+                        .send((lease_num, LeaseNotice::GrantTimeout { peer }))
                         .expect("sending to tx_notice_ref should succeed");
                 }),
                 true,
@@ -319,7 +344,7 @@ impl LeaseManager {
         peer: ReplicaId,
         guard_timeout: Duration,
         tx_action: &mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
-        tx_notice: Arc<mpsc::UnboundedSender<(LeaseNum, LeaseNoticeOrTimeout)>>,
+        tx_notice: Arc<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
         guards_held: &mut HashMap<ReplicaId, Timer>,
         promises_held: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
@@ -333,10 +358,7 @@ impl LeaseManager {
             false,
             Some(move || {
                 tx_notice
-                    .send((
-                        lease_num,
-                        LeaseNoticeOrTimeout::LeaseTimeout { peer },
-                    ))
+                    .send((lease_num, LeaseNotice::LeaseTimeout { peer }))
                     .expect("sending to tx_notice_ref should succeed");
             }),
             true,
@@ -481,7 +503,7 @@ impl LeaseManager {
         timer.kickoff(lease_timeout)?;
 
         // let protocol module mark next heartbeat as a promise refresh
-        tx_action.send((lease_num, LeaseAction::NextRefresh { peer }))?;
+        tx_action.send((lease_num, LeaseAction::ScheduleRefresh { peer }))?;
         Ok(())
     }
 
@@ -494,7 +516,8 @@ impl LeaseManager {
         promises_held: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
         // remove existing guard or promise held from this peer
-        Self::handle_lease_timeout(peer, guards_held, promises_held)?;
+        guards_held.remove(&peer);
+        promises_held.guard().remove(peer);
 
         // send RevokeReply back
         tx_action.send((
@@ -516,31 +539,56 @@ impl LeaseManager {
         promises_sent: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
         // remove existing guard or promise sent to this peer
-        Self::handle_grant_timeout(peer, guards_sent, promises_sent)?;
+        guards_sent.remove(&peer);
+        promises_sent.guard().remove(peer);
+        Ok(())
+    }
+
+    /// Extends the promise_sent timer for a peer by T_lease.
+    fn handle_sending_refresh(
+        _lease_num: LeaseNum,
+        peer: ReplicaId,
+        lease_timeout: Duration,
+        promises_sent: &mut flashmap::WriteHandle<ReplicaId, Timer>,
+    ) -> Result<(), SummersetError> {
+        let promises_sent = promises_sent.guard();
+        if let Some(timer) = promises_sent.get(&peer) {
+            timer.extend(lease_timeout)?;
+        }
         Ok(())
     }
 
     /// Timeout reached granting lease to a peer.
     fn handle_grant_timeout(
+        lease_num: LeaseNum,
         peer: ReplicaId,
+        tx_action: &mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
         guards_sent: &mut HashMap<ReplicaId, Timer>,
         promises_sent: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
         // remove existing guard or promise sent to this peer
         guards_sent.remove(&peer);
         promises_sent.guard().remove(peer);
+
+        // tell the protocol module about this timeout
+        tx_action.send((lease_num, LeaseAction::GrantTimeout { peer }))?;
         Ok(())
     }
 
     /// Timeout reached without promise refresh from a peer.
     fn handle_lease_timeout(
+        lease_num: LeaseNum,
         peer: ReplicaId,
+        tx_action: &mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
         guards_held: &mut HashMap<ReplicaId, Timer>,
         promises_held: &mut flashmap::WriteHandle<ReplicaId, Timer>,
     ) -> Result<(), SummersetError> {
         // remove existing guard or promise held from this peer
         guards_held.remove(&peer);
         promises_held.guard().remove(peer);
+
+        // tell the protocol module about this timeout
+        tx_action.send((lease_num, LeaseAction::LeaseTimeout { peer }))?;
         Ok(())
     }
 
@@ -553,11 +601,8 @@ impl LeaseManager {
         lease_timeout: Duration,
         tx_action: mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
         // will be cloned into every timer thread for its timeout trigger
-        tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNoticeOrTimeout)>,
-        mut rx_notice: mpsc::UnboundedReceiver<(
-            LeaseNum,
-            LeaseNoticeOrTimeout,
-        )>,
+        tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
+        mut rx_notice: mpsc::UnboundedReceiver<(LeaseNum, LeaseNotice)>,
         mut promises_sent: flashmap::WriteHandle<ReplicaId, Timer>,
         mut promises_held: flashmap::WriteHandle<ReplicaId, Timer>,
     ) {
@@ -579,7 +624,7 @@ impl LeaseManager {
             #[allow(clippy::comparison_chain)]
             if lease_num < active_num {
                 pf_warn!(
-                    "ignoring outdated lease number: {} < {}",
+                    "ignoring outdated lease_num: {} < {}",
                     lease_num,
                     active_num
                 );
@@ -587,11 +632,11 @@ impl LeaseManager {
             } else if lease_num > active_num {
                 // starting the grants of a new lease number, invalidate everything
                 // with old number
-                pf_debug!(
-                    "observed higher lease number: {} > {}",
-                    lease_num,
-                    active_num
-                );
+                // pf_debug!(
+                //     "observed higher lease_num: {} > {}",
+                //     lease_num,
+                //     active_num
+                // );
                 guards_sent.clear();
                 guards_held.clear();
                 {
@@ -610,112 +655,130 @@ impl LeaseManager {
             }
 
             match notice {
-                LeaseNoticeOrTimeout::Notice(notice) => match notice {
-                    LeaseNotice::NewGrants { peers } => {
-                        if let Err(e) = Self::handle_new_grants(
+                LeaseNotice::NewGrants { peers } => {
+                    if let Err(e) = Self::handle_new_grants(
+                        lease_num,
+                        peers,
+                        me,
+                        &tx_action,
+                        tx_notice_arc.clone(),
+                        &mut guards_sent,
+                        &mut promises_sent,
+                    ) {
+                        pf_error!("error handling lease NewGrants: {}", e);
+                    }
+                }
+                LeaseNotice::DoRevoke { peers } => {
+                    if let Err(e) = Self::handle_do_revoke(
+                        lease_num,
+                        peers,
+                        me,
+                        &tx_action,
+                        &mut guards_sent,
+                    ) {
+                        pf_error!("error handling lease DoRevoke: {}", e);
+                    }
+                }
+                LeaseNotice::RecvLeaseMsg { peer, msg } => {
+                    debug_assert_ne!(peer, me);
+                    if let Err(e) = match msg {
+                        LeaseMsg::Guard => Self::handle_msg_guard(
                             lease_num,
-                            peers,
-                            me,
+                            peer,
+                            guard_timeout,
                             &tx_action,
                             tx_notice_arc.clone(),
-                            &mut guards_sent,
-                            &mut promises_sent,
-                        ) {
-                            pf_error!("error handling lease NewGrants: {}", e);
-                        }
-                    }
-                    LeaseNotice::DoRevoke { peers } => {
-                        if let Err(e) = Self::handle_do_revoke(
+                            &mut guards_held,
+                            &mut promises_held,
+                        ),
+                        LeaseMsg::GuardReply => Self::handle_msg_guard_reply(
                             lease_num,
-                            peers,
-                            me,
+                            peer,
+                            guard_timeout,
+                            lease_timeout,
                             &tx_action,
                             &mut guards_sent,
-                        ) {
-                            pf_error!("error handling lease DoRevoke: {}", e);
-                        }
-                    }
-                    LeaseNotice::RecvLeaseMsg { peer, msg } => {
-                        debug_assert_ne!(peer, me);
-                        if let Err(e) = match msg {
-                            LeaseMsg::Guard => Self::handle_msg_guard(
+                            &mut promises_sent,
+                        ),
+                        LeaseMsg::Promise => Self::handle_msg_promise(
+                            lease_num,
+                            peer,
+                            lease_timeout,
+                            &tx_action,
+                            &mut guards_held,
+                            &mut promises_held,
+                        ),
+                        LeaseMsg::PromiseReply { held } => {
+                            Self::handle_msg_promise_reply(
                                 lease_num,
                                 peer,
-                                guard_timeout,
-                                &tx_action,
-                                tx_notice_arc.clone(),
-                                &mut guards_held,
-                                &mut promises_held,
-                            ),
-                            LeaseMsg::GuardReply => {
-                                Self::handle_msg_guard_reply(
-                                    lease_num,
-                                    peer,
-                                    guard_timeout,
-                                    lease_timeout,
-                                    &tx_action,
-                                    &mut guards_sent,
-                                    &mut promises_sent,
-                                )
-                            }
-                            LeaseMsg::Promise => Self::handle_msg_promise(
-                                lease_num,
-                                peer,
+                                held,
                                 lease_timeout,
                                 &tx_action,
-                                &mut guards_held,
-                                &mut promises_held,
-                            ),
-                            LeaseMsg::PromiseReply { held } => {
-                                Self::handle_msg_promise_reply(
-                                    lease_num,
-                                    peer,
-                                    held,
-                                    lease_timeout,
-                                    &tx_action,
-                                    &mut guards_sent,
-                                    &mut promises_sent,
-                                )
-                            }
-                            LeaseMsg::Revoke => Self::handle_msg_revoke(
+                                &mut guards_sent,
+                                &mut promises_sent,
+                            )
+                        }
+                        LeaseMsg::Revoke => Self::handle_msg_revoke(
+                            lease_num,
+                            peer,
+                            &tx_action,
+                            &mut guards_held,
+                            &mut promises_held,
+                        ),
+                        LeaseMsg::RevokeReply { held } => {
+                            Self::handle_msg_revoke_reply(
                                 lease_num,
                                 peer,
-                                &tx_action,
-                                &mut guards_held,
-                                &mut promises_held,
-                            ),
-                            LeaseMsg::RevokeReply { held } => {
-                                Self::handle_msg_revoke_reply(
-                                    lease_num,
-                                    peer,
-                                    held,
-                                    &mut guards_sent,
-                                    &mut promises_sent,
-                                )
-                            }
-                        } {
-                            pf_error!("error handling lease message: {}", e);
+                                held,
+                                &mut guards_sent,
+                                &mut promises_sent,
+                            )
                         }
+                    } {
+                        pf_error!("error handling lease message: {}", e);
                     }
-                },
-                LeaseNoticeOrTimeout::GrantTimeout { peer } => {
+                }
+                LeaseNotice::SendingRefresh { peer } => {
+                    debug_assert_ne!(peer, me);
+                    if let Err(e) = Self::handle_sending_refresh(
+                        lease_num,
+                        peer,
+                        lease_timeout,
+                        &mut promises_sent,
+                    ) {
+                        pf_error!("error handling lease SendingRefresh: {}", e);
+                    }
+                }
+                LeaseNotice::GrantTimeout { peer } => {
                     debug_assert_ne!(peer, me);
                     if let Err(e) = Self::handle_grant_timeout(
+                        lease_num,
                         peer,
+                        &tx_action,
                         &mut guards_sent,
                         &mut promises_sent,
                     ) {
                         pf_error!("error handling lease GrantTimeout: {}", e);
                     }
                 }
-                LeaseNoticeOrTimeout::LeaseTimeout { peer } => {
+                LeaseNotice::LeaseTimeout { peer } => {
                     debug_assert_ne!(peer, me);
                     if let Err(e) = Self::handle_lease_timeout(
+                        lease_num,
                         peer,
+                        &tx_action,
                         &mut guards_held,
                         &mut promises_held,
                     ) {
                         pf_error!("error handling lease LeaseTimeout: {}", e);
+                    }
+                }
+                LeaseNotice::SyncBarrier => {
+                    if let Err(e) =
+                        tx_action.send((lease_num, LeaseAction::SyncBarrier))
+                    {
+                        pf_error!("error injecting sync barrier: {}", e);
                     }
                 }
             }
@@ -864,6 +927,10 @@ mod tests {
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             // still so after T_guard expires
             time::sleep(Duration::from_millis(160)).await;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::LeaseTimeout { peer: 0 })
+            );
             assert_eq!(n1.try_recv_msg(0), Ok(None));
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             barrier1.wait().await;
@@ -894,8 +961,6 @@ mod tests {
         time::sleep(Duration::from_millis(10)).await;
         assert_eq!(n0.try_recv_msg(1), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
-        // still so after T_guard expires
-        time::sleep(Duration::from_millis(160)).await;
         assert_eq!(n0.try_recv_msg(1), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
@@ -958,6 +1023,10 @@ mod tests {
             // since no refreshes coming, after T_lease expires the held
             // promise should've expired
             time::sleep(Duration::from_millis(160)).await;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::LeaseTimeout { peer: 0 })
+            );
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             barrier1.wait().await;
             Ok::<(), SummersetError>(())
@@ -1013,6 +1082,10 @@ mod tests {
         assert_eq!(n0.leaseman.grant_set(), peers);
         // no longer considered granted after T_guard + T_lease expires
         time::sleep(Duration::from_millis(160)).await;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::GrantTimeout { peer: 1 })
+        );
         assert_eq!(n0.try_recv_msg(1), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
@@ -1118,6 +1191,10 @@ mod tests {
             // since no refreshes coming, after T_lease expires the held
             // promise should've expired
             time::sleep(Duration::from_millis(160)).await;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::LeaseTimeout { peer: 0 })
+            );
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             barrier1.wait().await;
             Ok::<(), SummersetError>(())
@@ -1179,10 +1256,16 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::NextRefresh { peer: 1 }),
+            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
+        assert_eq!(
+            n0.leaseman
+                .do_sync_notice(7, LeaseNotice::SendingRefresh { peer: 1 })
+                .await?,
+            vec![]
+        );
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // wait for PromiseReply and schedule next refresh Promise again
         assert_eq!(
@@ -1198,11 +1281,16 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::NextRefresh { peer: 1 }),
+            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
-        n0.leaseman.extend_grant_timer(1)?;
+        assert_eq!(
+            n0.leaseman
+                .do_sync_notice(7, LeaseNotice::SendingRefresh { peer: 1 })
+                .await?,
+            vec![]
+        );
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // no PromiseReply received so consider granted for 2 * T_lease since
         // last promise
@@ -1216,6 +1304,10 @@ mod tests {
         // no longer considered granted after 2 * T_lease has expired after
         // last promise
         time::sleep(Duration::from_millis(160)).await;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::GrantTimeout { peer: 1 })
+        );
         assert_eq!(n0.try_recv_msg(1), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
@@ -1356,7 +1448,7 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::NextRefresh { peer: 1 }),
+            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
@@ -1552,7 +1644,7 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::NextRefresh { peer: 1 }),
+            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);

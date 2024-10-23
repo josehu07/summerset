@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{LogAction, ReplicaId};
+use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
 use rand::prelude::*;
@@ -30,6 +30,23 @@ impl MultiPaxosReplica {
 
             // reset heartbeat timeout timer promptly
             self.kickoff_hb_hear_timer()?;
+
+            // if leasing enabled, revoke old lease if leader changed
+            if !self.config.disable_leasing {
+                if let Some(old_leader) = self.leader {
+                    if old_leader != self.id && old_leader != peer {
+                        self.lease_manager.add_notice(
+                            ballot as LeaseNum, // use new ballot as lease_num
+                            LeaseNotice::DoRevoke {
+                                peers: Bitmap::from((
+                                    self.population,
+                                    vec![old_leader],
+                                )),
+                            },
+                        )?;
+                    }
+                }
+            }
 
             // set this peer to be the believed leader
             debug_assert_ne!(peer, self.id);

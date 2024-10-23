@@ -11,6 +11,7 @@ mod control;
 mod durability;
 mod execution;
 mod leadership;
+mod leasing;
 mod messages;
 mod recovery;
 mod request;
@@ -26,8 +27,8 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
-    ExternalApi, GenericReplica, LeaseManager, LogActionId, ReplicaId,
-    StateMachine, StorageHub, TransportHub,
+    ExternalApi, GenericReplica, LeaseManager, LeaseMsg, LeaseNum, LogActionId,
+    ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError, Timer};
 
@@ -66,6 +67,12 @@ pub struct ReplicaConfigMultiPaxos {
     /// Disable heartbeat timer (to force a deterministic leader during tests).
     pub disable_hb_timer: bool,
 
+    /// Lease-related timeout duration in millisecs.
+    pub lease_expire_ms: u64,
+
+    /// Disable any lease-related operations?
+    pub disable_leasing: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -88,7 +95,7 @@ pub struct ReplicaConfigMultiPaxos {
     pub record_size_recv: bool,
 
     /// Simulate local read lease implementation?
-    // TODO: only for benchmarking purposes
+    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -104,6 +111,8 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
+            lease_expire_ms: 1000, // need proper hb settings if leasing
+            disable_leasing: false,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -288,6 +297,12 @@ pub(crate) enum PeerMsg {
         /// For conservative snapshotting purpose.
         snap_bar: usize,
     },
+
+    /// Lease-related message.
+    LeaseMsg {
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+    },
 }
 
 /// MultiPaxos server replica module.
@@ -328,6 +343,9 @@ pub(crate) struct MultiPaxosReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// LeaseManager module.
+    lease_manager: LeaseManager,
+
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
 
@@ -343,6 +361,9 @@ pub(crate) struct MultiPaxosReplica {
 
     /// Approximate health status tracking of peer replicas.
     peer_alive: Bitmap,
+
+    /// Active lease number (monotonically non-decresing).
+    lease_num: u64,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -507,6 +528,7 @@ impl GenericReplica for MultiPaxosReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
+                                    lease_expire_ms, disable_leasing,
                                     snapshot_path, snapshot_interval_s,
                                     msg_chunk_size, record_breakdown,
                                     record_value_ver, record_size_recv,
@@ -596,6 +618,17 @@ impl GenericReplica for MultiPaxosReplica {
             time::interval(Duration::from_millis(config.hb_send_interval_ms));
         hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let hb_reply_cnts = (0..population)
+            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
+            .collect();
+
+        let lease_manager = LeaseManager::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.lease_expire_ms),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+
         let mut snapshot_interval = time::interval(Duration::from_secs(
             if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
@@ -604,10 +637,6 @@ impl GenericReplica for MultiPaxosReplica {
             },
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        let hb_reply_cnts = (0..population)
-            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
-            .collect();
 
         let bd_stopwatch = if config.record_breakdown {
             Some(Stopwatch::new())
@@ -630,11 +659,13 @@ impl GenericReplica for MultiPaxosReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            lease_manager,
             leader: None,
             hb_hear_timer: Timer::default(),
             hb_send_interval,
             hb_reply_cnts,
             peer_alive: Bitmap::new(population, true),
+            lease_num: 0,
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -737,6 +768,19 @@ impl GenericReplica for MultiPaxosReplica {
                 _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
                     if let Err(e) = self.bcast_heartbeats() {
                         pf_error!("error broadcasting heartbeats: {}", e);
+                    }
+                },
+
+                // lease-related action
+                lease_action = self.lease_manager.get_action(), if !paused
+                                                                   && !self.config.disable_leasing => {
+                    if let Err(e) = lease_action {
+                        pf_error!("error getting lease action: {}", e);
+                        continue;
+                    }
+                    let (lease_num, lease_action) = lease_action.unwrap();
+                    if let Err(e) = self.handle_lease_action(lease_num, lease_action) {
+                        pf_error!("error handling lease action @ {}: {}", lease_num, e);
                     }
                 },
 
