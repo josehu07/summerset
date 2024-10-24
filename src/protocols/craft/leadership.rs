@@ -9,10 +9,6 @@ use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult, ReplicaId};
 use crate::utils::SummersetError;
 
-use rand::prelude::*;
-
-use tokio::time::Duration;
-
 // CRaftReplica leader election timeout logic
 impl CRaftReplica {
     /// Check if the given term is larger than mine. If so, convert my role
@@ -40,10 +36,10 @@ impl CRaftReplica {
                 .do_sync_action(
                     0, // using 0 as dummy log action ID
                     LogAction::Write {
-                        entry: DurEntry::Metadata {
-                            curr_term: self.curr_term,
-                            voted_for: self.voted_for,
-                        },
+                        entry: DurEntry::pack_meta(
+                            self.curr_term,
+                            self.voted_for,
+                        ),
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -65,6 +61,7 @@ impl CRaftReplica {
 
             if self.role != Role::Follower {
                 self.role = Role::Follower;
+                self.heartbeater.set_sending(false);
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                 pf_info!("converted back to follower");
@@ -185,10 +182,7 @@ impl CRaftReplica {
             .do_sync_action(
                 0, // using 0 as dummy log action ID
                 LogAction::Write {
-                    entry: DurEntry::Metadata {
-                        curr_term: self.curr_term,
-                        voted_for: self.voted_for,
-                    },
+                    entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                     offset: 0,
                     sync: self.config.logger_sync,
                 },
@@ -213,13 +207,12 @@ impl CRaftReplica {
     pub(super) fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
+        self.heartbeater.set_sending(true);
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        for cnts in self.hb_reply_cnts.values_mut() {
-            *cnts = (1, 0, 0);
-        }
+        self.heartbeater.clear_reply_cnts();
         self.bcast_heartbeats()?;
 
         // re-initialize next_slot and match_slot information
@@ -270,64 +263,22 @@ impl CRaftReplica {
             )?;
         }
 
-        // update max heartbeat reply counters and their repetitions seen
-        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
-            if cnts.0 > cnts.1 {
-                // more hb replies have been received from this peer; it is
-                // probably alive
-                cnts.1 = cnts.0;
-                cnts.2 = 0;
-            } else {
-                // did not receive hb reply from this peer at least for the
-                // last sent hb from me; increment repetition count
-                cnts.2 += 1;
-                let repeat_threshold = (self.config.hb_hear_timeout_min
-                    / self.config.hb_send_interval_ms)
-                    as u8;
-                if cnts.2 > repeat_threshold {
-                    // did not receive hb reply from this peer for too many
-                    // past hbs sent from me; this peer is probably dead
-                    if self.peer_alive.get(peer)? {
-                        self.peer_alive.set(peer, false)?;
-                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
-                    }
-                    cnts.2 = 0;
-                }
-            }
-        }
+        // update max heartbeat reply counters and their repetitions seen,
+        // and peers' liveness status accordingly
+        self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
         self.heard_heartbeat(self.id, self.curr_term)?;
 
         // check if we need to fall back to full-copy replication
         if !self.full_copy_mode
-            && self.population - self.peer_alive.count()
+            && self.population - self.heartbeater.peer_alive().count()
                 >= self.config.fault_tolerance
         {
             self.switch_assignment_mode(true)?;
         }
 
         // pf_trace!("broadcast heartbeats term {}", self.curr_term);
-        Ok(())
-    }
-
-    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
-    /// the hb_hear_timer.
-    pub(super) fn kickoff_hb_hear_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
-        self.hb_hear_timer.cancel()?;
-
-        if !self.config.disable_hb_timer {
-            let timeout_ms = thread_rng().gen_range(
-                self.config.hb_hear_timeout_min
-                    ..=self.config.hb_hear_timeout_max,
-            );
-            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
-            self.hb_hear_timer
-                .kickoff(Duration::from_millis(timeout_ms))?;
-        }
-
         Ok(())
     }
 
@@ -338,21 +289,21 @@ impl CRaftReplica {
         _term: Term,
     ) -> Result<(), SummersetError> {
         if peer != self.id {
-            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
-            if !self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, true)?;
-                pf_info!("peer_alive updated: {:?}", self.peer_alive);
-                // check if we can move back to 1-shard replication
-                // if self.population - self.peer_alive.count()
-                //     < self.config.fault_tolerance
-                // {
-                //     self.switch_assignment_mode(false)?;
-                // }
-            }
+            // update the peer's reply cnt and its liveness status accordingly
+            self.heartbeater.update_heard_cnt(peer)?;
+            // check if we can move back to 1-shard replication (NOT done by
+            // vanilla CRaft)
+            // if self.population - self.heartbeater.peer_alive().count()
+            //     < self.config.fault_tolerance
+            // {
+            //     self.switch_assignment_mode(false)?;
+            // }
         }
 
         // reset hearing timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         // pf_trace!("heard heartbeat <- {} term {}", peer, term);
         Ok(())

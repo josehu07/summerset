@@ -31,7 +31,9 @@ impl RSPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
-            self.kickoff_hb_hear_timer()?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= trigger_slot {
@@ -345,7 +347,9 @@ impl RSPaxosReplica {
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot)?;
-            self.kickoff_hb_hear_timer()?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {

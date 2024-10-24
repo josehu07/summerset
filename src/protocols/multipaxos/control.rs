@@ -63,7 +63,9 @@ impl MultiPaxosReplica {
         pf_warn!("server got resume req");
 
         // reset leader heartbeat timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         *paused = false;
         self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;

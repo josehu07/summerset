@@ -8,10 +8,6 @@ use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-use rand::prelude::*;
-
-use tokio::time::Duration;
-
 // CrosswordReplica leadership related logic
 impl CrosswordReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
@@ -32,10 +28,14 @@ impl CrosswordReplica {
 
             // reset heartbeat timeout timer to prevent me from trying to
             // compete with a new leader when it is doing reconstruction
-            self.kickoff_hb_hear_timer()?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // set this peer to be the believed leader
+            debug_assert_ne!(peer, self.id);
             self.leader = Some(peer);
+            self.heartbeater.set_sending(false);
         }
 
         Ok(())
@@ -48,15 +48,14 @@ impl CrosswordReplica {
             return Ok(());
         }
 
-        self.leader = Some(self.id); // this starts broadcasting heartbeats
+        self.leader = Some(self.id);
+        self.heartbeater.set_sending(true);
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        for cnts in self.hb_reply_cnts.values_mut() {
-            *cnts = (1, 0, 0);
-        }
+        self.heartbeater.clear_reply_cnts();
         self.bcast_heartbeats()?;
 
         // re-initialize peer_exec_bar information
@@ -174,7 +173,7 @@ impl CrosswordReplica {
         for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
             let slots = chunk.to_vec();
             let num_slots = slots.len();
-            // pf_warn!("recons {:?}", slots);
+            // pf_trace!("recons {:?}", slots);
             self.transport_hub
                 .bcast_msg(PeerMsg::Reconstruct { slots_excl: slots }, None)?;
             pf_trace!("broadcast Reconstruct messages for {} slots", num_slots);
@@ -191,7 +190,7 @@ impl CrosswordReplica {
                 None,
             )?;
             for (&peer, pending) in self.pending_heartbeats.iter_mut() {
-                if self.peer_alive.get(peer)? {
+                if self.heartbeater.peer_alive().get(peer)? {
                     pending.push_back((now_us, self.next_hb_id));
                 }
             }
@@ -216,38 +215,14 @@ impl CrosswordReplica {
             None,
         )?;
         for (&peer, pending) in self.pending_heartbeats.iter_mut() {
-            if self.peer_alive.get(peer)? {
+            if self.heartbeater.peer_alive().get(peer)? {
                 pending.push_back((now_us, self.next_hb_id));
             }
         }
 
-        // update max heartbeat reply counters and their repetitions seen
-        let mut peer_death = false;
-        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
-            if cnts.0 > cnts.1 {
-                // more hb replies have been received from this peer; it is
-                // probably alive
-                cnts.1 = cnts.0;
-                cnts.2 = 0;
-            } else {
-                // did not receive hb reply from this peer at least for the
-                // last sent hb from me; increment repetition count
-                cnts.2 += 1;
-                let repeat_threshold = (self.config.hb_hear_timeout_min
-                    / self.config.hb_send_interval_ms)
-                    * 3;
-                if cnts.2 > repeat_threshold {
-                    // did not receive hb reply from this peer for too many
-                    // past hbs sent from me; this peer is probably dead
-                    if self.peer_alive.get(peer)? {
-                        self.peer_alive.set(peer, false)?;
-                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
-                        peer_death = true;
-                    }
-                    cnts.2 = 0;
-                }
-            }
-        }
+        // update max heartbeat reply counters and their repetitions seen,
+        // and peers' liveness status accordingly
+        let peer_death = self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
@@ -267,26 +242,6 @@ impl CrosswordReplica {
         }
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
-        Ok(())
-    }
-
-    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
-    /// the hb_hear_timer.
-    pub(super) fn kickoff_hb_hear_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
-        self.hb_hear_timer.cancel()?;
-
-        if !self.config.disable_hb_timer {
-            let timeout_ms = thread_rng().gen_range(
-                self.config.hb_hear_timeout_min
-                    ..=self.config.hb_hear_timeout_max,
-            );
-            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
-            self.hb_hear_timer
-                .kickoff(Duration::from_millis(timeout_ms))?;
-        }
-
         Ok(())
     }
 
@@ -311,11 +266,8 @@ impl CrosswordReplica {
                 );
             }
 
-            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
-            if !self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, true)?;
-                pf_info!("peer_alive updated: {:?}", self.peer_alive);
-            }
+            // update the peer's reply cnt and its liveness status accordingly
+            self.heartbeater.update_heard_cnt(peer)?;
 
             // if the peer has made a higher ballot number, consider it as
             // a new leader
@@ -340,7 +292,9 @@ impl CrosswordReplica {
         if ballot < self.bal_max_seen {
             return Ok(());
         }
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
         if exec_bar < self.exec_bar {
             return Ok(());
         }
@@ -423,7 +377,7 @@ impl CrosswordReplica {
     /// for soft fallback triggered when peer_alive count decreases.
     fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
-        let alive_cnt = self.peer_alive.count();
+        let alive_cnt = self.heartbeater.peer_alive().count();
         let mut new_pending_accepts: HashMap<
             ReplicaId,
             VecDeque<(u128, usize)>,
@@ -483,7 +437,7 @@ impl CrosswordReplica {
                     &self.linreg_model,
                     self.config.b_to_d_threshold,
                     &self.qdisc_info,
-                    &self.peer_alive,
+                    self.heartbeater.peer_alive(),
                 );
                 pf_debug!(
                     "enter Accept phase for slot {} bal {} asgmt {}",
@@ -536,7 +490,7 @@ impl CrosswordReplica {
                         },
                         peer,
                     )?;
-                    if self.peer_alive.get(peer)? {
+                    if self.heartbeater.peer_alive().get(peer)? {
                         self.pending_accepts
                             .get_mut(&peer)
                             .unwrap()
@@ -563,7 +517,7 @@ impl CrosswordReplica {
                         None,
                     )?;
                     for (&peer, pending) in self.pending_heartbeats.iter_mut() {
-                        if self.peer_alive.get(peer)? {
+                        if self.heartbeater.peer_alive().get(peer)? {
                             pending.push_back((now_us, self.next_hb_id));
                         }
                     }

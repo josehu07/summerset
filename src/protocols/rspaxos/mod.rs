@@ -21,9 +21,10 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
+    HeartbeatEvent, Heartbeater, LogActionId, ReplicaId, StateMachine,
+    StorageHub, TransportHub,
 };
-use crate::utils::{Bitmap, RSCodeword, SummersetError, Timer};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 use async_trait::async_trait;
 
@@ -327,21 +328,11 @@ pub(crate) struct RSPaxosReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Heartbeater module.
+    heartbeater: Heartbeater,
+
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
-
-    /// Timer for hearing heartbeat from leader.
-    hb_hear_timer: Timer,
-
-    /// Interval for sending heartbeat to followers.
-    hb_send_interval: Interval,
-
-    /// Heartbeat reply counters for approximate detection of follower health.
-    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
-    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
-
-    /// Approximate health status tracking of peer replicas.
-    peer_alive: Bitmap,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -517,13 +508,13 @@ impl GenericReplica for RSPaxosReplica {
                 config.batch_interval_ms
             );
         }
-        if config.hb_hear_timeout_min < 100 {
+        if config.hb_hear_timeout_min == 0 {
             return logged_err!(
                 "invalid config.hb_hear_timeout_min '{}'",
                 config.hb_hear_timeout_min
             );
         }
-        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min {
             return logged_err!(
                 "invalid config.hb_hear_timeout_max '{}'",
                 config.hb_hear_timeout_max
@@ -606,9 +597,14 @@ impl GenericReplica for RSPaxosReplica {
         )
         .await?;
 
-        let mut hb_send_interval =
-            time::interval(Duration::from_millis(config.hb_send_interval_ms));
-        hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // setup heartbeat management module
+        let heartbeater = Heartbeater::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.hb_hear_timeout_min),
+            Duration::from_millis(config.hb_hear_timeout_max),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
 
         let mut snapshot_interval = time::interval(Duration::from_secs(
             if config.snapshot_interval_s > 0 {
@@ -618,10 +614,6 @@ impl GenericReplica for RSPaxosReplica {
             },
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        let hb_reply_cnts = (0..population)
-            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
-            .collect();
 
         Ok(RSPaxosReplica {
             id,
@@ -636,11 +628,8 @@ impl GenericReplica for RSPaxosReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            heartbeater,
             leader: None,
-            hb_hear_timer: Timer::default(),
-            hb_send_interval,
-            hb_reply_cnts,
-            peer_alive: Bitmap::new(population, true),
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -670,7 +659,9 @@ impl GenericReplica for RSPaxosReplica {
         self.recover_from_wal().await?;
 
         // kick off leader activity hearing timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         // main event loop
         let mut paused = false;
@@ -727,17 +718,19 @@ impl GenericReplica for RSPaxosReplica {
                     }
                 },
 
-                // leader inactivity timeout
-                _ = self.hb_hear_timer.timeout(), if !paused => {
-                    if let Err(e) = self.become_a_leader() {
-                        pf_error!("error becoming a leader: {}", e);
-                    }
-                },
-
-                // leader sending heartbeat
-                _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
-                    if let Err(e) = self.bcast_heartbeats() {
-                        pf_error!("error broadcasting heartbeats: {}", e);
+                // heartbeat-related event
+                hb_event = self.heartbeater.get_event(), if !paused => {
+                    match hb_event {
+                        HeartbeatEvent::HearTimeout => {
+                            if let Err(e) = self.become_a_leader() {
+                                pf_error!("error becoming a leader: {}", e);
+                            }
+                        }
+                        HeartbeatEvent::SendTicked => {
+                            if let Err(e) = self.bcast_heartbeats() {
+                                pf_error!("error broadcasting heartbeats: {}", e);
+                            }
+                        }
                     }
                 },
 

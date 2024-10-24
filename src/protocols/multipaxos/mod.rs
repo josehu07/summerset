@@ -27,10 +27,11 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
-    ExternalApi, GenericReplica, LeaseManager, LeaseMsg, LeaseNum, LogActionId,
-    ReplicaId, StateMachine, StorageHub, TransportHub,
+    ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
+    LeaseMsg, LeaseNum, LogActionId, ReplicaId, StateMachine, StorageHub,
+    TransportHub,
 };
-use crate::utils::{Bitmap, Stopwatch, SummersetError, Timer};
+use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
 use async_trait::async_trait;
 
@@ -111,7 +112,7 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
-            lease_expire_ms: 1000, // need proper hb settings if leasing
+            lease_expire_ms: 2000, // need proper hb settings if leasing
             disable_leasing: false,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
@@ -343,24 +344,14 @@ pub(crate) struct MultiPaxosReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Heartbeater module.
+    heartbeater: Heartbeater,
+
     /// LeaseManager module.
     lease_manager: LeaseManager,
 
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
-
-    /// Timer for hearing heartbeat from leader.
-    hb_hear_timer: Timer,
-
-    /// Interval for sending heartbeat to followers.
-    hb_send_interval: Interval,
-
-    /// Heartbeat reply counters for approximate detection of follower health.
-    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
-    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
-
-    /// Approximate health status tracking of peer replicas.
-    peer_alive: Bitmap,
 
     /// Active lease number (monotonically non-decresing).
     lease_num: u64,
@@ -539,13 +530,13 @@ impl GenericReplica for MultiPaxosReplica {
                 config.batch_interval_ms
             );
         }
-        if config.hb_hear_timeout_min < 100 {
+        if config.hb_hear_timeout_min == 0 {
             return logged_err!(
                 "invalid config.hb_hear_timeout_min '{}'",
                 config.hb_hear_timeout_min
             );
         }
-        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min {
             return logged_err!(
                 "invalid config.hb_hear_timeout_max '{}'",
                 config.hb_hear_timeout_max
@@ -555,6 +546,12 @@ impl GenericReplica for MultiPaxosReplica {
             return logged_err!(
                 "invalid config.hb_send_interval_ms '{}'",
                 config.hb_send_interval_ms
+            );
+        }
+        if config.lease_expire_ms < config.hb_hear_timeout_min {
+            return logged_err!(
+                "invalid config.lease_expire_ms '{}'",
+                config.lease_expire_ms
             );
         }
         if config.msg_chunk_size == 0 {
@@ -614,14 +611,16 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
-        let mut hb_send_interval =
-            time::interval(Duration::from_millis(config.hb_send_interval_ms));
-        hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        // setup heartbeat management module
+        let heartbeater = Heartbeater::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.hb_hear_timeout_min),
+            Duration::from_millis(config.hb_hear_timeout_max),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
 
-        let hb_reply_cnts = (0..population)
-            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
-            .collect();
-
+        // setup lease management module
         let lease_manager = LeaseManager::new_and_setup(
             id,
             population,
@@ -659,12 +658,9 @@ impl GenericReplica for MultiPaxosReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            heartbeater,
             lease_manager,
             leader: None,
-            hb_hear_timer: Timer::default(),
-            hb_send_interval,
-            hb_reply_cnts,
-            peer_alive: Bitmap::new(population, true),
             lease_num: 0,
             insts: vec![],
             start_slot: 0,
@@ -700,7 +696,9 @@ impl GenericReplica for MultiPaxosReplica {
         self.recover_from_wal().await?;
 
         // kick off leader activity hearing timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         // main event loop
         let mut paused = false;
@@ -757,17 +755,19 @@ impl GenericReplica for MultiPaxosReplica {
                     }
                 },
 
-                // leader inactivity timeout
-                _ = self.hb_hear_timer.timeout(), if !paused => {
-                    if let Err(e) = self.become_a_leader() {
-                        pf_error!("error becoming a leader: {}", e);
-                    }
-                },
-
-                // leader sending heartbeat
-                _ = self.hb_send_interval.tick(), if !paused && self.is_leader() => {
-                    if let Err(e) = self.bcast_heartbeats() {
-                        pf_error!("error broadcasting heartbeats: {}", e);
+                // heartbeat-related event
+                hb_event = self.heartbeater.get_event(), if !paused => {
+                    match hb_event {
+                        HeartbeatEvent::HearTimeout => {
+                            if let Err(e) = self.become_a_leader() {
+                                pf_error!("error becoming a leader: {}", e);
+                            }
+                        }
+                        HeartbeatEvent::SendTicked => {
+                            if let Err(e) = self.bcast_heartbeats() {
+                                pf_error!("error broadcasting heartbeats: {}", e);
+                            }
+                        }
                     }
                 },
 

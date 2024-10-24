@@ -25,19 +25,14 @@ impl RaftReplica {
             .1
         {
             LogResult::Read {
-                entry:
-                    Some(DurEntry::Metadata {
-                        curr_term,
-                        voted_for,
-                    }),
+                entry: Some(meta_entry),
                 end_offset,
             } => {
                 self.log_offset = end_offset;
                 self.log_meta_end = end_offset;
 
                 // recover necessary metadata info
-                self.curr_term = curr_term;
-                self.voted_for = voted_for;
+                (self.curr_term, self.voted_for) = meta_entry.unpack_meta()?;
 
                 // read out and push all log entries into memory log
                 loop {
@@ -82,10 +77,7 @@ impl RaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::Metadata {
-                                curr_term: 0,
-                                voted_for: None,
-                            },
+                            entry: DurEntry::pack_meta(0, None),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },

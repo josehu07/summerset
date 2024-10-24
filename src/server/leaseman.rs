@@ -1,6 +1,6 @@
-//! Summerset server lease manager module implementation.
+//! Summerset server lease management module implementation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::server::ReplicaId;
 use crate::utils::{Bitmap, SummersetError, Timer};
@@ -119,14 +119,17 @@ pub(crate) struct LeaseManager {
     /// Sender side of the notice channel.
     tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
 
-    /// Map from replica ID I've grant lease to on current lease number ->
+    /// Map from peer ID I've grant lease to on current lease number ->
     /// (T_guard timer, revocation intention flag); shared with the lease
     /// manager task.
     promises_sent: flashmap::ReadHandle<ReplicaId, (Timer, bool)>,
 
-    /// Map from replica ID I've been granted lease from (i.e., held) on current
+    /// Map from peer ID I've been granted lease from (i.e., held) on current
     /// lease number -> T_lease timer; shared with the lease manager task.
     promises_held: flashmap::ReadHandle<ReplicaId, Timer>,
+
+    /// Set of peer IDs to which the next heartbeat should be a promise refresh.
+    refresh_mark: HashSet<ReplicaId>,
 
     /// Join handle of the lease manager task.
     _lease_manager_handle: JoinHandle<()>,
@@ -141,7 +144,7 @@ impl LeaseManager {
         expire_timeout: Duration, // serves both T_guard and T_lease
         hb_send_interval: Duration,
     ) -> Result<Self, SummersetError> {
-        if expire_timeout < Duration::from_millis(10)
+        if expire_timeout < Duration::from_millis(100)
             || expire_timeout > Duration::from_secs(10)
         {
             return logged_err!(
@@ -150,6 +153,7 @@ impl LeaseManager {
             );
         }
         if 2 * hb_send_interval >= expire_timeout {
+            // T_lease must be > 2 * heartbeat interval
             return logged_err!(
                 "heartbeat interval {:?} too short given lease timeout {:?}",
                 hb_send_interval,
@@ -187,6 +191,7 @@ impl LeaseManager {
             tx_notice,
             promises_sent: promises_sent_read,
             promises_held: promises_held_read,
+            refresh_mark: HashSet::new(),
             _lease_manager_handle: lease_manager_handle,
         })
     }
@@ -263,10 +268,19 @@ impl LeaseManager {
         }
     }
 
-    /// Extends the promise_sent timer for a peer by T_lease. This synchronous
-    /// version method is useful for protocol modules to avoid the hassle of
-    /// go through the channels API.
-    pub(crate) fn extend_grant_timer(
+    /// Checks whether the next heartbeat to a peer should be a promise refresh.
+    pub(crate) fn should_refresh(
+        &self,
+        _lease_num: LeaseNum,
+        peer: ReplicaId,
+    ) -> bool {
+        self.refresh_mark.contains(&peer)
+    }
+
+    /// Extends the promise_sent timer for a peer by T_lease and unmark refresh.
+    /// This synchronous version method is called right before every promise
+    /// refresh heartbeat by the protocol module.
+    pub(crate) fn before_refresh(
         &mut self,
         lease_num: LeaseNum,
         peer: ReplicaId,
@@ -274,21 +288,25 @@ impl LeaseManager {
         let promises_sent = self.promises_sent.guard();
         if let Some((timer, revoking)) = promises_sent.get(&peer) {
             if !revoking {
-                timer.extend(self.expire_timeout)
+                timer.extend(self.expire_timeout)?;
             } else {
-                logged_err!(
+                return logged_err!(
                     "refreshing a revoking lease @ {} -> {}",
                     lease_num,
                     peer
-                )
+                );
             }
         } else {
-            logged_err!(
+            return logged_err!(
                 "refreshing not-found lease @ {} -> {}",
                 lease_num,
                 peer
-            )
+            );
         }
+
+        // unmark refresh to the peer
+        self.refresh_mark.remove(&peer);
+        Ok(())
     }
 }
 
@@ -707,7 +725,7 @@ impl LeaseManagerLogicTask {
         while let Some((lease_num, notice)) = self.rx_notice.recv().await {
             #[allow(clippy::comparison_chain)]
             if lease_num < self.active_num {
-                pf_warn!(
+                pf_debug!(
                     "ignoring outdated lease_num: {} < {}",
                     lease_num,
                     self.active_num
@@ -1222,7 +1240,7 @@ mod tests {
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
-        n0.leaseman.extend_grant_timer(7, 1)?;
+        n0.leaseman.before_refresh(7, 1)?;
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // wait for PromiseReply and schedule next refresh Promise again
         assert_eq!(
@@ -1242,7 +1260,7 @@ mod tests {
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
-        n0.leaseman.extend_grant_timer(7, 1)?;
+        n0.leaseman.before_refresh(7, 1)?;
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // no PromiseReply received so consider granted for 2 * T_lease since
         // last promise

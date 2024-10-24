@@ -277,7 +277,7 @@ impl CrosswordReplica {
 
         for (&peer, regressor) in self.regressor.iter_mut() {
             regressor.discard_before(keep_us);
-            if !self.peer_alive.get(peer)? {
+            if !self.heartbeater.peer_alive().get(peer)? {
                 // if peer not considered alive, use a very high delay
                 self.linreg_model
                     .get_mut(&peer)

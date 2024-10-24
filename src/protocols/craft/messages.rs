@@ -566,10 +566,10 @@ impl CRaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::Metadata {
-                                curr_term: self.curr_term,
-                                voted_for: self.voted_for,
-                            },
+                            entry: DurEntry::pack_meta(
+                                self.curr_term,
+                                self.voted_for,
+                            ),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },

@@ -192,7 +192,9 @@ impl CRaftReplica {
         self.snapshot_discard_log().await?;
 
         // reset the leader heartbeat hear timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         pf_info!("took snapshot up to: start {}", self.start_slot);
         Ok(())

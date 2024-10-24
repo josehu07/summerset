@@ -21,14 +21,12 @@ impl CrosswordReplica {
     ) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
-        if !self.config.disable_gossip_timer {
-            let timeout_ms = thread_rng().gen_range(
-                self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
-            );
-            // pf_trace!("kickoff gossip_timer @ {} ms", timeout_ms);
-            self.gossip_timer
-                .kickoff(Duration::from_millis(timeout_ms))?;
-        }
+        let timeout_ms = thread_rng().gen_range(
+            self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
+        );
+        // pf_trace!("kickoff gossip_timer @ {} ms", timeout_ms);
+        self.gossip_timer
+            .kickoff(Duration::from_millis(timeout_ms))?;
 
         Ok(())
     }
@@ -132,7 +130,7 @@ impl CrosswordReplica {
                     &self.insts[slot - self.start_slot].replica_bk,
                     avail_shards_map,
                     assignment,
-                    &self.peer_alive,
+                    self.heartbeater.peer_alive(),
                 );
 
                 for (peer, exclude) in targets_excl {
@@ -178,7 +176,9 @@ impl CrosswordReplica {
         }
 
         // reset gossip trigger timer
-        self.kickoff_gossip_timer()?;
+        if !self.config.disable_gossip_timer {
+            self.kickoff_gossip_timer()?;
+        }
 
         // update gossip_bar
         if slot_up_to > self.gossip_bar {

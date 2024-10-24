@@ -26,15 +26,24 @@ impl MultiPaxosReplica {
         if !self.config.disable_leasing {
             if let Some(leader) = self.leader {
                 if leader != self.id {
-                    self.lease_manager.add_notice(
-                        self.bal_max_seen as LeaseNum,
-                        LeaseNotice::NewGrants {
-                            peers: Bitmap::from((
-                                self.population,
-                                vec![leader],
-                            )),
-                        },
-                    )?;
+                    if self.bal_max_seen < self.lease_num {
+                        pf_debug!(
+                            "new ballot {} < active lease_num {}, granting not initiated",
+                            self.bal_max_seen,
+                            self.lease_num
+                        );
+                    } else {
+                        self.lease_num = self.bal_max_seen;
+                        self.lease_manager.add_notice(
+                            self.lease_num,
+                            LeaseNotice::NewGrants {
+                                peers: Bitmap::from((
+                                    self.population,
+                                    vec![leader],
+                                )),
+                            },
+                        )?;
+                    }
                 }
             }
         }
@@ -47,7 +56,7 @@ impl MultiPaxosReplica {
         lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        pf_warn!("lease grant timeout @ {} -> {}", lease_num, peer);
+        pf_debug!("lease grant timeout @ {} -> {}", lease_num, peer);
         self.handle_revoke_replied(lease_num, peer, false)
     }
 
@@ -57,7 +66,7 @@ impl MultiPaxosReplica {
         lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        pf_warn!("leaseholder timeout @ {} <- {}", lease_num, peer);
+        pf_debug!("leaseholder timeout @ {} <- {}", lease_num, peer);
         Ok(())
     }
 
@@ -124,7 +133,7 @@ impl MultiPaxosReplica {
     ) -> Result<(), SummersetError> {
         #[allow(clippy::comparison_chain)]
         if lease_num < self.lease_num {
-            pf_warn!(
+            pf_debug!(
                 "ignoring outdated lease_num: {} < {}",
                 lease_num,
                 self.lease_num

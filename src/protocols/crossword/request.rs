@@ -137,7 +137,7 @@ impl CrosswordReplica {
             &self.linreg_model,
             self.config.b_to_d_threshold,
             &self.qdisc_info,
-            &self.peer_alive,
+            self.heartbeater.peer_alive(),
         );
         pf_debug!(
             "enter Accept phase for slot {} bal {} asgmt {}",
@@ -189,7 +189,7 @@ impl CrosswordReplica {
                 },
                 peer,
             )?;
-            if self.peer_alive.get(peer)? {
+            if self.heartbeater.peer_alive().get(peer)? {
                 self.pending_accepts
                     .get_mut(&peer)
                     .unwrap()
