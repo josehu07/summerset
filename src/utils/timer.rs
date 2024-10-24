@@ -52,80 +52,23 @@ impl Timer {
         } else {
             None
         };
-        let notify_ref = notify.clone();
-
         let exploded = Arc::new(AtomicBool::new(false));
-        let exploded_ref = exploded.clone();
 
         // spawn the background sleeper task
-        tokio::spawn(Self::sleeper_task(
+        let mut sleeper = TimerSleeperTask::new(
             deadline_rx,
-            notify_ref,
+            notify.clone(),
             explode_fn,
-            exploded_ref,
+            exploded.clone(),
             allow_backwards,
-        ));
+        );
+        tokio::spawn(async move { sleeper.run().await });
 
         Timer {
             deadline_tx,
             notify,
             exploded,
         }
-    }
-
-    /// Background sleeper task function associated with this timer.
-    async fn sleeper_task<F>(
-        mut deadline_rx: watch::Receiver<Option<Instant>>,
-        notify: Option<Arc<Notify>>,
-        explode_fn: Option<F>,
-        exploded: Arc<AtomicBool>,
-        allow_backwards: bool,
-    ) -> Result<(), SummersetError>
-    where
-        F: Fn() + Send + 'static,
-    {
-        let sleep = time::sleep(Duration::ZERO);
-        tokio::pin!(sleep);
-
-        while deadline_rx.changed().await.is_ok() {
-            // received a new deadline
-            let deadline = *deadline_rx.borrow();
-            if let Some(ddl) = deadline {
-                sleep.as_mut().reset(ddl);
-
-                if !allow_backwards {
-                    (&mut sleep).await;
-                } else {
-                    tokio::select! {
-                        () = (&mut sleep) => {
-                            // deadline reached and no newer deadline set
-                        }
-                        res = deadline_rx.changed() => {
-                            // newer deadline set, try to use that instead
-                            if res.is_err() {
-                                break;
-                            }
-                            deadline_rx.mark_changed();
-                            continue;
-                        }
-                    }
-                }
-
-                // explode only if deadline not changed since last wakeup
-                if let Ok(false) = deadline_rx.has_changed() {
-                    exploded.store(true, Ordering::Release);
-                    if let Some(ref explode_fn) = explode_fn {
-                        explode_fn();
-                    }
-                    if let Some(notify) = notify.as_ref() {
-                        notify.notify_one();
-                    }
-                }
-            }
-        }
-
-        // sender has been dropped, terminate
-        Ok(())
     }
 
     /// Kicks-off the timer with the given duration. Every call to `kickoff()`
@@ -206,6 +149,88 @@ impl Default for Timer {
     fn default() -> Self {
         // by default uses notify and has no explode function
         Self::new::<fn()>(true, None, false)
+    }
+}
+
+/// Timer background sleeper task.
+struct TimerSleeperTask<F> {
+    deadline_rx: watch::Receiver<Option<Instant>>,
+
+    /// If not `None`, this semaphore will be notified once upon every timeout.
+    notify: Option<Arc<Notify>>,
+    /// If not `None`, the function will be called upon every timeout.
+    explode_fn: Option<F>,
+    /// Indicates whether the timer has exploded since last kickoff.
+    exploded: Arc<AtomicBool>,
+
+    allow_backwards: bool,
+}
+
+impl<F> TimerSleeperTask<F>
+where
+    F: Fn() + Send + 'static,
+{
+    /// Creates the background sleeper task associated with this timer.
+    fn new(
+        deadline_rx: watch::Receiver<Option<Instant>>,
+        notify: Option<Arc<Notify>>,
+        explode_fn: Option<F>,
+        exploded: Arc<AtomicBool>,
+        allow_backwards: bool,
+    ) -> Self {
+        TimerSleeperTask {
+            deadline_rx,
+            notify,
+            explode_fn,
+            exploded,
+            allow_backwards,
+        }
+    }
+
+    /// Starts the background sleeper task.
+    async fn run(&mut self) {
+        let sleep = time::sleep(Duration::ZERO);
+        tokio::pin!(sleep);
+
+        while self.deadline_rx.changed().await.is_ok() {
+            // received a new deadline
+            let deadline = *self.deadline_rx.borrow();
+            if let Some(ddl) = deadline {
+                sleep.as_mut().reset(ddl);
+
+                if !self.allow_backwards {
+                    (&mut sleep).await;
+                } else {
+                    tokio::select! {
+                        () = (&mut sleep) => {
+                            // deadline reached and no newer deadline set
+                        }
+                        res = self.deadline_rx.changed() => {
+                            // newer deadline set, try to use that instead
+                            if res.is_err() {
+                                break;
+                            }
+                            self.deadline_rx.mark_changed();
+                            continue;
+                        }
+                    }
+                }
+
+                // explode only if deadline not changed since last wakeup
+                if let Ok(false) = self.deadline_rx.has_changed() {
+                    self.exploded.store(true, Ordering::Release);
+                    if let Some(ref explode_fn) = self.explode_fn {
+                        println!("XXX");
+                        explode_fn();
+                    }
+                    if let Some(notify) = self.notify.as_ref() {
+                        notify.notify_one();
+                    }
+                }
+            }
+        }
+
+        // sender has been dropped, terminate
     }
 }
 

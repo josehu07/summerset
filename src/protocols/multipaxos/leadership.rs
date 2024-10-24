@@ -31,10 +31,10 @@ impl MultiPaxosReplica {
             // reset heartbeat timeout timer promptly
             self.kickoff_hb_hear_timer()?;
 
-            // if leasing enabled, revoke old lease if leader changed
+            // if leasing enabled, revoke old lease
             if !self.config.disable_leasing {
                 if let Some(old_leader) = self.leader {
-                    if old_leader != self.id && old_leader != peer {
+                    if old_leader != self.id {
                         self.lease_manager.add_notice(
                             ballot as LeaseNum, // use new ballot as lease_num
                             LeaseNotice::DoRevoke {
@@ -61,6 +61,23 @@ impl MultiPaxosReplica {
     pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
+        }
+
+        // if leasing enabled, revoke old lease
+        if !self.config.disable_leasing {
+            if let Some(old_leader) = self.leader {
+                if old_leader != self.id {
+                    self.lease_manager.add_notice(
+                        self.bal_max_seen as LeaseNum,
+                        LeaseNotice::DoRevoke {
+                            peers: Bitmap::from((
+                                self.population,
+                                vec![old_leader],
+                            )),
+                        },
+                    )?;
+                }
+            }
         }
 
         self.leader = Some(self.id); // this starts broadcasting heartbeats

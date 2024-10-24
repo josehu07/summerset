@@ -92,22 +92,22 @@ pub(crate) struct ClientReactor {
     rx_req: mpsc::UnboundedReceiver<(ClientId, CtrlRequest)>,
 
     /// Map from client ID -> sender side of the reply channel, shared with
-    /// the client acceptor thread.
+    /// the client acceptor task.
     tx_replies:
         flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<CtrlReply>>,
 
-    /// Join handle of the client acceptor thread.
+    /// Join handle of the client acceptor task.
     _client_acceptor_handle: JoinHandle<()>,
 
-    /// Map from client ID -> client responder thread join handles, shared
-    /// with the client acceptor thread.
+    /// Map from client ID -> client responder task join handles, shared
+    /// with the client acceptor task.
     _client_responder_handles: flashmap::ReadHandle<ClientId, JoinHandle<()>>,
 }
 
 // ClientReactor public API implementation
 impl ClientReactor {
     /// Creates a new client-facing responder module and spawns the client
-    /// acceptor thread. Creates a req channel for buffering incoming control
+    /// acceptor task. Creates a req channel for buffering incoming control
     /// requests.
     pub(crate) async fn new_and_setup(
         cli_addr: SocketAddr,
@@ -121,13 +121,14 @@ impl ClientReactor {
             flashmap::new::<ClientId, JoinHandle<()>>();
 
         let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
+        let mut acceptor = ClientReactorAcceptorTask::new(
+            tx_req,
+            tx_replies_write,
+            client_listener,
+            client_responder_handles_write,
+        );
         let client_acceptor_handle =
-            tokio::spawn(Self::client_acceptor_thread(
-                tx_req,
-                client_listener,
-                tx_replies_write,
-                client_responder_handles_write,
-            ));
+            tokio::spawn(async move { acceptor.run().await });
 
         Ok(ClientReactor {
             rx_req,
@@ -176,35 +177,73 @@ impl ClientReactor {
     }
 }
 
-// ClientReactor client_acceptor thread implementation
-impl ClientReactor {
-    /// Accepts a new client connection.
-    async fn accept_new_client(
-        mut stream: TcpStream,
-        addr: SocketAddr,
-        id: ClientId,
+/// ClientReactor client acceptor task.
+struct ClientReactorAcceptorTask {
+    tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
+    tx_replies:
+        flashmap::WriteHandle<ClientId, mpsc::UnboundedSender<CtrlReply>>,
+
+    client_listener: TcpListener,
+    client_responder_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+
+    next_client_id: ClientId,
+
+    tx_exit: mpsc::UnboundedSender<ClientId>,
+    rx_exit: mpsc::UnboundedReceiver<ClientId>,
+}
+
+impl ClientReactorAcceptorTask {
+    /// Creates the client acceptor task.
+    fn new(
         tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
-        tx_replies: &mut flashmap::WriteHandle<
+        tx_replies: flashmap::WriteHandle<
             ClientId,
             mpsc::UnboundedSender<CtrlReply>,
         >,
-        client_responder_handles: &mut flashmap::WriteHandle<
+        client_listener: TcpListener,
+        client_responder_handles: flashmap::WriteHandle<
             ClientId,
             JoinHandle<()>,
         >,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
+    ) -> Self {
+        // maintain a monotonically increasing client ID for new clients
+        // start with a relatively high value to avoid confusion with
+        // server replica IDs
+        let next_client_id: ClientId = 2857;
+
+        // create an exit mpsc channel for getting notified about termination
+        // of client responder tasks
+        let (tx_exit, rx_exit) = mpsc::unbounded_channel();
+
+        ClientReactorAcceptorTask {
+            tx_req,
+            tx_replies,
+            client_listener,
+            client_responder_handles,
+            next_client_id,
+            tx_exit,
+            rx_exit,
+        }
+    }
+
+    /// Accepts a new client connection.
+    async fn accept_new_client(
+        &mut self,
+        mut stream: TcpStream,
+        addr: SocketAddr,
+        id: ClientId,
     ) -> Result<(), SummersetError> {
         // send ID assignment
         if let Err(e) = stream.write_u64(id).await {
             return logged_err!("error assigning new client ID: {}", e);
         }
 
-        let mut tx_replies_guard = tx_replies.guard();
+        let mut tx_replies_guard = self.tx_replies.guard();
         if let Some(sender) = tx_replies_guard.get(&id) {
             if sender.is_closed() {
                 // if this client ID has left before, garbage collect it now
                 let mut client_responder_handles_guard =
-                    client_responder_handles.guard();
+                    self.client_responder_handles.guard();
                 client_responder_handles_guard.remove(id);
                 tx_replies_guard.remove(id);
             } else {
@@ -216,12 +255,18 @@ impl ClientReactor {
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
 
+        let mut responder = ClientReactorResponderTask::new(
+            id,
+            addr,
+            stream,
+            self.tx_req.clone(),
+            rx_reply,
+            self.tx_exit.clone(),
+        );
         let client_responder_handle =
-            tokio::spawn(Self::client_responder_thread(
-                id, addr, stream, tx_req, rx_reply, tx_exit,
-            ));
+            tokio::spawn(async move { responder.run().await });
         let mut client_responder_handles_guard =
-            client_responder_handles.guard();
+            self.client_responder_handles.guard();
         client_responder_handles_guard.insert(id, client_responder_handle);
 
         client_responder_handles_guard.publish();
@@ -231,87 +276,54 @@ impl ClientReactor {
 
     /// Removes handles of a left client connection.
     fn remove_left_client(
+        &mut self,
         id: ClientId,
-        tx_replies: &mut flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<CtrlReply>,
-        >,
-        client_responder_handles: &mut flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
     ) -> Result<(), SummersetError> {
-        let mut tx_replies_guard = tx_replies.guard();
+        let mut tx_replies_guard = self.tx_replies.guard();
         if !tx_replies_guard.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
         tx_replies_guard.remove(id);
 
         let mut client_responder_handles_guard =
-            client_responder_handles.guard();
+            self.client_responder_handles.guard();
         client_responder_handles_guard.remove(id);
 
         Ok(())
     }
 
-    /// Client acceptor thread function.
-    async fn client_acceptor_thread(
-        tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
-        client_listener: TcpListener,
-        mut tx_replies: flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<CtrlReply>,
-        >,
-        mut client_responder_handles: flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
-    ) {
-        pf_debug!("client_acceptor thread spawned");
+    /// Starts the client acceptor task loop.
+    async fn run(&mut self) {
+        pf_debug!("client_acceptor task spawned");
 
-        let local_addr = client_listener.local_addr().unwrap();
+        let local_addr = self.client_listener.local_addr().unwrap();
         pf_info!("accepting clients on '{}'", local_addr);
-
-        // maintain a monotonically increasing client ID for new clients
-        // start with a relatively high value to avoid confusion with
-        // server replica IDs
-        let mut next_client_id: ClientId = 2857;
-
-        // create an exit mpsc channel for getting notified about termination
-        // of client responder threads
-        let (tx_exit, mut rx_exit) = mpsc::unbounded_channel();
 
         loop {
             tokio::select! {
                 // new client connection
-                accepted = client_listener.accept() => {
+                accepted = self.client_listener.accept() => {
                     if let Err(e) = accepted {
                         pf_warn!("error accepting client connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
-                    if let Err(e) = Self::accept_new_client(
+                    if let Err(e) = self.accept_new_client(
                         stream,
                         addr,
-                        next_client_id,
-                        tx_req.clone(),
-                        &mut tx_replies,
-                        &mut client_responder_handles,
-                        tx_exit.clone()
+                        self.next_client_id
                     ).await {
                         pf_error!("error accepting new client: {}", e);
                     } else {
-                        next_client_id += 1;
+                        self.next_client_id += 1;
                     }
                 },
 
-                // a client responder thread exits
-                id = rx_exit.recv() => {
+                // a client responder task exits
+                id = self.rx_exit.recv() => {
                     let id = id.unwrap();
-                    if let Err(e) = Self::remove_left_client(
+                    if let Err(e) = self.remove_left_client(
                         id,
-                        &mut tx_replies,
-                        &mut client_responder_handles
                     ) {
                         pf_error!("error removing left client {}: {}", id, e);
                     }
@@ -319,13 +331,63 @@ impl ClientReactor {
             }
         }
 
-        // pf_debug!("client_acceptor thread exitted");
+        // pf_debug!("client_acceptor task exitted");
     }
 }
 
-// ClientReactor client_responder thread implementation
-impl ClientReactor {
+/// ClientReactor per-client responder task.
+struct ClientReactorResponderTask {
+    id: ClientId,
+    addr: SocketAddr,
+
+    conn_read: OwnedReadHalf,
+    conn_write: OwnedWriteHalf,
+
+    tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
+    req_buf: BytesMut,
+
+    rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
+    reply_buf: BytesMut,
+    reply_buf_cursor: usize,
+    retrying: bool,
+
+    tx_exit: mpsc::UnboundedSender<ClientId>,
+}
+
+impl ClientReactorResponderTask {
+    /// Creates a per-client responder task.
+    fn new(
+        id: ClientId,
+        addr: SocketAddr,
+        conn: TcpStream,
+        tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
+        rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
+        tx_exit: mpsc::UnboundedSender<ClientId>,
+    ) -> Self {
+        let (conn_read, conn_write) = conn.into_split();
+
+        let req_buf = BytesMut::with_capacity(8 + 1024);
+        let reply_buf = BytesMut::with_capacity(8 + 1024);
+        let reply_buf_cursor = 0;
+        let retrying = false;
+
+        ClientReactorResponderTask {
+            id,
+            addr,
+            conn_read,
+            conn_write,
+            tx_req,
+            req_buf,
+            rx_reply,
+            reply_buf,
+            reply_buf_cursor,
+            retrying,
+            tx_exit,
+        }
+    }
+
     /// Reads a client control request from given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_req(
         // first 8 btyes being the request length, and the rest bytes being the
         // request itself
@@ -336,6 +398,7 @@ impl ClientReactor {
     }
 
     /// Writes a control event reply through given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_reply(
         reply_buf: &mut BytesMut,
         reply_buf_cursor: &mut usize,
@@ -345,41 +408,32 @@ impl ClientReactor {
         safe_tcp_write(reply_buf, reply_buf_cursor, conn_write, reply)
     }
 
-    /// Client control request listener and reply sender thread function.
-    async fn client_responder_thread(
-        id: ClientId,
-        addr: SocketAddr,
-        conn: TcpStream,
-        tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
-        mut rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
-    ) {
-        pf_debug!("client_responder thread for {} '{}' spawned", id, addr);
+    /// Starts a per-client responder task loop.
+    async fn run(&mut self) {
+        pf_debug!(
+            "client_responder task for {} '{}' spawned",
+            self.id,
+            self.addr
+        );
 
-        let (mut conn_read, conn_write) = conn.into_split();
-        let mut req_buf = BytesMut::with_capacity(8 + 1024);
-        let mut reply_buf = BytesMut::with_capacity(8 + 1024);
-        let mut reply_buf_cursor = 0;
-
-        let mut retrying = false;
         loop {
             tokio::select! {
                 // gets a reply to send to client
-                reply = rx_reply.recv(), if !retrying => {
+                reply = self.rx_reply.recv(), if !self.retrying => {
                     match reply {
                         Some(reply) => {
                             match Self::write_reply(
-                                &mut reply_buf,
-                                &mut reply_buf_cursor,
-                                &conn_write,
+                                &mut self.reply_buf,
+                                &mut self.reply_buf_cursor,
+                                &self.conn_write,
                                 Some(&reply)
                             ) {
                                 Ok(true) => {
                                     // pf_trace!("sent -> {} reply {:?}", id, reply);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("should start retrying reply send -> {}", id);
-                                    retrying = true;
+                                    pf_debug!("should start retrying reply send -> {}", self.id);
+                                    self.retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
@@ -393,19 +447,19 @@ impl ClientReactor {
                 },
 
                 // retrying last unsuccessful reply send
-                _ = conn_write.writable(), if retrying => {
+                _ = self.conn_write.writable(), if self.retrying => {
                     match Self::write_reply(
-                        &mut reply_buf,
-                        &mut reply_buf_cursor,
-                        &conn_write,
+                        &mut self.reply_buf,
+                        &mut self.reply_buf_cursor,
+                        &self.conn_write,
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("finished retrying last reply send -> {}", id);
-                            retrying = false;
+                            pf_debug!("finished retrying last reply send -> {}", self.id);
+                            self.retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("still should retry last reply send -> {}", id);
+                            pf_debug!("still should retry last reply send -> {}", self.id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
@@ -416,30 +470,30 @@ impl ClientReactor {
                 },
 
                 // receives control request from client
-                req = Self::read_req(&mut req_buf, &mut conn_read) => {
+                req = Self::read_req(&mut self.req_buf, &mut self.conn_read) => {
                     match req {
                         Ok(CtrlRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = CtrlReply::Leave;
                             if let Err(_e) = Self::write_reply(
-                                &mut reply_buf,
-                                &mut reply_buf_cursor,
-                                &conn_write,
+                                &mut self.reply_buf,
+                                &mut self.reply_buf_cursor,
+                                &self.conn_write,
                                 Some(&reply)
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("client {} has left", id);
+                                pf_debug!("client {} has left", self.id);
                             }
                             break;
                         },
 
                         Ok(req) => {
                             // pf_trace!("recv <- {} req {:?}", id, req);
-                            if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!("error sending to tx_req for {}: {}", id, e);
+                            if let Err(e) = self.tx_req.send((self.id, req)) {
+                                pf_error!("error sending to tx_req for {}: {}", self.id, e);
                             }
                         },
 
@@ -454,10 +508,14 @@ impl ClientReactor {
             }
         }
 
-        if let Err(e) = tx_exit.send(id) {
-            pf_error!("error sending exit signal for {}: {}", id, e);
+        if let Err(e) = self.tx_exit.send(self.id) {
+            pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
-        pf_debug!("client_responder thread for {} '{}' exitted", id, addr);
+        pf_debug!(
+            "client_responder task for {} '{}' exitted",
+            self.id,
+            self.addr
+        );
     }
 }
 

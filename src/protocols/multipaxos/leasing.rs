@@ -6,27 +6,58 @@ use crate::server::{LeaseAction, LeaseNotice};
 
 // MultiPaxosReplica lease-related actions logic
 impl MultiPaxosReplica {
-    /// Mark the next heartbeat to given peer as a lease promise refresh.
-    fn mark_next_hb_refresh(
+    /// Marks the next heartbeat to given peer as a lease promise refresh.
+    fn handle_schedule_refresh(
         &mut self,
+        lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
+        Ok(())
+    }
+
+    /// Initiates granting lease to current leader after successful revocation
+    /// of the old.
+    fn handle_revoke_replied(
+        &mut self,
+        _lease_num: LeaseNum,
+        _peer: ReplicaId,
+        _held: bool,
+    ) -> Result<(), SummersetError> {
+        if !self.config.disable_leasing {
+            if let Some(leader) = self.leader {
+                if leader != self.id {
+                    self.lease_manager.add_notice(
+                        self.bal_max_seen as LeaseNum,
+                        LeaseNotice::NewGrants {
+                            peers: Bitmap::from((
+                                self.population,
+                                vec![leader],
+                            )),
+                        },
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
     /// Handle a grantor-side timeout.
     fn handle_grant_timeout(
         &mut self,
+        lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        Ok(())
+        pf_warn!("lease grant timeout @ {} -> {}", lease_num, peer);
+        self.handle_revoke_replied(lease_num, peer, false)
     }
 
     /// Handle a leaseholder-side timeout.
     fn handle_lease_timeout(
         &mut self,
+        lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
+        pf_warn!("leaseholder timeout @ {} <- {}", lease_num, peer);
         Ok(())
     }
 
@@ -65,13 +96,16 @@ impl MultiPaxosReplica {
                 )?;
             }
             LeaseAction::ScheduleRefresh { peer } => {
-                self.mark_next_hb_refresh(peer)?;
+                self.handle_schedule_refresh(lease_num, peer)?;
+            }
+            LeaseAction::RevokeReplied { peer, held } => {
+                self.handle_revoke_replied(lease_num, peer, held)?;
             }
             LeaseAction::GrantTimeout { peer } => {
-                self.handle_grant_timeout(peer)?;
+                self.handle_grant_timeout(lease_num, peer)?;
             }
             LeaseAction::LeaseTimeout { peer } => {
-                self.handle_lease_timeout(peer)?;
+                self.handle_lease_timeout(lease_num, peer)?;
             }
             LeaseAction::SyncBarrier => {
                 return logged_err!("unexpected SyncBarrier lease action");

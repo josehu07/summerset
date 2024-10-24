@@ -57,15 +57,15 @@ pub(crate) struct StateMachine {
     /// Receiver side of the ack channel.
     rx_ack: mpsc::UnboundedReceiver<(CommandId, CommandResult)>,
 
-    /// Join handle of the executor thread. The state HashMap is owned by this
-    /// thread.
+    /// Join handle of the executor task. The state HashMap is owned by this
+    /// task.
     _executor_handle: JoinHandle<()>,
 }
 
 // StateMachine public API implementation
 impl StateMachine {
-    /// Creates a new state machine with one executor thread. Spawns the
-    /// executor thread. Creates an exec channel for submitting commands to the
+    /// Creates a new state machine with one executor task. Spawns the
+    /// executor task. Creates an exec channel for submitting commands to the
     /// state machine and an ack channel for getting results.
     pub(crate) async fn new_and_setup(
         me: ReplicaId,
@@ -73,8 +73,8 @@ impl StateMachine {
         let (tx_exec, rx_exec) = mpsc::unbounded_channel();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
-        let executor_handle =
-            tokio::spawn(Self::executor_thread(rx_exec, tx_ack));
+        let mut executor = StateMachineExecutorTask::new(rx_exec, tx_ack);
+        let executor_handle = tokio::spawn(async move { executor.run().await });
 
         Ok(StateMachine {
             _me: me,
@@ -137,9 +137,30 @@ impl StateMachine {
     }
 }
 
-// StateMachine executor thread implementation
-impl StateMachine {
+/// StateMachine command executor task.
+struct StateMachineExecutorTask {
+    rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
+    tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
+
+    /// State is ultimately just a key-value HashMap.
+    state: State,
+}
+
+impl StateMachineExecutorTask {
+    /// Creates the command executor task.
+    fn new(
+        rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
+        tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
+    ) -> Self {
+        StateMachineExecutorTask {
+            rx_exec,
+            tx_ack,
+            state: State::new(),
+        }
+    }
+
     /// Executes given command on the state machine state.
+    /// This is a non-method function to make tests easier to write.
     fn execute(state: &mut State, cmd: &Command) -> CommandResult {
         let result = match cmd {
             Command::Get { key } => CommandResult::Get {
@@ -153,27 +174,21 @@ impl StateMachine {
         result
     }
 
-    /// Executor thread function.
-    async fn executor_thread(
-        mut rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
-        tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
-    ) {
-        pf_debug!("executor thread spawned");
+    /// Starts the command executor task loop.
+    async fn run(&mut self) {
+        pf_debug!("executor task spawned");
 
-        // create the state HashMap
-        let mut state = State::new();
-
-        while let Some((id, cmd)) = rx_exec.recv().await {
-            let res = Self::execute(&mut state, &cmd);
+        while let Some((id, cmd)) = self.rx_exec.recv().await {
+            let res = Self::execute(&mut self.state, &cmd);
             // pf_trace!("executed {:?}", cmd);
 
-            if let Err(e) = tx_ack.send((id, res)) {
+            if let Err(e) = self.tx_ack.send((id, res)) {
                 pf_error!("error sending to tx_ack: {}", e);
             }
         }
 
         // channel gets closed and no messages remain
-        pf_debug!("executor thread exitted");
+        pf_debug!("executor task exitted");
     }
 }
 
@@ -186,7 +201,7 @@ mod tests {
     fn get_empty() {
         let mut state = State::new();
         assert_eq!(
-            StateMachine::execute(
+            StateMachineExecutorTask::execute(
                 &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
@@ -198,7 +213,7 @@ mod tests {
     fn put_one_get_one() {
         let mut state = State::new();
         assert_eq!(
-            StateMachine::execute(
+            StateMachineExecutorTask::execute(
                 &mut state,
                 &Command::Put {
                     key: "Jose".into(),
@@ -208,7 +223,7 @@ mod tests {
             CommandResult::Put { old_value: None }
         );
         assert_eq!(
-            StateMachine::execute(
+            StateMachineExecutorTask::execute(
                 &mut state,
                 &Command::Get { key: "Jose".into() }
             ),
@@ -222,7 +237,7 @@ mod tests {
     fn put_twice() {
         let mut state = State::new();
         assert_eq!(
-            StateMachine::execute(
+            StateMachineExecutorTask::execute(
                 &mut state,
                 &Command::Put {
                     key: "Jose".into(),
@@ -232,7 +247,7 @@ mod tests {
             CommandResult::Put { old_value: None }
         );
         assert_eq!(
-            StateMachine::execute(
+            StateMachineExecutorTask::execute(
                 &mut state,
                 &Command::Put {
                     key: "Jose".into(),
@@ -261,7 +276,7 @@ mod tests {
             let key = gen_rand_str(1);
             let value = gen_rand_str(10);
             assert_eq!(
-                StateMachine::execute(
+                StateMachineExecutorTask::execute(
                     &mut state,
                     &Command::Put {
                         key: key.clone(),
@@ -281,7 +296,7 @@ mod tests {
                 "nonexist!".into()
             };
             assert_eq!(
-                StateMachine::execute(
+                StateMachineExecutorTask::execute(
                     &mut state,
                     &Command::Get { key: key.clone() }
                 ),
