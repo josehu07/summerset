@@ -6,11 +6,11 @@ use crate::server::{LeaseAction, LeaseNotice};
 
 // MultiPaxosReplica lease-related actions logic
 impl MultiPaxosReplica {
-    /// Marks the next heartbeat to given peer as a lease promise refresh.
-    fn handle_schedule_refresh(
+    /// Dothing special here to do for NextRefresh.
+    fn handle_next_refresh(
         &mut self,
-        lease_num: LeaseNum,
-        peer: ReplicaId,
+        _lease_num: LeaseNum,
+        _peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         Ok(())
     }
@@ -23,27 +23,25 @@ impl MultiPaxosReplica {
         _peer: ReplicaId,
         _held: bool,
     ) -> Result<(), SummersetError> {
-        if !self.config.disable_leasing {
-            if let Some(leader) = self.leader {
-                if leader != self.id {
-                    if self.bal_max_seen < self.lease_num {
-                        pf_debug!(
-                            "new ballot {} < active lease_num {}, granting not initiated",
-                            self.bal_max_seen,
-                            self.lease_num
-                        );
-                    } else {
-                        self.lease_num = self.bal_max_seen;
-                        self.lease_manager.add_notice(
-                            self.lease_num,
-                            LeaseNotice::NewGrants {
-                                peers: Bitmap::from((
-                                    self.population,
-                                    vec![leader],
-                                )),
-                            },
-                        )?;
-                    }
+        if let Some(leader) = self.leader {
+            if leader != self.id {
+                if self.bal_max_seen < self.lease_num {
+                    pf_debug!(
+                        "new ballot {} < active lease_num {}, granting not initiated",
+                        self.bal_max_seen,
+                        self.lease_num
+                    );
+                } else {
+                    self.lease_num = self.bal_max_seen; // use ballot as lease_num
+                    self.lease_manager.add_notice(
+                        self.lease_num,
+                        LeaseNotice::NewGrants {
+                            peers: Bitmap::from((
+                                self.population,
+                                vec![leader],
+                            )),
+                        },
+                    )?;
                 }
             }
         }
@@ -104,8 +102,8 @@ impl MultiPaxosReplica {
                     Some(peers),
                 )?;
             }
-            LeaseAction::ScheduleRefresh { peer } => {
-                self.handle_schedule_refresh(lease_num, peer)?;
+            LeaseAction::NextRefresh { peer } => {
+                self.handle_next_refresh(lease_num, peer)?;
             }
             LeaseAction::RevokeReplied { peer, held } => {
                 self.handle_revoke_replied(lease_num, peer, held)?;
@@ -115,9 +113,6 @@ impl MultiPaxosReplica {
             }
             LeaseAction::LeaseTimeout { peer } => {
                 self.handle_lease_timeout(lease_num, peer)?;
-            }
-            LeaseAction::SyncBarrier => {
-                return logged_err!("unexpected SyncBarrier lease action");
             }
         }
 

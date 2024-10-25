@@ -29,12 +29,15 @@ impl MultiPaxosReplica {
                 self.heartbeater.kickoff_hear_timer()?;
             }
 
-            // if leasing enabled, revoke old lease
+            // if leasing enabled, revoke old lease then initiate granting ot
+            // the new leader
             if !self.config.disable_leasing {
                 if let Some(old_leader) = self.leader {
+                    // revoke first; granting will be initiated at successful
+                    // revocation
                     if old_leader != self.id {
                         self.lease_manager.add_notice(
-                            ballot as LeaseNum, // use new ballot as lease_num
+                            self.lease_num,
                             LeaseNotice::DoRevoke {
                                 peers: Bitmap::from((
                                     self.population,
@@ -43,6 +46,14 @@ impl MultiPaxosReplica {
                             },
                         )?;
                     }
+                } else {
+                    // no old leader, directly initiate granting
+                    self.lease_manager.add_notice(
+                        self.lease_num,
+                        LeaseNotice::NewGrants {
+                            peers: Bitmap::from((self.population, vec![peer])),
+                        },
+                    )?;
                 }
             }
 
@@ -67,7 +78,7 @@ impl MultiPaxosReplica {
             if let Some(old_leader) = self.leader {
                 if old_leader != self.id {
                     self.lease_manager.add_notice(
-                        self.bal_max_seen as LeaseNum,
+                        self.lease_num,
                         LeaseNotice::DoRevoke {
                             peers: Bitmap::from((
                                 self.population,

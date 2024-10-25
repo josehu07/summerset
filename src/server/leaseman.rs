@@ -49,8 +49,9 @@ pub(crate) enum LeaseAction {
     /// To broadcast lease-related messages to peers.
     BcastLeaseMsgs { peers: Bitmap, msg: LeaseMsg },
 
-    /// To mark next heartbeat as a promise refresh.
-    ScheduleRefresh { peer: ReplicaId },
+    /// To mark next heartbeat to peer as a promise refresh, usually just used
+    /// by `get_action()` internally.
+    NextRefresh { peer: ReplicaId },
 
     /// To indicate a successful active RevokeReply.
     RevokeReplied { peer: ReplicaId, held: bool },
@@ -62,9 +63,6 @@ pub(crate) enum LeaseAction {
     /// In case the protocol logic needs it:
     /// Timed-out as a lease holder (promise not received/refreshed in time).
     LeaseTimeout { peer: ReplicaId },
-
-    /// Special: used only by `do_sync_notice()`.
-    SyncBarrier,
 }
 
 /// Wrapper type for lease-related notifications to trigger something to happen
@@ -75,7 +73,7 @@ pub(crate) enum LeaseNotice {
     /// possibly invalidating everything if the current lease number is older.
     NewGrants { peers: Bitmap },
 
-    /// Wnat to actively revoke leases made to peers.
+    /// Want to actively revoke leases made to peers.
     DoRevoke { peers: Bitmap },
 
     /// Received a lease-related message from a peer.
@@ -88,9 +86,6 @@ pub(crate) enum LeaseNotice {
     /// By internal timers ONLY:
     /// Timed-out as a lease holder (promise not received/refreshed in time).
     LeaseTimeout { peer: ReplicaId },
-
-    /// Special: used only by `do_sync_notice()`.
-    SyncBarrier,
 }
 
 /// The time-based lease manager module.
@@ -229,84 +224,38 @@ impl LeaseManager {
         &mut self,
     ) -> Result<(LeaseNum, LeaseAction), SummersetError> {
         match self.rx_action.recv().await {
-            Some((lease_num, action)) => Ok((lease_num, action)),
+            Some((lease_num, action)) => {
+                if let LeaseAction::NextRefresh { peer } = action {
+                    // bookkeep refresh_mark set internally
+                    self.refresh_mark.insert(peer);
+                }
+                Ok((lease_num, action))
+            }
             None => logged_err!("action channel has been closed"),
         }
     }
 
-    /// Try to get the next lease action to be treated by the protocol
-    /// implementation using `try_recv()`.
-    #[allow(dead_code)]
-    pub(crate) fn try_get_action(
+    /// Checks if the next heartbeat to a peer should be marked as a promise
+    /// refresh. If so, extends the promise_sent timer for a peer by T_lease,
+    /// unmarks refresh, and return true. Otherwise, return false.
+    ///
+    /// This synchronous version method is called right before every heartbeat
+    /// attempt by the protocol module.
+    pub(crate) fn attempt_refresh(
         &mut self,
-    ) -> Result<(LeaseNum, LeaseAction), SummersetError> {
-        match self.rx_action.try_recv() {
-            Ok((lease_num, action)) => Ok((lease_num, action)),
-            Err(e) => Err(SummersetError::msg(e)),
-        }
-    }
-
-    /// Submits a lease notice and waits for it to be processed blockingly.
-    /// Returns a vec of actions triggered by any previously submitted notices
-    /// followed by those triggered by this sync notice.
-    #[allow(dead_code)]
-    pub(crate) async fn do_sync_notice(
-        &mut self,
-        lease_num: LeaseNum,
-        notice: LeaseNotice,
-    ) -> Result<Vec<(LeaseNum, LeaseAction)>, SummersetError> {
-        self.add_notice(lease_num, notice)?;
-        self.add_notice(lease_num, LeaseNotice::SyncBarrier)?;
-        let mut actions = vec![];
-        loop {
-            let (this_num, action) = self.get_action().await?;
-            if matches!(action, LeaseAction::SyncBarrier) {
-                debug_assert_eq!(this_num, lease_num);
-                return Ok(actions);
-            }
-            actions.push((this_num, action));
-        }
-    }
-
-    /// Checks whether the next heartbeat to a peer should be a promise refresh.
-    pub(crate) fn should_refresh(
-        &self,
-        _lease_num: LeaseNum,
         peer: ReplicaId,
-    ) -> bool {
-        self.refresh_mark.contains(&peer)
-    }
-
-    /// Extends the promise_sent timer for a peer by T_lease and unmark refresh.
-    /// This synchronous version method is called right before every promise
-    /// refresh heartbeat by the protocol module.
-    pub(crate) fn before_refresh(
-        &mut self,
-        lease_num: LeaseNum,
-        peer: ReplicaId,
-    ) -> Result<(), SummersetError> {
-        let promises_sent = self.promises_sent.guard();
-        if let Some((timer, revoking)) = promises_sent.get(&peer) {
-            if !revoking {
-                timer.extend(self.expire_timeout)?;
-            } else {
-                return logged_err!(
-                    "refreshing a revoking lease @ {} -> {}",
-                    lease_num,
-                    peer
-                );
+    ) -> Result<bool, SummersetError> {
+        // bookkeep refresh_mark set internally
+        if self.refresh_mark.remove(&peer) {
+            let promises_sent = self.promises_sent.guard();
+            if let Some((timer, revoking)) = promises_sent.get(&peer) {
+                if !revoking {
+                    timer.extend(self.expire_timeout)?;
+                    return Ok(true);
+                }
             }
-        } else {
-            return logged_err!(
-                "refreshing not-found lease @ {} -> {}",
-                lease_num,
-                peer
-            );
         }
-
-        // unmark refresh to the peer
-        self.refresh_mark.remove(&peer);
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -597,7 +546,7 @@ impl LeaseManagerLogicTask {
 
             // let protocol module mark next heartbeat as a promise refresh
             self.tx_action
-                .send((lease_num, LeaseAction::ScheduleRefresh { peer }))?
+                .send((lease_num, LeaseAction::NextRefresh { peer }))?
         }
         Ok(())
     }
@@ -712,9 +661,6 @@ impl LeaseManagerLogicTask {
                 debug_assert_ne!(peer, self.me);
                 self.handle_lease_timeout(lease_num, peer)
             }
-            LeaseNotice::SyncBarrier => Ok(self
-                .tx_action
-                .send((lease_num, LeaseAction::SyncBarrier))?),
         }
     }
 
@@ -1236,11 +1182,11 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
+            (7, LeaseAction::NextRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
-        n0.leaseman.before_refresh(7, 1)?;
+        assert!(n0.leaseman.attempt_refresh(1)?);
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // wait for PromiseReply and schedule next refresh Promise again
         assert_eq!(
@@ -1256,11 +1202,11 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
+            (7, LeaseAction::NextRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
-        n0.leaseman.before_refresh(7, 1)?;
+        assert!(n0.leaseman.attempt_refresh(1)?);
         n0.send_msg(1, (7, LeaseMsg::Promise))?;
         // no PromiseReply received so consider granted for 2 * T_lease since
         // last promise
@@ -1418,7 +1364,7 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
+            (7, LeaseAction::NextRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
@@ -1602,7 +1548,7 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
+            (7, LeaseAction::NextRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
@@ -1634,7 +1580,7 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::GrantTimeout { peer: 1 })
         );
-        assert!(n0.leaseman.try_get_action().is_err());
+        assert!(!n0.leaseman.attempt_refresh(1)?);
         barrier0.wait().await;
         Ok(())
     }
@@ -1794,7 +1740,7 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
-            (7, LeaseAction::ScheduleRefresh { peer: 1 }),
+            (7, LeaseAction::NextRefresh { peer: 1 }),
         );
         time::sleep(Duration::from_millis(50)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
