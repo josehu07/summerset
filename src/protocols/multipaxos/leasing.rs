@@ -11,17 +11,28 @@ impl MultiPaxosReplica {
         &mut self,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
+        while self.lease_manager.grant_set().get(peer)? {
+            loop {
+                let (lease_num, lease_action) =
+                    self.lease_manager.get_action().await?;
+                if self.handle_lease_action(lease_num, lease_action).await? {
+                    break;
+                }
+            }
+            // grant_set might have shrinked, re-check
+        }
+
         Ok(())
     }
 
     /// Synthesized handler of lease-related actions from LeaseManager.
-    /// Returns a peer's ID if this action is a possible indicator of
-    /// a `grant_set()` change for the peer.
+    /// Returns true if this action is a possible indicator that the grant_set
+    /// shrinked; otherwise returns false.
     pub(super) async fn handle_lease_action(
         &mut self,
         lease_num: LeaseNum,
         lease_action: LeaseAction,
-    ) -> Result<Option<ReplicaId>, SummersetError> {
+    ) -> Result<bool, SummersetError> {
         match lease_action {
             LeaseAction::SendLeaseMsg { peer, msg } => {
                 self.transport_hub.send_lease_msg(lease_num, msg, peer)?;
@@ -33,14 +44,19 @@ impl MultiPaxosReplica {
                     Some(peers),
                 )?;
             }
-            LeaseAction::RevokeReplied { peer, .. }
-            | LeaseAction::GrantTimeout { peer } => {
-                // tell caller that it might want to double check `grant_set()`
-                return Ok(Some(peer));
+
+            LeaseAction::GrantRemoved { .. }
+            | LeaseAction::GrantTimeout { .. }
+            | LeaseAction::HigherNumber => {
+                // tell revoker that it might want to double check grant_set
+                return Ok(true);
             }
-            _ => {}
+
+            _ => {
+                // nothing special protocol-specific to do for other actions
+            }
         }
 
-        Ok(None)
+        Ok(false)
     }
 }

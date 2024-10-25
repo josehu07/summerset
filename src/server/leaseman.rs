@@ -55,8 +55,9 @@ pub(crate) enum LeaseAction {
     /// by `get_action()` internally.
     NextRefresh { peer: ReplicaId },
 
-    /// To indicate a successful active RevokeReply.
-    RevokeReplied { peer: ReplicaId, held: bool },
+    /// To indicate a peer being removed from promises_sent by a successful
+    /// active RevokeReply (or any other reason).
+    GrantRemoved { peer: ReplicaId, held: bool },
 
     /// In case the protocol logic needs it:
     /// Timed-out as a grantor (either in guard phase or in repeated promise).
@@ -65,6 +66,10 @@ pub(crate) enum LeaseAction {
     /// In case the protocol logic needs it:
     /// Timed-out as a lease holder (promise not received/refreshed in time).
     LeaseTimeout { peer: ReplicaId },
+
+    /// In case the protocol logic needs it:
+    /// Higher lease number received from a peer.
+    HigherNumber,
 }
 
 /// Wrapper type for lease-related notifications to trigger something to happen
@@ -579,6 +584,8 @@ impl LeaseManagerLogicTask {
             // promises_sent for efficiency
             self.guards_sent.remove(&peer);
             promises_sent.remove(peer);
+            self.tx_action
+                .send((lease_num, LeaseAction::GrantRemoved { peer, held }))?;
             return Ok(());
         }
 
@@ -586,7 +593,6 @@ impl LeaseManagerLogicTask {
         if timer.exploded() {
             // timer has already timed out, it's just that the timeout notice
             // has not been processed by the manager yet; abort
-            promises_sent.remove(peer);
             return Ok(());
         }
 
@@ -651,7 +657,7 @@ impl LeaseManagerLogicTask {
 
         // let protocol module know about successful revocation
         self.tx_action
-            .send((lease_num, LeaseAction::RevokeReplied { peer, held }))?;
+            .send((lease_num, LeaseAction::GrantRemoved { peer, held }))?;
         Ok(())
     }
 
@@ -770,6 +776,16 @@ impl LeaseManagerLogicTask {
                     }
                 }
                 self.active_num = lease_num;
+
+                if let Err(e) =
+                    self.tx_action.send((lease_num, LeaseAction::HigherNumber))
+                {
+                    pf_error!(
+                        "error sending HigherNumber action @ {}: {}",
+                        lease_num,
+                        e
+                    );
+                }
             }
 
             // pf_trace!("lease notice {:?}", notice);
@@ -909,6 +925,10 @@ mod tests {
             )?;
             assert_eq!(
                 n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
+            assert_eq!(
+                n1.leaseman.get_action().await?,
                 (
                     7,
                     LeaseAction::SendLeaseMsg {
@@ -942,6 +962,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -983,6 +1007,10 @@ mod tests {
                     msg: LeaseMsg::Guard,
                 },
             )?;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (
@@ -1037,6 +1065,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1108,6 +1140,10 @@ mod tests {
                     msg: LeaseMsg::Guard,
                 },
             )?;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (
@@ -1205,6 +1241,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1322,6 +1362,10 @@ mod tests {
             )?;
             assert_eq!(
                 n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
+            assert_eq!(
+                n1.leaseman.get_action().await?,
                 (
                     7,
                     LeaseAction::SendLeaseMsg {
@@ -1388,6 +1432,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1474,7 +1522,7 @@ mod tests {
             n0.leaseman.get_action().await?,
             (
                 7,
-                LeaseAction::RevokeReplied {
+                LeaseAction::GrantRemoved {
                     peer: 1,
                     held: true
                 }
@@ -1505,6 +1553,10 @@ mod tests {
                     msg: LeaseMsg::Guard,
                 },
             )?;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (
@@ -1572,6 +1624,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1680,6 +1736,10 @@ mod tests {
             )?;
             assert_eq!(
                 n1.leaseman.get_action().await?,
+                (7, LeaseAction::HigherNumber)
+            );
+            assert_eq!(
+                n1.leaseman.get_action().await?,
                 (
                     7,
                     LeaseAction::SendLeaseMsg {
@@ -1720,6 +1780,10 @@ mod tests {
                     msg: LeaseMsg::Guard,
                 },
             )?;
+            assert_eq!(
+                n1.leaseman.get_action().await?,
+                (8, LeaseAction::HigherNumber)
+            );
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (
@@ -1767,6 +1831,10 @@ mod tests {
                 peers: Some(peers.clone()),
             },
         )?;
+        assert_eq!(
+            n0.leaseman.get_action().await?,
+            (7, LeaseAction::HigherNumber)
+        );
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1826,6 +1894,10 @@ mod tests {
         )?;
         assert_eq!(
             n0.leaseman.get_action().await?,
+            (8, LeaseAction::HigherNumber)
+        );
+        assert_eq!(
+            n0.leaseman.get_action().await?,
             (
                 8,
                 LeaseAction::BcastLeaseMsgs {
@@ -1876,6 +1948,10 @@ mod tests {
             joins.push(tokio::spawn(async move {
                 n.leaseman
                     .add_notice(7, LeaseNotice::NewGrants { peers: None })?;
+                assert_eq!(
+                    n.leaseman.get_action().await?,
+                    (7, LeaseAction::HigherNumber)
+                );
                 assert_eq!(
                     n.leaseman.get_action().await?,
                     (
