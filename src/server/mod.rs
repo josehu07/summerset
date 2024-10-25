@@ -24,5 +24,5 @@ pub(crate) use statemach::StateMachine;
 pub(crate) use storage::{LogAction, LogActionId, LogResult, StorageHub};
 pub(crate) use transport::TransportHub;
 
-// TODO: turns Heartbeater into a more organized, channel-oriented module
-//       make Snapshotter a separate module and add full-fledged features
+// TODO: turn Heartbeater into a more organized, channel-oriented module like
+//       the LeaseManager, and make Snapshotter a separate full-fledged module

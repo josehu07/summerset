@@ -11,7 +11,7 @@ use crate::utils::{Bitmap, SummersetError};
 // CrosswordReplica leadership related logic
 impl CrosswordReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
-    pub(super) fn check_leader(
+    pub(super) async fn check_leader(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -43,7 +43,9 @@ impl CrosswordReplica {
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
-    pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_leader(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
         }
@@ -56,7 +58,7 @@ impl CrosswordReplica {
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         self.heartbeater.clear_reply_cnts();
-        self.bcast_heartbeats()?;
+        self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
         for slot in self.peer_exec_bar.values_mut() {
@@ -202,7 +204,9 @@ impl CrosswordReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
@@ -232,7 +236,8 @@ impl CrosswordReplica {
             self.commit_bar,
             self.exec_bar,
             self.snap_bar,
-        )?;
+        )
+        .await?;
         self.next_hb_id += 1;
 
         // if we need to do soft fallback to a config with smaller fast-path
@@ -248,7 +253,7 @@ impl CrosswordReplica {
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
-    pub(super) fn heard_heartbeat(
+    pub(super) async fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         hb_id: HeartbeatId,
@@ -271,7 +276,7 @@ impl CrosswordReplica {
 
             // if the peer has made a higher ballot number, consider it as
             // a new leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
 
             // reply back with a Heartbeat message
             if self.leader == Some(peer) {

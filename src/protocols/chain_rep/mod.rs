@@ -272,7 +272,7 @@ impl GenericReplica for ChainRepReplica {
 
         // setup transport hub module
         let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -343,7 +343,7 @@ impl GenericReplica for ChainRepReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -355,7 +355,7 @@ impl GenericReplica for ChainRepReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
@@ -370,7 +370,7 @@ impl GenericReplica for ChainRepReplica {
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
-                    if let Err(e) = self.handle_msg_recv(peer, msg) {
+                    if let Err(e) = self.handle_msg_recv(peer, msg).await {
                         pf_error!("error handling msg recv <- {}: {}", peer, e);
                     }
                 },
@@ -382,7 +382,7 @@ impl GenericReplica for ChainRepReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },

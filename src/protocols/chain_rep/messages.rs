@@ -109,7 +109,7 @@ impl ChainRepReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub(super) fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

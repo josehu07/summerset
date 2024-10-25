@@ -9,7 +9,7 @@ use crate::utils::{Bitmap, SummersetError};
 // SimplePushReplica peer-peer messages handling
 impl SimplePushReplica {
     /// Handler of push message from peer.
-    pub(super) fn handle_push_msg(
+    pub(super) async fn handle_push_msg(
         &mut self,
         peer: ReplicaId,
         src_inst_idx: usize,
@@ -43,7 +43,7 @@ impl SimplePushReplica {
     }
 
     /// Handler of push reply from peer.
-    pub(super) fn handle_push_reply(
+    pub(super) async fn handle_push_reply(
         &mut self,
         peer: ReplicaId,
         inst_idx: usize,

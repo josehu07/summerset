@@ -8,7 +8,7 @@ use crate::utils::SummersetError;
 // RaftReplica client requests entrance
 impl RaftReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {

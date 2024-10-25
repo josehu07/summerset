@@ -8,7 +8,7 @@ use crate::utils::{Bitmap, RSCodeword, SummersetError};
 // RSPaxosReplica client requests entrance
 impl RSPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {

@@ -9,7 +9,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::server::ReplicaId;
+use crate::server::{LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
     safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
     Bitmap, SummersetError,
@@ -31,8 +31,14 @@ use tokio::time::{self, Duration};
 /// Peer-peer message wrapper type that includes leave notification variants.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMessage<Msg> {
-    /// Normal protocol-specific request.
+    /// Normal protocol-specific message.
     Msg { msg: Msg },
+
+    /// Lease-related message.
+    LeaseMsg {
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+    },
 
     /// Server leave notification.
     Leave,
@@ -94,6 +100,8 @@ where
         me: ReplicaId,
         population: u8,
         p2p_addr: SocketAddr,
+        // if non-null, a shortcut channel to feed lease messages directly in:
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!("invalid population {}", population);
@@ -124,6 +132,7 @@ where
             peer_messenger_handles_write,
             rx_connect,
             tx_connack,
+            tx_lease,
         );
         let peer_acceptor_handle =
             tokio::spawn(async move { acceptor.run().await });
@@ -193,17 +202,15 @@ where
     }
 
     /// Sends a message to a specified peer by sending to the send channel.
-    pub(crate) fn send_msg(
+    fn send_msg_inner(
         &mut self,
-        msg: Msg,
+        msg: PeerMessage<Msg>,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
         match tx_sends_guard.get(&peer) {
             Some(tx_send) => {
-                tx_send
-                    .send(PeerMessage::Msg { msg })
-                    .map_err(SummersetError::msg)?;
+                tx_send.send(msg).map_err(SummersetError::msg)?;
             }
             None => {
                 // NOTE: commented out to avoid spurious error messages
@@ -219,9 +226,9 @@ where
 
     /// Broadcasts message to specified peers by sending to the send channel.
     /// If `target` is `None`, broadcast to all current peers.
-    pub(crate) fn bcast_msg(
+    fn bcast_msg_inner(
         &mut self,
-        msg: Msg,
+        msg: PeerMessage<Msg>,
         target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
@@ -239,11 +246,64 @@ where
             tx_sends_guard
                 .get(&peer)
                 .unwrap()
-                .send(PeerMessage::Msg { msg: msg.clone() })
+                .send(msg.clone())
                 .map_err(SummersetError::msg)?;
         }
 
         Ok(())
+    }
+
+    /// Sends a message to a specified peer by sending to the send channel.
+    pub(crate) fn send_msg(
+        &mut self,
+        msg: Msg,
+        peer: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        self.send_msg_inner(PeerMessage::Msg { msg }, peer)
+    }
+
+    /// Broadcasts message to specified peers by sending to the send channel.
+    /// If `target` is `None`, broadcast to all current peers.
+    pub(crate) fn bcast_msg(
+        &mut self,
+        msg: Msg,
+        target: Option<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        self.bcast_msg_inner(PeerMessage::Msg { msg }, target)
+    }
+
+    /// Sends a lease-related message to a specified peer by sending to the
+    /// send channel.
+    pub(crate) fn send_lease_msg(
+        &mut self,
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+        peer: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        self.send_msg_inner(
+            PeerMessage::LeaseMsg {
+                lease_num,
+                lease_msg,
+            },
+            peer,
+        )
+    }
+
+    /// Broadcasts lease-related message to specified peers by sending to the
+    /// send channel. If `target` is `None`, broadcast to all current peers.
+    pub(crate) fn bcast_lease_msg(
+        &mut self,
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+        target: Option<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        self.bcast_msg_inner(
+            PeerMessage::LeaseMsg {
+                lease_num,
+                lease_msg,
+            },
+            target,
+        )
     }
 
     /// Receives a message from some peer by receiving from the recv channel.
@@ -328,6 +388,8 @@ struct TransportHubAcceptorTask<Msg> {
     rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
     tx_connack: mpsc::UnboundedSender<ReplicaId>,
 
+    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
     rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
 }
@@ -343,6 +405,7 @@ where
         + 'static,
 {
     /// Creates the peer acceptor task.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         me: ReplicaId,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
@@ -357,6 +420,7 @@ where
         >,
         rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
         tx_connack: mpsc::UnboundedSender<ReplicaId>,
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
         // of peer messenger tasks
@@ -370,6 +434,7 @@ where
             peer_messenger_handles,
             rx_connect,
             tx_connack,
+            tx_lease,
             tx_exit,
             rx_exit,
         }
@@ -401,6 +466,7 @@ where
             stream,
             rx_send,
             self.tx_recv.clone(),
+            self.tx_lease.clone(),
             self.tx_exit.clone(),
         );
         let peer_messenger_handle =
@@ -439,6 +505,7 @@ where
             stream,
             rx_send,
             self.tx_recv.clone(),
+            self.tx_lease.clone(),
             self.tx_exit.clone(),
         );
         let peer_messenger_handle =
@@ -542,6 +609,8 @@ struct TransportHubMessengerTask<Msg> {
     write_buf_cursor: usize,
     retrying: bool,
 
+    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
 }
 
@@ -563,6 +632,7 @@ where
         conn: TcpStream,
         rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
@@ -583,6 +653,7 @@ where
             write_buf,
             write_buf_cursor,
             retrying,
+            tx_lease,
             tx_exit,
         }
     }
@@ -624,12 +695,11 @@ where
                     match msg {
                         Some(PeerMessage::Leave) => {
                             // I decide to leave, notify peers
-                            let peer_msg = PeerMessage::Leave;
                             if let Err(_e) = Self::write_msg(
                                 &mut self.write_buf,
                                 &mut self.write_buf_cursor,
                                 &self.conn_write,
-                                Some(&peer_msg),
+                                Some(&PeerMessage::Leave),
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
@@ -643,13 +713,12 @@ where
                             pf_error!("proactively sending LeaveReply msg");
                         },
 
-                        Some(PeerMessage::Msg { msg }) => {
-                            let peer_msg = PeerMessage::Msg { msg };
+                        Some(PeerMessage::LeaseMsg { .. }) | Some(PeerMessage::Msg { .. }) => {
                             match Self::write_msg(
                                 &mut self.write_buf,
                                 &mut self.write_buf_cursor,
                                 &self.conn_write,
-                                Some(&peer_msg),
+                                Some(msg.as_ref().unwrap()),
                             ) {
                                 Ok(true) => {
                                     // pf_trace!("sent -> {} msg {:?}", id, msg);
@@ -698,12 +767,11 @@ where
                     match msg {
                         Ok(PeerMessage::Leave) => {
                             // peer leaving, send dummy reply and break
-                            let peer_msg = PeerMessage::LeaveReply;
                             if let Err(_e) = Self::write_msg(
                                 &mut self.write_buf,
                                 &mut self.write_buf_cursor,
                                 &self.conn_write,
-                                Some(&peer_msg),
+                                Some(&PeerMessage::LeaveReply),
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
@@ -716,17 +784,29 @@ where
 
                         Ok(PeerMessage::LeaveReply) => {
                             // my leave notification is acked by peer, break
-                            let peer_msg = PeerMessage::LeaveReply;
-                            if let Err(e) = self.tx_recv.send((self.id, peer_msg)) {
+                            if let Err(e) = self.tx_recv.send((self.id, PeerMessage::LeaveReply)) {
                                 pf_error!("error sending to tx_recv for {}: {}", self.id, e);
                             }
                             break;
                         }
 
-                        Ok(PeerMessage::Msg { msg }) => {
+                        Ok(PeerMessage::LeaseMsg { lease_num, lease_msg }) => {
                             // pf_trace!("recv <- {} msg {:?}", id, msg);
-                            let peer_msg = PeerMessage::Msg { msg };
-                            if let Err(e) = self.tx_recv.send((self.id, peer_msg)) {
+                            if let Some(tx_lease) = self.tx_lease.as_ref() {
+                                if let Err(e) = tx_lease.send((
+                                    lease_num,
+                                    LeaseNotice::RecvLeaseMsg { peer: self.id, msg: lease_msg }
+                                )) {
+                                    pf_error!("error sending to tx_lease for {}: {}", self.id, e);
+                                }
+                            } else {
+                                pf_error!("received LeaseMsg <- {} but tx_lease is None", self.id);
+                            }
+                        },
+
+                        Ok(PeerMessage::Msg { .. }) => {
+                            // pf_trace!("recv <- {} msg {:?}", id, msg);
+                            if let Err(e) = self.tx_recv.send((self.id, msg.unwrap())) {
                                 pf_error!("error sending to tx_recv for {}: {}", self.id, e);
                             }
                         },
@@ -770,9 +850,14 @@ mod tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:30011".parse()?)
-                    .await?;
+            let (tx_lease, mut rx_lease) = mpsc::unbounded_channel();
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:30011".parse()?,
+                Some(tx_lease),
+            )
+            .await?;
             barrier1.wait().await;
             hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
             // recv a message from 0
@@ -787,6 +872,16 @@ mod tests {
             assert_eq!(msg, TestMsg("nice".into()));
             // send another message to 0
             hub.send_msg(TestMsg("job!".into()), 0)?;
+            // recv a lease message from 0
+            let (num, msg) = rx_lease.recv().await.unwrap();
+            assert_eq!(num, 7);
+            assert_eq!(
+                msg,
+                LeaseNotice::RecvLeaseMsg {
+                    peer: 0,
+                    msg: LeaseMsg::Guard
+                }
+            );
             // wait for termination message
             let (id, msg) = hub.recv_msg().await?;
             assert_eq!(id, 0);
@@ -795,9 +890,13 @@ mod tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30012".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:30012".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -813,7 +912,7 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30011".parse()?).await?;
@@ -828,13 +927,15 @@ mod tests {
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
         // send another message to 1 only
-        let mut map = Bitmap::new(3, false);
-        map.set(1, true)?;
-        hub.bcast_msg(TestMsg("nice".into()), Some(map))?;
+        hub.send_msg(TestMsg("nice".into()), 1)?;
         // recv another message from 1
         let (id, msg) = hub.recv_msg().await?;
         assert_eq!(id, 1);
         assert_eq!(msg, TestMsg("job!".into()));
+        // send a lease message to 1 only
+        let mut map = Bitmap::new(3, false);
+        map.set(1, true)?;
+        hub.bcast_lease_msg(7, LeaseMsg::Guard, Some(map))?;
         // send termination message to 1 and 2
         hub.bcast_msg(TestMsg("terminate".into()), None)?;
         Ok(())
@@ -846,9 +947,13 @@ mod tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1/2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:30111".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:30111".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -858,9 +963,13 @@ mod tests {
             // leave and come back as 2
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30112".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:30112".parse()?,
+                None,
+            )
+            .await?;
             hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
@@ -868,7 +977,7 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30111".parse()?).await?;

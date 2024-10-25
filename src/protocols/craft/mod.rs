@@ -467,9 +467,18 @@ impl GenericReplica for CRaftReplica {
             StorageHub::new_and_setup(id, Path::new(&config.backer_path))
                 .await?;
 
+        // setup heartbeat management module
+        let heartbeater = Heartbeater::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.hb_hear_timeout_min),
+            Duration::from_millis(config.hb_hear_timeout_max),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+
         // setup transport hub module
         let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -522,15 +531,6 @@ impl GenericReplica for CRaftReplica {
             config.max_batch_size,
         )
         .await?;
-
-        // setup heartbeat management module
-        let heartbeater = Heartbeater::new_and_setup(
-            id,
-            population,
-            Duration::from_millis(config.hb_hear_timeout_min),
-            Duration::from_millis(config.hb_hear_timeout_max),
-            Duration::from_millis(config.hb_send_interval_ms),
-        )?;
 
         let mut snapshot_interval = time::interval(Duration::from_secs(
             if config.snapshot_interval_s > 0 {
@@ -610,7 +610,7 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -622,7 +622,7 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
@@ -649,7 +649,7 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
@@ -663,7 +663,7 @@ impl GenericReplica for CRaftReplica {
                             }
                         }
                         HeartbeatEvent::SendTicked => {
-                            if let Err(e) = self.bcast_heartbeats() {
+                            if let Err(e) = self.bcast_heartbeats().await {
                                 pf_error!("error broadcasting heartbeats: {}", e);
                             }
                         }

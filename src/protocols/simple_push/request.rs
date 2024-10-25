@@ -9,7 +9,7 @@ use crate::utils::{Bitmap, SummersetError};
 // SimplePushReplica client requests entrance
 impl SimplePushReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         req_batch: Vec<(ClientId, ApiRequest)>,
     ) -> Result<(), SummersetError> {

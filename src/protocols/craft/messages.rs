@@ -88,7 +88,7 @@ impl CRaftReplica {
                 // also refresh heartbeat timer here since the "decrementing"
                 // procedure for a lagging follower might take long
                 self.leader = Some(leader);
-                self.heard_heartbeat(leader, term)?;
+                self.heard_heartbeat(leader, term).await?;
             }
             return Ok(());
         }
@@ -96,7 +96,7 @@ impl CRaftReplica {
         // update my knowledge of who's the current leader, and reset election
         // timeout timer
         self.leader = Some(leader);
-        self.heard_heartbeat(leader, term)?;
+        self.heard_heartbeat(leader, term).await?;
 
         // check if any existing entry conflicts with a new one in `entries`.
         // If so, truncate everything at and after that entry
@@ -120,8 +120,8 @@ impl CRaftReplica {
                     )
                     .await?;
                 for (old_id, old_result) in old_results {
-                    self.handle_log_result(old_id, old_result)?;
-                    self.heard_heartbeat(leader, term)?;
+                    self.handle_log_result(old_id, old_result).await?;
+                    self.heard_heartbeat(leader, term).await?;
                 }
                 if let LogResult::Truncate {
                     offset_ok: true,
@@ -276,7 +276,7 @@ impl CRaftReplica {
         if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
         }
-        self.heard_heartbeat(peer, term)?;
+        self.heard_heartbeat(peer, term).await?;
 
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
@@ -557,7 +557,7 @@ impl CRaftReplica {
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
-                self.heard_heartbeat(candidate, term)?;
+                self.heard_heartbeat(candidate, term).await?;
 
                 // update voted_for and make the field durable, synchronously
                 self.voted_for = Some(candidate);
@@ -576,8 +576,8 @@ impl CRaftReplica {
                     )
                     .await?;
                 for (old_id, old_result) in old_results {
-                    self.handle_log_result(old_id, old_result)?;
-                    self.heard_heartbeat(candidate, term)?;
+                    self.handle_log_result(old_id, old_result).await?;
+                    self.heard_heartbeat(candidate, term).await?;
                 }
                 if let LogResult::Write {
                     offset_ok: true, ..
@@ -616,14 +616,14 @@ impl CRaftReplica {
 
         // if a majority of servers have voted for me, become the leader
         if self.votes_granted.len() as u8 >= self.majority {
-            self.become_the_leader()?;
+            self.become_the_leader().await?;
         }
 
         Ok(())
     }
 
     /// Handler of Reconstruct message from leader.
-    fn handle_msg_reconstruct(
+    async fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
         slots: Vec<(usize, Term)>,
@@ -632,7 +632,7 @@ impl CRaftReplica {
         let mut slots_data = HashMap::new();
 
         // reconstruction messages also count as heartbeats
-        self.heard_heartbeat(peer, self.curr_term)?;
+        self.heard_heartbeat(peer, self.curr_term).await?;
 
         for (slot, term) in slots {
             if slot < self.start_slot
@@ -666,13 +666,13 @@ impl CRaftReplica {
     }
 
     /// Handler of Reconstruct reply from replica.
-    fn handle_msg_reconstruct_reply(
+    async fn handle_msg_reconstruct_reply(
         &mut self,
         peer: ReplicaId,
         slots_data: HashMap<usize, RSCodeword<ReqBatch>>,
     ) -> Result<(), SummersetError> {
         // reconstruction messages also count as heartbeats
-        self.heard_heartbeat(peer, self.curr_term)?;
+        self.heard_heartbeat(peer, self.curr_term).await?;
 
         // shadow_last_commit is the position of where last_commit should be
         // at if without sharding issues
@@ -798,10 +798,10 @@ impl CRaftReplica {
                     .await
             }
             PeerMsg::Reconstruct { slots } => {
-                self.handle_msg_reconstruct(peer, slots)
+                self.handle_msg_reconstruct(peer, slots).await
             }
             PeerMsg::ReconstructReply { slots_data } => {
-                self.handle_msg_reconstruct_reply(peer, slots_data)
+                self.handle_msg_reconstruct_reply(peer, slots_data).await
             }
         }
     }

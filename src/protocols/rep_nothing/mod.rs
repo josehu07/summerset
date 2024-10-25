@@ -207,7 +207,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -219,7 +219,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}", action_id, e);
                     }
                 },
@@ -231,7 +231,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },

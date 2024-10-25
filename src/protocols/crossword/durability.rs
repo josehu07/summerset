@@ -210,7 +210,7 @@ impl CrosswordReplica {
     }
 
     /// Synthesized handler of durable logging result chan recv.
-    pub(super) fn handle_log_result(
+    pub(super) async fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,

@@ -61,7 +61,7 @@ impl RaftReplica {
             .do_sync_action(0, LogAction::Read { offset: 0 })
             .await?;
         for (old_id, old_result) in old_results {
-            self.handle_log_result(old_id, old_result)?;
+            self.handle_log_result(old_id, old_result).await?;
         }
 
         // cut at the first entry's log_offset
@@ -143,7 +143,7 @@ impl RaftReplica {
         // collect and dump all Puts in executed entries
         if self.role == Role::Leader {
             // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats()?;
+            self.bcast_heartbeats().await?;
         }
         self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
@@ -181,7 +181,7 @@ impl RaftReplica {
         // discarding everything lower than start_slot in durable log
         if self.role == Role::Leader {
             // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats()?;
+            self.bcast_heartbeats().await?;
         }
         self.snapshot_discard_log().await?;
 

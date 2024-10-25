@@ -64,7 +64,7 @@ impl CrosswordReplica {
             .do_sync_action(0, LogAction::Read { offset: 0 })
             .await?;
         for (old_id, old_result) in old_results {
-            self.handle_log_result(old_id, old_result)?;
+            self.handle_log_result(old_id, old_result).await?;
         }
 
         // get offset to cut the WAL at
@@ -142,7 +142,7 @@ impl CrosswordReplica {
         // collect and dump all Puts in executed instances
         if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats()?;
+            self.bcast_heartbeats().await?;
         }
         self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
@@ -179,7 +179,7 @@ impl CrosswordReplica {
         // discarding everything older than start_slot in WAL log
         if self.is_leader() {
             // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats()?;
+            self.bcast_heartbeats().await?;
         }
         self.snapshot_discard_log().await?;
 

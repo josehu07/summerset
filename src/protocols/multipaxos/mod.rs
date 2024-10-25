@@ -113,7 +113,7 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
             lease_expire_ms: 2000, // need proper hb settings if leasing
-            disable_leasing: false,
+            disable_leasing: true,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -298,12 +298,6 @@ pub(crate) enum PeerMsg {
         /// For conservative snapshotting purpose.
         snap_bar: usize,
     },
-
-    /// Lease-related message.
-    LeaseMsg {
-        lease_num: LeaseNum,
-        lease_msg: LeaseMsg,
-    },
 }
 
 /// MultiPaxos server replica module.
@@ -352,9 +346,6 @@ pub(crate) struct MultiPaxosReplica {
 
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
-
-    /// Active lease number (monotonically non-decresing).
-    lease_num: u64,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -569,9 +560,32 @@ impl GenericReplica for MultiPaxosReplica {
             StorageHub::new_and_setup(id, Path::new(&config.backer_path))
                 .await?;
 
+        // setup heartbeat management module
+        let mut heartbeater = Heartbeater::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.hb_hear_timeout_min),
+            Duration::from_millis(config.hb_hear_timeout_max),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+        heartbeater.set_sending(true); // doing all-to-all heartbeating
+
+        // setup lease management module
+        let (lease_manager, tx_lease_msg) = LeaseManager::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.lease_expire_ms),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            Some(tx_lease_msg),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -611,23 +625,6 @@ impl GenericReplica for MultiPaxosReplica {
         )
         .await?;
 
-        // setup heartbeat management module
-        let heartbeater = Heartbeater::new_and_setup(
-            id,
-            population,
-            Duration::from_millis(config.hb_hear_timeout_min),
-            Duration::from_millis(config.hb_hear_timeout_max),
-            Duration::from_millis(config.hb_send_interval_ms),
-        )?;
-
-        // setup lease management module
-        let lease_manager = LeaseManager::new_and_setup(
-            id,
-            population,
-            Duration::from_millis(config.lease_expire_ms),
-            Duration::from_millis(config.hb_send_interval_ms),
-        )?;
-
         let mut snapshot_interval = time::interval(Duration::from_secs(
             if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
@@ -661,7 +658,6 @@ impl GenericReplica for MultiPaxosReplica {
             heartbeater,
             lease_manager,
             leader: None,
-            lease_num: 0,
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -711,7 +707,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -723,7 +719,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
@@ -738,7 +734,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let (peer, msg) = msg.unwrap();
-                    if let Err(e) = self.handle_msg_recv(peer, msg) {
+                    if let Err(e) = self.handle_msg_recv(peer, msg).await {
                         pf_error!("error handling msg recv <- {}: {}", peer, e);
                     }
                 },
@@ -750,7 +746,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
@@ -759,12 +755,12 @@ impl GenericReplica for MultiPaxosReplica {
                 hb_event = self.heartbeater.get_event(), if !paused => {
                     match hb_event {
                         HeartbeatEvent::HearTimeout => {
-                            if let Err(e) = self.become_a_leader() {
+                            if let Err(e) = self.become_a_leader().await {
                                 pf_error!("error becoming a leader: {}", e);
                             }
                         }
                         HeartbeatEvent::SendTicked => {
-                            if let Err(e) = self.bcast_heartbeats() {
+                            if let Err(e) = self.bcast_heartbeats().await {
                                 pf_error!("error broadcasting heartbeats: {}", e);
                             }
                         }
@@ -779,7 +775,7 @@ impl GenericReplica for MultiPaxosReplica {
                         continue;
                     }
                     let (lease_num, lease_action) = lease_action.unwrap();
-                    if let Err(e) = self.handle_lease_action(lease_num, lease_action) {
+                    if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
                         pf_error!("error handling lease action @ {}: {}", lease_num, e);
                     }
                 },

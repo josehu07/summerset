@@ -28,7 +28,7 @@ impl CRaftReplica {
 
             // refresh heartbeat hearing timer
             self.leader = Some(peer);
-            self.heard_heartbeat(peer, term)?;
+            self.heard_heartbeat(peer, term).await?;
 
             // also make the two critical fields durable, synchronously
             let (old_results, result) = self
@@ -46,8 +46,8 @@ impl CRaftReplica {
                 )
                 .await?;
             for (old_id, old_result) in old_results {
-                self.handle_log_result(old_id, old_result)?;
-                self.heard_heartbeat(peer, term)?;
+                self.handle_log_result(old_id, old_result).await?;
+                self.heard_heartbeat(peer, term).await?;
             }
             if let LogResult::Write {
                 offset_ok: true, ..
@@ -155,7 +155,7 @@ impl CRaftReplica {
         pf_info!("starting election with term {}...", self.curr_term);
 
         // reset election timeout timer
-        self.heard_heartbeat(self.id, self.curr_term)?;
+        self.heard_heartbeat(self.id, self.curr_term).await?;
 
         // send RequestVote messages to all other peers
         let last_slot = self.start_slot + self.log.len() - 1;
@@ -189,8 +189,8 @@ impl CRaftReplica {
             )
             .await?;
         for (old_id, old_result) in old_results {
-            self.handle_log_result(old_id, old_result)?;
-            self.heard_heartbeat(self.id, self.curr_term)?;
+            self.handle_log_result(old_id, old_result).await?;
+            self.heard_heartbeat(self.id, self.curr_term).await?;
         }
         if let LogResult::Write {
             offset_ok: true, ..
@@ -204,7 +204,9 @@ impl CRaftReplica {
     }
 
     /// Becomes the leader after enough votes granted for me.
-    pub(super) fn become_the_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_the_leader(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.heartbeater.set_sending(true);
@@ -213,7 +215,7 @@ impl CRaftReplica {
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         self.heartbeater.clear_reply_cnts();
-        self.bcast_heartbeats()?;
+        self.bcast_heartbeats().await?;
 
         // re-initialize next_slot and match_slot information
         for slot in self.next_slot.values_mut() {
@@ -239,7 +241,9 @@ impl CRaftReplica {
     }
 
     /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
-    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;
@@ -268,7 +272,7 @@ impl CRaftReplica {
         self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
-        self.heard_heartbeat(self.id, self.curr_term)?;
+        self.heard_heartbeat(self.id, self.curr_term).await?;
 
         // check if we need to fall back to full-copy replication
         if !self.full_copy_mode
@@ -283,7 +287,7 @@ impl CRaftReplica {
     }
 
     /// Heard a heartbeat from some other replica. Resets election timer.
-    pub(super) fn heard_heartbeat(
+    pub(super) async fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         _term: Term,

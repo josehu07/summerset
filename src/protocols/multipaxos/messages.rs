@@ -10,7 +10,7 @@ use crate::utils::SummersetError;
 // MultiPaxosReplica peer-peer messages handling
 impl MultiPaxosReplica {
     /// Handler of Prepare message from leader.
-    fn handle_msg_prepare(
+    async fn handle_msg_prepare(
         &mut self,
         peer: ReplicaId,
         trigger_slot: usize,
@@ -29,7 +29,7 @@ impl MultiPaxosReplica {
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
                 self.heartbeater.kickoff_hear_timer()?;
             }
@@ -265,7 +265,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Accept message from leader.
-    fn handle_msg_accept(
+    async fn handle_msg_accept(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -285,7 +285,7 @@ impl MultiPaxosReplica {
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
                 self.heartbeater.kickoff_hear_timer()?;
             }
@@ -414,7 +414,7 @@ impl MultiPaxosReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub(super) fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,
@@ -423,7 +423,7 @@ impl MultiPaxosReplica {
             PeerMsg::Prepare {
                 trigger_slot,
                 ballot,
-            } => self.handle_msg_prepare(peer, trigger_slot, ballot),
+            } => self.handle_msg_prepare(peer, trigger_slot, ballot).await,
             PeerMsg::PrepareReply {
                 slot,
                 trigger_slot,
@@ -439,7 +439,7 @@ impl MultiPaxosReplica {
                 voted,
             ),
             PeerMsg::Accept { slot, ballot, reqs } => {
-                self.handle_msg_accept(peer, slot, ballot, reqs)
+                self.handle_msg_accept(peer, slot, ballot, reqs).await
             }
             PeerMsg::AcceptReply {
                 slot,
@@ -451,12 +451,12 @@ impl MultiPaxosReplica {
                 commit_bar,
                 exec_bar,
                 snap_bar,
-            } => self
-                .heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar),
-            PeerMsg::LeaseMsg {
-                lease_num,
-                lease_msg,
-            } => self.handle_lease_msg(peer, lease_num, lease_msg),
+            } => {
+                self.heard_heartbeat(
+                    peer, ballot, commit_bar, exec_bar, snap_bar,
+                )
+                .await
+            }
         }
     }
 }

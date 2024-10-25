@@ -187,7 +187,7 @@ impl GenericReplica for SimplePushReplica {
 
         // setup transport hub module
         let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -256,7 +256,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -268,7 +268,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}", action_id, e);
                     }
                 },
@@ -284,12 +284,12 @@ impl GenericReplica for SimplePushReplica {
                     let (peer, msg) = msg.unwrap();
                     match msg {
                         PushMsg::Push { src_inst_idx, reqs } => {
-                            if let Err(e) = self.handle_push_msg(peer, src_inst_idx, reqs) {
+                            if let Err(e) = self.handle_push_msg(peer, src_inst_idx, reqs).await {
                                 pf_error!("error handling peer msg: {}", e);
                             }
                         },
                         PushMsg::PushReply { src_inst_idx, num_reqs } => {
-                            if let Err(e) = self.handle_push_reply(peer, src_inst_idx, num_reqs) {
+                            if let Err(e) = self.handle_push_reply(peer, src_inst_idx, num_reqs).await {
                                 pf_error!("error handling peer reply: {}", e);
                             }
                         },
@@ -304,7 +304,7 @@ impl GenericReplica for SimplePushReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },

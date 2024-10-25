@@ -63,7 +63,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of Prepare message from leader.
-    fn handle_msg_prepare(
+    async fn handle_msg_prepare(
         &mut self,
         peer: ReplicaId,
         trigger_slot: usize,
@@ -82,7 +82,7 @@ impl CrosswordReplica {
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
                 self.heartbeater.kickoff_hear_timer()?;
             }
@@ -399,7 +399,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of Accept message from leader.
-    fn handle_msg_accept(
+    async fn handle_msg_accept(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -421,7 +421,7 @@ impl CrosswordReplica {
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
                 self.heartbeater.kickoff_hear_timer()?;
             }
@@ -720,7 +720,7 @@ impl CrosswordReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub(super) fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,
@@ -729,7 +729,7 @@ impl CrosswordReplica {
             PeerMsg::Prepare {
                 trigger_slot,
                 ballot,
-            } => self.handle_msg_prepare(peer, trigger_slot, ballot),
+            } => self.handle_msg_prepare(peer, trigger_slot, ballot).await,
             PeerMsg::PrepareReply {
                 slot,
                 trigger_slot,
@@ -751,6 +751,7 @@ impl CrosswordReplica {
                 assignment,
             } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs_cw, assignment)
+                    .await
             }
             PeerMsg::AcceptReply {
                 slot,
@@ -772,9 +773,12 @@ impl CrosswordReplica {
                 commit_bar,
                 exec_bar,
                 snap_bar,
-            } => self.heard_heartbeat(
-                peer, hb_id, ballot, commit_bar, exec_bar, snap_bar,
-            ),
+            } => {
+                self.heard_heartbeat(
+                    peer, hb_id, ballot, commit_bar, exec_bar, snap_bar,
+                )
+                .await
+            }
         }
     }
 }

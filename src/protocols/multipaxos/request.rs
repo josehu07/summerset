@@ -2,13 +2,13 @@
 
 use super::*;
 
-use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::server::{ApiReply, ApiRequest, Command, LogAction};
 use crate::utils::{Bitmap, SummersetError};
 
 // MultiPaxosReplica client requests entrance
 impl MultiPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
@@ -45,20 +45,34 @@ impl MultiPaxosReplica {
             return Ok(());
         }
 
-        // if simulating read leases, extract all the reads and immediately
-        // reply to them with a dummy value
-        // NOTE: this is only for benchmarking purposes
-        if self.config.sim_read_lease {
+        // if I'm a majority-leased leader or if simulating read leases, extract
+        // all the reads and immediately reply to them
+        if (self.is_leader()
+            && self.bal_max_seen == self.bal_prepared
+            && self.bal_prepared > 0
+            && self.lease_manager.lease_cnt() + 1 >= self.quorum_cnt)
+           // NOTE: this is only for benchmarking purposes
+           || self.config.sim_read_lease
+        {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {
                     id: req_id,
-                    cmd: Command::Get { .. },
+                    cmd: Command::Get { key },
                 } = req
                 {
+                    // has to use the `do_sync_cmd()` API
+                    let (old_results, cmd_result) = self
+                        .state_machine
+                        .do_sync_cmd(*req_id, Command::Get { key: key.clone() })
+                        .await?;
+                    for (old_id, old_result) in old_results {
+                        self.handle_cmd_result(old_id, old_result).await?;
+                    }
+
                     self.external_api.send_reply(
                         ApiReply::Reply {
                             id: *req_id,
-                            result: Some(CommandResult::Get { value: None }),
+                            result: Some(cmd_result),
                             redirect: None,
                         },
                         *client,

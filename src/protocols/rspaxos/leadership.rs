@@ -9,7 +9,7 @@ use crate::utils::{Bitmap, SummersetError};
 // RSPaxosReplica leadership related logic
 impl RSPaxosReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
-    pub(super) fn check_leader(
+    pub(super) async fn check_leader(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -41,7 +41,9 @@ impl RSPaxosReplica {
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
-    pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_leader(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
         }
@@ -54,7 +56,7 @@ impl RSPaxosReplica {
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
         self.heartbeater.clear_reply_cnts();
-        self.bcast_heartbeats()?;
+        self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
         for slot in self.peer_exec_bar.values_mut() {
@@ -179,7 +181,9 @@ impl RSPaxosReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
@@ -201,7 +205,8 @@ impl RSPaxosReplica {
             self.commit_bar,
             self.exec_bar,
             self.snap_bar,
-        )?;
+        )
+        .await?;
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
@@ -210,7 +215,7 @@ impl RSPaxosReplica {
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
-    pub(super) fn heard_heartbeat(
+    pub(super) async fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -224,7 +229,7 @@ impl RSPaxosReplica {
 
             // if the peer has made a higher ballot number, consider it as
             // a new leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
 
             // reply back with a Heartbeat message
             if self.leader == Some(peer) {
