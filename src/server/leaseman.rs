@@ -802,22 +802,18 @@ impl LeaseManagerLogicTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::Arc;
     use tokio::sync::mpsc::error::TryRecvError;
     use tokio::sync::Barrier;
+    use tokio::task::JoinSet;
     use tokio::time;
 
     /// Mock server node (lease module caller) used for testing.
     struct TestNode {
-        #[allow(clippy::type_complexity)]
-        transport: HashMap<
-            ReplicaId,
-            (
-                mpsc::UnboundedSender<(LeaseNum, LeaseMsg)>,
-                mpsc::UnboundedReceiver<(LeaseNum, LeaseMsg)>,
-            ),
-        >,
         leaseman: LeaseManager,
+        transport: TestTransport,
+        _messengers: HashMap<ReplicaId, JoinHandle<()>>,
     }
 
     impl TestNode {
@@ -829,73 +825,123 @@ mod tests {
             assert!(population >= 2);
             let mut nodes = Vec::with_capacity(population as usize);
 
-            let mut channels = HashMap::with_capacity(
+            let mut conns = HashMap::with_capacity(
                 (population * (population - 1)) as usize,
             );
             for i in 0..(population - 1) {
                 for j in (i + 1)..population {
                     let (tx_i_j, rx_i_j) = mpsc::unbounded_channel();
                     let (tx_j_i, rx_j_i) = mpsc::unbounded_channel();
-                    channels.insert((i, j), (tx_i_j, rx_j_i));
-                    channels.insert((j, i), (tx_j_i, rx_i_j));
+                    conns.insert((i, j), (tx_i_j, rx_j_i));
+                    conns.insert((j, i), (tx_j_i, rx_i_j));
                 }
             }
 
             for n in 0..population {
-                let transport = (0..population)
-                    .filter_map(|p| {
-                        if p == n {
-                            None
-                        } else {
-                            Some((p, channels.remove(&(n, p)).unwrap()))
-                        }
-                    })
-                    .collect();
+                let (tx_recv, rx_recv) = mpsc::unbounded_channel();
+                let mut tx_sends = HashMap::new();
+                let mut messengers = HashMap::new();
+                for p in (0..population).filter(|&p| p != n) {
+                    let (tx_conn, mut rx_conn) = conns.remove(&(n, p)).unwrap();
+                    let (tx_send, mut rx_send) = mpsc::unbounded_channel();
+                    tx_sends.insert(p, tx_send);
+                    let tx_recv_clone = tx_recv.clone();
+                    messengers.insert(
+                        p,
+                        tokio::spawn(async move {loop { tokio::select! {
+                            msg = rx_send.recv() => {
+                                if msg.is_none() {
+                                    break;
+                                }
+                                let (lease_num, lease_msg) = msg.unwrap();
+                                tx_conn.send((lease_num, lease_msg)).unwrap();
+                            }
+                            msg = rx_conn.recv() => {
+                                if msg.is_none() {
+                                    break;
+                                }
+                                let (lease_num, lease_msg) = msg.unwrap();
+                                tx_recv_clone.send((p, lease_num, lease_msg)).unwrap();
+                            }
+                        }}}),
+                    );
+                }
+
                 let (leaseman, _) = LeaseManager::new_and_setup(
                     n,
                     population,
                     expire_timeout,
                     Duration::ZERO, // dummy; refreshes are hardcoded in tests
                 )?;
+
                 nodes.push(TestNode {
-                    transport,
                     leaseman,
+                    transport: TestTransport {
+                        id: n,
+                        tx_sends,
+                        rx_recv,
+                    },
+                    _messengers: messengers,
                 });
             }
 
             Ok(nodes)
         }
+    }
 
+    /// Mock server transport struct.
+    struct TestTransport {
+        id: ReplicaId,
+        tx_sends:
+            HashMap<ReplicaId, mpsc::UnboundedSender<(LeaseNum, LeaseMsg)>>,
+        rx_recv: mpsc::UnboundedReceiver<(ReplicaId, LeaseNum, LeaseMsg)>,
+    }
+
+    impl TestTransport {
         /// Sends a message to a peer node.
         fn send_msg(
             &mut self,
             peer: ReplicaId,
             msg: (LeaseNum, LeaseMsg),
         ) -> Result<(), SummersetError> {
-            let (tx_msg, _) = self.transport.get(&peer).unwrap();
-            tx_msg.send(msg).map_err(SummersetError::msg)
+            self.tx_sends
+                .get(&peer)
+                .unwrap()
+                .send(msg)
+                .map_err(SummersetError::msg)
         }
 
-        /// Receives a message from a peer node.
+        /// Broadcasts a messages to peers.
+        fn bcast_msg(
+            &mut self,
+            peers: Bitmap,
+            msg: (LeaseNum, LeaseMsg),
+        ) -> Result<(), SummersetError> {
+            for (peer, flag) in peers.iter() {
+                if peer != self.id && flag {
+                    self.send_msg(peer, msg.clone())?;
+                }
+            }
+            Ok(())
+        }
+
+        /// Receives a message from some peer node.
         async fn recv_msg(
             &mut self,
-            peer: ReplicaId,
-        ) -> Result<(LeaseNum, LeaseMsg), SummersetError> {
-            let (_, rx_msg) = self.transport.get_mut(&peer).unwrap();
-            rx_msg
+        ) -> Result<(ReplicaId, LeaseNum, LeaseMsg), SummersetError> {
+            self.rx_recv
                 .recv()
                 .await
                 .ok_or(SummersetError::msg("msg channel closed"))
         }
 
-        /// Tries to receive a message from a peer node, returning `None`
+        /// Tries to receive a message from some peer node, returning `None`
         /// immediately if no ready message in channel.
         fn try_recv_msg(
             &mut self,
-            peer: ReplicaId,
-        ) -> Result<Option<(LeaseNum, LeaseMsg)>, SummersetError> {
-            let (_, rx_msg) = self.transport.get_mut(&peer).unwrap();
-            match rx_msg.try_recv() {
+        ) -> Result<Option<(ReplicaId, LeaseNum, LeaseMsg)>, SummersetError>
+        {
+            match self.rx_recv.try_recv() {
                 Ok(msg) => Ok(Some(msg)),
                 Err(TryRecvError::Empty) => Ok(None),
                 Err(err) => Err(err.into()),
@@ -906,7 +952,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn guard_expired() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -915,7 +961,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -938,16 +984,16 @@ mod tests {
                 )
             );
             // deliberately not sending GuardReply
-            time::sleep(Duration::from_millis(20)).await;
-            assert_eq!(n1.try_recv_msg(0), Ok(None));
+            time::sleep(Duration::from_millis(60)).await;
+            assert_eq!(n1.transport.try_recv_msg(), Ok(None));
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             // still so after T_guard expires
-            time::sleep(Duration::from_millis(160)).await;
+            time::sleep(Duration::from_millis(660)).await;
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (7, LeaseAction::LeaseTimeout { peer: 0 })
             );
-            assert_eq!(n1.try_recv_msg(0), Ok(None));
+            assert_eq!(n1.transport.try_recv_msg(), Ok(None));
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             barrier1.wait().await;
             Ok::<(), SummersetError>(())
@@ -976,12 +1022,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         // no GuardReply received so no promise to make
-        time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
         Ok(())
@@ -990,7 +1036,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn promise_expired() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -999,7 +1045,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1022,8 +1068,11 @@ mod tests {
                 )
             );
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1042,11 +1091,11 @@ mod tests {
                 )
             );
             // deliberately not sending PromiseReply
-            time::sleep(Duration::from_millis(20)).await;
+            time::sleep(Duration::from_millis(60)).await;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // since no refreshes coming, after T_lease expires the held
             // promise should've expired
-            time::sleep(Duration::from_millis(160)).await;
+            time::sleep(Duration::from_millis(660)).await;
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (7, LeaseAction::LeaseTimeout { peer: 0 })
@@ -1079,9 +1128,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (7, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1099,22 +1151,22 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         // no PromiseReply received so has to wait for T_guard + T_lease
-        time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), peers);
         // still so after T_guard expires
-        time::sleep(Duration::from_millis(160)).await;
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        time::sleep(Duration::from_millis(660)).await;
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), peers);
         // no longer considered granted after T_guard + T_lease expires
-        time::sleep(Duration::from_millis(160)).await;
+        time::sleep(Duration::from_millis(660)).await;
         assert_eq!(
             n0.leaseman.get_action().await?,
             (7, LeaseAction::GrantTimeout { peer: 1 })
         );
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
         Ok(())
@@ -1123,7 +1175,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn promise_refresh() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -1132,7 +1184,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1156,8 +1208,11 @@ mod tests {
             );
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1176,9 +1231,13 @@ mod tests {
                 )
             );
             // send PromiseReply and wait for the next refresh Promise
-            n1.send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1197,9 +1256,13 @@ mod tests {
                 )
             );
             // send PromiseReply and wait for the next refresh Promise again
-            n1.send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1218,11 +1281,11 @@ mod tests {
                 )
             );
             // deliberately not sending PromiseReply
-            time::sleep(Duration::from_millis(20)).await;
+            time::sleep(Duration::from_millis(60)).await;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // since no refreshes coming, after T_lease expires the held
             // promise should've expired
-            time::sleep(Duration::from_millis(160)).await;
+            time::sleep(Duration::from_millis(660)).await;
             assert_eq!(
                 n1.leaseman.get_action().await?,
                 (7, LeaseAction::LeaseTimeout { peer: 0 })
@@ -1255,10 +1318,13 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (7, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1276,12 +1342,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // wait for PromiseReply and schedule next refresh Promise
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::PromiseReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::PromiseReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1294,14 +1360,14 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::NextRefresh { peer: 1 }),
         );
-        time::sleep(Duration::from_millis(50)).await;
+        time::sleep(Duration::from_millis(120)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
         assert_eq!(n0.leaseman.attempt_refresh(Some(&peers))?, peers);
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         // wait for PromiseReply and schedule next refresh Promise again
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::PromiseReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::PromiseReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1314,27 +1380,27 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::NextRefresh { peer: 1 }),
         );
-        time::sleep(Duration::from_millis(50)).await;
+        time::sleep(Duration::from_millis(120)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
         assert_eq!(n0.leaseman.attempt_refresh(Some(&peers))?, peers);
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         // no PromiseReply received so consider granted for 2 * T_lease since
         // last promise
-        time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), peers);
         // still so after T_lease expires
-        time::sleep(Duration::from_millis(160)).await;
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        time::sleep(Duration::from_millis(660)).await;
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), peers);
         // no longer considered granted after 2 * T_lease has expired after
         // last promise
-        time::sleep(Duration::from_millis(160)).await;
+        time::sleep(Duration::from_millis(660)).await;
         assert_eq!(
             n0.leaseman.get_action().await?,
             (7, LeaseAction::GrantTimeout { peer: 1 })
         );
-        assert_eq!(n0.try_recv_msg(1), Ok(None));
+        assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
         Ok(())
@@ -1343,7 +1409,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn revoke_replied() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -1352,7 +1418,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1375,8 +1441,11 @@ mod tests {
                 )
             );
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1395,10 +1464,14 @@ mod tests {
                 )
             );
             // send PromiseReply
-            n1.send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // grantor decided to revoke the lease
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Revoke));
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Revoke)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1417,7 +1490,8 @@ mod tests {
                 )
             );
             // send RevokeReply
-            n1.send_msg(0, (7, LeaseMsg::RevokeReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::RevokeReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             barrier1.wait().await;
             Ok::<(), SummersetError>(())
@@ -1446,9 +1520,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (7, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1466,12 +1543,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // wait for PromiseReply and schedule next refresh Promise
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::PromiseReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::PromiseReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1484,7 +1561,7 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::NextRefresh { peer: 1 }),
         );
-        time::sleep(Duration::from_millis(50)).await;
+        time::sleep(Duration::from_millis(120)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // I decide to revoke the granted lease
         n0.leaseman.add_notice(
@@ -1503,12 +1580,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Revoke))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Revoke))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // wait for RevokeReply
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::RevokeReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::RevokeReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1517,7 +1594,7 @@ mod tests {
                 msg: LeaseMsg::RevokeReply { held: true },
             },
         )?;
-        time::sleep(Duration::from_millis(20)).await;
+        time::sleep(Duration::from_millis(60)).await;
         assert_eq!(
             n0.leaseman.get_action().await?,
             (
@@ -1536,7 +1613,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn revoke_expired() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -1545,7 +1622,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1568,8 +1645,11 @@ mod tests {
                 )
             );
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1588,10 +1668,14 @@ mod tests {
                 )
             );
             // send PromiseReply
-            n1.send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // grantor decided to revoke the lease
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Revoke));
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Revoke)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1638,9 +1722,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (7, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1658,12 +1745,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // wait for PromiseReply and schedule next refresh Promise
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::PromiseReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::PromiseReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1676,7 +1763,7 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::NextRefresh { peer: 1 }),
         );
-        time::sleep(Duration::from_millis(50)).await;
+        time::sleep(Duration::from_millis(120)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // I decide to revoke the granted lease
         n0.leaseman.add_notice(
@@ -1695,11 +1782,11 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Revoke))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Revoke))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // not receiving RevokeReply, so has to wait for grant timeout
         assert_eq!(n0.leaseman.grant_set(), peers);
-        time::sleep(Duration::from_millis(160)).await;
+        time::sleep(Duration::from_millis(660)).await;
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         // also check that no further refreshes scheduled
         assert_eq!(
@@ -1717,7 +1804,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn regrant_higher() -> Result<(), SummersetError> {
         let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(150)).await?;
+            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
         let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
             .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
@@ -1726,7 +1813,7 @@ mod tests {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1749,8 +1836,11 @@ mod tests {
                 )
             );
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (7, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 7, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1769,10 +1859,11 @@ mod tests {
                 )
             );
             // send PromiseReply
-            n1.send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // grantor decided to move to a new lease number
-            assert_eq!(n1.recv_msg(0).await?, (8, LeaseMsg::Guard));
+            assert_eq!(n1.transport.recv_msg().await?, (0, 8, LeaseMsg::Guard));
             n1.leaseman.add_notice(
                 8,
                 LeaseNotice::RecvLeaseMsg {
@@ -1796,8 +1887,11 @@ mod tests {
             );
             assert_eq!(n1.leaseman.lease_cnt(), 0);
             // send GuardReply and wait for Promise
-            n1.send_msg(0, (8, LeaseMsg::GuardReply))?;
-            assert_eq!(n1.recv_msg(0).await?, (8, LeaseMsg::Promise));
+            n1.transport.send_msg(0, (8, LeaseMsg::GuardReply))?;
+            assert_eq!(
+                n1.transport.recv_msg().await?,
+                (0, 8, LeaseMsg::Promise)
+            );
             n1.leaseman.add_notice(
                 8,
                 LeaseNotice::RecvLeaseMsg {
@@ -1816,7 +1910,8 @@ mod tests {
                 )
             );
             // send PromiseReply
-            n1.send_msg(0, (8, LeaseMsg::PromiseReply { held: true }))?;
+            n1.transport
+                .send_msg(0, (8, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             barrier1.wait().await;
             Ok::<(), SummersetError>(())
@@ -1845,9 +1940,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Guard))?;
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (7, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1865,12 +1963,12 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (7, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (7, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // wait for PromiseReply and schedule next refresh Promise
         assert_eq!(
-            n0.recv_msg(1).await?,
-            (7, LeaseMsg::PromiseReply { held: true })
+            n0.transport.recv_msg().await?,
+            (1, 7, LeaseMsg::PromiseReply { held: true })
         );
         n0.leaseman.add_notice(
             7,
@@ -1883,7 +1981,7 @@ mod tests {
             n0.leaseman.get_action().await?,
             (7, LeaseAction::NextRefresh { peer: 1 }),
         );
-        time::sleep(Duration::from_millis(50)).await;
+        time::sleep(Duration::from_millis(120)).await;
         assert_eq!(n0.leaseman.grant_set(), peers);
         // I decide to move to a new lease number
         n0.leaseman.add_notice(
@@ -1907,9 +2005,12 @@ mod tests {
             )
         );
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
-        n0.send_msg(1, (8, LeaseMsg::Guard))?;
+        n0.transport.send_msg(1, (8, LeaseMsg::Guard))?;
         // wait for GuardReply and send Promise
-        assert_eq!(n0.recv_msg(1).await?, (8, LeaseMsg::GuardReply));
+        assert_eq!(
+            n0.transport.recv_msg().await?,
+            (1, 8, LeaseMsg::GuardReply)
+        );
         n0.leaseman.add_notice(
             8,
             LeaseNotice::RecvLeaseMsg {
@@ -1927,49 +2028,100 @@ mod tests {
                 }
             )
         );
-        n0.send_msg(1, (8, LeaseMsg::Promise))?;
+        n0.transport.send_msg(1, (8, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         barrier0.wait().await;
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn mutual_leases() -> Result<(), SummersetError> {
+        let population = 5;
         let nodes =
-            TestNode::new_cluster(3, Duration::from_millis(150)).await?;
-        let mut joins = Vec::with_capacity(3);
-        let barrier = Arc::new(Barrier::new(3));
+            TestNode::new_cluster(population, Duration::from_millis(1200))
+                .await?;
+        let mut joins = JoinSet::new();
+        let barrier = Arc::new(Barrier::new(population as usize));
+        let abitmap = Arc::new(AtomicU8::new(0));
         for (i, mut n) in nodes.into_iter().enumerate() {
             let barrier_ref = barrier.clone();
-            let peers = Bitmap::from((
-                3,
-                (0..3_u8).filter(|&p| p != i as u8).collect::<Vec<u8>>(),
-            ));
-            joins.push(tokio::spawn(async move {
+            let abitmap_ref = abitmap.clone();
+            let mask_i: u8 = 1 << i;
+            // spawn node i's mimic event loop
+            joins.spawn(async move {
                 n.leaseman
                     .add_notice(7, LeaseNotice::NewGrants { peers: None })?;
-                assert_eq!(
-                    n.leaseman.get_action().await?,
-                    (7, LeaseAction::HigherNumber)
-                );
-                assert_eq!(
-                    n.leaseman.get_action().await?,
-                    (
-                        7,
-                        LeaseAction::BcastLeaseMsgs {
-                            peers: peers.clone(),
-                            msg: LeaseMsg::Guard
+                loop {
+                    tokio::select! {
+                        lease_action = n.leaseman.get_action() => {
+                            let (lease_num, lease_action) = lease_action.unwrap();
+                            match lease_action {
+                                LeaseAction::SendLeaseMsg { peer, msg } => {
+                                    n.transport.send_msg(
+                                        peer,
+                                        (lease_num, msg)
+                                    ).unwrap();
+                                },
+                                LeaseAction::BcastLeaseMsgs { peers, msg } => {
+                                    n.transport.bcast_msg(
+                                        peers,
+                                        (lease_num, msg)
+                                    ).unwrap();
+                                },
+                                LeaseAction::HigherNumber => {
+                                    if lease_num > 7 {
+                                        return Err(SummersetError::msg(format!(
+                                            "unexpected lease number {} seen",
+                                            lease_num
+                                        )));
+                                    }
+                                },
+                                LeaseAction::GrantRemoved { .. }
+                                | LeaseAction::GrantTimeout { .. }
+                                | LeaseAction::LeaseTimeout { .. } => {
+                                    return Err(SummersetError::msg(format!(
+                                        "removal or timeout happened on {}",
+                                        i
+                                    )));
+                                },
+                                LeaseAction::NextRefresh { .. } => {},
+                            }
                         }
-                    )
-                );
-                // TODO: this test is obvious to hold but require some extra
-                // work on the testing side to implement; leaving blank for now
+                        msg = n.transport.recv_msg() => {
+                            let (peer, lease_num, msg) = msg.unwrap();
+                            if lease_num > 0 {
+                                n.leaseman.add_notice(
+                                    lease_num,
+                                    LeaseNotice::RecvLeaseMsg { peer, msg }
+                                ).unwrap();
+                            }
+                        }
+                    }
+                    // update global counter of how many nodes have all peers'
+                    // leases held, and broadcast a dummy message to allow other
+                    // peers a chance to check abitmap
+                    if n.leaseman.lease_cnt() + 1 == population {
+                        let old = abitmap_ref.fetch_or(mask_i, Ordering::AcqRel);
+                        if old & mask_i == 0 {
+                            n.transport.bcast_msg(
+                                Bitmap::new(population, true),
+                                (0, LeaseMsg::Guard)
+                            ).unwrap();
+                        }
+                    }
+                    // all node should have held leases from all peers at some
+                    // point before any timeout happens
+                    let abitmap = abitmap_ref.load(Ordering::Acquire);
+                    if (abitmap.count_ones() as u8) == population {
+                        break;
+                    }
+                };
                 barrier_ref.wait().await;
                 Ok::<(), SummersetError>(())
-            }));
+            });
         }
-        for j in joins {
-            j.await??;
+        while let Some(join_res) = joins.join_next().await {
+            join_res??;
         }
         Ok(())
     }

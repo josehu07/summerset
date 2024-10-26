@@ -220,7 +220,6 @@ where
                 if let Ok(false) = self.deadline_rx.has_changed() {
                     self.exploded.store(true, Ordering::Release);
                     if let Some(ref explode_fn) = self.explode_fn {
-                        println!("XXX");
                         explode_fn();
                     }
                     if let Some(notify) = self.notify.as_ref() {
@@ -246,34 +245,34 @@ mod tests {
         let timer_ref = timer.clone();
         let start = Instant::now();
         // once
-        timer_ref.kickoff(Duration::from_millis(100))?;
+        timer_ref.kickoff(Duration::from_millis(300))?;
         assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(100));
+                assert!(finish.duration_since(start) >= Duration::from_millis(300));
                 assert!(timer.exploded());
             }
         }
         // twice
-        timer_ref.kickoff(Duration::from_millis(100))?;
+        timer_ref.kickoff(Duration::from_millis(300))?;
         assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(200));
+                assert!(finish.duration_since(start) >= Duration::from_millis(600));
                 assert!(timer.exploded());
             }
         }
         // extend
-        timer_ref.kickoff(Duration::from_millis(120))?;
+        timer_ref.kickoff(Duration::from_millis(500))?;
         assert!(!timer.exploded());
-        time::sleep(Duration::from_millis(40)).await;
-        timer_ref.extend(Duration::from_millis(60))?;
+        time::sleep(Duration::from_millis(200)).await;
+        timer_ref.extend(Duration::from_millis(500))?;
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(380));
+                assert!(finish.duration_since(start) >= Duration::from_millis(1300));
                 assert!(timer.exploded());
             }
         }
@@ -287,16 +286,17 @@ mod tests {
         let start = Instant::now();
         tokio::spawn(async move {
             // setter-side
-            timer_ref.kickoff(Duration::from_millis(100))?;
-            time::sleep(Duration::from_millis(50)).await;
-            timer_ref.kickoff(Duration::from_millis(200))?;
+            timer_ref.kickoff(Duration::from_millis(400))?;
+            time::sleep(Duration::from_millis(100)).await;
+            timer_ref.kickoff(Duration::from_millis(400))?;
             Ok::<(), SummersetError>(())
         });
         // looper-side
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(250));
+                assert!(finish.duration_since(start) >= Duration::from_millis(500));
+                assert!(finish.duration_since(start) < Duration::from_millis(800));
             }
         }
         Ok(())
@@ -307,15 +307,15 @@ mod tests {
         let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
-        timer_ref.kickoff(Duration::from_millis(50))?;
+        timer_ref.kickoff(Duration::from_millis(300))?;
         time::sleep(Duration::from_millis(100)).await;
         timer_ref.cancel()?;
         assert!(!timer.exploded());
-        timer_ref.kickoff(Duration::from_millis(200))?;
+        timer_ref.kickoff(Duration::from_millis(500))?;
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(300));
+                assert!(finish.duration_since(start) >= Duration::from_millis(600));
                 assert!(timer.exploded());
             }
         }
@@ -335,23 +335,23 @@ mod tests {
         let timer_ref = timer.clone();
         // once
         let start = Instant::now();
-        timer_ref.kickoff(Duration::from_millis(100))?;
+        timer_ref.kickoff(Duration::from_millis(300))?;
         assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(100));
+                assert!(finish.duration_since(start) >= Duration::from_millis(300));
                 assert_eq!(rx.recv().await, Some(7));
                 assert!(timer.exploded());
             }
         }
         // twice
-        timer_ref.kickoff(Duration::from_millis(100))?;
+        timer_ref.kickoff(Duration::from_millis(300))?;
         assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(200));
+                assert!(finish.duration_since(start) >= Duration::from_millis(600));
                 assert_eq!(rx.recv().await, Some(7));
                 assert!(timer.exploded());
             }
@@ -365,17 +365,17 @@ mod tests {
         let timer_ref = timer.clone();
         let start = Instant::now();
         // set long
-        timer_ref.kickoff(Duration::from_millis(200))?;
+        timer_ref.kickoff(Duration::from_millis(600))?;
         assert!(!timer.exploded());
-        time::sleep(Duration::from_millis(60)).await;
+        time::sleep(Duration::from_millis(100)).await;
         // set short
-        timer_ref.kickoff(Duration::from_millis(60))?;
+        timer_ref.kickoff(Duration::from_millis(200))?;
         assert!(!timer.exploded());
         tokio::select! {
             () = timer.timeout() => {
                 let finish = Instant::now();
-                assert!(finish.duration_since(start) >= Duration::from_millis(120));
-                assert!(finish.duration_since(start) < Duration::from_millis(200));
+                assert!(finish.duration_since(start) >= Duration::from_millis(300));
+                assert!(finish.duration_since(start) < Duration::from_millis(600));
                 assert!(timer.exploded());
             }
         }

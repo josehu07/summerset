@@ -199,3 +199,5 @@ impl Heartbeater {
         }
     }
 }
+
+// TODO: add Heartbeater module unit tests after fleshing it up
