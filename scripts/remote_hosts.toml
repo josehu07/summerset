@@ -4,11 +4,11 @@ repo_name = "summerset"
 
 # (SET PROPERLY) for each group, its DNS domain names
 [reg]
-host0 = "c220g5-110405.wisc.cloudlab.us"
-host1 = "c220g5-110408.wisc.cloudlab.us"
-host2 = "c220g5-110418.wisc.cloudlab.us"
-host3 = "c220g5-110430.wisc.cloudlab.us"
-host4 = "c220g5-110427.wisc.cloudlab.us"
+host0 = "domain.cloudlab.us"
+host1 = "domain.cloudlab.us"
+host2 = "domain.cloudlab.us"
+host3 = "domain.cloudlab.us"
+host4 = "domain.cloudlab.us"
 # host5 = "c220g5-111224.wisc.cloudlab.us"
 # host6 = "c220g5-111203.wisc.cloudlab.us"
 # host7 = "c220g5-111208.wisc.cloudlab.us"
