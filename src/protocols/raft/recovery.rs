@@ -129,7 +129,7 @@ impl RaftReplica {
             _ => return logged_err!("unexpected log result type"),
         }
 
-        // do an extra Truncate to remove paritial entry at the end if any
+        // do an extra Truncate to remove partial entry at the end if any
         debug_assert!(self.log_offset >= self.log_meta_end);
         if let LogResult::Truncate {
             offset_ok: true, ..

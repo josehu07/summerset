@@ -1,4 +1,4 @@
-//! Configuraiton parameters struct parsing helper.
+//! Configuration parameters struct parsing helper.
 
 /// Composes a configuration struct from its default values, then overwrites
 /// given fields by parsing from given TOML string if it's not `None`. Returns

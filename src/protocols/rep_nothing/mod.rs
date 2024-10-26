@@ -157,7 +157,7 @@ impl GenericReplica for RepNothingReplica {
 
         // TransportHub is not needed in RepNothing
 
-        // tell the manager tha I have joined
+        // tell the manager than I have joined
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
             protocol: SmrProtocol::RepNothing,

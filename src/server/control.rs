@@ -150,7 +150,7 @@ impl ControlHubMessengerTask {
     /// Reads a manager control message from given TcpStream.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -240,14 +240,14 @@ impl ControlHubMessengerTask {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading ctrl: {}", e);
-                            break; // probably the manager exitted ungracefully
+                            break; // probably the manager exited ungracefully
                         }
                     }
                 }
             }
         }
 
-        pf_debug!("control_messenger task exitted");
+        pf_debug!("control_messenger task exited");
     }
 }
 

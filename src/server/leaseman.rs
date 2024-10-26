@@ -809,7 +809,7 @@ impl LeaseManagerLogicTask {
             }
         }
 
-        pf_debug!("lease_manager task exitted");
+        pf_debug!("lease_manager task exited");
     }
 }
 

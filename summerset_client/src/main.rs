@@ -240,10 +240,10 @@ fn main() -> ExitCode {
     logger_init();
 
     if let Err(ref e) = client_main() {
-        pf_error!("client_main exitted: {}", e);
+        pf_error!("client_main exited: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("client_main exitted successfully");
+        pf_warn!("client_main exited successfully");
         ExitCode::SUCCESS
     }
 }

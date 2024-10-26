@@ -16,7 +16,7 @@ use tokio::time::{self, Duration, Instant};
 
 /// Timer utility for signalling after a given timeout.
 ///
-/// Supports reseting with a different duration for implementing incremental
+/// Supports resetting with a different duration for implementing incremental
 /// backoff, etc. Must be used within the context of a tokio runtime.
 #[derive(Debug)]
 pub struct Timer {

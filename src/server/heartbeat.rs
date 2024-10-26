@@ -22,7 +22,7 @@ pub(crate) enum HeartbeatEvent {
 /// The heartbeats management module.
 ///
 /// TODO: make this module channel-oriented like other modules and manage more
-///       common things inherently, avoid poluting protocol modules
+///       common things inherently, avoid polluting protocol modules
 pub(crate) struct Heartbeater {
     /// My replica ID.
     _me: ReplicaId,

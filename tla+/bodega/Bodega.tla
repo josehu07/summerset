@@ -228,7 +228,7 @@ LeaseGrant(f, cfg) == [from |-> f, config |-> cfg]
                         \* a "cheated" model of leasing: if a LeaseGrant
                         \* message is removed, it means that promise has
                         \* expired and the grantor did not refresh, probably
-                        \* making way for switching to a differnt config
+                        \* making way for switching to a different config
 
 ----------
 

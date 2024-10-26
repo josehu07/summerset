@@ -21,7 +21,7 @@ impl ChainRepReplica {
             reqs.len()
         );
 
-        // ignore if Propagate message not from my precessor
+        // ignore if Propagate message not from my predecessor
         if self.is_head() || self.predecessor().unwrap() != peer {
             return Ok(());
         }

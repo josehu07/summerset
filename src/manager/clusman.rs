@@ -473,7 +473,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client TakeSnapshot rquest.
+    /// Handler of client TakeSnapshot request.
     async fn handle_client_take_snapshot(
         &mut self,
         client: ClientId,

@@ -149,10 +149,10 @@ fn main() -> ExitCode {
     logger_init();
 
     if let Err(ref e) = manager_main() {
-        pf_error!("manager_main exitted: {}", e);
+        pf_error!("manager_main exited: {}", e);
         ExitCode::FAILURE
     } else {
-        // pf_warn!("manager_main exitted successfully");
+        // pf_warn!("manager_main exited successfully");
         ExitCode::SUCCESS
     }
 }

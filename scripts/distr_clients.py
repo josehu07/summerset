@@ -398,7 +398,7 @@ if __name__ == "__main__":
                 rcs.append(client_proc.returncode)
     except subprocess.TimeoutExpired:
         if args.expect_halt:  # mainly for failover experiments
-            print("WARN: getting expected halt, exitting...")
+            print("WARN: getting expected halt, exiting...")
             sys.exit(0)
         raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 

@@ -2,7 +2,7 @@
 (* Crossword protocol in state machine replication (SMR) style with write/read    *)
 (* commands on a single key. Payload of each write is allowed to be erasure-coded *)
 (* in a (N, M) scheme and follow balanced Round-Robin assignment policies.        *)
-(* Careful adjustments to the accpetance condition are made to retaining the same *)
+(* Careful adjustments to the acceptance condition are made to retaining the same *)
 (* fault-tolerance level as classic MultiPaxos.                                   *)
 (*                                                                                *)
 (* See multipaxos_smr_style/MultiPaxos.tla for detailed description of base spec. *)

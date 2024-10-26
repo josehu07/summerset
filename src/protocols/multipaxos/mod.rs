@@ -448,7 +448,7 @@ impl MultiPaxosReplica {
     }
 
     /// Compose LogActionId from slot index & entry type.
-    /// Uses the `Status` enum type to represent differnet entry types.
+    /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {

@@ -334,7 +334,7 @@ pub(crate) struct RaftReplica {
 // RaftReplica common helpers
 impl RaftReplica {
     /// Compose LogActionId from (slot, end_slot) pair & entry type.
-    /// Uses the `Role` enum type to represent differnet entry types.
+    /// Uses the `Role` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(
         slot: usize,

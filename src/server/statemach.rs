@@ -188,7 +188,7 @@ impl StateMachineExecutorTask {
         }
 
         // channel gets closed and no messages remain
-        pf_debug!("executor task exitted");
+        pf_debug!("executor task exited");
     }
 }
 

@@ -19,7 +19,7 @@ impl MultiPaxosReplica {
                     break;
                 }
             }
-            // grant_set might have shrinked, re-check
+            // grant_set might have shrunk, re-check
         }
 
         Ok(())
@@ -27,7 +27,7 @@ impl MultiPaxosReplica {
 
     /// Synthesized handler of lease-related actions from LeaseManager.
     /// Returns true if this action is a possible indicator that the grant_set
-    /// shrinked; otherwise returns false.
+    /// shrunk; otherwise returns false.
     pub(super) async fn handle_lease_action(
         &mut self,
         lease_num: LeaseNum,

@@ -325,7 +325,7 @@ impl ServerReignerAcceptorTask {
             }
         }
 
-        // pf_debug!("server_acceptor task exitted");
+        // pf_debug!("server_acceptor task exited");
     }
 }
 
@@ -383,7 +383,7 @@ impl ServerReignerControllerTask {
     /// Reads a server control message from given TcpStream.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -525,7 +525,7 @@ impl ServerReignerControllerTask {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading ctrl <- {}: {}", id, e);
-                            break; // probably the server exitted ungracefully
+                            break; // probably the server exited ungracefully
                         }
                     }
                 }
@@ -536,7 +536,7 @@ impl ServerReignerControllerTask {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
         pf_debug!(
-            "server_controller task for {} '{}' exitted",
+            "server_controller task for {} '{}' exited",
             self.id,
             self.addr
         );

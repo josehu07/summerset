@@ -587,13 +587,13 @@ where
             }
         }
 
-        // pf_debug!("peer_acceptor task exitted");
+        // pf_debug!("peer_acceptor task exited");
     }
 }
 
 /// TransportHub per-peer messenger task.
 struct TransportHubMessengerTask<Msg> {
-    /// Corresonding peer's ID.
+    /// Corresponding peer's ID.
     id: ReplicaId,
     /// Corresponding peer's address.
     addr: SocketAddr,
@@ -672,7 +672,7 @@ where
     /// Reads a message from given TcpStream.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_msg(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -815,7 +815,7 @@ where
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error receiving msg <- {}: {}", id, e);
-                            break; // probably the peer exitted ungracefully
+                            break; // probably the peer exited ungracefully
                         }
                     }
                 }
@@ -826,7 +826,7 @@ where
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
         pf_debug!(
-            "peer_messenger task for {} '{}' exitted",
+            "peer_messenger task for {} '{}' exited",
             self.id,
             self.addr
         );

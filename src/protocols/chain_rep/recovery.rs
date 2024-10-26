@@ -83,7 +83,7 @@ impl ChainRepReplica {
             }
         }
 
-        // do an extra Truncate to remove paritial entry at the end if any
+        // do an extra Truncate to remove partial entry at the end if any
         if let LogResult::Truncate {
             offset_ok: true, ..
         } = self

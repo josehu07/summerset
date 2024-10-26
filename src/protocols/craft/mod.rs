@@ -360,7 +360,7 @@ pub(crate) struct CRaftReplica {
 // CRaftReplica common helpers
 impl CRaftReplica {
     /// Compose LogActionId from (slot, end_slot) pair & entry type.
-    /// Uses the `Role` enum type to represent differnet entry types.
+    /// Uses the `Role` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(
         slot: usize,

@@ -501,7 +501,7 @@ pub(crate) struct CrosswordReplica {
     /// perf monitoring.
     pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize)>>,
 
-    /// Map from peer ID -> ;ist of pending heartbeats (timestamp, id) for
+    /// Map from peer ID -> list of pending heartbeats (timestamp, id) for
     /// perf monitoring.
     pending_heartbeats: HashMap<ReplicaId, VecDeque<(u128, HeartbeatId)>>,
 
@@ -590,7 +590,7 @@ impl CrosswordReplica {
     }
 
     /// Compose LogActionId from slot index & entry type.
-    /// Uses the `Status` enum type to represent differnet entry types.
+    /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
         let type_num = match entry_type {

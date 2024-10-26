@@ -1,6 +1,6 @@
 //! Replication protocol: Chain Replication.
 //!
-//! A partical implementation without proper fault-tolerance. References:
+//! A partial implementation without proper fault-tolerance. References:
 //!   - <https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf>
 //!   - <https://www.usenix.org/conference/atc22/presentation/fouto>
 

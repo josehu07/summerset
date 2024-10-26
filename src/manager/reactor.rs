@@ -331,7 +331,7 @@ impl ClientReactorAcceptorTask {
             }
         }
 
-        // pf_debug!("client_acceptor task exitted");
+        // pf_debug!("client_acceptor task exited");
     }
 }
 
@@ -389,7 +389,7 @@ impl ClientReactorResponderTask {
     /// Reads a client control request from given TcpStream.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_req(
-        // first 8 btyes being the request length, and the rest bytes being the
+        // first 8 bytes being the request length, and the rest bytes being the
         // request itself
         req_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -501,7 +501,7 @@ impl ClientReactorResponderTask {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading req <- {}: {}", id, e);
-                            break; // probably the client exitted without `leave()`
+                            break; // probably the client exited without `leave()`
                         }
                     }
                 }
@@ -512,7 +512,7 @@ impl ClientReactorResponderTask {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
         pf_debug!(
-            "client_responder task for {} '{}' exitted",
+            "client_responder task for {} '{}' exited",
             self.id,
             self.addr
         );

@@ -216,7 +216,7 @@ where
         let metadata = backer_file.metadata().await;
         if let Err(e) = metadata {
             return logged_err!(
-                "error reading backer file metadata: {}, exitting",
+                "error reading backer file metadata: {}, exiting",
                 e
             );
         }
@@ -492,7 +492,7 @@ where
         }
 
         // channel gets closed and no messages remain
-        pf_debug!("logger task exitted");
+        pf_debug!("logger task exited");
     }
 }
 
