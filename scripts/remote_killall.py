@@ -11,10 +11,6 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False, etcd=False):
     cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
-    if chain:
-    if cockroach:
-    if zookeeper:
-    if etcd:
     return cmds
 
 
