@@ -183,6 +183,7 @@ Note that these scripts use `sudo` and assume specific ranges of available ports
 - [ ] long-term planned improvements
   - [ ] use a sophisticated storage backend
   - [ ] efficient state-transfer snapshotting
+  - [ ] apply leasing whenever appropriate
   - [ ] more robust TCP msg infrastructure
   - [ ] membership discovery & view change
   - [ ] multi-versioning & stale reads
