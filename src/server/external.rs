@@ -550,11 +550,7 @@ impl ExternalApiServantTask {
         if let Err(e) = self.tx_exit.send(self.id) {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
-        pf_debug!(
-            "client_servant task for {} '{}' exited",
-            self.id,
-            self.addr
-        );
+        pf_debug!("client_servant task for {} '{}' exited", self.id, self.addr);
     }
 }
 
