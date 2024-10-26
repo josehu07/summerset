@@ -387,7 +387,7 @@ impl LeaseManagerLogicTask {
         }
 
         // broadcast Guard messages to these peers
-        pf_info!("lease bcast Guard @ {} -> {:?}", lease_num, bcast_peers);
+        pf_debug!("lease bcast Guard @ {} -> {:?}", lease_num, bcast_peers);
         self.tx_action.send((
             lease_num,
             LeaseAction::BcastLeaseMsgs {
@@ -418,7 +418,7 @@ impl LeaseManagerLogicTask {
         }
 
         // broadcast Revoke messages to these peers
-        pf_info!("leases bcast Revoke @ {} -> {:?}", lease_num, bcast_peers);
+        pf_debug!("leases bcast Revoke @ {} -> {:?}", lease_num, bcast_peers);
         self.tx_action.send((
             lease_num,
             LeaseAction::BcastLeaseMsgs {
@@ -511,14 +511,16 @@ impl LeaseManagerLogicTask {
         lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        pf_trace!("lease recv Promise @ {} <- {}", lease_num, peer);
+        // pf_trace!("lease recv Promise @ {} <- {}", lease_num, peer);
 
         let mut promises_held = self.promises_held.guard();
         if self.guards_held.contains_key(&peer) {
             // was in guard phase, this is the first promise
+            pf_trace!("lease recv Promise @ {} <- {}", lease_num, peer);
             let timer = self.guards_held.remove(&peer).unwrap();
             timer.kickoff(self.lease_timeout)?;
             promises_held.insert(peer, timer);
+            pf_info!("lease promise held @ {} <- {}", lease_num, peer);
 
             // send PromiseReply back
             pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
@@ -537,7 +539,7 @@ impl LeaseManagerLogicTask {
                 .kickoff(self.lease_timeout)?;
 
             // send PromiseReply back
-            pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
+            // pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
             self.tx_action.send((
                 lease_num,
                 LeaseAction::SendLeaseMsg {
@@ -567,12 +569,12 @@ impl LeaseManagerLogicTask {
         peer: ReplicaId,
         held: bool,
     ) -> Result<(), SummersetError> {
-        pf_trace!(
-            "lease recv PromiseReply({}) @ {} <- {}",
-            if held { "T" } else { "F" },
-            lease_num,
-            peer
-        );
+        // pf_trace!(
+        //     "lease recv PromiseReply({}) @ {} <- {}",
+        //     if held { "T" } else { "F" },
+        //     lease_num,
+        //     peer
+        // );
 
         let mut promises_sent = self.promises_sent.guard();
         if !promises_sent.contains_key(&peer) {
@@ -601,7 +603,7 @@ impl LeaseManagerLogicTask {
             timer.kickoff(self.lease_timeout)?;
 
             // let protocol module mark next heartbeat as a promise refresh
-            pf_trace!("lease mark NextRefresh @ {} -> {}", lease_num, peer);
+            // pf_trace!("lease mark NextRefresh @ {} -> {}", lease_num, peer);
             self.tx_action
                 .send((lease_num, LeaseAction::NextRefresh { peer }))?
         }
@@ -619,6 +621,9 @@ impl LeaseManagerLogicTask {
         // remove existing guard or promise held from this peer
         self.guards_held.remove(&peer);
         let held = self.promises_held.guard().remove(peer).is_some();
+        if held {
+            pf_info!("lease revoked drop @ {} <- {}", lease_num, peer);
+        }
 
         // send RevokeReply back
         pf_trace!(
@@ -689,7 +694,10 @@ impl LeaseManagerLogicTask {
 
         // remove existing guard or promise held from this peer
         self.guards_held.remove(&peer);
-        self.promises_held.guard().remove(peer);
+        let held = self.promises_held.guard().remove(peer).is_some();
+        if held {
+            pf_info!("lease expired drop @ {} <- {}", lease_num, peer);
+        }
 
         // tell the protocol module about this timeout
         self.tx_action
@@ -772,7 +780,13 @@ impl LeaseManagerLogicTask {
                 {
                     let mut promises_held_guard = self.promises_held.guard();
                     for peer in (0..self.population).filter(|&p| p != self.me) {
-                        promises_held_guard.remove(peer);
+                        if promises_held_guard.remove(peer).is_some() {
+                            pf_info!(
+                                "lease highnum drop @ {} <- {}",
+                                self.active_num,
+                                peer
+                            );
+                        }
                     }
                 }
                 self.active_num = lease_num;
