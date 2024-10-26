@@ -12,16 +12,45 @@ use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
 
 mod clients;
 mod drivers;
-
 use crate::clients::{
     ClientBench, ClientMess, ClientMode, ClientRepl, ClientTester,
+    ModeParamsBench,
 };
+
+mod zookeeper;
+use crate::zookeeper::{ZooKeeperBench, ZooKeeperSession};
+
+mod etcd;
+use crate::etcd::{EtcdBench, EtcdKvClient};
+
+/// Enum selecting a Summerset-implemented protocol or an external system.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SmrProtocolOrSystem {
+    Protocol(SmrProtocol),
+    ZooKeeper,
+    Etcd,
+}
+
+impl SmrProtocolOrSystem {
+    /// Parse a string into SmrProtocolOrSystem enum.
+    fn parse_name(name: &str) -> Option<Self> {
+        SmrProtocol::parse_name(name)
+            .map(SmrProtocolOrSystem::Protocol)
+            .or(match name {
+                "ZooKeeper" => Some(Self::ZooKeeper),
+                "Etcd" => Some(Self::Etcd),
+                _ => None,
+            })
+    }
+}
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct CliArgs {
     /// Name of SMR protocol to use.
+    /// Apart from Summerset-impl protocols, also partially supports these
+    /// special names as external systems: ZooKeeper.
     #[arg(short, long)]
     protocol: String,
 
@@ -30,7 +59,7 @@ struct CliArgs {
     #[arg(long, default_value_t = String::from(""))]
     config: String,
 
-    /// Client utility mode to run: repl|bench|tester.
+    /// Client utility mode to run: repl|bench|tester|mess.
     #[arg(short, long)]
     utility: String,
 
@@ -40,6 +69,7 @@ struct CliArgs {
     params: String,
 
     /// Cluster manager oracle's client-facing address.
+    /// If 'protocol' is an external system, this is the connection address.
     #[arg(short, long)]
     manager: SocketAddr,
 
@@ -53,9 +83,11 @@ struct CliArgs {
 }
 
 impl CliArgs {
-    /// Sanitize command line arguments, return `Ok(protocol)` on success
-    /// or `Err(SummersetError)` on any error.
-    fn sanitize(&self) -> Result<(ClientMode, SmrProtocol), SummersetError> {
+    /// Sanitize command line arguments, return `Ok(mode, protocol_or_system)`
+    /// on success or `Err(SummersetError)` on any error.
+    fn sanitize(
+        &self,
+    ) -> Result<(ClientMode, SmrProtocolOrSystem), SummersetError> {
         if self.threads < 2 {
             Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
@@ -73,12 +105,11 @@ impl CliArgs {
                     self.utility
                 )),
             )?;
-            let protocol = SmrProtocol::parse_name(&self.protocol).ok_or(
-                SummersetError::msg(format!(
+            let protocol = SmrProtocolOrSystem::parse_name(&self.protocol)
+                .ok_or(SummersetError::msg(format!(
                     "protocol name '{}' unrecognized",
                     self.protocol
-                )),
-            )?;
+                )))?;
             Ok((mode, protocol))
         }
     }
@@ -115,45 +146,88 @@ fn client_main() -> Result<(), SummersetError> {
 
     // enter tokio runtime, connect to the service, and do work
     runtime.block_on(async move {
-        let endpoint = protocol
-            .new_client_endpoint(args.manager, config_str)
-            .await?;
+        match protocol {
+            // Summerset-implemented protocol
+            SmrProtocolOrSystem::Protocol(protocol) => {
+                let endpoint = protocol
+                    .new_client_endpoint(args.manager, config_str)
+                    .await?;
+                match mode {
+                    ClientMode::Repl => {
+                        // run interactive REPL loop
+                        let mut repl = ClientRepl::new(
+                            endpoint,
+                            Duration::from_millis(args.timeout_ms),
+                        );
+                        repl.run().await?;
+                    }
+                    ClientMode::Bench => {
+                        // run benchmarking client
+                        let mut bench = ClientBench::new(
+                            endpoint,
+                            Duration::from_millis(args.timeout_ms),
+                            params_str,
+                        )?;
+                        bench.run().await?;
+                    }
+                    ClientMode::Tester => {
+                        // run correctness testing client
+                        let mut tester = ClientTester::new(
+                            endpoint,
+                            Duration::from_millis(args.timeout_ms),
+                            params_str,
+                        )?;
+                        tester.run().await?;
+                    }
+                    ClientMode::Mess => {
+                        // run one-shot control client
+                        let mut mess = ClientMess::new(
+                            endpoint,
+                            Duration::from_millis(args.timeout_ms),
+                            params_str,
+                        )?;
+                        mess.run().await?;
+                    }
+                }
+            }
 
-        match mode {
-            ClientMode::Repl => {
-                // run interactive REPL loop
-                let mut repl = ClientRepl::new(
-                    endpoint,
-                    Duration::from_millis(args.timeout_ms),
-                );
-                repl.run().await?;
+            // ZooKeeper
+            SmrProtocolOrSystem::ZooKeeper => {
+                let session = ZooKeeperSession::new(args.manager, config_str)?;
+                match mode {
+                    ClientMode::Bench => {
+                        // run benchmarking client
+                        let mut bench =
+                            ZooKeeperBench::new(session, params_str)?;
+                        bench.run().await?;
+                    }
+                    _ => {
+                        // unsupported
+                        return Err(SummersetError::msg(format!(
+                            "utility mode '{}' not supported for ZooKeeper",
+                            args.utility
+                        )));
+                    }
+                }
             }
-            ClientMode::Bench => {
-                // run benchmarking client
-                let mut bench = ClientBench::new(
-                    endpoint,
-                    Duration::from_millis(args.timeout_ms),
-                    params_str,
-                )?;
-                bench.run().await?;
-            }
-            ClientMode::Tester => {
-                // run correctness testing client
-                let mut tester = ClientTester::new(
-                    endpoint,
-                    Duration::from_millis(args.timeout_ms),
-                    params_str,
-                )?;
-                tester.run().await?;
-            }
-            ClientMode::Mess => {
-                // run one-shot control client
-                let mut mess = ClientMess::new(
-                    endpoint,
-                    Duration::from_millis(args.timeout_ms),
-                    params_str,
-                )?;
-                mess.run().await?;
+
+            // etcd
+            SmrProtocolOrSystem::Etcd => {
+                let kv_client = EtcdKvClient::new(args.manager, config_str)?;
+                match mode {
+                    ClientMode::Bench => {
+                        // run benchmarking client
+                        let mut bench = EtcdBench::new(kv_client, params_str)?;
+                        bench.run().await?;
+                    }
+                    _ => {
+                        // unsupported
+                        return Err(SummersetError::msg(format!(
+                            "utility mode '{}' not supported for etcd",
+                            args.utility
+                        )));
+                    }
+                }
             }
         }
 
@@ -166,10 +240,10 @@ fn main() -> ExitCode {
     logger_init();
 
     if let Err(ref e) = client_main() {
-        pf_error!("client_main exitted: {}", e);
+        pf_error!("client_main exited: {}", e);
         ExitCode::FAILURE
     } else {
-        pf_warn!("client_main exitted successfully");
+        pf_warn!("client_main exited successfully");
         ExitCode::SUCCESS
     }
 }
@@ -191,7 +265,10 @@ mod arg_tests {
         };
         assert_eq!(
             args.sanitize(),
-            Ok((ClientMode::Repl, SmrProtocol::RepNothing))
+            Ok((
+                ClientMode::Repl,
+                SmrProtocolOrSystem::Protocol(SmrProtocol::RepNothing)
+            ))
         );
         Ok(())
     }

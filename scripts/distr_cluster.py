@@ -285,7 +285,7 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+        "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
@@ -397,6 +397,7 @@ if __name__ == "__main__":
     # print_manager_t.start()
 
     # then launch server replicas
+    print("Launching server processes...")
     server_procs = launch_servers(
         remotes,
         ipaddrs,

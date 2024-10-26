@@ -10,7 +10,7 @@ use crate::utils::SummersetError;
 // RaftReplica durable logging
 impl RaftReplica {
     /// Handler of leader append logging result chan recv.
-    fn handle_logged_leader_append(
+    async fn handle_logged_leader_append(
         &mut self,
         slot: usize,
         slot_e: usize,
@@ -89,7 +89,7 @@ impl RaftReplica {
         }
 
         // I also heard my own heartbeat
-        self.heard_heartbeat(self.id, self.curr_term)?;
+        self.heard_heartbeat(self.id, self.curr_term).await?;
 
         Ok(())
     }
@@ -134,7 +134,7 @@ impl RaftReplica {
     }
 
     /// Synthesized handler of durable logging result chan recv.
-    pub(super) fn handle_log_result(
+    pub(super) async fn handle_log_result(
         &mut self,
         action_id: LogActionId,
         log_result: LogResult<DurEntry>,
@@ -159,7 +159,9 @@ impl RaftReplica {
 
         match entry_type {
             Role::Follower => self.handle_logged_follower_append(slot, slot_e),
-            Role::Leader => self.handle_logged_leader_append(slot, slot_e),
+            Role::Leader => {
+                self.handle_logged_leader_append(slot, slot_e).await
+            }
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)
             }

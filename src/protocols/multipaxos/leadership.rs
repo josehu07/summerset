@@ -3,24 +3,18 @@
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{LogAction, ReplicaId};
+use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
-
-use rand::prelude::*;
-
-use tokio::time::Duration;
 
 // MultiPaxosReplica leadership related logic
 impl MultiPaxosReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
-    pub(super) fn check_leader(
+    pub(super) async fn check_leader(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
     ) -> Result<(), SummersetError> {
         if ballot > self.bal_max_seen {
-            self.bal_max_seen = ballot;
-
             // clear my leader status if I was one
             if self.is_leader() {
                 self.control_hub
@@ -29,11 +23,44 @@ impl MultiPaxosReplica {
             }
 
             // reset heartbeat timeout timer promptly
-            self.kickoff_hb_hear_timer()?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
+
+            // if leasing enabled, revoke old lease if any made to old leader,
+            // then initiate granting to the new leader
+            if !self.config.disable_leasing {
+                if let Some(old_leader) = self.leader {
+                    if old_leader != self.id {
+                        self.lease_manager.add_notice(
+                            self.bal_max_seen,
+                            LeaseNotice::DoRevoke {
+                                peers: Some(Bitmap::from((
+                                    self.population,
+                                    vec![old_leader],
+                                ))),
+                            },
+                        )?;
+                        self.ensure_lease_revoked(old_leader).await?;
+                    }
+                }
+
+                // initiate granting to new leader
+                self.lease_manager.add_notice(
+                    ballot, // use new ballot as lease_num
+                    LeaseNotice::NewGrants {
+                        peers: Some(Bitmap::from((
+                            self.population,
+                            vec![peer],
+                        ))),
+                    },
+                )?;
+            }
 
             // set this peer to be the believed leader
             debug_assert_ne!(peer, self.id);
             self.leader = Some(peer);
+            self.bal_max_seen = ballot;
         }
 
         Ok(())
@@ -41,21 +68,40 @@ impl MultiPaxosReplica {
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
-    pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_leader(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
         }
 
-        self.leader = Some(self.id); // this starts broadcasting heartbeats
+        // if leasing enabled, start to revoke old lease
+        let mut old_leader = None;
+        if !self.config.disable_leasing {
+            if let Some(leader) = self.leader {
+                if leader != self.id {
+                    self.lease_manager.add_notice(
+                        self.bal_max_seen,
+                        LeaseNotice::DoRevoke {
+                            peers: Some(Bitmap::from((
+                                self.population,
+                                vec![leader],
+                            ))),
+                        },
+                    )?;
+                    old_leader = Some(leader);
+                }
+            }
+        }
+
+        self.leader = Some(self.id);
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        for cnts in self.hb_reply_cnts.values_mut() {
-            *cnts = (1, 0, 0);
-        }
-        self.bcast_heartbeats()?;
+        self.heartbeater.clear_reply_cnts();
+        self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
         for slot in self.peer_exec_bar.values_mut() {
@@ -149,11 +195,40 @@ impl MultiPaxosReplica {
             self.bal_prep_sent
         );
 
+        // before moving on, ensure that any lease to old leader has either
+        // been RevokeReplied or timed out
+        if !self.config.disable_leasing {
+            if let Some(old_leader) = old_leader {
+                self.ensure_lease_revoked(old_leader).await?;
+            }
+        }
+
         Ok(())
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(
+        &mut self,
+    ) -> Result<(), SummersetError> {
+        // check and send lease promise refresh to leader
+        if !self.config.disable_leasing {
+            if let Some(leader) = self.leader {
+                if leader != self.id {
+                    let to_refresh = self.lease_manager.attempt_refresh(
+                        Some(&Bitmap::from((self.population, vec![leader]))),
+                    )?;
+                    if to_refresh.count() > 0 {
+                        self.transport_hub.bcast_lease_msg(
+                            self.bal_max_seen,
+                            LeaseMsg::Promise,
+                            Some(to_refresh),
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // broadcast heartbeat to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
@@ -164,31 +239,9 @@ impl MultiPaxosReplica {
             None,
         )?;
 
-        // update max heartbeat reply counters and their repetitions seen
-        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
-            if cnts.0 > cnts.1 {
-                // more hb replies have been received from this peer; it is
-                // probably alive
-                cnts.1 = cnts.0;
-                cnts.2 = 0;
-            } else {
-                // did not receive hb reply from this peer at least for the
-                // last sent hb from me; increment repetition count
-                cnts.2 += 1;
-                let repeat_threshold = (self.config.hb_hear_timeout_min
-                    / self.config.hb_send_interval_ms)
-                    as u8;
-                if cnts.2 > repeat_threshold {
-                    // did not receive hb reply from this peer for too many
-                    // past hbs sent from me; this peer is probably dead
-                    if self.peer_alive.get(peer)? {
-                        self.peer_alive.set(peer, false)?;
-                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
-                    }
-                    cnts.2 = 0;
-                }
-            }
-        }
+        // update max heartbeat reply counters and their repetitions seen,
+        // and peers' liveness status accordingly
+        self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
@@ -197,36 +250,17 @@ impl MultiPaxosReplica {
             self.commit_bar,
             self.exec_bar,
             self.snap_bar,
-        )?;
+        )
+        .await?;
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
-        Ok(())
-    }
-
-    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
-    /// the hb_hear_timer.
-    pub(super) fn kickoff_hb_hear_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
-        self.hb_hear_timer.cancel()?;
-
-        if !self.config.disable_hb_timer {
-            let timeout_ms = thread_rng().gen_range(
-                self.config.hb_hear_timeout_min
-                    ..=self.config.hb_hear_timeout_max,
-            );
-            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
-            self.hb_hear_timer
-                .kickoff(Duration::from_millis(timeout_ms))?;
-        }
-
         Ok(())
     }
 
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
-    pub(super) fn heard_heartbeat(
+    pub(super) async fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -235,35 +269,39 @@ impl MultiPaxosReplica {
         snap_bar: usize,
     ) -> Result<(), SummersetError> {
         if peer != self.id {
-            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
-            if !self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, true)?;
-                pf_info!("peer_alive updated: {:?}", self.peer_alive);
-            }
+            // update the peer's reply cnt and its liveness status accordingly
+            self.heartbeater.update_heard_cnt(peer)?;
 
             // if the peer has made a higher ballot number, consider it as
             // a new leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
 
             // reply back with a Heartbeat message
-            if self.leader == Some(peer) {
-                self.transport_hub.send_msg(
-                    PeerMsg::Heartbeat {
-                        ballot: self.bal_max_seen,
-                        commit_bar: self.commit_bar,
-                        exec_bar: self.exec_bar,
-                        snap_bar: self.snap_bar,
-                    },
-                    peer,
-                )?;
-            }
+            // NOTE: commented out to favor the new all-to-all heartbeats
+            //       pattern; performance-wise should have no impact
+            // if self.leader == Some(peer) {
+            //     self.transport_hub.send_msg(
+            //         PeerMsg::Heartbeat {
+            //             ballot: self.bal_max_seen,
+            //             commit_bar: self.commit_bar,
+            //             exec_bar: self.exec_bar,
+            //             snap_bar: self.snap_bar,
+            //         },
+            //         peer,
+            //     )?;
+            // }
         }
 
         // ignore outdated heartbeats, reset hearing timer
         if ballot < self.bal_max_seen {
             return Ok(());
         }
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer
+            && self.leader == Some(peer)
+            && self.bal_max_seen == ballot
+        {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
         if exec_bar < self.exec_bar {
             return Ok(());
         }

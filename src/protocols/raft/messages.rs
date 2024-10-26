@@ -87,7 +87,7 @@ impl RaftReplica {
             if term >= self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
                 // procedure for a lagging follower might take long
-                self.heard_heartbeat(leader, term)?;
+                self.heard_heartbeat(leader, term).await?;
             }
             return Ok(());
         }
@@ -95,7 +95,7 @@ impl RaftReplica {
         // update my knowledge of who's the current leader, and reset election
         // timeout timer
         self.leader = Some(leader);
-        self.heard_heartbeat(leader, term)?;
+        self.heard_heartbeat(leader, term).await?;
 
         // check if any existing entry conflicts with a new one in `entries`.
         // If so, truncate everything at and after that entry
@@ -119,8 +119,8 @@ impl RaftReplica {
                     )
                     .await?;
                 for (old_id, old_result) in old_results {
-                    self.handle_log_result(old_id, old_result)?;
-                    self.heard_heartbeat(leader, term)?;
+                    self.handle_log_result(old_id, old_result).await?;
+                    self.heard_heartbeat(leader, term).await?;
                 }
                 if let LogResult::Truncate {
                     offset_ok: true,
@@ -240,7 +240,7 @@ impl RaftReplica {
         if self.check_term(peer, term).await? || self.role != Role::Leader {
             return Ok(());
         }
-        self.heard_heartbeat(peer, term)?;
+        self.heard_heartbeat(peer, term).await?;
 
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
@@ -444,7 +444,7 @@ impl RaftReplica {
 
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
-                self.heard_heartbeat(candidate, term)?;
+                self.heard_heartbeat(candidate, term).await?;
 
                 // update voted_for and make the field durable, synchronously
                 self.voted_for = Some(candidate);
@@ -453,18 +453,18 @@ impl RaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::Metadata {
-                                curr_term: self.curr_term,
-                                voted_for: self.voted_for,
-                            },
+                            entry: DurEntry::pack_meta(
+                                self.curr_term,
+                                self.voted_for,
+                            ),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },
                     )
                     .await?;
                 for (old_id, old_result) in old_results {
-                    self.handle_log_result(old_id, old_result)?;
-                    self.heard_heartbeat(candidate, term)?;
+                    self.handle_log_result(old_id, old_result).await?;
+                    self.heard_heartbeat(candidate, term).await?;
                 }
                 if let LogResult::Write {
                     offset_ok: true, ..
@@ -503,7 +503,7 @@ impl RaftReplica {
 
         // if a majority of servers have voted for me, become the leader
         if self.votes_granted.len() as u8 >= self.quorum_cnt {
-            self.become_the_leader()?;
+            self.become_the_leader().await?;
         }
 
         Ok(())

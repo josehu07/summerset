@@ -1,23 +1,18 @@
 # (DON'T CHANGE) remote base path and project repo folder name
-base_path = "/eval"
+base_path = "/home/smr"
 repo_name = "summerset"
 
-# (SET PROPERLY) for each group, its username @ DNS domain names
-[1dc]
+# (SET PROPERLY) for each group, its DNS domain names
+[reg]
+host0 = "domain.cloudlab.us"
+host1 = "domain.cloudlab.us"
+host2 = "domain.cloudlab.us"
+host3 = "domain.cloudlab.us"
+host4 = "domain.cloudlab.us"
 
-host0 = "username@domain.com"
-host1 = "username@domain.com"
-host2 = "username@domain.com"
-# host3 = "username@domain.com"
-# host4 = "username@domain.com"
-# host5 = "username@domain.com"
-# host6 = "username@domain.com"
-# host7 = "username@domain.com"
-# host8 = "username@domain.com"
-
-# [wan]
-# host0 = "username@domain.com"
-# host1 = "username@domain.com"
-# host2 = "username@domain.com"
-# host3 = "username@domain.com"
-# host4 = "username@domain.com"
+[wan]
+host0 = "domain.cloudlab.us"
+host1 = "domain.cloudlab.us"
+host2 = "domain.cloudlab.us"
+host3 = "domain.cloudlab.us"
+host4 = "domain.cloudlab.us"

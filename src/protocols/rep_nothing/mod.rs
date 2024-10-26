@@ -50,7 +50,7 @@ pub struct ReplicaConfigRepNothing {
 impl Default for ReplicaConfigRepNothing {
     fn default() -> Self {
         ReplicaConfigRepNothing {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rep_nothing.wal".into(),
             logger_sync: false,
@@ -157,7 +157,7 @@ impl GenericReplica for RepNothingReplica {
 
         // TransportHub is not needed in RepNothing
 
-        // tell the manager tha I have joined
+        // tell the manager than I have joined
         control_hub.send_ctrl(CtrlMsg::NewServerJoin {
             id,
             protocol: SmrProtocol::RepNothing,
@@ -207,7 +207,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -219,7 +219,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}", action_id, e);
                     }
                 },
@@ -231,7 +231,7 @@ impl GenericReplica for RepNothingReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },

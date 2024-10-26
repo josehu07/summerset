@@ -178,10 +178,10 @@ fn main() -> ExitCode {
     logger_init();
 
     if let Err(ref e) = server_main() {
-        pf_error!("server_main exitted: {}", e);
+        pf_error!("server_main exited: {}", e);
         ExitCode::FAILURE
     } else {
-        // pf_warn!("server_main exitted successfully");
+        // pf_warn!("server_main exited successfully");
         ExitCode::SUCCESS
     }
 }

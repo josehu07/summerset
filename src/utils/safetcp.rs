@@ -1,6 +1,7 @@
 //! Safe TCP bind/connect/read/write helper functions.
 
 use std::io::ErrorKind;
+use std::marker::Unpin;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 
@@ -32,7 +33,7 @@ pub(crate) async fn safe_tcp_read<T, Conn>(
 ) -> Result<T, SummersetError>
 where
     T: DeserializeOwned,
-    Conn: AsyncReadExt + std::marker::Unpin,
+    Conn: AsyncReadExt + Unpin,
 {
     // read length of obj first
     if read_buf.capacity() < 8 {
@@ -162,9 +163,9 @@ pub(crate) async fn tcp_bind_with_retry(
 
         match socket.listen(1024) {
             Ok(listener) => return Ok(listener),
-            Err(e) => {
+            Err(err) => {
                 if retries == 0 {
-                    return Err(e.into());
+                    return Err(err.into());
                 }
                 retries -= 1;
                 time::sleep(Duration::from_secs(1)).await;
@@ -187,9 +188,9 @@ pub(crate) async fn tcp_connect_with_retry(
 
         match socket.connect(conn_addr).await {
             Ok(stream) => return Ok(stream),
-            Err(e) => {
+            Err(err) => {
                 if retries == 0 {
-                    return Err(e.into());
+                    return Err(err.into());
                 }
                 retries -= 1;
                 time::sleep(Duration::from_secs(1)).await;

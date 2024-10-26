@@ -9,26 +9,32 @@ import utils
 TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
-def killall_on_targets(destinations, cd_dir, chain=False):
-    cmd = ["./scripts/kill_all_procs.sh", "incl_distr"]
-    if chain:
-        pass  # placeholder line
+def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False, etcd=False):
+    cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
+    return cmds
 
-    print("Running kill commands in parallel...")
-    procs = []
-    for remote in destinations:
-        procs.append(
-            utils.proc.run_process_over_ssh(
-                remote,
-                cmd,
-                cd_dir=cd_dir,
-                capture_stdout=True,
-                capture_stderr=True,
+
+def killall_on_targets(
+    destinations, cd_dir, chain=False, cockroach=False, zookeeper=False, etcd=False
+):
+    cmds = compose_kill_cmds(
+        chain=chain, cockroach=cockroach, zookeeper=zookeeper, etcd=etcd
+    )
+    for cmd in cmds:
+        print("Running kill commands in parallel...")
+        procs = []
+        for remote in destinations:
+            procs.append(
+                utils.proc.run_process_over_ssh(
+                    remote,
+                    cmd,
+                    cd_dir=cd_dir,
+                    capture_stdout=True,
+                    capture_stderr=True,
+                )
             )
-        )
-
-    print("Waiting for command results...")
-    utils.proc.wait_parallel_procs(procs)
+        print("Waiting for command results...")
+        utils.proc.wait_parallel_procs(procs)
 
 
 if __name__ == "__main__":
@@ -36,7 +42,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+        "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
         "-t",
@@ -47,6 +53,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--chain", action="store_true", help="if set, kill ChainPaxos processes"
+    )
+    parser.add_argument(
+        "--cockroach", action="store_true", help="if set, kill CockroachDB processes"
+    )
+    parser.add_argument(
+        "--zookeeper", action="store_true", help="if set, kill ZooKeeper processes"
+    )
+    parser.add_argument(
+        "--etcd", action="store_true", help="if set, kill etcd processes"
     )
     args = parser.parse_args()
 
@@ -66,4 +81,11 @@ if __name__ == "__main__":
     if len(destinations) == 0:
         raise ValueError(f"targets list is empty")
 
-    killall_on_targets(destinations, f"{base}/{repo}", args.chain)
+    killall_on_targets(
+        destinations,
+        f"{base}/{repo}",
+        args.chain,
+        args.cockroach,
+        args.zookeeper,
+        args.etcd,
+    )

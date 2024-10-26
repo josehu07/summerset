@@ -292,7 +292,7 @@ impl ClientRepl {
         let cmd = self.read_command()?;
         match cmd {
             ReplCommand::Exit => {
-                println!("Exitting...");
+                println!("Exiting...");
                 Ok(false)
             }
 

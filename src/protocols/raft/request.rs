@@ -8,7 +8,7 @@ use crate::utils::SummersetError;
 // RaftReplica client requests entrance
 impl RaftReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
@@ -47,7 +47,7 @@ impl RaftReplica {
 
         // if simulating read leases, extract all the reads and immediately
         // reply to them with a dummy value
-        // TODO: only for benchmarking purposes
+        // NOTE: this is only for benchmarking purposes
         if self.config.sim_read_lease {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {

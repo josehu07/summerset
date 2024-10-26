@@ -6,14 +6,10 @@ use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-use rand::prelude::*;
-
-use tokio::time::Duration;
-
 // RSPaxosReplica leadership related logic
 impl RSPaxosReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
-    pub(super) fn check_leader(
+    pub(super) async fn check_leader(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -30,10 +26,14 @@ impl RSPaxosReplica {
 
             // reset heartbeat timeout timer to prevent me from trying to
             // compete with a new leader when it is doing reconstruction
-            self.kickoff_hb_hear_timer()?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // set this peer to be the believed leader
+            debug_assert_ne!(peer, self.id);
             self.leader = Some(peer);
+            self.heartbeater.set_sending(false);
         }
 
         Ok(())
@@ -41,21 +41,22 @@ impl RSPaxosReplica {
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
     /// for all in-progress instances, and starts broadcasting heartbeats.
-    pub(super) fn become_a_leader(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn become_a_leader(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
         }
 
-        self.leader = Some(self.id); // this starts broadcasting heartbeats
+        self.leader = Some(self.id);
+        self.heartbeater.set_sending(true);
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        for cnts in self.hb_reply_cnts.values_mut() {
-            *cnts = (1, 0, 0);
-        }
-        self.bcast_heartbeats()?;
+        self.heartbeater.clear_reply_cnts();
+        self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
         for slot in self.peer_exec_bar.values_mut() {
@@ -180,7 +181,9 @@ impl RSPaxosReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(
+        &mut self,
+    ) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
@@ -191,31 +194,9 @@ impl RSPaxosReplica {
             None,
         )?;
 
-        // update max heartbeat reply counters and their repetitions seen
-        for (&peer, cnts) in self.hb_reply_cnts.iter_mut() {
-            if cnts.0 > cnts.1 {
-                // more hb replies have been received from this peer; it is
-                // probably alive
-                cnts.1 = cnts.0;
-                cnts.2 = 0;
-            } else {
-                // did not receive hb reply from this peer at least for the
-                // last sent hb from me; increment repetition count
-                cnts.2 += 1;
-                let repeat_threshold = (self.config.hb_hear_timeout_min
-                    / self.config.hb_send_interval_ms)
-                    as u8;
-                if cnts.2 > repeat_threshold {
-                    // did not receive hb reply from this peer for too many
-                    // past hbs sent from me; this peer is probably dead
-                    if self.peer_alive.get(peer)? {
-                        self.peer_alive.set(peer, false)?;
-                        pf_info!("peer_alive updated: {:?}", self.peer_alive);
-                    }
-                    cnts.2 = 0;
-                }
-            }
-        }
+        // update max heartbeat reply counters and their repetitions seen,
+        // and peers' liveness status accordingly
+        self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
         self.heard_heartbeat(
@@ -224,36 +205,17 @@ impl RSPaxosReplica {
             self.commit_bar,
             self.exec_bar,
             self.snap_bar,
-        )?;
+        )
+        .await?;
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
-        Ok(())
-    }
-
-    /// Chooses a random hb_hear_timeout from the min-max range and kicks off
-    /// the hb_hear_timer.
-    pub(super) fn kickoff_hb_hear_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
-        self.hb_hear_timer.cancel()?;
-
-        if !self.config.disable_hb_timer {
-            let timeout_ms = thread_rng().gen_range(
-                self.config.hb_hear_timeout_min
-                    ..=self.config.hb_hear_timeout_max,
-            );
-            // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
-            self.hb_hear_timer
-                .kickoff(Duration::from_millis(timeout_ms))?;
-        }
-
         Ok(())
     }
 
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
-    pub(super) fn heard_heartbeat(
+    pub(super) async fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
@@ -262,15 +224,12 @@ impl RSPaxosReplica {
         snap_bar: usize,
     ) -> Result<(), SummersetError> {
         if peer != self.id {
-            self.hb_reply_cnts.get_mut(&peer).unwrap().0 += 1;
-            if !self.peer_alive.get(peer)? {
-                self.peer_alive.set(peer, true)?;
-                pf_info!("peer_alive updated: {:?}", self.peer_alive);
-            }
+            // update the peer's reply cnt and its liveness status accordingly
+            self.heartbeater.update_heard_cnt(peer)?;
 
             // if the peer has made a higher ballot number, consider it as
             // a new leader
-            self.check_leader(peer, ballot)?;
+            self.check_leader(peer, ballot).await?;
 
             // reply back with a Heartbeat message
             if self.leader == Some(peer) {
@@ -290,7 +249,9 @@ impl RSPaxosReplica {
         if ballot < self.bal_max_seen {
             return Ok(());
         }
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
         if exec_bar < self.exec_bar {
             return Ok(());
         }

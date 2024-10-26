@@ -40,7 +40,10 @@ def gather_outputs(
     while t + tb < te:
         tputs, lats = [], []
         for c in range(num_clients):
-            while t + tb > outputs[c]["time"][cidxs[c]]:
+            while (
+                cidxs[c] < len(outputs[c]["time"]) - 1
+                and t + tb > outputs[c]["time"][cidxs[c]]
+            ):
                 cidxs[c] += 1
             if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
                 tputs.append(0.0)
@@ -63,7 +66,7 @@ def gather_outputs(
     return result
 
 
-def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te, partition=None):
+def gather_ycsb_outputs(protocol_with_midfix, path_prefix, tb, te, partition=None):
     if partition is not None:
         protocol_with_midfix += f".{partition}"
 
@@ -105,6 +108,50 @@ def parse_ycsb_log(protocol_with_midfix, path_prefix, tb, te, partition=None):
             "stdev": (sum(map(lambda s: s**2, lat_stdevs)) / len(lat_stdevs)) ** 0.5,
         },
     }
+
+
+def gather_tpcc_outputs(protocol_with_midfix, path_prefix, partition=None):
+    if partition is not None:
+        protocol_with_midfix += f".{partition}"
+
+    results = {
+        "delivery": dict(),
+        "newOrder": dict(),
+        "orderStatus": dict(),
+        "payment": dict(),
+        "stockLevel": dict(),
+        "aggregate": dict(),
+    }
+    with open(f"{path_prefix}/{protocol_with_midfix}.run", "r") as fout:
+        in_txn_sum_sec, in_agg_sum_sec = False, False
+        for line in fout:
+            if "ops(total)" in line:
+                if line.strip().endswith("_result"):
+                    in_agg_sum_sec = True
+                else:
+                    in_txn_sum_sec = True
+
+            elif in_txn_sum_sec or in_agg_sum_sec:
+                segs = line.strip().split()
+
+                txn_type = "aggregate"
+                if not in_agg_sum_sec:
+                    txn_type = segs[-1]
+
+                result = dict()
+                result["txns"] = int(segs[2])
+                result["errors"] = int(segs[1])
+                result["tput"] = float(segs[3])
+                result["lat_avg"] = float(segs[4])
+                result["lat_p50"] = float(segs[5])
+                result["lat_p95"] = float(segs[6])
+                result["lat_p99"] = float(segs[7])
+                results[txn_type] = result
+
+                in_txn_sum_sec = False
+                in_agg_sum_sec = False
+
+    return results
 
 
 def list_smoothing(l, d, p, j, m):

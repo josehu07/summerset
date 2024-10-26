@@ -8,7 +8,7 @@ use crate::utils::{Bitmap, RSCodeword, SummersetError};
 // CRaftReplica client requests entrance
 impl CRaftReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
@@ -47,7 +47,7 @@ impl CRaftReplica {
 
         // if simulating read leases, extract all the reads and immediately
         // reply to them with a dummy value
-        // TODO: only for benchmarking purposes
+        // NOTE: this is only for benchmarking purposes
         if self.config.sim_read_lease {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {
@@ -99,15 +99,15 @@ impl CRaftReplica {
                         term: self.curr_term,
                         reqs_cw: if self.full_copy_mode {
                             reqs_cw.subset_copy(
-                                &Bitmap::from(
+                                &Bitmap::from((
                                     self.population,
-                                    (0..self.majority).collect(),
-                                ),
+                                    0..self.majority,
+                                )),
                                 false,
                             )?
                         } else {
                             reqs_cw.subset_copy(
-                                &Bitmap::from(self.population, vec![self.id]),
+                                &Bitmap::from((self.population, vec![self.id])),
                                 false,
                             )?
                         },

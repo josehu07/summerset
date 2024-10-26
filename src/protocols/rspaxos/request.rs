@@ -8,7 +8,7 @@ use crate::utils::{Bitmap, RSCodeword, SummersetError};
 // RSPaxosReplica client requests entrance
 impl RSPaxosReplica {
     /// Handler of client request batch chan recv.
-    pub(super) fn handle_req_batch(
+    pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
     ) -> Result<(), SummersetError> {
@@ -47,7 +47,7 @@ impl RSPaxosReplica {
 
         // if simulating read leases, extract all the reads and immediately
         // reply to them with a dummy value
-        // TODO: only for benchmarking purposes
+        // NOTE: this is only for benchmarking purposes
         if self.config.sim_read_lease {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {
@@ -114,7 +114,7 @@ impl RSPaxosReplica {
 
         // record update to largest accepted ballot and corresponding data
         let subset_copy = inst.reqs_cw.subset_copy(
-            &Bitmap::from(self.population, vec![self.id]),
+            &Bitmap::from((self.population, vec![self.id])),
             false,
         )?;
         inst.voted = (inst.bal, subset_copy.clone());
@@ -146,7 +146,7 @@ impl RSPaxosReplica {
                     slot,
                     ballot: inst.bal,
                     reqs_cw: inst.reqs_cw.subset_copy(
-                        &Bitmap::from(self.population, vec![peer]),
+                        &Bitmap::from((self.population, vec![peer])),
                         false,
                     )?,
                 },

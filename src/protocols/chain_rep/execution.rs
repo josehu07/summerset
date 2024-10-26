@@ -8,7 +8,7 @@ use crate::utils::SummersetError;
 // ChainRepReplica state machine execution
 impl ChainRepReplica {
     /// Handler of state machine exec result chan recv.
-    pub(super) fn handle_cmd_result(
+    pub(super) async fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,

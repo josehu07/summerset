@@ -10,7 +10,7 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
 def ssh_to_remote(remote, no_cd, base, repo):
-    ssh_args = ["ssh"]
+    ssh_args = ["ssh", "-o", "StrictHostKeyChecking=no"]
     if no_cd:
         ssh_args.append(remote)
     else:
@@ -24,7 +24,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+        "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
         "-t",

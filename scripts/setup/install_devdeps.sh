@@ -17,41 +17,84 @@ sudo apt -y upgrade
 
 echo
 echo "Installing necessary apt packages..."
-sudo apt -y install htop \
+sudo apt -y install wget \
+                    curl \
+                    htop \
                     tree \
                     cloc \
-                    python3-pip \
                     iperf3 \
                     iptables-persistent \
-                    screen
+                    screen \
+                    build-essential \
+                    cmake \
+                    autoconf \
+                    flex \
+                    bison \
+                    patch \
+                    libssl-dev \
+                    zlib1g-dev \
+                    libbz2-dev \
+                    libreadline-dev \
+                    libsqlite3-dev \
+                    libncurses-dev \
+                    libncursesw5-dev \
+                    xz-utils \
+                    tk-dev \
+                    libxml2-dev \
+                    libxmlsec1-dev \
+                    libffi-dev \
+                    liblzma-dev
 
 
 echo
-echo "Installing Rust toolchain (please ignore euid error)..."
-export RUSTUP_HOME=/usr/local/rustup
-export CARGO_HOME=/usr/local/cargo
-export PATH=/usr/local/cargo/bin:$PATH
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sudo sh -s -- -y
-sudo chown -R ${USER} /usr/local/rustup
-sudo chown -R ${USER} /usr/local/cargo
+echo "Installing Rust toolchain..."
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+sudo tee -a $HOME/.bashrc <<EOF
+
+# cargo
+export RUSTUP_HOME=\$HOME/.rustup
+export CARGO_HOME=\$HOME/.cargo
+export PATH=\$HOME/.cargo/bin:\$PATH
+EOF
+sudo tee -a $HOME/.profile <<EOF
+
+# cargo
+export RUSTUP_HOME=\$HOME/.rustup
+export CARGO_HOME=\$HOME/.cargo
+export PATH=\$HOME/.cargo/bin:\$PATH
+EOF
+source $HOME/.profile
+
+
+echo
+echo "Installing pyenv..."
+curl https://pyenv.run | bash
+tee -a $HOME/.bashrc <<EOF
+
+# pyenv
+export PYENV_ROOT="\$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(pyenv init -)"
+EOF
+tee -a $HOME/.profile <<EOF
+
+# pyenv
+export PYENV_ROOT="\$HOME/.pyenv"
+command -v pyenv >/dev/null || export PATH="\$PYENV_ROOT/bin:\$PATH"
+eval "\$(pyenv init -)"
+EOF
+source $HOME/.profile
+
+
+echo
+echo "Installing Python 3.12..."
+pyenv install 3.12
+pyenv global 3.12
+source $HOME/.profile
 
 
 echo
 echo "Installing necessary pip packages..."
-sudo -H pip3 install numpy \
-                     matplotlib \
-                     toml
-
-
-echo
-echo "Adding login commands to /etc/profile..."
-sudo tee -a /etc/profile <<EOF
-
-# for global installation of rust
-export RUSTUP_HOME=/usr/local/rustup
-export CARGO_HOME=/usr/local/cargo
-export PATH=/usr/local/cargo/bin:\$PATH
-
-# cd into /eval/summerset on login
-cd /eval/summerset
-EOF
+pip3 install numpy \
+             matplotlib \
+             toml

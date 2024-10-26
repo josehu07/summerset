@@ -7,6 +7,9 @@ from proc import run_process, run_process_over_ssh
 from net import lookup_dns_to_ip
 
 
+DEFAULT_USER = "smr"
+
+
 def parse_comma_separated(l):
     l = l.strip().split(",")
     if len(l) == 0:
@@ -35,8 +38,13 @@ def parse_toml_file(filename, group):
         print(f"ERROR: invalid hosts group name '{group}'")
         sys.exit(1)
     remotes = hosts_config[group]
+    for host in remotes:
+        if (not host.startswith("host")) or (not host[4:].isdigit()):
+            raise ValueError(f"invalid remote host name {host}")
+        if "@" not in remotes[host]:
+            remotes[host] = DEFAULT_USER + "@" + remotes[host]
 
-    hosts = sorted(list(remotes.keys()))
+    hosts = sorted(list(remotes.keys()), key=lambda h: int(h[4:]))
     domains = {name: split_remote_string(remote)[1] for name, remote in remotes.items()}
     ipaddrs = {name: lookup_dns_to_ip(domain) for name, domain in domains.items()}
 

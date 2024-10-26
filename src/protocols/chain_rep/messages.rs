@@ -21,7 +21,7 @@ impl ChainRepReplica {
             reqs.len()
         );
 
-        // ignore if Propagate message not from my precessor
+        // ignore if Propagate message not from my predecessor
         if self.is_head() || self.predecessor().unwrap() != peer {
             return Ok(());
         }
@@ -109,7 +109,7 @@ impl ChainRepReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub(super) fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,

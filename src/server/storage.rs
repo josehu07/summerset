@@ -80,7 +80,7 @@ pub(crate) struct StorageHub<Ent> {
     /// Receiver side of the ack channel.
     rx_ack: mpsc::UnboundedReceiver<(LogActionId, LogResult<Ent>)>,
 
-    /// Join handle of the logger thread.
+    /// Join handle of the logger task.
     _logger_handle: JoinHandle<()>,
 }
 
@@ -96,7 +96,7 @@ where
         + Sync
         + 'static,
 {
-    /// Creates a new durable storage logging hub. Spawns the logger thread.
+    /// Creates a new durable storage logging hub. Spawns the logger task.
     /// Creates a log channel for submitting logging actions to the logger and
     /// an ack channel for getting results. Prepares the given backing file as
     /// durability backend.
@@ -119,8 +119,9 @@ where
             mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
-        let logger_handle =
-            tokio::spawn(Self::logger_thread(backer_file, rx_log, tx_ack));
+        let mut logger =
+            StorageHubLoggerTask::new(rx_log, tx_ack, backer_file).await?;
+        let logger_handle = tokio::spawn(async move { logger.run().await });
 
         Ok(StorageHub {
             _me: me,
@@ -185,8 +186,17 @@ where
     }
 }
 
-// StorageHub logger thread implementation
-impl<Ent> StorageHub<Ent>
+/// StorageHub durable logger task.
+struct StorageHubLoggerTask<Ent> {
+    rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
+    tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
+
+    backer_file: File,
+    /// Backer file size is maintained by the logger.
+    file_size: usize,
+}
+
+impl<Ent> StorageHubLoggerTask<Ent>
 where
     Ent: fmt::Debug
         + Clone
@@ -196,7 +206,32 @@ where
         + Sync
         + 'static,
 {
+    /// Creates the durable logger task.
+    async fn new(
+        rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
+        tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
+        backer_file: File,
+    ) -> Result<Self, SummersetError> {
+        // load initial file size
+        let metadata = backer_file.metadata().await;
+        if let Err(e) = metadata {
+            return logged_err!(
+                "error reading backer file metadata: {}, exiting",
+                e
+            );
+        }
+        let file_size: usize = metadata.unwrap().len() as usize;
+
+        Ok(StorageHubLoggerTask {
+            rx_log,
+            tx_ack,
+            backer_file,
+            file_size,
+        })
+    }
+
     /// Read out entry at given offset.
+    /// This is a non-method function to make tests easier to write.
     async fn read_entry(
         backer: &mut File,
         file_size: usize,
@@ -234,6 +269,7 @@ where
     }
 
     /// Write given entry to given offset.
+    /// This is a non-method function to make tests easier to write.
     async fn write_entry(
         backer: &mut File,
         file_size: usize,
@@ -276,6 +312,7 @@ where
     }
 
     /// Append given entry to EOF.
+    /// This is a non-method function to make tests easier to write.
     async fn append_entry(
         backer: &mut File,
         file_size: usize,
@@ -299,6 +336,7 @@ where
     }
 
     /// Truncate the file at given index, keeping the head part.
+    /// This is a non-method function to make tests easier to write.
     async fn truncate_log(
         backer: &mut File,
         file_size: usize,
@@ -322,6 +360,7 @@ where
 
     /// Discard the file before given index, keeping the tail part (and
     /// optionally a fixed head part).
+    /// This is a non-method function to make tests easier to write.
     async fn discard_log(
         backer: &mut File,
         file_size: usize,
@@ -360,97 +399,100 @@ where
         }
     }
 
-    /// Carry out the given action on logger. Returns a tuple of result and
-    /// file size after the action.
-    async fn do_action(
-        backer: &mut File,
-        file_size: &mut usize,
+    /// Synthesized handler of durable logging actions on logger. Returns a
+    /// tuple of result and file size after the action.
+    async fn handle_action(
+        &mut self,
         action: LogAction<Ent>,
     ) -> Result<LogResult<Ent>, SummersetError> {
         match action {
             LogAction::Read { offset } => {
-                Self::read_entry(backer, *file_size, offset).await.map(
-                    |(entry, end_offset)| LogResult::Read { entry, end_offset },
-                )
+                Self::read_entry(&mut self.backer_file, self.file_size, offset)
+                    .await
+                    .map(|(entry, end_offset)| LogResult::Read {
+                        entry,
+                        end_offset,
+                    })
             }
             LogAction::Write {
                 entry,
                 offset,
                 sync,
-            } => Self::write_entry(backer, *file_size, &entry, offset, sync)
-                .await
-                .map(|(offset_ok, now_size)| {
-                    *file_size = now_size;
-                    LogResult::Write {
-                        offset_ok,
-                        now_size,
-                    }
-                }),
-            LogAction::Append { entry, sync } => {
-                Self::append_entry(backer, *file_size, &entry, sync)
-                    .await
-                    .map(|now_size| {
-                        *file_size = now_size;
-                        LogResult::Append { now_size }
-                    })
-            }
-            LogAction::Truncate { offset } => {
-                Self::truncate_log(backer, *file_size, offset).await.map(
-                    |(offset_ok, now_size)| {
-                        *file_size = now_size;
-                        LogResult::Truncate {
-                            offset_ok,
-                            now_size,
-                        }
-                    },
-                )
-            }
-            LogAction::Discard { offset, keep } => {
-                Self::discard_log(backer, *file_size, offset, keep)
-                    .await
-                    .map(|(offset_ok, now_size)| {
-                        *file_size = now_size;
-                        LogResult::Discard {
-                            offset_ok,
-                            now_size,
-                        }
-                    })
-            }
+            } => Self::write_entry(
+                &mut self.backer_file,
+                self.file_size,
+                &entry,
+                offset,
+                sync,
+            )
+            .await
+            .map(|(offset_ok, now_size)| {
+                self.file_size = now_size;
+                LogResult::Write {
+                    offset_ok,
+                    now_size,
+                }
+            }),
+            LogAction::Append { entry, sync } => Self::append_entry(
+                &mut self.backer_file,
+                self.file_size,
+                &entry,
+                sync,
+            )
+            .await
+            .map(|now_size| {
+                self.file_size = now_size;
+                LogResult::Append { now_size }
+            }),
+            LogAction::Truncate { offset } => Self::truncate_log(
+                &mut self.backer_file,
+                self.file_size,
+                offset,
+            )
+            .await
+            .map(|(offset_ok, now_size)| {
+                self.file_size = now_size;
+                LogResult::Truncate {
+                    offset_ok,
+                    now_size,
+                }
+            }),
+            LogAction::Discard { offset, keep } => Self::discard_log(
+                &mut self.backer_file,
+                self.file_size,
+                offset,
+                keep,
+            )
+            .await
+            .map(|(offset_ok, now_size)| {
+                self.file_size = now_size;
+                LogResult::Discard {
+                    offset_ok,
+                    now_size,
+                }
+            }),
         }
     }
 
-    /// Logger thread function.
-    async fn logger_thread(
-        mut backer_file: File,
-        mut rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
-        tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
-    ) {
-        pf_debug!("logger thread spawned");
+    /// Starts the durable logger task loop.
+    async fn run(&mut self) {
+        pf_debug!("logger task spawned");
 
-        // maintain file size
-        let metadata = backer_file.metadata().await;
-        if let Err(e) = metadata {
-            pf_error!("error reading backer file metadata: {}, exitting", e);
-            return;
-        }
-        let mut file_size: usize = metadata.unwrap().len() as usize;
-
-        while let Some((id, action)) = rx_log.recv().await {
+        while let Some((id, action)) = self.rx_log.recv().await {
             // pf_trace!("log action {:?}", action);
-            let res =
-                Self::do_action(&mut backer_file, &mut file_size, action).await;
+            let res = self.handle_action(action).await;
             if let Err(e) = res {
                 pf_error!("error during logging: {}", e);
                 continue;
             }
 
-            if let Err(e) = tx_ack.send((id, res.unwrap())) {
+            if let Err(e) = self.tx_ack.send((id, res.unwrap())) {
                 pf_error!("error sending to tx_ack: {}", e);
             }
         }
 
         // channel gets closed and no messages remain
-        pf_debug!("logger thread exitted");
+        pf_debug!("logger task exited");
     }
 }
 
@@ -477,11 +519,16 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-0.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let (offset_ok, now_size) =
-            StorageHub::write_entry(&mut backer_file, 0, &entry, 0, false)
-                .await?;
+        let (offset_ok, now_size) = StorageHubLoggerTask::write_entry(
+            &mut backer_file,
+            0,
+            &entry,
+            0,
+            false,
+        )
+        .await?;
         debug_assert!(offset_ok);
-        let (offset_ok, now_size) = StorageHub::write_entry(
+        let (offset_ok, now_size) = StorageHubLoggerTask::write_entry(
             &mut backer_file,
             now_size,
             &entry,
@@ -490,7 +537,7 @@ mod tests {
         )
         .await?;
         debug_assert!(offset_ok);
-        let (offset_ok, now_size) = StorageHub::write_entry(
+        let (offset_ok, now_size) = StorageHubLoggerTask::write_entry(
             &mut backer_file,
             now_size,
             &entry,
@@ -499,7 +546,7 @@ mod tests {
         )
         .await?;
         debug_assert!(offset_ok);
-        let (offset_ok, _) = StorageHub::write_entry(
+        let (offset_ok, _) = StorageHubLoggerTask::write_entry(
             &mut backer_file,
             now_size,
             &entry,
@@ -517,13 +564,21 @@ mod tests {
             prepare_test_file("/tmp/test-backer-1.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let entry_bytes = bincode::serialize(&entry)?;
-        let mid_size =
-            StorageHub::append_entry(&mut backer_file, 0, &entry, false)
-                .await?;
+        let mid_size = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            0,
+            &entry,
+            false,
+        )
+        .await?;
         debug_assert!(mid_size >= entry_bytes.len());
-        let end_size =
-            StorageHub::append_entry(&mut backer_file, mid_size, &entry, true)
-                .await?;
+        let end_size = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            mid_size,
+            &entry,
+            true,
+        )
+        .await?;
         debug_assert!(end_size - mid_size >= entry_bytes.len());
         Ok(())
     }
@@ -533,23 +588,36 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-2.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid_size =
-            StorageHub::append_entry(&mut backer_file, 0, &entry, false)
-                .await?;
-        let end_size =
-            StorageHub::append_entry(&mut backer_file, mid_size, &entry, true)
-                .await?;
+        let mid_size = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            0,
+            &entry,
+            false,
+        )
+        .await?;
+        let end_size = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            mid_size,
+            &entry,
+            true,
+        )
+        .await?;
         assert_eq!(
-            StorageHub::read_entry(&mut backer_file, end_size, mid_size)
-                .await?,
+            StorageHubLoggerTask::read_entry(
+                &mut backer_file,
+                end_size,
+                mid_size
+            )
+            .await?,
             (Some(TestEntry("test-entry-dummy-string".into())), end_size)
         );
         assert_eq!(
-            StorageHub::read_entry(&mut backer_file, end_size, 0).await?,
+            StorageHubLoggerTask::read_entry(&mut backer_file, end_size, 0)
+                .await?,
             (Some(TestEntry("test-entry-dummy-string".into())), mid_size)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::read_entry(
+            StorageHubLoggerTask::<TestEntry>::read_entry(
                 &mut backer_file,
                 end_size,
                 mid_size + 10
@@ -558,7 +626,7 @@ mod tests {
             (None, mid_size + 10)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::read_entry(
+            StorageHubLoggerTask::<TestEntry>::read_entry(
                 &mut backer_file,
                 mid_size,
                 mid_size - 4
@@ -574,10 +642,14 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-3.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid_offset =
-            StorageHub::append_entry(&mut backer_file, 0, &entry, false)
-                .await?;
-        let end_offset = StorageHub::append_entry(
+        let mid_offset = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            0,
+            &entry,
+            false,
+        )
+        .await?;
+        let end_offset = StorageHubLoggerTask::append_entry(
             &mut backer_file,
             mid_offset,
             &entry,
@@ -585,7 +657,7 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            StorageHub::<TestEntry>::truncate_log(
+            StorageHubLoggerTask::<TestEntry>::truncate_log(
                 &mut backer_file,
                 end_offset,
                 mid_offset
@@ -594,7 +666,7 @@ mod tests {
             (true, mid_offset)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::truncate_log(
+            StorageHubLoggerTask::<TestEntry>::truncate_log(
                 &mut backer_file,
                 mid_offset,
                 end_offset
@@ -603,7 +675,7 @@ mod tests {
             (false, mid_offset)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::truncate_log(
+            StorageHubLoggerTask::<TestEntry>::truncate_log(
                 &mut backer_file,
                 mid_offset,
                 0
@@ -619,17 +691,21 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-4.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid1_offset =
-            StorageHub::append_entry(&mut backer_file, 0, &entry, false)
-                .await?;
-        let mid2_offset = StorageHub::append_entry(
+        let mid1_offset = StorageHubLoggerTask::append_entry(
+            &mut backer_file,
+            0,
+            &entry,
+            false,
+        )
+        .await?;
+        let mid2_offset = StorageHubLoggerTask::append_entry(
             &mut backer_file,
             mid1_offset,
             &entry,
             false,
         )
         .await?;
-        let end_offset = StorageHub::append_entry(
+        let end_offset = StorageHubLoggerTask::append_entry(
             &mut backer_file,
             mid2_offset,
             &entry,
@@ -638,7 +714,7 @@ mod tests {
         .await?;
         let tail_size = end_offset - mid2_offset;
         assert_eq!(
-            StorageHub::<TestEntry>::discard_log(
+            StorageHubLoggerTask::<TestEntry>::discard_log(
                 &mut backer_file,
                 end_offset,
                 mid2_offset,
@@ -648,7 +724,7 @@ mod tests {
             (true, 2 * tail_size)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::discard_log(
+            StorageHubLoggerTask::<TestEntry>::discard_log(
                 &mut backer_file,
                 2 * tail_size,
                 mid1_offset,
@@ -658,7 +734,7 @@ mod tests {
             (false, 2 * tail_size)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::discard_log(
+            StorageHubLoggerTask::<TestEntry>::discard_log(
                 &mut backer_file,
                 2 * tail_size,
                 mid1_offset,
@@ -668,7 +744,7 @@ mod tests {
             (true, tail_size)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::discard_log(
+            StorageHubLoggerTask::<TestEntry>::discard_log(
                 &mut backer_file,
                 tail_size,
                 end_offset,
@@ -678,7 +754,7 @@ mod tests {
             (false, tail_size)
         );
         assert_eq!(
-            StorageHub::<TestEntry>::discard_log(
+            StorageHubLoggerTask::<TestEntry>::discard_log(
                 &mut backer_file,
                 tail_size,
                 tail_size,
@@ -690,7 +766,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_log_ack() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-6.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
@@ -731,7 +807,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_do_sync() -> Result<(), SummersetError> {
         let path = Path::new("/tmp/test-backer-7.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;

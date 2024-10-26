@@ -33,7 +33,7 @@ impl DriverClosedLoop {
         DriverClosedLoop {
             endpoint,
             next_req: 0,
-            timer: Timer::new(),
+            timer: Timer::default(),
             timeout,
         }
     }

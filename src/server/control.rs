@@ -30,7 +30,7 @@ pub(crate) struct ControlHub {
     /// Sender side of the send channel.
     tx_send: mpsc::UnboundedSender<CtrlMsg>,
 
-    /// Control messengener thread join handle.
+    /// Control messengener task join handle.
     _control_messenger_handle: JoinHandle<()>,
 }
 
@@ -38,7 +38,7 @@ pub(crate) struct ControlHub {
 impl ControlHub {
     /// Creates a new control message handler module. Connects to the cluster
     /// manager and getting assigned my server ID. Spawns the control messenger
-    /// thread. Creates a send channel for proactively sending control messages
+    /// task. Creates a send channel for proactively sending control messages
     /// and a recv channel for buffering incoming control messages. Returns the
     /// assigned server ID on success.
     pub(crate) async fn new_and_setup(
@@ -56,9 +56,10 @@ impl ControlHub {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
-        let control_messenger_handle = tokio::spawn(
-            Self::control_messenger_thread(stream, tx_recv, rx_send),
-        );
+        let mut messenger =
+            ControlHubMessengerTask::new(stream, tx_recv, rx_send);
+        let control_messenger_handle =
+            tokio::spawn(async move { messenger.run().await });
 
         Ok(ControlHub {
             me: id,
@@ -106,11 +107,50 @@ impl ControlHub {
     }
 }
 
-// ControlHub control_messenger thread implementation
-impl ControlHub {
+/// ControlHub control messenger task.
+struct ControlHubMessengerTask {
+    conn_read: OwnedReadHalf,
+    conn_write: OwnedWriteHalf,
+
+    tx_recv: mpsc::UnboundedSender<CtrlMsg>,
+    read_buf: BytesMut,
+
+    rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
+    write_buf: BytesMut,
+    write_buf_cursor: usize,
+    retrying: bool,
+}
+
+impl ControlHubMessengerTask {
+    /// Creates the control messenger task.
+    fn new(
+        conn: TcpStream,
+        tx_recv: mpsc::UnboundedSender<CtrlMsg>,
+        rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
+    ) -> Self {
+        let (conn_read, conn_write) = conn.into_split();
+
+        let read_buf = BytesMut::new();
+        let write_buf = BytesMut::new();
+        let write_buf_cursor = 0;
+        let retrying = false;
+
+        ControlHubMessengerTask {
+            conn_read,
+            conn_write,
+            tx_recv,
+            read_buf,
+            rx_send,
+            write_buf,
+            write_buf_cursor,
+            retrying,
+        }
+    }
+
     /// Reads a manager control message from given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -119,6 +159,7 @@ impl ControlHub {
     }
 
     /// Writes a control message through given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_ctrl(
         write_buf: &mut BytesMut,
         write_buf_cursor: &mut usize,
@@ -128,30 +169,20 @@ impl ControlHub {
         safe_tcp_write(write_buf, write_buf_cursor, conn_write, msg)
     }
 
-    /// Manager control message listener and sender thread function.
-    async fn control_messenger_thread(
-        conn: TcpStream,
-        tx_recv: mpsc::UnboundedSender<CtrlMsg>,
-        mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
-    ) {
-        pf_debug!("control_messenger thread spawned");
+    /// Starts the control messenger task loop.
+    async fn run(&mut self) {
+        pf_debug!("control_messenger task spawned");
 
-        let (mut conn_read, conn_write) = conn.into_split();
-        let mut read_buf = BytesMut::new();
-        let mut write_buf = BytesMut::new();
-        let mut write_buf_cursor = 0;
-
-        let mut retrying = false;
         loop {
             tokio::select! {
                 // gets a message to send to manager
-                msg = rx_send.recv(), if !retrying => {
+                msg = self.rx_send.recv(), if !self.retrying => {
                     match msg {
                         Some(msg) => {
                             match Self::write_ctrl(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
                                 Some(&msg)
                             ) {
                                 Ok(true) => {
@@ -159,7 +190,7 @@ impl ControlHub {
                                 }
                                 Ok(false) => {
                                     pf_debug!("should start retrying ctrl send");
-                                    retrying = true;
+                                    self.retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
@@ -173,16 +204,16 @@ impl ControlHub {
                 },
 
                 // retrying last unsuccessful send
-                _ = conn_write.writable(), if retrying => {
+                _ = self.conn_write.writable(), if self.retrying => {
                     match Self::write_ctrl(
-                        &mut write_buf,
-                        &mut write_buf_cursor,
-                        &conn_write,
+                        &mut self.write_buf,
+                        &mut self.write_buf_cursor,
+                        &self.conn_write,
                         None
                     ) {
                         Ok(true) => {
                             pf_debug!("finished retrying last ctrl send");
-                            retrying = false;
+                            self.retrying = false;
                         }
                         Ok(false) => {
                             pf_debug!("still should retry last ctrl send");
@@ -196,11 +227,11 @@ impl ControlHub {
                 },
 
                 // receives control message from manager
-                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
+                msg = Self::read_ctrl(&mut self.read_buf, &mut self.conn_read) => {
                     match msg {
                         Ok(msg) => {
                             // pf_trace!("recv ctrl {:?}", msg);
-                            if let Err(e) = tx_recv.send(msg) {
+                            if let Err(e) = self.tx_recv.send(msg) {
                                 pf_error!("error sending to tx_recv: {}", e);
                             }
                         },
@@ -209,14 +240,14 @@ impl ControlHub {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading ctrl: {}", e);
-                            break; // probably the manager exitted ungracefully
+                            break; // probably the manager exited ungracefully
                         }
                     }
                 }
             }
         }
 
-        pf_debug!("control_messenger thread exitted");
+        pf_debug!("control_messenger task exited");
     }
 }
 

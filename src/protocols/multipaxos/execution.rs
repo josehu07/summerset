@@ -8,7 +8,7 @@ use crate::utils::SummersetError;
 // MultiPaxosReplica state machine execution
 impl MultiPaxosReplica {
     /// Handler of state machine exec result chan recv.
-    pub(super) fn handle_cmd_result(
+    pub(super) async fn handle_cmd_result(
         &mut self,
         cmd_id: CommandId,
         cmd_result: CommandResult,

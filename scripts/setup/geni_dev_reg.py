@@ -1,8 +1,9 @@
 """Running Summerset on a variable number of nodes in a single site.
 """
 
-# Import the Portal object.
+# Import the Portal object and ProtoGENI lib.
 import geni.portal as portal  # type: ignore
+import geni.rspec.pg as rspec  # type: ignore
 
 # Primary partition's disk image.
 DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:summerset.dev"
@@ -33,8 +34,10 @@ pc.defineParameter(
 params = pc.bindParameters()
 
 # Check parameter validity.
-if params.nodeCount < 1 or params.nodeCount > 9:
-    pc.reportError(portal.ParameterError("#nodes must be >= 1 and <= 9", ["nodeCount"]))
+if params.nodeCount < 1 or params.nodeCount > 25:
+    pc.reportError(
+        portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"])
+    )
 
 if params.nodeType.strip() == "":
     pc.reportError(portal.ParameterError("Physical node type is empty", ["nodeType"]))
@@ -63,6 +66,10 @@ for i in range(params.nodeCount):
         iface = node.addInterface("eth1")
         lan.addInterface(iface)
         pass
+    # Copy backup home directory back to '/home/smr'?
+    # node.addService(
+    #     rspec.Execute(shell="bash", command="cp -r /opt/home-backup/. /home/smr/")
+    # )
 
 # Print the RSpec to the enclosing page.
 pc.printRequestRSpec(request)

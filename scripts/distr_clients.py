@@ -128,13 +128,11 @@ def run_clients(
     config,
     capture_stdout,
     pin_cores,
-    base_idx,
     timeout_ms,
 ):
     if num_clients < 1:
         raise ValueError(f"invalid num_clients: {num_clients}")
 
-    # assuming I am the machine to run manager
     manager_pub_ip = ipaddrs[man]
 
     # if dist_machs set, put clients round-robinly across this many machines
@@ -200,7 +198,7 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "-g", "--group", type=str, default="1dc", help="hosts group to run on"
+        "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
         "--me", type=str, default="host0", help="main script runner's host nickname"
@@ -210,12 +208,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
-    )
-    parser.add_argument(
-        "--base_idx",
-        type=int,
-        default=0,
-        help="idx of the first client for calculating ports",
     )
     parser.add_argument(
         "--timeout_ms", type=int, default=5000, help="client-side request timeout"
@@ -328,7 +320,7 @@ if __name__ == "__main__":
         raise ValueError(f"invalid manager oracle's host {args.man}")
 
     # check that the partition index is valid
-    partition_in_args, partition, file_midfix = False, 0, args.file_midfix
+    partition_in_args, partition, file_midfix = False, 0, ""
     if args.utility == "bench":
         partition_in_args = "partition" in args
         if partition_in_args and (args.partition < 0 or args.partition >= 5):
@@ -380,7 +372,6 @@ if __name__ == "__main__":
         args.config,
         capture_stdout,
         args.pin_cores,
-        args.base_idx,
         args.timeout_ms,
     )
 
@@ -407,7 +398,7 @@ if __name__ == "__main__":
                 rcs.append(client_proc.returncode)
     except subprocess.TimeoutExpired:
         if args.expect_halt:  # mainly for failover experiments
-            print("WARN: getting expected halt, exitting...")
+            print("WARN: getting expected halt, exiting...")
             sys.exit(0)
         raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 

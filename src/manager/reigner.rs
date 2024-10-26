@@ -77,21 +77,21 @@ pub(crate) struct ServerReigner {
     rx_recv: mpsc::UnboundedReceiver<(ReplicaId, CtrlMsg)>,
 
     /// Map from replica ID -> sender side of the send channel, shared with
-    /// the server acceptor thread.
+    /// the server acceptor task.
     tx_sends: flashmap::ReadHandle<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>,
 
-    /// Join handle of the server acceptor thread.
+    /// Join handle of the server acceptor task.
     _server_acceptor_handle: JoinHandle<()>,
 
-    /// Map from replica ID -> replica controller thread join handles, shared
-    /// with the server acceptor thread.
+    /// Map from replica ID -> replica controller task join handles, shared
+    /// with the server acceptor task.
     _server_controller_handles: flashmap::ReadHandle<ReplicaId, JoinHandle<()>>,
 }
 
 // ServerReigner public API implementation
 impl ServerReigner {
     /// Creates a new server-facing controller module. Spawns the server
-    /// acceptor thread. Creates a pair of ID assignment channels. Creates
+    /// acceptor task. Creates a pair of ID assignment channels. Creates
     /// a recv channel for buffering incoming control messages.
     pub(crate) async fn new_and_setup(
         srv_addr: SocketAddr,
@@ -107,15 +107,16 @@ impl ServerReigner {
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
         let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
+        let mut acceptor = ServerReignerAcceptorTask::new(
+            tx_id_assign,
+            rx_id_result,
+            tx_recv,
+            tx_sends_write,
+            server_listener,
+            server_controller_handles_write,
+        );
         let server_acceptor_handle =
-            tokio::spawn(Self::server_acceptor_thread(
-                tx_id_assign,
-                rx_id_result,
-                tx_recv,
-                server_listener,
-                tx_sends_write,
-                server_controller_handles_write,
-            ));
+            tokio::spawn(async move { acceptor.run().await });
 
         Ok(ServerReigner {
             rx_recv,
@@ -164,32 +165,67 @@ impl ServerReigner {
     }
 }
 
-// ServerReigner server_acceptor thread implementation
-impl ServerReigner {
-    /// Accepts a new server connection.
-    #[allow(clippy::too_many_arguments)]
-    async fn accept_new_server(
-        mut stream: TcpStream,
-        addr: SocketAddr,
-        tx_id_assign: &mpsc::UnboundedSender<()>,
-        rx_id_result: &mut mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+/// ServerReigner server acceptor task.
+struct ServerReignerAcceptorTask {
+    tx_id_assign: mpsc::UnboundedSender<()>,
+    rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+
+    tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
+    tx_sends: flashmap::WriteHandle<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>,
+
+    server_listener: TcpListener,
+    server_controller_handles: flashmap::WriteHandle<ReplicaId, JoinHandle<()>>,
+
+    tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
+}
+
+impl ServerReignerAcceptorTask {
+    /// Creates the server acceptor task.
+    fn new(
+        tx_id_assign: mpsc::UnboundedSender<()>,
+        rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
-        tx_sends: &mut flashmap::WriteHandle<
+        tx_sends: flashmap::WriteHandle<
             ReplicaId,
             mpsc::UnboundedSender<CtrlMsg>,
         >,
-        server_controller_handles: &mut flashmap::WriteHandle<
+
+        server_listener: TcpListener,
+        server_controller_handles: flashmap::WriteHandle<
             ReplicaId,
             JoinHandle<()>,
         >,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    ) -> Self {
+        // create an exit mpsc channel for getting notified about termination
+        // of server controller tasks
+        let (tx_exit, rx_exit) = mpsc::unbounded_channel();
+
+        ServerReignerAcceptorTask {
+            tx_id_assign,
+            rx_id_result,
+            tx_recv,
+            tx_sends,
+            server_listener,
+            server_controller_handles,
+            tx_exit,
+            rx_exit,
+        }
+    }
+
+    /// Accepts a new server connection.
+    async fn accept_new_server(
+        &mut self,
+        mut stream: TcpStream,
+        addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        // communicate with the manager's main thread to get assigned server ID
-        tx_id_assign.send(())?;
-        let (id, population) = rx_id_result
-            .recv()
-            .await
-            .ok_or(SummersetError::msg("failed to get server ID assignment"))?;
+        // communicate with the manager's main task to get assigned server ID
+        self.tx_id_assign.send(())?;
+        let (id, population) =
+            self.rx_id_result.recv().await.ok_or(SummersetError::msg(
+                "failed to get server ID assignment",
+            ))?;
 
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
@@ -201,12 +237,12 @@ impl ServerReigner {
             return logged_err!("error sending population: {}", e);
         }
 
-        let mut tx_sends_guard = tx_sends.guard();
+        let mut tx_sends_guard = self.tx_sends.guard();
         if let Some(sender) = tx_sends_guard.get(&id) {
             if sender.is_closed() {
                 // if this server ID has left before, garbage collect it now
                 let mut server_controller_handles_guard =
-                    server_controller_handles.guard();
+                    self.server_controller_handles.guard();
                 server_controller_handles_guard.remove(id);
                 tx_sends_guard.remove(id);
             } else {
@@ -218,12 +254,18 @@ impl ServerReigner {
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
 
+        let mut controller = ServerReignerControllerTask::new(
+            id,
+            addr,
+            stream,
+            self.tx_recv.clone(),
+            rx_send,
+            self.tx_exit.clone(),
+        );
         let server_controller_handle =
-            tokio::spawn(Self::server_controller_thread(
-                id, addr, stream, tx_recv, rx_send, tx_exit,
-            ));
+            tokio::spawn(async move { controller.run().await });
         let mut server_controller_handles_guard =
-            server_controller_handles.guard();
+            self.server_controller_handles.guard();
         server_controller_handles_guard.insert(id, server_controller_handle);
 
         server_controller_handles_guard.publish();
@@ -233,99 +275,115 @@ impl ServerReigner {
 
     /// Removes handles of a left server connection.
     fn remove_left_server(
+        &mut self,
         id: ReplicaId,
-        tx_sends: &mut flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<CtrlMsg>,
-        >,
-        server_controller_handles: &mut flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
     ) -> Result<(), SummersetError> {
-        let mut tx_sends_guard = tx_sends.guard();
+        let mut tx_sends_guard = self.tx_sends.guard();
         if !tx_sends_guard.contains_key(&id) {
             return logged_err!("server {} not found among active ones", id);
         }
         tx_sends_guard.remove(id);
 
         let mut server_controller_handles_guard =
-            server_controller_handles.guard();
+            self.server_controller_handles.guard();
         server_controller_handles_guard.remove(id);
 
         Ok(())
     }
 
-    /// Server acceptor thread function.
-    async fn server_acceptor_thread(
-        tx_id_assign: mpsc::UnboundedSender<()>,
-        mut rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
-        tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
-        server_listener: TcpListener,
-        mut tx_sends: flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<CtrlMsg>,
-        >,
-        mut server_controller_handles: flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
-    ) {
-        pf_debug!("server_acceptor thread spawned");
+    /// Starts the server acceptor task loop.
+    async fn run(&mut self) {
+        pf_debug!("server_acceptor task spawned");
 
-        let local_addr = server_listener.local_addr().unwrap();
+        let local_addr = self.server_listener.local_addr().unwrap();
         pf_info!("accepting servers on '{}'", local_addr);
-
-        // create an exit mpsc channel for getting notified about termination
-        // of server controller threads
-        let (tx_exit, mut rx_exit) = mpsc::unbounded_channel();
 
         loop {
             tokio::select! {
                 // new client connection
-                accepted = server_listener.accept() => {
+                accepted = self.server_listener.accept() => {
                     if let Err(e) = accepted {
                         pf_warn!("error accepting server connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
-                    if let Err(e) = Self::accept_new_server(
+                    if let Err(e) = self.accept_new_server(
                         stream,
                         addr,
-                        &tx_id_assign,
-                        &mut rx_id_result,
-                        tx_recv.clone(),
-                        &mut tx_sends,
-                        &mut server_controller_handles,
-                        tx_exit.clone(),
                     ).await {
                         pf_error!("error accepting new server: {}", e);
                     }
                 },
 
-                // a server controller thread exits
-                id = rx_exit.recv() => {
+                // a server controller task exits
+                id = self.rx_exit.recv() => {
                     let id = id.unwrap();
-                    if let Err(e) = Self::remove_left_server(
-                        id,
-                        &mut tx_sends,
-                        &mut server_controller_handles
-                    ) {
+                    if let Err(e) = self.remove_left_server(id) {
                         pf_error!("error removing left server {}: {}", id, e);
                     }
                 },
             }
         }
 
-        // pf_debug!("server_acceptor thread exitted");
+        // pf_debug!("server_acceptor task exited");
     }
 }
 
-// ServerReigner server_controller thread implementation
-impl ServerReigner {
+/// ServerReigner per-server controller task.
+struct ServerReignerControllerTask {
+    id: ReplicaId,
+    addr: SocketAddr,
+
+    conn_read: OwnedReadHalf,
+    conn_write: OwnedWriteHalf,
+
+    tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
+    read_buf: BytesMut,
+
+    rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
+    write_buf: BytesMut,
+    write_buf_cursor: usize,
+    retrying: bool,
+
+    tx_exit: mpsc::UnboundedSender<ReplicaId>,
+}
+
+impl ServerReignerControllerTask {
+    /// Creates a per-server controller task.
+    fn new(
+        id: ReplicaId,
+        addr: SocketAddr,
+        conn: TcpStream,
+        tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
+        rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
+        tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    ) -> Self {
+        let (conn_read, conn_write) = conn.into_split();
+
+        let read_buf = BytesMut::new();
+        let write_buf = BytesMut::new();
+        let write_buf_cursor = 0;
+        let retrying = false;
+
+        ServerReignerControllerTask {
+            id,
+            addr,
+            conn_read,
+            conn_write,
+            tx_recv,
+            read_buf,
+            rx_send,
+            write_buf,
+            write_buf_cursor,
+            retrying,
+            tx_exit,
+        }
+    }
+
     /// Reads a server control message from given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -334,6 +392,7 @@ impl ServerReigner {
     }
 
     /// Writes a control message through given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_ctrl(
         write_buf: &mut BytesMut,
         write_buf_cursor: &mut usize,
@@ -343,41 +402,32 @@ impl ServerReigner {
         safe_tcp_write(write_buf, write_buf_cursor, conn_write, msg)
     }
 
-    /// Server control message listener and sender thread function.
-    async fn server_controller_thread(
-        id: ReplicaId,
-        addr: SocketAddr,
-        conn: TcpStream,
-        tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
-        mut rx_send: mpsc::UnboundedReceiver<CtrlMsg>,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
-    ) {
-        pf_debug!("server_controller thread for {} '{}' spawned", id, addr);
+    /// Starts a per-server controller task.
+    async fn run(&mut self) {
+        pf_debug!(
+            "server_controller task for {} '{}' spawned",
+            self.id,
+            self.addr
+        );
 
-        let (mut conn_read, conn_write) = conn.into_split();
-        let mut read_buf = BytesMut::new();
-        let mut write_buf = BytesMut::new();
-        let mut write_buf_cursor = 0;
-
-        let mut retrying = false;
         loop {
             tokio::select! {
                 // gets a message to send to server
-                msg = rx_send.recv(), if !retrying => {
+                msg = self.rx_send.recv(), if !self.retrying => {
                     match msg {
                         Some(msg) => {
                             match Self::write_ctrl(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
                                 Some(&msg)
                             ) {
                                 Ok(true) => {
                                     // pf_trace!("sent -> {} ctrl {:?}", id, msg);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("should start retrying ctrl send -> {}", id);
-                                    retrying = true;
+                                    pf_debug!("should start retrying ctrl send -> {}", self.id);
+                                    self.retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
@@ -391,19 +441,19 @@ impl ServerReigner {
                 },
 
                 // retrying last unsuccessful reply send
-                _ = conn_write.writable(), if retrying => {
+                _ = self.conn_write.writable(), if self.retrying => {
                     match Self::write_ctrl(
-                        &mut write_buf,
-                        &mut write_buf_cursor,
-                        &conn_write,
+                        &mut self.write_buf,
+                        &mut self.write_buf_cursor,
+                        &self.conn_write,
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("finished retrying last ctrl send -> {}", id);
-                            retrying = false;
+                            pf_debug!("finished retrying last ctrl send -> {}", self.id);
+                            self.retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("still should retry last ctrl send -> {}", id);
+                            pf_debug!("still should retry last ctrl send -> {}", self.id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
@@ -414,22 +464,22 @@ impl ServerReigner {
                 },
 
                 // receives control message from server
-                msg = Self::read_ctrl(&mut read_buf, &mut conn_read) => {
+                msg = Self::read_ctrl(&mut self.read_buf, &mut self.conn_read) => {
                     match msg {
                         Ok(CtrlMsg::Leave) => {
                             // server leaving, send dummy reply and break
                             let msg = CtrlMsg::LeaveReply;
                             if let Err(_e) = Self::write_ctrl(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
                                 Some(&msg)
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("server {} has left", id);
+                                pf_debug!("server {} has left", self.id);
                             }
                             break;
                         },
@@ -446,7 +496,7 @@ impl ServerReigner {
                             // the server's remote IP address known at the
                             // time of accepting connection to make them valid
                             // remote addresses
-                            let conn_ip = conn_write.peer_addr().unwrap().ip();
+                            let conn_ip = self.conn_write.peer_addr().unwrap().ip();
                             api_addr.set_ip(conn_ip);
                             p2p_addr.set_ip(conn_ip);
 
@@ -457,7 +507,7 @@ impl ServerReigner {
                                 p2p_addr
                             };
                             // pf_trace!("recv <- {} ctrl {:?}", id, msg);
-                            if let Err(e) = tx_recv.send((id, msg)) {
+                            if let Err(e) = self.tx_recv.send((id, msg)) {
                                 pf_error!("error sending to tx_recv for {}: {}",
                                           id, e);
                             }
@@ -465,9 +515,9 @@ impl ServerReigner {
 
                         Ok(msg) => {
                             // pf_trace!("recv <- {} ctrl {:?}", id, msg);
-                            if let Err(e) = tx_recv.send((id, msg)) {
+                            if let Err(e) = self.tx_recv.send((self.id, msg)) {
                                 pf_error!("error sending to tx_recv for {}: {}",
-                                          id, e);
+                                          self.id, e);
                             }
                         },
 
@@ -475,17 +525,21 @@ impl ServerReigner {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading ctrl <- {}: {}", id, e);
-                            break; // probably the server exitted ungracefully
+                            break; // probably the server exited ungracefully
                         }
                     }
                 }
             }
         }
 
-        if let Err(e) = tx_exit.send(id) {
-            pf_error!("error sending exit signal for {}: {}", id, e);
+        if let Err(e) = self.tx_exit.send(self.id) {
+            pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
-        pf_debug!("server_controller thread for {} '{}' exitted", id, addr);
+        pf_debug!(
+            "server_controller task for {} '{}' exited",
+            self.id,
+            self.addr
+        );
     }
 }
 
@@ -497,7 +551,7 @@ mod tests {
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn api_send_recv() -> Result<(), SummersetError> {
         let setup_bar = Arc::new(Barrier::new(3));
         let setup_bar0 = setup_bar.clone();
@@ -613,8 +667,6 @@ mod tests {
     async fn api_do_sync() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        let term_bar = Arc::new(Barrier::new(2));
-        let term_bar2 = term_bar.clone();
         tokio::spawn(async move {
             // replica
             barrier2.wait().await;
@@ -628,13 +680,14 @@ mod tests {
                 api_addr: "127.0.0.1:30100".parse()?,
                 p2p_addr: "127.0.0.1:30110".parse()?,
             })?;
-            // send a message to manager and wait for reply blockingly
+            // send a leave to manager and wait for reply blockingly
+            barrier2.wait().await;
             assert_eq!(
                 hub.do_sync_ctrl(CtrlMsg::Leave, |m| m == &CtrlMsg::LeaveReply)
                     .await?,
                 CtrlMsg::LeaveReply
             );
-            term_bar.wait().await;
+            barrier2.wait().await;
             Ok::<(), SummersetError>(())
         });
         // manager
@@ -670,8 +723,9 @@ mod tests {
             id,
         )?;
         // recv second message (which is a Leave) from server; reply is sent
-        // directly from the controller thread's event loop
-        term_bar2.wait().await;
+        // directly from the controller task's event loop
+        barrier.wait().await;
+        barrier.wait().await;
         Ok(())
     }
 

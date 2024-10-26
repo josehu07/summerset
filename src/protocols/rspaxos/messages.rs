@@ -11,7 +11,7 @@ use crate::utils::{Bitmap, RSCodeword, SummersetError};
 // RSPaxosReplica peer-peer messages handling
 impl RSPaxosReplica {
     /// Handler of Prepare message from leader.
-    fn handle_msg_prepare(
+    async fn handle_msg_prepare(
         &mut self,
         peer: ReplicaId,
         trigger_slot: usize,
@@ -30,8 +30,10 @@ impl RSPaxosReplica {
         // if ballot is not smaller than what I have seen:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
-            self.kickoff_hb_hear_timer()?;
+            self.check_leader(peer, ballot).await?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= trigger_slot {
@@ -266,7 +268,7 @@ impl RSPaxosReplica {
                         // record update to largest accepted ballot and its
                         // corresponding data
                         let subset_copy = inst.reqs_cw.subset_copy(
-                            &Bitmap::from(self.population, vec![self.id]),
+                            &Bitmap::from((self.population, vec![self.id])),
                             false,
                         )?;
                         inst.voted = (ballot, subset_copy.clone());
@@ -299,10 +301,10 @@ impl RSPaxosReplica {
                                     slot: this_slot,
                                     ballot,
                                     reqs_cw: inst.reqs_cw.subset_copy(
-                                        &Bitmap::from(
+                                        &Bitmap::from((
                                             self.population,
                                             vec![peer],
-                                        ),
+                                        )),
                                         false,
                                     )?,
                                 },
@@ -323,7 +325,7 @@ impl RSPaxosReplica {
     }
 
     /// Handler of Accept message from leader.
-    fn handle_msg_accept(
+    async fn handle_msg_accept(
         &mut self,
         peer: ReplicaId,
         slot: usize,
@@ -344,8 +346,10 @@ impl RSPaxosReplica {
         // if ballot is not smaller than what I have made promises for:
         if ballot >= self.bal_max_seen {
             // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot)?;
-            self.kickoff_hb_hear_timer()?;
+            self.check_leader(peer, ballot).await?;
+            if !self.config.disable_hb_timer {
+                self.heartbeater.kickoff_hear_timer()?;
+            }
 
             // locate instance in memory, filling in null instances if needed
             while self.start_slot + self.insts.len() <= slot {
@@ -590,7 +594,7 @@ impl RSPaxosReplica {
     }
 
     /// Synthesized handler of receiving message from peer.
-    pub(super) fn handle_msg_recv(
+    pub(super) async fn handle_msg_recv(
         &mut self,
         peer: ReplicaId,
         msg: PeerMsg,
@@ -599,7 +603,7 @@ impl RSPaxosReplica {
             PeerMsg::Prepare {
                 trigger_slot,
                 ballot,
-            } => self.handle_msg_prepare(peer, trigger_slot, ballot),
+            } => self.handle_msg_prepare(peer, trigger_slot, ballot).await,
             PeerMsg::PrepareReply {
                 slot,
                 trigger_slot,
@@ -618,7 +622,7 @@ impl RSPaxosReplica {
                 slot,
                 ballot,
                 reqs_cw,
-            } => self.handle_msg_accept(peer, slot, ballot, reqs_cw),
+            } => self.handle_msg_accept(peer, slot, ballot, reqs_cw).await,
             PeerMsg::AcceptReply { slot, ballot } => {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
@@ -633,8 +637,12 @@ impl RSPaxosReplica {
                 commit_bar,
                 exec_bar,
                 snap_bar,
-            } => self
-                .heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar),
+            } => {
+                self.heard_heartbeat(
+                    peer, ballot, commit_bar, exec_bar, snap_bar,
+                )
+                .await
+            }
         }
     }
 }

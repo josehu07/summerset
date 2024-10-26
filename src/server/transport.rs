@@ -9,7 +9,7 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::server::ReplicaId;
+use crate::server::{LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
     safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
     Bitmap, SummersetError,
@@ -31,8 +31,14 @@ use tokio::time::{self, Duration};
 /// Peer-peer message wrapper type that includes leave notification variants.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
 enum PeerMessage<Msg> {
-    /// Normal protocol-specific request.
+    /// Normal protocol-specific message.
     Msg { msg: Msg },
+
+    /// Lease-related message.
+    LeaseMsg {
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+    },
 
     /// Server leave notification.
     Leave,
@@ -53,13 +59,13 @@ pub(crate) struct TransportHub<Msg> {
     rx_recv: mpsc::UnboundedReceiver<(ReplicaId, PeerMessage<Msg>)>,
 
     /// Map from peer ID -> sender side of the send channel, shared with the
-    /// peer acceptor thread.
+    /// peer acceptor task.
     tx_sends: flashmap::ReadHandle<
         ReplicaId,
         mpsc::UnboundedSender<PeerMessage<Msg>>,
     >,
 
-    /// Join handle of the peer acceptor thread.
+    /// Join handle of the peer acceptor task.
     _peer_acceptor_handle: JoinHandle<()>,
 
     /// Sender side of the connect channel, used when proactively connecting
@@ -70,8 +76,8 @@ pub(crate) struct TransportHub<Msg> {
     /// to some peer.
     rx_connack: mpsc::UnboundedReceiver<ReplicaId>,
 
-    /// Map from peer ID -> peer messenger thread join handles, shared with
-    /// the peer acceptor thread.
+    /// Map from peer ID -> peer messenger task join handles, shared with
+    /// the peer acceptor task.
     _peer_messenger_handles: flashmap::ReadHandle<ReplicaId, JoinHandle<()>>,
 }
 
@@ -88,12 +94,14 @@ where
         + 'static,
 {
     /// Creates a new server internal TCP transport hub. Spawns the peer
-    /// acceptor thread. Creates a recv channel for listening on peers'
+    /// acceptor task. Creates a recv channel for listening on peers'
     /// messages.
     pub(crate) async fn new_and_setup(
         me: ReplicaId,
         population: u8,
         p2p_addr: SocketAddr,
+        // if non-null, a shortcut channel to feed lease messages directly in:
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!("invalid population {}", population);
@@ -111,12 +119,12 @@ where
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
         // the connect & connack channels are used to notify the peer acceptor
-        // thread to proactively connect to some peer
+        // task to proactively connect to some peer
         let (tx_connect, rx_connect) = mpsc::unbounded_channel();
         let (tx_connack, rx_connack) = mpsc::unbounded_channel();
 
         let peer_listener = tcp_bind_with_retry(p2p_addr, 10).await?;
-        let peer_acceptor_handle = tokio::spawn(Self::peer_acceptor_thread(
+        let mut acceptor = TransportHubAcceptorTask::new(
             me,
             tx_recv.clone(),
             peer_listener,
@@ -124,7 +132,10 @@ where
             peer_messenger_handles_write,
             rx_connect,
             tx_connack,
-        ));
+            tx_lease,
+        );
+        let peer_acceptor_handle =
+            tokio::spawn(async move { acceptor.run().await });
 
         Ok(TransportHub {
             me,
@@ -139,7 +150,7 @@ where
     }
 
     /// Connects to a peer replica proactively, and spawns the corresponding
-    /// messenger thread.
+    /// messenger task.
     pub(crate) async fn connect_to_peer(
         &mut self,
         id: ReplicaId,
@@ -191,17 +202,15 @@ where
     }
 
     /// Sends a message to a specified peer by sending to the send channel.
-    pub(crate) fn send_msg(
+    fn send_msg_inner(
         &mut self,
-        msg: Msg,
+        msg: PeerMessage<Msg>,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
         match tx_sends_guard.get(&peer) {
             Some(tx_send) => {
-                tx_send
-                    .send(PeerMessage::Msg { msg })
-                    .map_err(SummersetError::msg)?;
+                tx_send.send(msg).map_err(SummersetError::msg)?;
             }
             None => {
                 // NOTE: commented out to avoid spurious error messages
@@ -217,9 +226,9 @@ where
 
     /// Broadcasts message to specified peers by sending to the send channel.
     /// If `target` is `None`, broadcast to all current peers.
-    pub(crate) fn bcast_msg(
+    fn bcast_msg_inner(
         &mut self,
-        msg: Msg,
+        msg: PeerMessage<Msg>,
         target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
         let tx_sends_guard = self.tx_sends.guard();
@@ -237,11 +246,64 @@ where
             tx_sends_guard
                 .get(&peer)
                 .unwrap()
-                .send(PeerMessage::Msg { msg: msg.clone() })
+                .send(msg.clone())
                 .map_err(SummersetError::msg)?;
         }
 
         Ok(())
+    }
+
+    /// Sends a message to a specified peer by sending to the send channel.
+    pub(crate) fn send_msg(
+        &mut self,
+        msg: Msg,
+        peer: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        self.send_msg_inner(PeerMessage::Msg { msg }, peer)
+    }
+
+    /// Broadcasts message to specified peers by sending to the send channel.
+    /// If `target` is `None`, broadcast to all current peers.
+    pub(crate) fn bcast_msg(
+        &mut self,
+        msg: Msg,
+        target: Option<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        self.bcast_msg_inner(PeerMessage::Msg { msg }, target)
+    }
+
+    /// Sends a lease-related message to a specified peer by sending to the
+    /// send channel.
+    pub(crate) fn send_lease_msg(
+        &mut self,
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+        peer: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        self.send_msg_inner(
+            PeerMessage::LeaseMsg {
+                lease_num,
+                lease_msg,
+            },
+            peer,
+        )
+    }
+
+    /// Broadcasts lease-related message to specified peers by sending to the
+    /// send channel. If `target` is `None`, broadcast to all current peers.
+    pub(crate) fn bcast_lease_msg(
+        &mut self,
+        lease_num: LeaseNum,
+        lease_msg: LeaseMsg,
+        target: Option<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        self.bcast_msg_inner(
+            PeerMessage::LeaseMsg {
+                lease_num,
+                lease_msg,
+            },
+            target,
+        )
     }
 
     /// Receives a message from some peer by receiving from the recv channel.
@@ -310,8 +372,29 @@ where
     }
 }
 
-// TransportHub peer_acceptor thread implementation
-impl<Msg> TransportHub<Msg>
+/// TransportHub peer acceptor task.
+struct TransportHubAcceptorTask<Msg> {
+    me: ReplicaId,
+
+    tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
+    tx_sends: flashmap::WriteHandle<
+        ReplicaId,
+        mpsc::UnboundedSender<PeerMessage<Msg>>,
+    >,
+
+    peer_listener: TcpListener,
+    peer_messenger_handles: flashmap::WriteHandle<ReplicaId, JoinHandle<()>>,
+
+    rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
+    tx_connack: mpsc::UnboundedSender<ReplicaId>,
+
+    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+
+    tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
+}
+
+impl<Msg> TransportHubAcceptorTask<Msg>
 where
     Msg: fmt::Debug
         + Clone
@@ -321,39 +404,73 @@ where
         + Sync
         + 'static,
 {
-    /// Connects to a peer proactively.
+    /// Creates the peer acceptor task.
     #[allow(clippy::too_many_arguments)]
-    async fn connect_new_peer(
+    fn new(
         me: ReplicaId,
-        id: ReplicaId,
-        conn_addr: SocketAddr,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        tx_sends: &mut flashmap::WriteHandle<
+        peer_listener: TcpListener,
+        tx_sends: flashmap::WriteHandle<
             ReplicaId,
             mpsc::UnboundedSender<PeerMessage<Msg>>,
         >,
-        peer_messenger_handles: &mut flashmap::WriteHandle<
+        peer_messenger_handles: flashmap::WriteHandle<
             ReplicaId,
             JoinHandle<()>,
         >,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
+        rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
+        tx_connack: mpsc::UnboundedSender<ReplicaId>,
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+    ) -> Self {
+        // create an exit mpsc channel for getting notified about termination
+        // of peer messenger tasks
+        let (tx_exit, rx_exit) = mpsc::unbounded_channel();
+
+        TransportHubAcceptorTask {
+            me,
+            tx_recv,
+            peer_listener,
+            tx_sends,
+            peer_messenger_handles,
+            rx_connect,
+            tx_connack,
+            tx_lease,
+            tx_exit,
+            rx_exit,
+        }
+    }
+
+    /// Connects to a peer proactively.
+    async fn connect_new_peer(
+        &mut self,
+        id: ReplicaId,
+        conn_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         pf_debug!("connecting to peer {} '{}'...", id, conn_addr);
         let mut stream = tcp_connect_with_retry(conn_addr, 10).await?;
-        stream.write_u8(me).await?; // send my ID
+        stream.write_u8(self.me).await?; // send my ID
 
-        let mut peer_messenger_handles_guard = peer_messenger_handles.guard();
+        let mut peer_messenger_handles_guard =
+            self.peer_messenger_handles.guard();
         if peer_messenger_handles_guard.contains_key(&id) {
             return logged_err!("duplicate peer ID to connect: {}", id);
         }
 
-        let mut tx_sends_guard = tx_sends.guard();
+        let mut tx_sends_guard = self.tx_sends.guard();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
 
-        let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
-            id, conn_addr, stream, rx_send, tx_recv, tx_exit,
-        ));
+        let mut messenger = TransportHubMessengerTask::new(
+            id,
+            conn_addr,
+            stream,
+            rx_send,
+            self.tx_recv.clone(),
+            self.tx_lease.clone(),
+            self.tx_exit.clone(),
+        );
+        let peer_messenger_handle =
+            tokio::spawn(async move { messenger.run().await });
         peer_messenger_handles_guard.insert(id, peer_messenger_handle);
 
         pf_debug!("connected to peer {}", id);
@@ -362,18 +479,9 @@ where
 
     /// Accepts a new peer connection.
     async fn accept_new_peer(
+        &mut self,
         mut stream: TcpStream,
         addr: SocketAddr,
-        tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        tx_sends: &mut flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<PeerMessage<Msg>>,
-        >,
-        peer_messenger_handles: &mut flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Result<(), SummersetError> {
         let id = stream.read_u8().await; // receive peer's ID
         if let Err(e) = id {
@@ -381,18 +489,27 @@ where
         }
         let id = id.unwrap();
 
-        let mut peer_messenger_handles_guard = peer_messenger_handles.guard();
+        let mut peer_messenger_handles_guard =
+            self.peer_messenger_handles.guard();
         if peer_messenger_handles_guard.contains_key(&id) {
             return logged_err!("duplicate peer ID listened: {}", id);
         }
 
-        let mut tx_sends_guard = tx_sends.guard();
+        let mut tx_sends_guard = self.tx_sends.guard();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         tx_sends_guard.insert(id, tx_send);
 
-        let peer_messenger_handle = tokio::spawn(Self::peer_messenger_thread(
-            id, addr, stream, rx_send, tx_recv, tx_exit,
-        ));
+        let mut messenger = TransportHubMessengerTask::new(
+            id,
+            addr,
+            stream,
+            rx_send,
+            self.tx_recv.clone(),
+            self.tx_lease.clone(),
+            self.tx_exit.clone(),
+        );
+        let peer_messenger_handle =
+            tokio::spawn(async move { messenger.run().await });
         peer_messenger_handles_guard.insert(id, peer_messenger_handle);
 
         pf_debug!("waited on peer {}", id);
@@ -401,103 +518,68 @@ where
 
     /// Removes handles of a left peer connection.
     fn remove_left_peer(
+        &mut self,
         id: ReplicaId,
-        tx_sends: &mut flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<PeerMessage<Msg>>,
-        >,
-        peer_messenger_handles: &mut flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
     ) -> Result<(), SummersetError> {
-        let mut tx_sends_guard = tx_sends.guard();
+        let mut tx_sends_guard = self.tx_sends.guard();
         if !tx_sends_guard.contains_key(&id) {
             return logged_err!("peer {} not found among connected ones", id);
         }
         tx_sends_guard.remove(id);
 
-        let mut peer_messenger_handles_guard = peer_messenger_handles.guard();
+        let mut peer_messenger_handles_guard =
+            self.peer_messenger_handles.guard();
         peer_messenger_handles_guard.remove(id);
 
         Ok(())
     }
 
-    /// Peer acceptor thread function.
-    async fn peer_acceptor_thread(
-        me: ReplicaId,
-        tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        peer_listener: TcpListener,
-        mut tx_sends: flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<PeerMessage<Msg>>,
-        >,
-        mut peer_messenger_handles: flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
-        mut rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
-        tx_connack: mpsc::UnboundedSender<ReplicaId>,
-    ) {
-        pf_debug!("peer_acceptor thread spawned");
+    /// Starts the peer acceptor task loop.
+    async fn run(&mut self) {
+        pf_debug!("peer_acceptor task spawned");
 
-        let local_addr = peer_listener.local_addr().unwrap();
+        let local_addr = self.peer_listener.local_addr().unwrap();
         pf_info!("accepting peers on '{}'", local_addr);
-
-        // create an exit mpsc channel for getting notified about termination
-        // of peer messenger threads
-        let (tx_exit, mut rx_exit) = mpsc::unbounded_channel();
 
         loop {
             tokio::select! {
                 // proactive connection request
-                to_connect = rx_connect.recv() => {
+                to_connect = self.rx_connect.recv() => {
                     if to_connect.is_none() {
                         pf_error!("connect channel closed");
                         break; // channel gets closed and no messages remain
                     }
                     let (peer, conn_addr) = to_connect.unwrap();
-                    if let Err(e) = Self::connect_new_peer(
-                        me,
+                    if let Err(e) = self.connect_new_peer(
                         peer,
                         conn_addr,
-                        tx_recv.clone(),
-                        &mut tx_sends,
-                        &mut peer_messenger_handles,
-                        tx_exit.clone()
                     ).await {
                         pf_error!("error connecting to new peer: {}", e);
-                    } else if let Err(e) = tx_connack.send(peer) {
+                    } else if let Err(e) = self.tx_connack.send(peer) {
                         pf_error!("error sending to tx_connack: {}", e);
                     }
                 },
 
                 // new peer connection accepted
-                accepted = peer_listener.accept() => {
+                accepted = self.peer_listener.accept() => {
                     if let Err(e) = accepted {
                         pf_warn!("error accepting peer connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
-                    if let Err(e) = Self::accept_new_peer(
+                    if let Err(e) = self.accept_new_peer(
                         stream,
                         addr,
-                        tx_recv.clone(),
-                        &mut tx_sends,
-                        &mut peer_messenger_handles,
-                        tx_exit.clone()
                     ).await {
                         pf_error!("error accepting new peer: {}", e);
                     }
                 },
 
-                // a peer messenger thread exits
-                id = rx_exit.recv() => {
+                // a peer messenger task exits
+                id = self.rx_exit.recv() => {
                     let id = id.unwrap();
-                    if let Err(e) = Self::remove_left_peer(
+                    if let Err(e) = self.remove_left_peer(
                         id,
-                        &mut tx_sends,
-                        &mut peer_messenger_handles
                     ) {
                         pf_error!("error removing left peer {}: {}", id, e);
                     }
@@ -505,12 +587,35 @@ where
             }
         }
 
-        // pf_debug!("peer_acceptor thread exitted");
+        // pf_debug!("peer_acceptor task exited");
     }
 }
 
-// TransportHub peer_messenger thread implementation
-impl<Msg> TransportHub<Msg>
+/// TransportHub per-peer messenger task.
+struct TransportHubMessengerTask<Msg> {
+    /// Corresponding peer's ID.
+    id: ReplicaId,
+    /// Corresponding peer's address.
+    addr: SocketAddr,
+
+    conn_read: OwnedReadHalf,
+    conn_write: OwnedWriteHalf,
+
+    rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
+    read_buf: BytesMut,
+
+    tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
+    write_buf: BytesMut,
+    write_buf_cursor: usize,
+    retrying: bool,
+
+    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+
+    tx_exit: mpsc::UnboundedSender<ReplicaId>,
+}
+
+// TransportHub peer_messenger task implementation
+impl<Msg> TransportHubMessengerTask<Msg>
 where
     Msg: fmt::Debug
         + Clone
@@ -520,7 +625,41 @@ where
         + Sync
         + 'static,
 {
+    /// Creates a per-peer messenger task.
+    fn new(
+        id: ReplicaId,
+        addr: SocketAddr,
+        conn: TcpStream,
+        rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
+        tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
+        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+        tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    ) -> Self {
+        let (conn_read, conn_write) = conn.into_split();
+
+        let read_buf = BytesMut::with_capacity(8 + 1024);
+        let write_buf = BytesMut::with_capacity(8 + 1024);
+        let write_buf_cursor = 0;
+        let retrying = false;
+
+        TransportHubMessengerTask {
+            id,
+            addr,
+            conn_read,
+            conn_write,
+            rx_send,
+            read_buf,
+            tx_recv,
+            write_buf,
+            write_buf_cursor,
+            retrying,
+            tx_lease,
+            tx_exit,
+        }
+    }
+
     /// Writes a message through given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_msg(
         write_buf: &mut BytesMut,
         write_buf_cursor: &mut usize,
@@ -531,8 +670,9 @@ where
     }
 
     /// Reads a message from given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_msg(
-        // first 8 btyes being the message length, and the rest bytes being the
+        // first 8 bytes being the message length, and the rest bytes being the
         // message itself
         read_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -540,42 +680,32 @@ where
         safe_tcp_read(read_buf, conn_read).await
     }
 
-    /// Peer messenger thread function.
-    async fn peer_messenger_thread(
-        id: ReplicaId,    // corresonding peer's ID
-        addr: SocketAddr, // corresponding peer's address
-        conn: TcpStream,
-        mut rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
-        tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
-    ) {
-        pf_debug!("peer_messenger thread for {} '{}' spawned", id, addr);
+    /// Starts a per-peer messenger task loop.
+    async fn run(&mut self) {
+        pf_debug!(
+            "peer_messenger task for {} '{}' spawned",
+            self.id,
+            self.addr
+        );
 
-        let (mut conn_read, conn_write) = conn.into_split();
-        let mut read_buf = BytesMut::with_capacity(8 + 1024);
-        let mut write_buf = BytesMut::with_capacity(8 + 1024);
-        let mut write_buf_cursor = 0;
-
-        let mut retrying = false;
         loop {
             tokio::select! {
                 // gets a message to send out
-                msg = rx_send.recv(), if !retrying => {
+                msg = self.rx_send.recv(), if !self.retrying => {
                     match msg {
                         Some(PeerMessage::Leave) => {
                             // I decide to leave, notify peers
-                            let peer_msg = PeerMessage::Leave;
                             if let Err(_e) = Self::write_msg(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
-                                Some(&peer_msg),
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
+                                Some(&PeerMessage::Leave),
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!("error sending -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("sent leave notification -> {}", id);
+                                pf_debug!("sent leave notification -> {}", self.id);
                             }
                         },
 
@@ -583,20 +713,19 @@ where
                             pf_error!("proactively sending LeaveReply msg");
                         },
 
-                        Some(PeerMessage::Msg { msg }) => {
-                            let peer_msg = PeerMessage::Msg { msg };
+                        Some(PeerMessage::LeaseMsg { .. }) | Some(PeerMessage::Msg { .. }) => {
                             match Self::write_msg(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
-                                Some(&peer_msg),
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
+                                Some(msg.as_ref().unwrap()),
                             ) {
                                 Ok(true) => {
                                     // pf_trace!("sent -> {} msg {:?}", id, msg);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("should start retrying msg send -> {}", id);
-                                    retrying = true;
+                                    pf_debug!("should start retrying msg send -> {}", self.id);
+                                    self.retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
@@ -611,19 +740,19 @@ where
                 },
 
                 // retrying last unsuccessful send
-                _ = conn_write.writable(), if retrying => {
+                _ = self.conn_write.writable(), if self.retrying => {
                     match Self::write_msg(
-                        &mut write_buf,
-                        &mut write_buf_cursor,
-                        &conn_write,
+                        &mut self.write_buf,
+                        &mut self.write_buf_cursor,
+                        &self.conn_write,
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("finished retrying last msg send -> {}", id);
-                            retrying = false;
+                            pf_debug!("finished retrying last msg send -> {}", self.id);
+                            self.retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("still should retry last msg send -> {}", id);
+                            pf_debug!("still should retry last msg send -> {}", self.id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
@@ -634,40 +763,51 @@ where
                 },
 
                 // receives new message from peer
-                msg = Self::read_msg(&mut read_buf, &mut conn_read) => {
+                msg = Self::read_msg(&mut self.read_buf, &mut self.conn_read) => {
                     match msg {
                         Ok(PeerMessage::Leave) => {
                             // peer leaving, send dummy reply and break
-                            let peer_msg = PeerMessage::LeaveReply;
                             if let Err(_e) = Self::write_msg(
-                                &mut write_buf,
-                                &mut write_buf_cursor,
-                                &conn_write,
-                                Some(&peer_msg),
+                                &mut self.write_buf,
+                                &mut self.write_buf_cursor,
+                                &self.conn_write,
+                                Some(&PeerMessage::LeaveReply),
                             ) {
                                 // NOTE: commented out to prevent console lags
                                 // during benchmarking
                                 // pf_error!("error sending -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("peer {} has left", id);
+                                pf_debug!("peer {} has left", self.id);
                             }
                             break;
                         },
 
                         Ok(PeerMessage::LeaveReply) => {
                             // my leave notification is acked by peer, break
-                            let peer_msg = PeerMessage::LeaveReply;
-                            if let Err(e) = tx_recv.send((id, peer_msg)) {
-                                pf_error!("error sending to tx_recv for {}: {}", id, e);
+                            if let Err(e) = self.tx_recv.send((self.id, PeerMessage::LeaveReply)) {
+                                pf_error!("error sending to tx_recv for {}: {}", self.id, e);
                             }
                             break;
                         }
 
-                        Ok(PeerMessage::Msg { msg }) => {
+                        Ok(PeerMessage::LeaseMsg { lease_num, lease_msg }) => {
                             // pf_trace!("recv <- {} msg {:?}", id, msg);
-                            let peer_msg = PeerMessage::Msg { msg };
-                            if let Err(e) = tx_recv.send((id, peer_msg)) {
-                                pf_error!("error sending to tx_recv for {}: {}", id, e);
+                            if let Some(tx_lease) = self.tx_lease.as_ref() {
+                                if let Err(e) = tx_lease.send((
+                                    lease_num,
+                                    LeaseNotice::RecvLeaseMsg { peer: self.id, msg: lease_msg }
+                                )) {
+                                    pf_error!("error sending to tx_lease for {}: {}", self.id, e);
+                                }
+                            } else {
+                                pf_error!("received LeaseMsg <- {} but tx_lease is None", self.id);
+                            }
+                        },
+
+                        Ok(PeerMessage::Msg { .. }) => {
+                            // pf_trace!("recv <- {} msg {:?}", id, msg);
+                            if let Err(e) = self.tx_recv.send((self.id, msg.unwrap())) {
+                                pf_error!("error sending to tx_recv for {}: {}", self.id, e);
                             }
                         },
 
@@ -675,17 +815,17 @@ where
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error receiving msg <- {}: {}", id, e);
-                            break; // probably the peer exitted ungracefully
+                            break; // probably the peer exited ungracefully
                         }
                     }
                 }
             }
         }
 
-        if let Err(e) = tx_exit.send(id) {
-            pf_error!("error sending exit signal for {}: {}", id, e);
+        if let Err(e) = self.tx_exit.send(self.id) {
+            pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
-        pf_debug!("peer_messenger thread for {} '{}' exitted", id, addr);
+        pf_debug!("peer_messenger task for {} '{}' exited", self.id, self.addr);
     }
 }
 
@@ -699,16 +839,21 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
     struct TestMsg(String);
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn api_send_recv() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(3));
         let barrier1 = barrier.clone();
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:30011".parse()?)
-                    .await?;
+            let (tx_lease, mut rx_lease) = mpsc::unbounded_channel();
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:30011".parse()?,
+                Some(tx_lease),
+            )
+            .await?;
             barrier1.wait().await;
             hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
             // recv a message from 0
@@ -723,6 +868,16 @@ mod tests {
             assert_eq!(msg, TestMsg("nice".into()));
             // send another message to 0
             hub.send_msg(TestMsg("job!".into()), 0)?;
+            // recv a lease message from 0
+            let (num, msg) = rx_lease.recv().await.unwrap();
+            assert_eq!(num, 7);
+            assert_eq!(
+                msg,
+                LeaseNotice::RecvLeaseMsg {
+                    peer: 0,
+                    msg: LeaseMsg::Guard
+                }
+            );
             // wait for termination message
             let (id, msg) = hub.recv_msg().await?;
             assert_eq!(id, 0);
@@ -731,9 +886,13 @@ mod tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30012".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:30012".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -749,7 +908,7 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30011".parse()?).await?;
@@ -764,13 +923,15 @@ mod tests {
         assert!(id == 1 || id == 2);
         assert_eq!(msg, TestMsg("world".into()));
         // send another message to 1 only
-        let mut map = Bitmap::new(3, false);
-        map.set(1, true)?;
-        hub.bcast_msg(TestMsg("nice".into()), Some(map))?;
+        hub.send_msg(TestMsg("nice".into()), 1)?;
         // recv another message from 1
         let (id, msg) = hub.recv_msg().await?;
         assert_eq!(id, 1);
         assert_eq!(msg, TestMsg("job!".into()));
+        // send a lease message to 1 only
+        let mut map = Bitmap::new(3, false);
+        map.set(1, true)?;
+        hub.bcast_lease_msg(7, LeaseMsg::Guard, Some(map))?;
         // send termination message to 1 and 2
         hub.bcast_msg(TestMsg("terminate".into()), None)?;
         Ok(())
@@ -782,9 +943,13 @@ mod tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1/2
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:30111".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                1,
+                3,
+                "127.0.0.1:30111".parse()?,
+                None,
+            )
+            .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -794,9 +959,13 @@ mod tests {
             // leave and come back as 2
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30112".parse()?)
-                    .await?;
+            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+                2,
+                3,
+                "127.0.0.1:30112".parse()?,
+                None,
+            )
+            .await?;
             hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
@@ -804,7 +973,7 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?)
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?, None)
                 .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30111".parse()?).await?;

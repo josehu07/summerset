@@ -584,7 +584,7 @@ impl ClientTester {
         time::sleep(Duration::from_millis(500)).await;
         self.force_snapshot(HashSet::new()).await?;
         self.checked_put("Jose", &v1, Some(Some(&v0)), 0).await?;
-        // reseting all nodes and see if things are there
+        // resetting all nodes and see if things are there
         self.driver.leave(false).await?;
         self.reset_servers(HashSet::new(), true).await?;
         time::sleep(Duration::from_secs(3)).await;
@@ -594,7 +594,7 @@ impl ClientTester {
         // forcing all nodes to take snapshot again
         time::sleep(Duration::from_millis(500)).await;
         self.force_snapshot(HashSet::new()).await?;
-        // reseting all nodes again and check again
+        // resetting all nodes again and check again
         self.driver.leave(false).await?;
         self.reset_servers(HashSet::new(), true).await?;
         time::sleep(Duration::from_secs(3)).await;

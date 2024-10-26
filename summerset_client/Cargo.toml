@@ -7,14 +7,16 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]
 summerset = { path = "../" }
-tokio = { version = "1.39", features = ["full"] }
-rand = "0.8"
-rand_distr = "0.4"
-rangemap = "1.5"
-lazy_static = "1.5"
-clap = { version = "4.0", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-toml = { version = "0.8", features = ["parse"] }
-log = "0.4"
-env_logger = "0.11"
-color-print = { version = "0.3", features = ["terminfo"] }
+tokio = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+rangemap = { workspace = true }
+lazy_static = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+clap = { workspace = true }
+color-print = { workspace = true }
+zookeeper-client = { workspace = true }
+etcd-client = { workspace = true }

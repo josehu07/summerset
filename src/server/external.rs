@@ -74,7 +74,7 @@ pub enum ApiReply {
 }
 
 /// The external client-facing API module.
-pub struct ExternalApi {
+pub(crate) struct ExternalApi {
     /// My replica ID.
     _me: ReplicaId,
 
@@ -82,31 +82,31 @@ pub struct ExternalApi {
     rx_req: mpsc::UnboundedReceiver<(ClientId, ApiRequest)>,
 
     /// Map from client ID -> sender side of its reply channel, shared with
-    /// the client acceptor thread.
+    /// the client acceptor task.
     tx_replies: flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<ApiReply>>,
 
     /// Notify used as batch dumping signal, shared with the batch ticker
-    /// thread.
+    /// task.
     batch_notify: Arc<Notify>,
 
     /// Maximum number of requests to return per batch; 0 means no limit.
     max_batch_size: usize,
 
-    /// Join handle of the client acceptor thread.
+    /// Join handle of the client acceptor task.
     _client_acceptor_handle: JoinHandle<()>,
 
-    /// Map from client ID -> client servant thread join handles, shared with
-    /// the client acceptor thread.
+    /// Map from client ID -> client servant task join handles, shared with
+    /// the client acceptor task.
     _client_servant_handles: flashmap::ReadHandle<ClientId, JoinHandle<()>>,
 
-    /// Join handle of the batch ticker thread.
+    /// Join handle of the batch ticker task.
     _batch_ticker_handle: JoinHandle<()>,
 }
 
 // ExternalApi public API implementation
 impl ExternalApi {
-    /// Creates a new external API module. Spawns the client acceptor thread
-    /// and the batch ticker thread. Creates a req channel for buffering
+    /// Creates a new external API module. Spawns the client acceptor task
+    /// and the batch ticker task. Creates a req channel for buffering
     /// incoming client requests.
     pub(crate) async fn new_and_setup(
         me: ReplicaId,
@@ -130,20 +130,23 @@ impl ExternalApi {
             flashmap::new::<ClientId, JoinHandle<()>>();
 
         let client_listener = tcp_bind_with_retry(api_addr, 10).await?;
+        let mut acceptor = ExternalApiAcceptorTask::new(
+            tx_req,
+            client_listener,
+            tx_replies_write,
+            client_servant_handles_write,
+        );
         let client_acceptor_handle =
-            tokio::spawn(Self::client_acceptor_thread(
-                tx_req,
-                client_listener,
-                tx_replies_write,
-                client_servant_handles_write,
-            ));
+            tokio::spawn(async move { acceptor.run().await });
 
         let batch_notify = Arc::new(Notify::new());
-        let batch_ticker_handle = tokio::spawn(Self::batch_ticker_thread(
+        let mut batch_ticker = ExternalApiBatchTickerTask::new(
             me,
             batch_interval,
             batch_notify.clone(),
-        ));
+        );
+        let batch_ticker_handle =
+            tokio::spawn(async move { batch_ticker.run().await });
 
         Ok(ExternalApi {
             _me: me,
@@ -224,22 +227,49 @@ impl ExternalApi {
     }
 }
 
-// ExternalApi client_acceptor thread implementation
-impl ExternalApi {
-    /// Accepts a new client connection.
-    async fn accept_new_client(
-        mut stream: TcpStream,
-        addr: SocketAddr,
+/// ExternalApi client acceptor task.
+struct ExternalApiAcceptorTask {
+    tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
+    tx_replies:
+        flashmap::WriteHandle<ClientId, mpsc::UnboundedSender<ApiReply>>,
+
+    client_listener: TcpListener,
+    client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+
+    tx_exit: mpsc::UnboundedSender<ClientId>,
+    rx_exit: mpsc::UnboundedReceiver<ClientId>,
+}
+
+impl ExternalApiAcceptorTask {
+    /// Creates the client acceptor task.
+    fn new(
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
-        tx_replies: &mut flashmap::WriteHandle<
+        client_listener: TcpListener,
+        tx_replies: flashmap::WriteHandle<
             ClientId,
             mpsc::UnboundedSender<ApiReply>,
         >,
-        client_servant_handles: &mut flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
+        client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+    ) -> Self {
+        // create an exit mpsc channel for getting notified about termination
+        // of client servant tasks
+        let (tx_exit, rx_exit) = mpsc::unbounded_channel();
+
+        ExternalApiAcceptorTask {
+            tx_req,
+            tx_replies,
+            client_listener,
+            client_servant_handles,
+            tx_exit,
+            rx_exit,
+        }
+    }
+
+    /// Accepts a new client connection.
+    async fn accept_new_client(
+        &mut self,
+        mut stream: TcpStream,
+        addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         let id = match stream.read_u64().await {
             Ok(id) => id,
@@ -248,12 +278,12 @@ impl ExternalApi {
             }
         };
 
-        let mut tx_replies_guard = tx_replies.guard();
+        let mut tx_replies_guard = self.tx_replies.guard();
         if let Some(sender) = tx_replies_guard.get(&id) {
             if sender.is_closed() {
                 // if this client ID has left before, garbage collect it now
                 let mut client_servant_handles_guard =
-                    client_servant_handles.guard();
+                    self.client_servant_handles.guard();
                 client_servant_handles_guard.remove(id);
                 tx_replies_guard.remove(id);
             } else {
@@ -265,10 +295,18 @@ impl ExternalApi {
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
         tx_replies_guard.insert(id, tx_reply);
 
-        let client_servant_handle = tokio::spawn(Self::client_servant_thread(
-            id, addr, stream, tx_req, rx_reply, tx_exit,
-        ));
-        let mut client_servant_handles_guard = client_servant_handles.guard();
+        let mut servant = ExternalApiServantTask::new(
+            id,
+            addr,
+            stream,
+            self.tx_req.clone(),
+            rx_reply,
+            self.tx_exit.clone(),
+        );
+        let client_servant_handle =
+            tokio::spawn(async move { servant.run().await });
+        let mut client_servant_handles_guard =
+            self.client_servant_handles.guard();
         client_servant_handles_guard.insert(id, client_servant_handle);
 
         client_servant_handles_guard.publish();
@@ -278,78 +316,51 @@ impl ExternalApi {
 
     /// Removes handles of a left client connection.
     fn remove_left_client(
+        &mut self,
         id: ClientId,
-        tx_replies: &mut flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<ApiReply>,
-        >,
-        client_servant_handles: &mut flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
     ) -> Result<(), SummersetError> {
-        let mut tx_replies_guard = tx_replies.guard();
+        let mut tx_replies_guard = self.tx_replies.guard();
         if !tx_replies_guard.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
         tx_replies_guard.remove(id);
 
-        let mut client_servant_handles_guard = client_servant_handles.guard();
+        let mut client_servant_handles_guard =
+            self.client_servant_handles.guard();
         client_servant_handles_guard.remove(id);
 
         Ok(())
     }
 
-    /// Client acceptor thread function.
-    async fn client_acceptor_thread(
-        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
-        client_listener: TcpListener,
-        mut tx_replies: flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<ApiReply>,
-        >,
-        mut client_servant_handles: flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
-    ) {
-        pf_debug!("client_acceptor thread spawned");
+    /// Starts the client acceptor task loop.
+    async fn run(&mut self) {
+        pf_debug!("client_acceptor task spawned");
 
-        let local_addr = client_listener.local_addr().unwrap();
+        let local_addr = self.client_listener.local_addr().unwrap();
         pf_info!("accepting clients on '{}'", local_addr);
-
-        // create an exit mpsc channel for getting notified about termination
-        // of client servant threads
-        let (tx_exit, mut rx_exit) = mpsc::unbounded_channel();
 
         loop {
             tokio::select! {
                 // new client connection
-                accepted = client_listener.accept() => {
+                accepted = self.client_listener.accept() => {
                     if let Err(e) = accepted {
                         pf_warn!("error accepting client connection: {}", e);
                         continue;
                     }
                     let (stream, addr) = accepted.unwrap();
-                    if let Err(e) = Self::accept_new_client(
+                    if let Err(e) = self.accept_new_client(
                         stream,
                         addr,
-                        tx_req.clone(),
-                        &mut tx_replies,
-                        &mut client_servant_handles,
-                        tx_exit.clone()
                     ).await {
                         pf_error!("error accepting new client: {}", e);
                     }
                 },
 
-                // a client servant thread exits
-                id = rx_exit.recv() => {
+                // a client servant task exits
+                id = self.rx_exit.recv() => {
                     let id = id.unwrap();
-                    if let Err(e) = Self::remove_left_client(
-                        id,
-                        &mut tx_replies,
-                        &mut client_servant_handles
+                    if let Err(e) = self.remove_left_client(
+                        id
                     ) {
                         pf_error!("error removing left client {}: {}", id, e);
                     }
@@ -357,15 +368,65 @@ impl ExternalApi {
             }
         }
 
-        // pf_debug!("client_acceptor thread exitted");
+        // pf_debug!("client_acceptor task exited");
     }
 }
 
-// ExternalApi client_servant thread implementation
-impl ExternalApi {
+/// ExternalApi per-client servant task.
+struct ExternalApiServantTask {
+    id: ClientId,
+    addr: SocketAddr,
+
+    conn_read: OwnedReadHalf,
+    conn_write: OwnedWriteHalf,
+
+    tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
+    req_buf: BytesMut,
+
+    rx_reply: mpsc::UnboundedReceiver<ApiReply>,
+    reply_buf: BytesMut,
+    reply_buf_cursor: usize,
+    retrying: bool,
+
+    tx_exit: mpsc::UnboundedSender<ClientId>,
+}
+
+impl ExternalApiServantTask {
+    /// Creates a per-server servant task.
+    fn new(
+        id: ClientId,
+        addr: SocketAddr,
+        conn: TcpStream,
+        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
+        rx_reply: mpsc::UnboundedReceiver<ApiReply>,
+        tx_exit: mpsc::UnboundedSender<ClientId>,
+    ) -> Self {
+        let (conn_read, conn_write) = conn.into_split();
+
+        let req_buf = BytesMut::with_capacity(8 + 1024);
+        let reply_buf = BytesMut::with_capacity(8 + 1024);
+        let reply_buf_cursor = 0;
+        let retrying = false;
+
+        ExternalApiServantTask {
+            id,
+            addr,
+            conn_read,
+            conn_write,
+            tx_req,
+            req_buf,
+            rx_reply,
+            reply_buf,
+            reply_buf_cursor,
+            retrying,
+            tx_exit,
+        }
+    }
+
     /// Reads a client request from given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_req(
-        // first 8 btyes being the request length, and the rest bytes being the
+        // first 8 bytes being the request length, and the rest bytes being the
         // request itself
         req_buf: &mut BytesMut,
         conn_read: &mut OwnedReadHalf,
@@ -374,6 +435,7 @@ impl ExternalApi {
     }
 
     /// Writes a reply through given TcpStream.
+    /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_reply(
         reply_buf: &mut BytesMut,
         reply_buf_cursor: &mut usize,
@@ -383,23 +445,14 @@ impl ExternalApi {
         safe_tcp_write(reply_buf, reply_buf_cursor, conn_write, reply)
     }
 
-    /// Client request listener and reply sender thread function.
-    async fn client_servant_thread(
-        id: ClientId,
-        addr: SocketAddr,
-        conn: TcpStream,
-        tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
-        mut rx_reply: mpsc::UnboundedReceiver<ApiReply>,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
-    ) {
-        pf_debug!("client_servant thread for {} '{}' spawned", id, addr);
+    /// Starts a per-client servant task loop.
+    async fn run(&mut self) {
+        pf_debug!(
+            "client_servant task for {} '{}' spawned",
+            self.id,
+            self.addr
+        );
 
-        let (mut conn_read, conn_write) = conn.into_split();
-        let mut req_buf = BytesMut::with_capacity(8 + 1024);
-        let mut reply_buf = BytesMut::with_capacity(8 + 1024);
-        let mut reply_buf_cursor = 0;
-
-        let mut retrying = false;
         loop {
             tokio::select! {
                 // select between getting a new reply to send back and receiving
@@ -407,21 +460,21 @@ impl ExternalApi {
                 biased;
 
                 // gets a reply to send back
-                reply = rx_reply.recv(), if !retrying => {
+                reply = self.rx_reply.recv(), if !self.retrying => {
                     match reply {
                         Some(reply) => {
                             match Self::write_reply(
-                                &mut reply_buf,
-                                &mut reply_buf_cursor,
-                                &conn_write,
+                                &mut self.reply_buf,
+                                &mut self.reply_buf_cursor,
+                                &self.conn_write,
                                 Some(&reply)
                             ) {
                                 Ok(true) => {
                                     // pf_trace!("replied -> {} reply {:?}", id, reply);
                                 }
                                 Ok(false) => {
-                                    pf_debug!("should start retrying reply send -> {}", id);
-                                    retrying = true;
+                                    pf_debug!("should start retrying reply send -> {}", self.id);
+                                    self.retrying = true;
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
@@ -435,19 +488,19 @@ impl ExternalApi {
                 },
 
                 // retrying last unsuccessful send
-                _ = conn_write.writable(), if retrying => {
+                _ = self.conn_write.writable(), if self.retrying => {
                     match Self::write_reply(
-                        &mut reply_buf,
-                        &mut reply_buf_cursor,
-                        &conn_write,
+                        &mut self.reply_buf,
+                        &mut self.reply_buf_cursor,
+                        &self.conn_write,
                         None
                     ) {
                         Ok(true) => {
-                            pf_debug!("finished retrying last reply send -> {}", id);
-                            retrying = false;
+                            pf_debug!("finished retrying last reply send -> {}", self.id);
+                            self.retrying = false;
                         }
                         Ok(false) => {
-                            pf_debug!("still should retry last reply send -> {}", id);
+                            pf_debug!("still should retry last reply send -> {}", self.id);
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
@@ -458,28 +511,28 @@ impl ExternalApi {
                 },
 
                 // receives client request
-                req = Self::read_req(&mut req_buf, &mut conn_read) => {
+                req = Self::read_req(&mut self.req_buf, &mut self.conn_read) => {
                     match req {
                         Ok(ApiRequest::Leave) => {
                             // client leaving, send dummy reply and break
                             let reply = ApiReply::Leave;
                             if let Err(_e) = Self::write_reply(
-                                &mut reply_buf,
-                                &mut reply_buf_cursor,
-                                &conn_write,
+                                &mut self.reply_buf,
+                                &mut self.reply_buf_cursor,
+                                &self.conn_write,
                                 Some(&reply),
                             ) {
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
-                                pf_debug!("client {} has left", id);
+                                pf_debug!("client {} has left", self.id);
                             }
                             break;
                         },
 
                         Ok(req) => {
                             // pf_trace!("request <- {} req {:?}", id, req);
-                            if let Err(e) = tx_req.send((id, req)) {
-                                pf_error!("error sending to tx_req for {}: {}", id, e);
+                            if let Err(e) = self.tx_req.send((self.id, req)) {
+                                pf_error!("error sending to tx_req for {}: {}", self.id, e);
                             }
                         },
 
@@ -487,34 +540,50 @@ impl ExternalApi {
                             // NOTE: commented out to prevent console lags
                             // during benchmarking
                             // pf_error!("error reading request <- {}: {}", id, e);
-                            break; // probably the client exitted without `leave()`
+                            break; // probably the client exited without `leave()`
                         }
                     }
                 }
             }
         }
 
-        if let Err(e) = tx_exit.send(id) {
-            pf_error!("error sending exit signal for {}: {}", id, e);
+        if let Err(e) = self.tx_exit.send(self.id) {
+            pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
-        pf_debug!("client_servant thread for {} '{}' exitted", id, addr);
+        pf_debug!("client_servant task for {} '{}' exited", self.id, self.addr);
     }
 }
 
-// ExternalApi batch_ticker thread implementation
-impl ExternalApi {
-    /// Batch ticker thread function.
-    async fn batch_ticker_thread(
-        _me: ReplicaId,
+/// ExternalApi batch ticker task.
+struct ExternalApiBatchTickerTask {
+    _me: ReplicaId,
+
+    batch_interval: Duration,
+    batch_notify: Arc<Notify>,
+}
+
+impl ExternalApiBatchTickerTask {
+    /// Creates the batch ticker task.
+    fn new(
+        me: ReplicaId,
         batch_interval: Duration,
         batch_notify: Arc<Notify>,
-    ) {
-        let mut interval = time::interval(batch_interval);
+    ) -> Self {
+        ExternalApiBatchTickerTask {
+            _me: me,
+            batch_interval,
+            batch_notify,
+        }
+    }
+
+    /// Starts the batch ticker task loop.
+    async fn run(&mut self) {
+        let mut interval = time::interval(self.batch_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             interval.tick().await;
-            batch_notify.notify_one();
+            self.batch_notify.notify_one();
             // pf_trace!("batch interval ticked");
         }
     }

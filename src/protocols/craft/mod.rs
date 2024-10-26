@@ -21,9 +21,10 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
+    HeartbeatEvent, Heartbeater, LogActionId, ReplicaId, StateMachine,
+    StorageHub, TransportHub,
 };
-use crate::utils::{Bitmap, RSCodeword, SummersetError, Timer};
+use crate::utils::{RSCodeword, SummersetError};
 
 use async_trait::async_trait;
 
@@ -76,8 +77,7 @@ pub struct ReplicaConfigCRaft {
     pub msg_chunk_size: usize,
 
     /// Simulate local read lease implementation?
-    // TODO: actual read lease impl later? (won't affect anything about
-    // evalutaion results though)
+    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -85,7 +85,7 @@ pub struct ReplicaConfigCRaft {
 impl Default for ReplicaConfigCRaft {
     fn default() -> Self {
         ReplicaConfigCRaft {
-            batch_interval_ms: 10,
+            batch_interval_ms: 1,
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.craft.wal".into(),
             logger_sync: false,
@@ -143,11 +143,39 @@ pub(crate) enum DurEntry {
     /// Durable metadata.
     Metadata {
         curr_term: Term,
-        voted_for: Option<ReplicaId>,
+        /// Not using `Option<ReplicaId>` here to ensure it serdes to fixed size.
+        /// `None` is mapped to `ReplicaId::MAX`.
+        voted_for: ReplicaId,
     },
 
     /// Log entry mirroring in-mem log.
     LogEntry { entry: LogEntry },
+}
+
+impl DurEntry {
+    fn pack_meta(curr_term: Term, voted_for: Option<ReplicaId>) -> Self {
+        DurEntry::Metadata {
+            curr_term,
+            voted_for: voted_for.unwrap_or(ReplicaId::MAX),
+        }
+    }
+
+    fn unpack_meta(self) -> Result<(Term, Option<ReplicaId>), SummersetError> {
+        match self {
+            DurEntry::Metadata {
+                curr_term,
+                voted_for,
+            } => Ok((
+                curr_term,
+                if voted_for == ReplicaId::MAX {
+                    None
+                } else {
+                    Some(voted_for)
+                },
+            )),
+            _ => logged_err!("unpacking non Metadata entry"),
+        }
+    }
 }
 
 /// Snapshot file entry type.
@@ -261,24 +289,14 @@ pub(crate) struct CRaftReplica {
     /// TransportHub module.
     transport_hub: TransportHub<PeerMsg>,
 
+    /// Heartbeater module.
+    heartbeater: Heartbeater,
+
     /// Which role am I in right now?
     role: Role,
 
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
-
-    /// Timer for hearing heartbeat from leader.
-    hb_hear_timer: Timer,
-
-    /// Interval for sending heartbeat to followers.
-    hb_send_interval: Interval,
-
-    /// Heartbeat reply counters for approximate detection of follower health.
-    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
-    hb_reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
-
-    /// Approximate health status tracking of peer replicas.
-    peer_alive: Bitmap,
 
     /// Latest term seen.
     curr_term: Term,
@@ -342,7 +360,7 @@ pub(crate) struct CRaftReplica {
 // CRaftReplica common helpers
 impl CRaftReplica {
     /// Compose LogActionId from (slot, end_slot) pair & entry type.
-    /// Uses the `Role` enum type to represent differnet entry types.
+    /// Uses the `Role` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(
         slot: usize,
@@ -416,13 +434,13 @@ impl GenericReplica for CRaftReplica {
                 config.batch_interval_ms
             );
         }
-        if config.hb_hear_timeout_min < 100 {
+        if config.hb_hear_timeout_min == 0 {
             return logged_err!(
                 "invalid config.hb_hear_timeout_min '{}'",
                 config.hb_hear_timeout_min
             );
         }
-        if config.hb_hear_timeout_max < config.hb_hear_timeout_min + 100 {
+        if config.hb_hear_timeout_max < config.hb_hear_timeout_min {
             return logged_err!(
                 "invalid config.hb_hear_timeout_max '{}'",
                 config.hb_hear_timeout_max
@@ -449,9 +467,18 @@ impl GenericReplica for CRaftReplica {
             StorageHub::new_and_setup(id, Path::new(&config.backer_path))
                 .await?;
 
+        // setup heartbeat management module
+        let heartbeater = Heartbeater::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.hb_hear_timeout_min),
+            Duration::from_millis(config.hb_hear_timeout_max),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+
         // setup transport hub module
         let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr).await?;
+            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -505,10 +532,6 @@ impl GenericReplica for CRaftReplica {
         )
         .await?;
 
-        let mut hb_send_interval =
-            time::interval(Duration::from_millis(config.hb_send_interval_ms));
-        hb_send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
         let mut snapshot_interval = time::interval(Duration::from_secs(
             if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
@@ -517,10 +540,6 @@ impl GenericReplica for CRaftReplica {
             },
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-        let hb_reply_cnts = (0..population)
-            .filter_map(|p| if p == id { None } else { Some((p, (1, 0, 0))) })
-            .collect();
 
         Ok(CRaftReplica {
             id,
@@ -536,12 +555,9 @@ impl GenericReplica for CRaftReplica {
             storage_hub,
             snapshot_hub,
             transport_hub,
+            heartbeater,
             role: Role::Follower,
             leader: None,
-            hb_hear_timer: Timer::new(),
-            hb_send_interval,
-            hb_reply_cnts,
-            peer_alive: Bitmap::new(population, true),
             curr_term: 0,
             voted_for: None,
             votes_granted: HashSet::new(),
@@ -579,7 +595,9 @@ impl GenericReplica for CRaftReplica {
         self.recover_from_wal().await?;
 
         // kick off leader activity hearing timer
-        self.kickoff_hb_hear_timer()?;
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer()?;
+        }
 
         // main event loop
         let mut paused = false;
@@ -592,7 +610,7 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let req_batch = req_batch.unwrap();
-                    if let Err(e) = self.handle_req_batch(req_batch) {
+                    if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
                 },
@@ -604,7 +622,7 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result) {
+                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
                         pf_error!("error handling log result {}: {}",
                                            action_id, e);
                     }
@@ -631,23 +649,24 @@ impl GenericReplica for CRaftReplica {
                         continue;
                     }
                     let (cmd_id, cmd_result) = cmd_result.unwrap();
-                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result) {
+                    if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
                 },
 
-                // leader inactivity timeout
-                _ = self.hb_hear_timer.timeout(), if !paused => {
-                    if let Err(e) = self.become_a_candidate().await {
-                        pf_error!("error becoming a candidate: {}", e);
-                    }
-                },
-
-                // leader sending heartbeat
-                _ = self.hb_send_interval.tick(), if !paused
-                                                     && self.role == Role::Leader => {
-                    if let Err(e) = self.bcast_heartbeats() {
-                        pf_error!("error broadcasting heartbeats: {}", e);
+                // heartbeat-related event
+                hb_event = self.heartbeater.get_event(), if !paused => {
+                    match hb_event {
+                        HeartbeatEvent::HearTimeout => {
+                            if let Err(e) = self.become_a_candidate().await {
+                                pf_error!("error becoming a candidate: {}", e);
+                            }
+                        }
+                        HeartbeatEvent::SendTicked => {
+                            if let Err(e) = self.bcast_heartbeats().await {
+                                pf_error!("error broadcasting heartbeats: {}", e);
+                            }
+                        }
                     }
                 },
 
