@@ -431,7 +431,7 @@ impl ServerReignerControllerTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -457,7 +457,7 @@ impl ServerReignerControllerTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
@@ -476,7 +476,7 @@ impl ServerReignerControllerTask {
                                 Some(&msg)
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("server {} has left", self.id);
@@ -523,7 +523,7 @@ impl ServerReignerControllerTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exited ungracefully
                         }

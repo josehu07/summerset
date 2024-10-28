@@ -110,16 +110,16 @@ impl RSPaxosReplica {
 
     /// Take a snapshot up to current exec_bar, then discard the in-mem log up
     /// to that index as well as outdate entries in the durable WAL log file.
-    ///
-    /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot. Production quality implementations should
-    /// make the snapshotting action "atomic".
-    ///
-    /// NOTE: the current implementation does not take care of InstallSnapshot
-    /// messages (which is needed when some lagging follower has some slot
-    /// which all other peers have snapshotted); we assume here that failed
-    /// Accept messages will be retried indefinitely until success before its
-    /// associated data gets discarded from leader's memory.
+    //
+    // NOTE: the current implementation does not guard against crashes in the
+    //       middle of taking a snapshot. Production quality implementations
+    //       should make the snapshotting action "atomic".
+    //
+    // NOTE: the current implementation does not take care of InstallSnapshot
+    //       messages (which is needed when some lagging follower has some slot
+    //       which all other peers have snapshotted); we assume here that failed
+    //       Accept messages will be retried indefinitely until success before
+    //       its associated data gets discarded from leader's memory.
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {

@@ -60,12 +60,12 @@ impl Default for ReplicaConfigRepNothing {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) struct WalEntry {
+struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
 
 /// In-memory instance containing a commands batch.
-pub(crate) struct Instance {
+struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     execed: Vec<bool>,

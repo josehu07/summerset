@@ -183,6 +183,11 @@ impl MultiPaxosReplica {
                     if bal > leader_bk.prepare_max_bal {
                         leader_bk.prepare_max_bal = bal;
                         inst.reqs = val;
+                        Self::refresh_highest_slot(
+                            slot,
+                            &inst.reqs,
+                            &mut self.highest_slot,
+                        );
                     }
                 }
             }
@@ -300,6 +305,7 @@ impl MultiPaxosReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_slot(slot, &reqs, &mut self.highest_slot);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
@@ -446,6 +452,19 @@ impl MultiPaxosReplica {
                 ballot,
                 reply_ts,
             } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
+            PeerMsg::ReadQuery { reads } => {
+                self.handle_msg_read_query(peer, reads).await
+            }
+            PeerMsg::ReadQueryReply {
+                rq_id,
+                replies,
+                from_leader,
+            } => self.handle_msg_read_query_reply(
+                peer,
+                rq_id,
+                replies,
+                from_leader,
+            ),
             PeerMsg::Heartbeat {
                 ballot,
                 commit_bar,

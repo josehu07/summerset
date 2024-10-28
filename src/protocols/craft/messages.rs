@@ -463,7 +463,7 @@ impl CRaftReplica {
                 .collect();
 
             // NOTE: also breaking long AppendEntries into chunks to keep
-            // peers heartbeated
+            //       peers heartbeated
             let mut now_prev_slot = prev_slot;
             while !entries.is_empty() {
                 let end = cmp::min(entries.len(), self.config.msg_chunk_size);
@@ -640,10 +640,10 @@ impl CRaftReplica {
                 || term != self.log[slot - self.start_slot].term
             {
                 // NOTE: this has one caveat: a new leader trying to do
-                // reconstruction reads might find that all other peers have
-                // snapshotted that slot. Proper InstallSnapshot-style messages
-                // will be needed to deal with this; but since this scenario is
-                // just too rare, it is not implemented yet
+                //       reconstruction reads might find that all other peers
+                //       have snapshotted that slot. Proper InstallSnapshot-style
+                //       messages will be needed to deal with this; but since
+                //       this scenario is just too rare, it is not implemented yet
                 continue;
             }
 

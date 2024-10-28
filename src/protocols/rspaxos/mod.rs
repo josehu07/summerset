@@ -82,8 +82,8 @@ pub struct ReplicaConfigRSPaxos {
     pub perf_network_a: u64,
     pub perf_network_b: u64,
 
+    // [for benchmarking purposes only]
     /// Simulate local read lease implementation?
-    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -113,13 +113,13 @@ impl Default for ReplicaConfigRSPaxos {
 }
 
 /// Ballot number type. Use 0 as a null ballot number.
-pub(crate) type Ballot = u64;
+type Ballot = u64;
 
 /// Instance status enum.
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Status {
+enum Status {
     Null = 0,
     Preparing = 1,
     Accepting = 2,
@@ -128,11 +128,11 @@ pub(crate) enum Status {
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
-pub(crate) struct LeaderBookkeeping {
+struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
     trigger_slot: usize,
 
@@ -151,7 +151,7 @@ pub(crate) struct LeaderBookkeeping {
 
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
-pub(crate) struct ReplicaBookkeeping {
+struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 
@@ -164,7 +164,7 @@ pub(crate) struct ReplicaBookkeeping {
 
 /// In-memory instance containing a (possibly partial) commands batch.
 #[derive(Debug, Clone)]
-pub(crate) struct Instance {
+struct Instance {
     /// Ballot number.
     bal: Ballot,
 
@@ -192,7 +192,7 @@ pub(crate) struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum WalEntry {
+enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -208,12 +208,12 @@ pub(crate) enum WalEntry {
 }
 
 /// Snapshot file entry type.
-///
-/// NOTE: the current implementation simply appends a squashed log at the
-/// end of the snapshot file for simplicity. In production, the snapshot
-/// file should be a bounded-sized backend, e.g., an LSM-tree.
+//
+// NOTE: the current implementation simply appends a squashed log at the
+//       end of the snapshot file for simplicity. In production, the snapshot
+//       file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum SnapEntry {
+enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log instances covered
@@ -227,7 +227,7 @@ pub(crate) enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
         /// Slot index in Prepare message is the triggering slot of this
@@ -364,9 +364,9 @@ pub(crate) struct RSPaxosReplica {
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
     /// Slot index before which it is safe to take snapshot.
-    /// NOTE: we are taking a conservative approach here that a snapshot
-    /// covering an entry can be taken only when all servers have durably
-    /// committed (and executed) that entry.
+    // NOTE: we are taking a conservative approach here that a snapshot
+    //       covering an entry can be taken only when all servers have durably
+    //       committed (and executed) that entry.
     snap_bar: usize,
 
     /// Current durable WAL log file offset.
@@ -696,7 +696,7 @@ impl GenericReplica for RSPaxosReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -892,7 +892,7 @@ impl GenericEndpoint for RSPaxosClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }

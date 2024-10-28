@@ -478,7 +478,7 @@ impl ExternalApiServantTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error replying -> {}: {}", id, e);
                                 }
                             }
@@ -504,7 +504,7 @@ impl ExternalApiServantTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
@@ -538,7 +538,7 @@ impl ExternalApiServantTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading request <- {}: {}", id, e);
                             break; // probably the client exited without `leave()`
                         }

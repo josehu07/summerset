@@ -131,7 +131,7 @@ impl ZooKeeperSession {
             .ok_or(SummersetError::msg("no active session"))?;
 
         // NOTE: should've returned previous value to match Summerset's
-        // behavior, but ZooKeeper does not offer this
+        //       behavior, but ZooKeeper does not offer this
         let set_result = session
             .set_data(&path, value.as_bytes(), None) // any version allowed
             .await;

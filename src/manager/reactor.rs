@@ -437,7 +437,7 @@ impl ClientReactorResponderTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -463,7 +463,7 @@ impl ClientReactorResponderTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
@@ -482,7 +482,7 @@ impl ClientReactorResponderTask {
                                 Some(&reply)
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("client {} has left", self.id);
@@ -499,7 +499,7 @@ impl ClientReactorResponderTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading req <- {}: {}", id, e);
                             break; // probably the client exited without `leave()`
                         }

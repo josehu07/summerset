@@ -6,6 +6,7 @@
 //!   - <https://www.cs.cornell.edu/courses/cs7412/2011sp/paxos.pdf>
 //!   - <https://github.com/josehu07/learn-tla/tree/main/Dr.-TLA%2B-selected/multipaxos_practical>
 //!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
+//!   - <https://www.usenix.org/system/files/hotstorage19-paper-charapko.pdf>
 
 mod control;
 mod durability;
@@ -13,6 +14,7 @@ mod execution;
 mod leadership;
 mod leasing;
 mod messages;
+mod quorumread;
 mod recovery;
 mod request;
 mod snapshot;
@@ -28,8 +30,8 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
-    LeaseMsg, LeaseNum, LogActionId, ReplicaId, StateMachine, StorageHub,
-    TransportHub,
+    LeaseMsg, LeaseNum, LogActionId, ReplicaId, RequestId, StateMachine,
+    StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -71,8 +73,11 @@ pub struct ReplicaConfigMultiPaxos {
     /// Lease-related timeout duration in millisecs.
     pub lease_expire_ms: u64,
 
-    /// Disable any lease-related operations?
-    pub disable_leasing: bool,
+    /// Enable stable leader leases for leader local reads?
+    pub enable_leader_leases: bool,
+
+    /// Enable nearest majority quorum read optimization?
+    pub enable_quorum_reads: bool,
 
     /// Path to snapshot file.
     pub snapshot_path: String,
@@ -95,8 +100,8 @@ pub struct ReplicaConfigMultiPaxos {
     /// Only effective if record_breakdown is set to true.
     pub record_size_recv: bool,
 
+    // [for benchmarking purposes only]
     /// Simulate local read lease implementation?
-    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -113,7 +118,8 @@ impl Default for ReplicaConfigMultiPaxos {
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
             lease_expire_ms: 2000, // need proper hb settings if leasing
-            disable_leasing: true,
+            enable_leader_leases: false,
+            enable_quorum_reads: false,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -126,13 +132,13 @@ impl Default for ReplicaConfigMultiPaxos {
 }
 
 /// Ballot number type. Use 0 as a null ballot number.
-pub(crate) type Ballot = u64;
+type Ballot = u64;
 
 /// Instance status enum.
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Status {
+enum Status {
     Null = 0,
     Preparing = 1,
     Accepting = 2,
@@ -141,11 +147,11 @@ pub(crate) enum Status {
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
-pub(crate) struct LeaderBookkeeping {
+struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
     trigger_slot: usize,
 
@@ -165,7 +171,7 @@ pub(crate) struct LeaderBookkeeping {
 
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
-pub(crate) struct ReplicaBookkeeping {
+struct ReplicaBookkeeping {
     /// Source leader replica ID for replying to Prepares and Accepts.
     source: ReplicaId,
 
@@ -176,9 +182,23 @@ pub(crate) struct ReplicaBookkeeping {
     endprep_slot: usize,
 }
 
+/// Bookkeeping info for near quorum reads if enabled.
+#[derive(Debug, Clone)]
+struct ReadQueryBookkeeping {
+    /// The batch of read-only requests (technically get need to remember
+    /// a vec of client IDs but nah doesn't matter).
+    reads: ReqBatch,
+
+    /// Replicas from which I have received ReadQuery replies.
+    rq_acks: Bitmap,
+
+    /// The reply with the highest slot number found for each key.
+    max_replies: Vec<Option<(usize, Option<String>)>>,
+}
+
 /// In-memory instance containing a commands batch.
 #[derive(Debug, Clone)]
-pub(crate) struct Instance {
+struct Instance {
     /// Ballot number.
     bal: Ballot,
 
@@ -206,7 +226,7 @@ pub(crate) struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum WalEntry {
+enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -222,12 +242,12 @@ pub(crate) enum WalEntry {
 }
 
 /// Snapshot file entry type.
-///
-/// NOTE: the current implementation simply appends a squashed log at the
-/// end of the snapshot file for simplicity. In production, the snapshot
-/// file should be a bounded-sized backend, e.g., an LSM-tree.
+//
+// NOTE: the current implementation simply appends a squashed log at the
+//       end of the snapshot file for simplicity. In production, the snapshot
+//       file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum SnapEntry {
+enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log instances covered
@@ -241,7 +261,7 @@ pub(crate) enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
         /// Slot index in Prepare message is the triggering slot of this
@@ -287,7 +307,28 @@ pub(crate) enum PeerMsg {
         reply_ts: Option<SystemTime>,
     },
 
-    /// Leader activity heartbeat.
+    /// Near quorum read query from any replica to peers.
+    ReadQuery {
+        /// Should contain only Get requests.
+        reads: ReqBatch,
+    },
+
+    /// Near quorum read reply from peer to issuer.
+    ReadQueryReply {
+        /// Since these reads do not reside in a log slot, we use the
+        /// (client ID, request ID) pair of the first read in batch to uniquely
+        /// identify attempts.
+        rq_id: (ClientId, RequestId),
+        /// The highest slot number seen for each key in the batch and, if that
+        /// slot is in Committed status, the latest committed value. `None` if
+        /// key never seen.
+        replies: Vec<Option<(usize, Option<String>)>>,
+        /// True if from a stable majority-leased leader; this shortcuts the
+        /// quorum and allows directly replying to clients.
+        from_leader: bool,
+    },
+
+    /// Peer-to-peer periodic heartbeat.
     Heartbeat {
         ballot: Ballot,
         /// For notifying followers about safe-to-commit slots (in a bit
@@ -377,10 +418,20 @@ pub(crate) struct MultiPaxosReplica {
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
     /// Slot index before which it is safe to take snapshot.
-    /// NOTE: we are taking a conservative approach here that a snapshot
-    /// covering an entry can be taken only when all servers have durably
-    /// committed (and executed) that entry.
+    // NOTE: we are taking a conservative approach here that a snapshot
+    //       covering an entry can be taken only when all servers have durably
+    //       committed (and executed) that entry.
     snap_bar: usize,
+
+    /// Map from key -> the highest slot number that (might) contain a write
+    /// to that key. Useful for read optimizations.
+    // NOTE: there probably are better ways to do such bookkeeping, but this is
+    //       good enough for now unless the key space is disgustingly huge
+    highest_slot: HashMap<String, usize>,
+
+    /// Ongoing attempts of near quorum reads.
+    // NOTE: may add (easy) garbage collection for outdated stuck attempts.
+    quorum_reads: HashMap<(ClientId, RequestId), ReadQueryBookkeeping>,
 
     /// Current durable WAL log file offset.
     wal_offset: usize,
@@ -478,7 +529,7 @@ impl MultiPaxosReplica {
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
         debug_assert!(slot <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(cmd_idx <= (u32::MAX as usize) / 2);
         ((slot << 32) | cmd_idx) as CommandId
     }
 
@@ -488,6 +539,14 @@ impl MultiPaxosReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// Special composition of a command ID used at read-only shortcuts.
+    #[inline]
+    fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
+        debug_assert!(client <= (u32::MAX as ClientId));
+        debug_assert!(req_id <= (u32::MAX as RequestId) / 2);
+        ((client << 32) | 1 << 31 | req_id) as CommandId
     }
 }
 
@@ -510,11 +569,11 @@ impl GenericReplica for MultiPaxosReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
-                                    lease_expire_ms, disable_leasing,
-                                    snapshot_path, snapshot_interval_s,
-                                    msg_chunk_size, record_breakdown,
-                                    record_value_ver, record_size_recv,
-                                    sim_read_lease)?;
+                                    lease_expire_ms, enable_leader_leases,
+                                    enable_quorum_reads, snapshot_path,
+                                    snapshot_interval_s, msg_chunk_size,
+                                    record_breakdown, record_value_ver,
+                                    record_size_recv, sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -670,6 +729,8 @@ impl GenericReplica for MultiPaxosReplica {
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
             snap_bar: 0,
+            highest_slot: HashMap::new(),
+            quorum_reads: HashMap::new(),
             wal_offset: 0,
             snap_offset: 0,
             startup_time: Instant::now(),
@@ -729,7 +790,7 @@ impl GenericReplica for MultiPaxosReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -769,7 +830,7 @@ impl GenericReplica for MultiPaxosReplica {
 
                 // lease-related action
                 lease_action = self.lease_manager.get_action(), if !paused
-                                                                   && !self.config.disable_leasing => {
+                                                                   && self.config.enable_leader_leases => {
                     if let Err(e) = lease_action {
                         pf_error!("error getting lease action: {}", e);
                         continue;
@@ -860,12 +921,22 @@ impl GenericReplica for MultiPaxosReplica {
 pub struct ClientConfigMultiPaxos {
     /// Which server to pick initially.
     pub init_server_id: ReplicaId,
+
+    /// App-designated nearest server ID for near read attempts.
+    pub near_server_id: ReplicaId,
+
+    /// Enable nearest majority quorum read optimization?
+    pub enable_quorum_reads: bool,
 }
 
 #[allow(clippy::derivable_impls)]
 impl Default for ClientConfigMultiPaxos {
     fn default() -> Self {
-        ClientConfigMultiPaxos { init_server_id: 0 }
+        ClientConfigMultiPaxos {
+            init_server_id: 0,
+            near_server_id: 0,
+            enable_quorum_reads: false,
+        }
     }
 }
 
@@ -875,13 +946,21 @@ pub(crate) struct MultiPaxosClient {
     id: ClientId,
 
     /// Configuration parameters struct.
-    _config: ClientConfigMultiPaxos,
+    config: ClientConfigMultiPaxos,
 
     /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
 
-    /// Current server ID to talk to.
-    server_id: ReplicaId,
+    /// Current server ID to talk to for normal consensus commands.
+    curr_server_id: ReplicaId,
+
+    /// App-designated nearest server ID for near read attempts. Could become
+    /// different from `config.near_server_id` if the latter is deemed inactive.
+    near_server_id: ReplicaId,
+
+    /// Last server ID I sent something to; used here to help with retrying
+    /// and receiving replies.
+    last_server_id: ReplicaId,
 
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
@@ -903,14 +982,18 @@ impl GenericEndpoint for MultiPaxosClient {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ClientConfigMultiPaxos;
-                                    init_server_id)?;
-        let init_server_id = config.init_server_id;
+                                    init_server_id, near_server_id,
+                                    enable_quorum_reads)?;
+        let curr_server_id = config.init_server_id;
+        let near_server_id = config.near_server_id;
 
         Ok(MultiPaxosClient {
             id,
-            _config: config,
+            config,
             servers: HashMap::new(),
-            server_id: init_server_id,
+            curr_server_id,
+            near_server_id,
+            last_server_id: 0,
             ctrl_stub,
             api_stubs: HashMap::new(),
         })
@@ -937,10 +1020,21 @@ impl GenericEndpoint for MultiPaxosClient {
             } => {
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id)
-                    || servers_info[&self.server_id].is_paused
+                while !servers_info.contains_key(&self.curr_server_id)
+                    || servers_info[&self.curr_server_id].is_paused
                 {
-                    self.server_id = (self.server_id + 1) % population;
+                    self.curr_server_id =
+                        (self.curr_server_id + 1) % population;
+                }
+                if !servers_info.contains_key(&self.near_server_id)
+                    || servers_info[&self.near_server_id].is_paused
+                {
+                    pf_warn!(
+                        "near server {} inactive, using {} instead...",
+                        self.near_server_id,
+                        self.curr_server_id
+                    );
+                    self.near_server_id = self.curr_server_id;
                 }
                 // establish connection to all servers
                 self.servers = servers_info
@@ -968,7 +1062,7 @@ impl GenericEndpoint for MultiPaxosClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }
@@ -992,24 +1086,39 @@ impl GenericEndpoint for MultiPaxosClient {
         &mut self,
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
-        if self.api_stubs.contains_key(&self.server_id) {
-            self.api_stubs
-                .get_mut(&self.server_id)
-                .unwrap()
-                .send_req(req)
+        let server_id = match req {
+            None => {
+                // last send needs retry
+                self.last_server_id
+            }
+            Some(req) if req.read_only() && self.config.enable_quorum_reads => {
+                // read-only request and doing near quorum reads
+                self.near_server_id
+            }
+            _ => {
+                // normal consensus command
+                self.curr_server_id
+            }
+        };
+
+        if self.api_stubs.contains_key(&server_id) {
+            let success =
+                self.api_stubs.get_mut(&server_id).unwrap().send_req(req)?;
+            self.last_server_id = server_id;
+            Ok(success)
         } else {
             Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
-                self.server_id
+                server_id
             )))
         }
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        if self.api_stubs.contains_key(&self.server_id) {
+        if self.api_stubs.contains_key(&self.last_server_id) {
             let reply = self
                 .api_stubs
-                .get_mut(&self.server_id)
+                .get_mut(&self.last_server_id)
                 .unwrap()
                 .recv_reply()
                 .await?;
@@ -1024,7 +1133,7 @@ impl GenericEndpoint for MultiPaxosClient {
                 if result.is_none() && redirect.is_some() {
                     let redirect_id = redirect.unwrap();
                     debug_assert!(self.servers.contains_key(&redirect_id));
-                    self.server_id = redirect_id;
+                    self.curr_server_id = redirect_id;
                     pf_debug!(
                         "redirected to replica {} '{}'",
                         redirect_id,
@@ -1037,7 +1146,7 @@ impl GenericEndpoint for MultiPaxosClient {
         } else {
             Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
-                self.server_id
+                self.last_server_id
             )))
         }
     }

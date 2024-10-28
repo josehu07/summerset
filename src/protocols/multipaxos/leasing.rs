@@ -6,6 +6,18 @@ use crate::server::LeaseAction;
 
 // MultiPaxosReplica lease-related actions logic
 impl MultiPaxosReplica {
+    /// Checks if I'm a stable majority-leased leader.
+    #[inline]
+    pub(super) fn is_stable_leader(&self) -> bool {
+        self.is_leader()
+            && self.bal_prepared > 0
+            && ((self.config.enable_leader_leases
+                 && self.bal_max_seen == self.bal_prepared
+                 && self.lease_manager.lease_cnt() + 1 >= self.quorum_cnt)
+               // [for benchmarking purposes only]
+               || self.config.sim_read_lease)
+    }
+
     /// Wait on lease actions until I'm sure I'm no longer granting to a peer.
     pub(super) async fn ensure_lease_revoked(
         &mut self,

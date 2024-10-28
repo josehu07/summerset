@@ -62,7 +62,7 @@ impl Default for ReplicaConfigSimplePush {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum WalEntry {
+enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
     },
@@ -75,7 +75,7 @@ pub(crate) enum WalEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PushMsg {
+enum PushMsg {
     Push {
         src_inst_idx: usize,
         reqs: Vec<(ClientId, ApiRequest)>,
@@ -87,7 +87,7 @@ pub(crate) enum PushMsg {
 }
 
 /// In-memory instance containing a commands batch.
-pub(crate) struct Instance {
+struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     pending_peers: Bitmap,
@@ -277,7 +277,7 @@ impl GenericReplica for SimplePushReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }

@@ -66,7 +66,7 @@ impl Default for ReplicaConfigChainRep {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Status {
+enum Status {
     Null = 0,
     Streaming = 1,
     Propagated = 2,
@@ -74,10 +74,10 @@ pub(crate) enum Status {
 }
 
 /// Request batch type.
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-memory log entry containing a commands batch.
-pub(crate) struct LogEntry {
+struct LogEntry {
     /// Log entry status.
     status: Status,
 
@@ -90,14 +90,14 @@ pub(crate) struct LogEntry {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) struct WalEntry {
+struct WalEntry {
     slot: usize,
     reqs: ReqBatch,
 }
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// Propagate message from predecessor to successor.
     Propagate { slot: usize, reqs: ReqBatch },
 
@@ -365,7 +365,7 @@ impl GenericReplica for ChainRepReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -590,7 +590,7 @@ impl GenericEndpoint for ChainRepClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }

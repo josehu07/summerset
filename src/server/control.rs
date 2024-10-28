@@ -194,7 +194,7 @@ impl ControlHubMessengerTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending ctrl: {}", e);
                                 }
                             }
@@ -220,7 +220,7 @@ impl ControlHubMessengerTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last ctrl send: {}", e);
                         }
                     }
@@ -238,7 +238,7 @@ impl ControlHubMessengerTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading ctrl: {}", e);
                             break; // probably the manager exited ungracefully
                         }

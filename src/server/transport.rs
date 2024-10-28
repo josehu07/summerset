@@ -354,7 +354,7 @@ where
         }
 
         // NOTE: commenting out the following to avoid rare blocking during
-        // tester resets
+        //       tester resets
         // let mut replies = Bitmap::new(self.population, false);
         // while replies.count() < num_peers {
         //     match self.rx_recv.recv().await {
@@ -702,7 +702,7 @@ where
                                 Some(&PeerMessage::Leave),
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error sending -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("sent leave notification -> {}", self.id);
@@ -729,7 +729,7 @@ where
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -756,7 +756,7 @@ where
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last msg send -> {}: {}", id, e);
                         }
                     }
@@ -774,7 +774,7 @@ where
                                 Some(&PeerMessage::LeaveReply),
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error sending -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("peer {} has left", self.id);
@@ -813,7 +813,7 @@ where
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error receiving msg <- {}: {}", id, e);
                             break; // probably the peer exited ungracefully
                         }

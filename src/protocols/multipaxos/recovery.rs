@@ -48,6 +48,7 @@ impl MultiPaxosReplica {
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
                 inst.reqs.clone_from(&reqs);
+                Self::refresh_highest_slot(slot, &reqs, &mut self.highest_slot);
                 inst.voted = (ballot, reqs);
                 // it could be the case that the PrepareBal action for this
                 // ballot has been snapshotted

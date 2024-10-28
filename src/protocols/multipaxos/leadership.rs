@@ -29,7 +29,7 @@ impl MultiPaxosReplica {
 
             // if leasing enabled, revoke old lease if any made to old leader,
             // then initiate granting to the new leader
-            if !self.config.disable_leasing {
+            if self.config.enable_leader_leases {
                 if let Some(old_leader) = self.leader {
                     if old_leader != self.id {
                         self.lease_manager.add_notice(
@@ -77,7 +77,7 @@ impl MultiPaxosReplica {
 
         // if leasing enabled, start to revoke old lease
         let mut old_leader = None;
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(leader) = self.leader {
                 if leader != self.id {
                     self.lease_manager.add_notice(
@@ -197,7 +197,7 @@ impl MultiPaxosReplica {
 
         // before moving on, ensure that any lease to old leader has either
         // been RevokeReplied or timed out
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(old_leader) = old_leader {
                 self.ensure_lease_revoked(old_leader).await?;
             }
@@ -211,7 +211,7 @@ impl MultiPaxosReplica {
         &mut self,
     ) -> Result<(), SummersetError> {
         // check and send lease promise refresh to leader
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(leader) = self.leader {
                 if leader != self.id {
                     let to_refresh = self.lease_manager.attempt_refresh(

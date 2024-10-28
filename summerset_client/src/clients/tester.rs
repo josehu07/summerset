@@ -35,7 +35,7 @@ lazy_static! {
         ("leader_node_pause", false),
         ("node_pause_resume", false),
         // NOTE: our current snapshotting implementation does not
-        // guarantee to pass this
+        //       guarantee to pass this
         // ("snapshot_reset", false),
     ];
 }
