@@ -26,6 +26,8 @@ UTILITY_PARAM_NAMES = {
         "put_ratio",
         "ycsb_trace",
         "length_s",
+        "use_random_keys",
+        "skip_preloading",
         "norm_stdev_ratio",
         "unif_interval_ms",
         "unif_upper_bound",
@@ -196,6 +198,12 @@ if __name__ == "__main__":
         "--expect_halt",
         action="store_true",
         help="if set, expect there'll be a service halt",
+    )
+    parser_bench.add_argument(
+        "--use_random_keys", action="store_true", help="if set, generate random keys"
+    )
+    parser_bench.add_argument(
+        "--skip_preloading", action="store_true", help="if set, skip preloading phase"
     )
     parser_bench.add_argument(
         "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"

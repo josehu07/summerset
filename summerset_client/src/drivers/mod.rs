@@ -11,6 +11,7 @@ pub(crate) use closed_loop::DriverClosedLoop;
 pub(crate) use open_loop::DriverOpenLoop;
 
 /// Reply result type, common across the two driver styles.
+#[derive(Debug, Clone)]
 pub(crate) enum DriverReply {
     /// Successful reply.
     Success {

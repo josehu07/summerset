@@ -227,7 +227,7 @@ impl ZooKeeperBench {
         self.chunk_cnt += 1;
 
         let lat_us =
-            Instant::now().duration_since(ts).as_secs_f64() * 1000000.0;
+            Instant::now().duration_since(ts).as_secs_f64() * 1_000_000.0;
         self.chunk_lats.push(lat_us);
 
         Ok(())

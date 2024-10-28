@@ -69,6 +69,12 @@ pub struct ModeParamsBench {
     /// Number of keys to choose from.
     pub num_keys: usize,
 
+    /// Whether to generate keys randomly or use predetermined sequence from 0.
+    pub use_random_keys: bool,
+
+    /// Whether to skip the preloading phase that loads values for all keys.
+    pub skip_preloading: bool,
+
     /// If non-zero, use a normal distribution of this standard deviation
     /// ratio for every write command.
     pub norm_stdev_ratio: f32,
@@ -92,6 +98,8 @@ impl Default for ModeParamsBench {
             ycsb_trace: "".into(),
             value_size: "1024".into(),
             num_keys: 5,
+            use_random_keys: false,
+            skip_preloading: false,
             norm_stdev_ratio: 0.0,
             unif_interval_ms: 0,
             unif_upper_bound: 128 * 1024,
@@ -170,12 +178,12 @@ impl ClientBench {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
-                                    freq_target, length_s,
-                                    put_ratio, ycsb_trace,
-                                    value_size, num_keys,
+                                    freq_target, length_s, put_ratio,
+                                    ycsb_trace, value_size, num_keys,
+                                    use_random_keys, skip_preloading,
                                     norm_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
-        if params.freq_target > 1000000 {
+        if params.freq_target > 1_000_000 {
             return logged_err!(
                 "invalid params.freq_target '{}'",
                 params.freq_target
@@ -222,14 +230,16 @@ impl ClientBench {
 
         let keys_pool = if params.ycsb_trace.is_empty() {
             let mut pool = Vec::with_capacity(params.num_keys);
-            for _ in 0..params.num_keys {
-                pool.push(
+            for i in 0..params.num_keys {
+                pool.push(if params.use_random_keys {
                     rand::thread_rng()
                         .sample_iter(&Alphanumeric)
                         .take(KEY_LEN)
                         .map(char::from)
-                        .collect(),
-                );
+                        .collect()
+                } else {
+                    format!("key{:0w$}", i, w = KEY_LEN - 3)
+                });
             }
             Some(pool)
         } else {
@@ -447,7 +457,7 @@ impl ClientBench {
             .get(self.rng.gen_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..=100) <= self.params.put_ratio {
+        if self.rng.gen_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
             self.driver.issue_put(&key, val)
@@ -512,10 +522,14 @@ impl ClientBench {
         if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
             match result {
-                DriverReply::Success { latency, .. } => {
+                DriverReply::Success {
+                    latency,
+                    cmd_result,
+                    ..
+                } => {
                     self.reply_cnt += 1;
                     self.chunk_cnt += 1;
-                    let lat_us = latency.as_secs_f64() * 1000000.0;
+                    let lat_us = latency.as_secs_f64() * 1_000_000.0;
                     self.chunk_lats.push(lat_us);
                 }
 
@@ -542,7 +556,7 @@ impl ClientBench {
                     DriverReply::Success { latency, .. } => {
                         self.reply_cnt += 1;
                         self.chunk_cnt += 1;
-                        let lat_us = latency.as_secs_f64() * 1000000.0;
+                        let lat_us = latency.as_secs_f64() * 1_000_000.0;
                         self.chunk_lats.push(lat_us);
 
                         if self.slowdown > 0 {
@@ -582,6 +596,40 @@ impl ClientBench {
         Ok(())
     }
 
+    /// If not using trace, preload values for all keys.
+    async fn do_preload(&mut self) -> Result<(), SummersetError> {
+        let val = self.gen_value_at_now()?;
+
+        if let Some(keys_pool) = &self.keys_pool {
+            println!("Preloading all keys...");
+
+            let mut retries = 10; // hardcoded
+            for key in keys_pool {
+                loop {
+                    while self.driver.issue_put(key, val)?.is_none() {}
+
+                    match self.driver.wait_reply().await? {
+                        DriverReply::Success { .. } => {
+                            break;
+                        }
+                        _ => {
+                            retries -= 1;
+                            if retries == 0 {
+                                return logged_err!(
+                                    "unsuccessful preload reply, no retries left"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            println!("  Done");
+        }
+
+        Ok(())
+    }
+
     /// Drops the current interval ticker and create a new one using the
     /// current frequency.
     fn reset_ticker(&mut self) {
@@ -589,7 +637,7 @@ impl ClientBench {
             self.curr_freq = 1; // avoid division-by-zero
         }
 
-        let period = Duration::from_nanos(1000000000 / self.curr_freq);
+        let period = Duration::from_nanos(1_000_000_000 / self.curr_freq);
         self.ticker = time::interval(period);
         self.ticker
             .set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -598,23 +646,24 @@ impl ClientBench {
     /// Runs the adaptive benchmark for given time length.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
-        println!(
-            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
-        );
 
         self.start = Instant::now();
         self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let mut last_print = self.start;
-        let (mut printed_1_100, mut printed_1_10) = (false, false);
+        // if not using trace, preload values for all keys
+        if !self.params.skip_preloading {
+            self.do_preload().await?;
+        }
 
         if self.params.freq_target > 0 {
             // is open-loop, set up interval ticker
             self.curr_freq = self.params.freq_target;
             self.reset_ticker();
         }
+
+        let mut last_print = self.start;
+        let (mut printed_1_100, mut printed_1_10) = (false, false);
 
         self.total_cnt = 0;
         self.reply_cnt = 0;
@@ -624,6 +673,10 @@ impl ClientBench {
         self.slowdown = 0;
 
         // run for specified length
+        println!(
+            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
+        );
         let mut elapsed = self.now.duration_since(self.start);
         while elapsed < length {
             if self.params.freq_target == 0 {
