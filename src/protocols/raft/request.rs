@@ -28,11 +28,7 @@ impl RaftReplica {
                         (self.id + 1) % self.population
                     };
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: req_id,
-                            result: None,
-                            redirect: Some(target),
-                        },
+                        ApiReply::redirect(req_id, Some(target)),
                         client,
                     )?;
                     pf_trace!(
@@ -56,26 +52,17 @@ impl RaftReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: *req_id,
-                            result: Some(CommandResult::Get { value: None }),
-                            redirect: None,
-                        },
+                        ApiReply::normal(
+                            *req_id,
+                            Some(CommandResult::Get { value: None }),
+                        ),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
-            req_batch.retain(|(_, req)| {
-                !matches!(
-                    req,
-                    ApiRequest::Req {
-                        cmd: Command::Get { .. },
-                        ..
-                    }
-                )
-            });
+            req_batch.retain(|(_, req)| !req.read_only());
             if req_batch.is_empty() {
                 return Ok(());
             }

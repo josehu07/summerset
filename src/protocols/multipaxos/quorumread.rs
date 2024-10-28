@@ -275,24 +275,33 @@ impl MultiPaxosReplica {
             {
                 if let ApiRequest::Req {
                     id: req_id,
-                    cmd: Command::Get { .. },
+                    cmd: Command::Get { key },
                 } = req
                 {
-                    let cmd_result = match reply {
-                        None => CommandResult::Get { value: None },
-                        Some((_, None)) => TODO,
+                    let api_reply = match reply {
+                        None => {
+                            // no one in quorum knows about this key, safely
+                            // reply not found
+                            ApiReply::normal(
+                                req_id,
+                                Some(CommandResult::Get { value: None }),
+                            )
+                        }
+                        Some((_, None)) => {
+                            // highest slot for this key not committed, should
+                            // fallback to slow path
+                            ApiReply::rq_retry(req_id, Command::Get { key })
+                        }
                         Some((_, Some(value))) => {
-                            CommandResult::Get { value: Some(value) }
+                            // highest slot for this key committed, safely use
+                            // its value
+                            ApiReply::normal(
+                                req_id,
+                                Some(CommandResult::Get { value: Some(value) }),
+                            )
                         }
                     };
-                    self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: req_id,
-                            result: Some(cmd_result),
-                            redirect: None,
-                        },
-                        client,
-                    )?;
+                    self.external_api.send_reply(api_reply, client)?;
                     pf_trace!("replied -> client {} for near-read cmd", client);
                 } else {
                     return logged_err!(

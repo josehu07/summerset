@@ -37,6 +37,7 @@ log = { workspace = true }
 env_logger = { workspace = true }
 async-trait = "0.1"
 fixedbitset = { version = "0.5", features = ["serde"] }
+atomic_refcell = "0.1"
 flashmap = "0.1"
 futures = "0.3"
 bincode = "1.3"

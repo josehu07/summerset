@@ -178,6 +178,7 @@ impl DriverOpenLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if !self.pending_reqs.contains_key(&reply_id) {
                         // logged_err!("request ID {} not in pending set",

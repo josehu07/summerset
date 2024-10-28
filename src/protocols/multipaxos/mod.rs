@@ -35,6 +35,8 @@ use crate::server::{
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
+use atomic_refcell::AtomicRefCell;
+
 use async_trait::async_trait;
 
 use get_size::GetSize;
@@ -958,15 +960,15 @@ pub(crate) struct MultiPaxosClient {
     /// different from `config.near_server_id` if the latter is deemed inactive.
     near_server_id: ReplicaId,
 
-    /// Last server ID I sent something to; used here to help with retrying
-    /// and receiving replies.
-    last_server_id: ReplicaId,
+    /// Last server ID I sent something to unsuccessfully; used here to help
+    /// with retrying.
+    last_server_id: Option<ReplicaId>,
 
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
     /// API stubs for communicating with servers.
-    api_stubs: HashMap<ReplicaId, ClientApiStub>,
+    api_stubs: HashMap<ReplicaId, AtomicRefCell<ClientApiStub>>,
 }
 
 #[async_trait]
@@ -993,7 +995,7 @@ impl GenericEndpoint for MultiPaxosClient {
             servers: HashMap::new(),
             curr_server_id,
             near_server_id,
-            last_server_id: 0,
+            last_server_id: None,
             ctrl_stub,
             api_stubs: HashMap::new(),
         })
@@ -1045,7 +1047,7 @@ impl GenericEndpoint for MultiPaxosClient {
                     pf_debug!("connecting to server {} '{}'...", id, server);
                     let api_stub =
                         ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, api_stub);
+                    self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
                 }
                 Ok(())
             }
@@ -1055,10 +1057,11 @@ impl GenericEndpoint for MultiPaxosClient {
 
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to all servers
-        for (id, mut api_stub) in self.api_stubs.drain() {
-            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
+        for (id, api_stub) in self.api_stubs.drain() {
+            let mut sent =
+                api_stub.borrow_mut().send_req(Some(&ApiRequest::Leave))?;
             while !sent {
-                sent = api_stub.send_req(None)?;
+                sent = api_stub.borrow_mut().send_req(None)?;
             }
 
             // NOTE: commented out the following wait to avoid accidental
@@ -1089,7 +1092,11 @@ impl GenericEndpoint for MultiPaxosClient {
         let server_id = match req {
             None => {
                 // last send needs retry
-                self.last_server_id
+                if let Some(last_server_id) = self.last_server_id {
+                    last_server_id
+                } else {
+                    return logged_err!("last_server_id not set when retrying");
+                }
             }
             Some(req) if req.read_only() && self.config.enable_quorum_reads => {
                 // read-only request and doing near quorum reads
@@ -1102,9 +1109,13 @@ impl GenericEndpoint for MultiPaxosClient {
         };
 
         if self.api_stubs.contains_key(&server_id) {
-            let success =
-                self.api_stubs.get_mut(&server_id).unwrap().send_req(req)?;
-            self.last_server_id = server_id;
+            let success = self
+                .api_stubs
+                .get_mut(&server_id)
+                .unwrap()
+                .borrow_mut()
+                .send_req(req)?;
+            self.last_server_id = if success { None } else { Some(server_id) };
             Ok(success)
         } else {
             Err(SummersetError::msg(format!(
@@ -1115,40 +1126,90 @@ impl GenericEndpoint for MultiPaxosClient {
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        if self.api_stubs.contains_key(&self.last_server_id) {
-            let reply = self
-                .api_stubs
-                .get_mut(&self.last_server_id)
-                .unwrap()
-                .recv_reply()
-                .await?;
+        if !self.api_stubs.contains_key(&self.curr_server_id) {
+            return Err(SummersetError::msg(format!(
+                "server_id {} not in api_stubs",
+                self.curr_server_id
+            )));
+        }
+        if !self.api_stubs.contains_key(&self.near_server_id) {
+            return Err(SummersetError::msg(format!(
+                "server_id {} not in api_stubs",
+                self.near_server_id
+            )));
+        }
 
-            if let ApiReply::Reply {
-                ref result,
-                ref redirect,
-                ..
-            } = reply
-            {
-                // if the current server redirects me to a different server
-                if result.is_none() && redirect.is_some() {
-                    let redirect_id = redirect.unwrap();
-                    debug_assert!(self.servers.contains_key(&redirect_id));
-                    self.curr_server_id = redirect_id;
-                    pf_debug!(
-                        "redirected to replica {} '{}'",
-                        redirect_id,
-                        self.servers[&redirect_id]
+        let mut reply = if self.curr_server_id == self.near_server_id {
+            // curr is the same as near, so just wait on that stub
+            self.api_stubs
+                .get(&self.curr_server_id)
+                .unwrap()
+                .borrow_mut()
+                .recv_reply()
+                .await?
+        } else {
+            // don't know which one would have reply come in first, so need to do
+            // a `tokio::select!` here
+            let mut curr_stub = self
+                .api_stubs
+                .get(&self.curr_server_id)
+                .unwrap()
+                .borrow_mut();
+            let mut near_stub = self
+                .api_stubs
+                .get(&self.near_server_id)
+                .unwrap()
+                .borrow_mut();
+            tokio::select! {
+                reply = curr_stub.recv_reply() => reply?,
+                reply = near_stub.recv_reply() => reply?,
+            }
+        };
+
+        if let ApiReply::Reply {
+            id: req_id,
+            ref result,
+            ref redirect,
+            ref mut rq_retry,
+        } = reply
+        {
+            // if to retry a failed read-only optimization, just fallback to
+            // sending the request to (believed) current leader and continue
+            // the wait
+            if let Some(read_cmd) = rq_retry.take() {
+                if !read_cmd.read_only() {
+                    return logged_err!(
+                        "non-Get command found in reply rq_retry"
                     );
                 }
+                while self.last_server_id.is_some() {
+                    self.send_req(None)?;
+                }
+                self.api_stubs
+                    .get(&self.curr_server_id)
+                    .unwrap()
+                    .borrow_mut()
+                    .send_req(Some(&ApiRequest::Req {
+                        id: req_id,
+                        cmd: read_cmd,
+                    }))?;
+                return self.recv_reply().await;
             }
 
-            Ok(reply)
-        } else {
-            Err(SummersetError::msg(format!(
-                "server_id {} not in api_stubs",
-                self.last_server_id
-            )))
+            // if the current server redirects me to a different server
+            if result.is_none() && redirect.is_some() {
+                let redirect_id = redirect.unwrap();
+                debug_assert!(self.servers.contains_key(&redirect_id));
+                self.curr_server_id = redirect_id;
+                pf_debug!(
+                    "redirected to replica {} '{}'",
+                    redirect_id,
+                    self.servers[&redirect_id]
+                );
+            }
         }
+
+        Ok(reply)
     }
 
     fn id(&self) -> ClientId {

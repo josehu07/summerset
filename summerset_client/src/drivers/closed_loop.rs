@@ -107,6 +107,7 @@ impl DriverClosedLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if reply_id != req_id {
                         // logged_err!(self.id;
@@ -180,6 +181,7 @@ impl DriverClosedLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if reply_id != req_id {
                         // logged_err!(self.id;

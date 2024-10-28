@@ -42,11 +42,7 @@ impl MultiPaxosReplica {
                     }
 
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: *req_id,
-                            result: Some(cmd_result),
-                            redirect: None,
-                        },
+                        ApiReply::normal(*req_id, Some(cmd_result)),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
@@ -104,15 +100,7 @@ impl MultiPaxosReplica {
         }
 
         if strip_read_only {
-            req_batch.retain(|(_, req)| {
-                !matches!(
-                    req,
-                    ApiRequest::Req {
-                        cmd: Command::Get { .. },
-                        ..
-                    }
-                )
-            });
+            req_batch.retain(|(_, req)| !req.read_only());
         }
         Ok(())
     }
@@ -145,11 +133,7 @@ impl MultiPaxosReplica {
                         (self.id + 1) % self.population
                     };
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: req_id,
-                            result: None,
-                            redirect: Some(target),
-                        },
+                        ApiReply::redirect(req_id, Some(target)),
                         client,
                     )?;
                     pf_trace!(
