@@ -278,31 +278,49 @@ impl MultiPaxosReplica {
                     cmd: Command::Get { key },
                 } = req
                 {
-                    let api_reply = match reply {
+                    let (api_reply, is_retry) = match reply {
                         None => {
                             // no one in quorum knows about this key, safely
                             // reply not found
-                            ApiReply::normal(
-                                req_id,
-                                Some(CommandResult::Get { value: None }),
+                            (
+                                ApiReply::normal(
+                                    req_id,
+                                    Some(CommandResult::Get { value: None }),
+                                ),
+                                false,
                             )
                         }
                         Some((_, None)) => {
                             // highest slot for this key not committed, should
                             // fallback to slow path
-                            ApiReply::rq_retry(req_id, Command::Get { key })
+                            (
+                                ApiReply::rq_retry(
+                                    req_id,
+                                    Command::Get { key },
+                                ),
+                                true,
+                            )
                         }
                         Some((_, Some(value))) => {
                             // highest slot for this key committed, safely use
                             // its value
-                            ApiReply::normal(
-                                req_id,
-                                Some(CommandResult::Get { value: Some(value) }),
+                            (
+                                ApiReply::normal(
+                                    req_id,
+                                    Some(CommandResult::Get {
+                                        value: Some(value),
+                                    }),
+                                ),
+                                false,
                             )
                         }
                     };
                     self.external_api.send_reply(api_reply, client)?;
-                    pf_trace!("replied -> client {} for near-read cmd", client);
+                    pf_trace!(
+                        "replied -> client {} for near-read {}",
+                        client,
+                        if is_retry { "retry" } else { "rgood" }
+                    );
                 } else {
                     return logged_err!(
                         "non-Get request found in rq_bk reads field"
