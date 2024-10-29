@@ -106,7 +106,7 @@ impl ServerReigner {
         let (server_controller_handles_write, server_controller_handles_read) =
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
-        let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
+        let server_listener = tcp_bind_with_retry(srv_addr, 15).await?;
         let mut acceptor = ServerReignerAcceptorTask::new(
             tx_id_assign,
             rx_id_result,

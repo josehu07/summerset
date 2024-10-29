@@ -3,14 +3,22 @@ import random
 
 
 def gather_outputs(
-    protocol_with_midfix, num_clients, path_prefix, tb, te, tgap, partition=None
+    protocol_with_midfix,
+    num_clients,
+    path_prefix,
+    tb,
+    te,
+    tgap,
+    partition=None,
+    client_start=0,
+    client_step=1,
 ):
     if partition is not None:
         protocol_with_midfix += f".{partition}"
 
     outputs = dict()
-    for c in range(num_clients):
-        outputs[c] = {"time": [], "tput": [], "lat": []}
+    for c in range(client_start, num_clients, client_step):
+        outputs[c] = {"time": [], "tput": [], "lat": [], "wlat": [], "rlat": []}
         with open(f"{path_prefix}/{protocol_with_midfix}.{c}.out", "r") as fout:
             started = False
             for line in fout:
@@ -22,6 +30,8 @@ def gather_outputs(
                     outputs[c]["time"].append(float(segs[0]))
                     outputs[c]["tput"].append(float(segs[2]))
                     outputs[c]["lat"].append(float(segs[4]))
+                    outputs[c]["wlat"].append(float(segs[6]))
+                    outputs[c]["rlat"].append(float(segs[8]))
 
     result = {
         "time": [],
@@ -34,12 +44,20 @@ def gather_outputs(
         "lat_max": [],
         "lat_avg": [],
         "lat_stdev": [],
+        "wlat_min": [],
+        "wlat_max": [],
+        "wlat_avg": [],
+        "wlat_stdev": [],
+        "rlat_min": [],
+        "rlat_max": [],
+        "rlat_avg": [],
+        "rlat_stdev": [],
     }
     t = 0
-    cidxs = [0 for _ in range(num_clients)]
+    cidxs = {c: 0 for c in range(client_start, num_clients, client_step)}
     while t + tb < te:
-        tputs, lats = [], []
-        for c in range(num_clients):
+        tputs, lats, wlats, rlats = [], [], [], []
+        for c in range(client_start, num_clients, client_step):
             while (
                 cidxs[c] < len(outputs[c]["time"]) - 1
                 and t + tb > outputs[c]["time"][cidxs[c]]
@@ -48,9 +66,13 @@ def gather_outputs(
             if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
                 tputs.append(0.0)
                 lats.append(0.0)
+                wlats.append(0.0)
+                rlats.append(0.0)
             else:
                 tputs.append(outputs[c]["tput"][cidxs[c]])
                 lats.append(outputs[c]["lat"][cidxs[c]])
+                wlats.append(outputs[c]["wlat"][cidxs[c]])
+                rlats.append(outputs[c]["rlat"][cidxs[c]])
         result["time"].append(t)
         result["tput_sum"].append(sum(tputs))
         result["tput_min"].append(min(tputs))
@@ -61,6 +83,14 @@ def gather_outputs(
         result["lat_max"].append(max(lats))
         result["lat_avg"].append(sum(lats) / len(lats))
         result["lat_stdev"].append(statistics.stdev(lats) if num_clients > 1 else 0.0)
+        result["wlat_min"].append(min(wlats))
+        result["wlat_max"].append(max(wlats))
+        result["wlat_avg"].append(sum(wlats) / len(wlats))
+        result["wlat_stdev"].append(statistics.stdev(wlats) if num_clients > 1 else 0.0)
+        result["rlat_min"].append(min(rlats))
+        result["rlat_max"].append(max(rlats))
+        result["rlat_avg"].append(sum(rlats) / len(rlats))
+        result["rlat_stdev"].append(statistics.stdev(rlats) if num_clients > 1 else 0.0)
         t += tgap
 
     return result

@@ -90,7 +90,9 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
+def compose_client_cmd(
+    protocol, manager, config, utility, timeout_ms, params, release, near_id=None
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
@@ -100,7 +102,19 @@ def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, r
         "--timeout-ms",
         str(timeout_ms),
     ]
+
     if config is not None and len(config) > 0:
+        # if dist_machs is set, near_id will be the node ID that's considered
+        # the closest to this client
+        # NOTE: dumb overwriting near_server_id field here for simplicity
+        if near_id is not None and "near_server_id" in config:
+            bi = config.index("near_server_id=") + 15
+            epi = config[bi:].find("+")
+            esi = config[bi:].find(" ")
+            ei = epi if esi == -1 else esi if epi == -1 else min(epi, esi)
+            ei = len(config) if ei == -1 else ei
+            assert config[bi:ei] == "0"
+            config = config[:bi] + str(near_id) + config[ei:]
         cmd += ["--config", config]
 
     cmd += ["-u", utility]
@@ -117,6 +131,7 @@ def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, r
 def run_clients(
     remotes,
     ipaddrs,
+    hosts,
     me,
     man,
     cd_dir,
@@ -139,10 +154,9 @@ def run_clients(
 
     # if dist_machs set, put clients round-robinly across this many machines
     # starting from me
-    hosts = list(remotes.keys())
-    hosts = hosts[hosts.index(me) :] + hosts[: hosts.index(me)]
+    td_hosts = hosts[hosts.index(me) :] + hosts[: hosts.index(me)]
     if dist_machs > 0:
-        hosts = hosts[:dist_machs]
+        td_hosts = td_hosts[:dist_machs]
 
     client_procs = []
     for i in range(num_clients):
@@ -155,6 +169,7 @@ def run_clients(
             timeout_ms,
             params,
             release,
+            near_id=hosts.index(me if dist_machs <= 1 else td_hosts[i % len(td_hosts)]),
         )
 
         proc = None
@@ -163,8 +178,8 @@ def run_clients(
                 i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
             )
         else:
-            host = hosts[i % len(hosts)]
-            local_i = i // len(hosts)
+            host = td_hosts[i % len(td_hosts)]
+            local_i = i // len(td_hosts)
             if host == me:
                 # run my responsible clients locally
                 proc = run_process_pinned(
@@ -315,7 +330,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
         TOML_FILENAME, args.group
     )
     cd_dir = f"{base}/{repo}"
@@ -367,6 +382,7 @@ if __name__ == "__main__":
     client_procs = run_clients(
         remotes,
         ipaddrs,
+        hosts,
         args.me,
         args.man,
         cd_dir,

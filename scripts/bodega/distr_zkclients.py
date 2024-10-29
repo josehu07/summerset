@@ -111,6 +111,7 @@ def compose_client_cmd(protocol, server, config, utility, params, release):
 def run_clients(
     remotes,
     ipaddrs,
+    hosts,
     me,
     server,
     cd_dir,
@@ -268,7 +269,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
         TOML_FILENAME, args.group
     )
     cd_dir = f"{base}/{repo}"
@@ -311,6 +312,7 @@ if __name__ == "__main__":
     client_procs = run_clients(
         remotes,
         ipaddrs,
+        hosts,
         args.me,
         args.server,
         cd_dir,

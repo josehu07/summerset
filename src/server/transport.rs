@@ -123,7 +123,7 @@ where
         let (tx_connect, rx_connect) = mpsc::unbounded_channel();
         let (tx_connack, rx_connack) = mpsc::unbounded_channel();
 
-        let peer_listener = tcp_bind_with_retry(p2p_addr, 10).await?;
+        let peer_listener = tcp_bind_with_retry(p2p_addr, 15).await?;
         let mut acceptor = TransportHubAcceptorTask::new(
             me,
             tx_recv.clone(),
@@ -183,7 +183,7 @@ where
             logged_err!("invalid group size {}", group)
         } else {
             while self.current_peers()?.count() + 1 < group {
-                time::sleep(Duration::from_millis(100)).await;
+                time::sleep(Duration::from_millis(500)).await;
             }
             Ok(())
         }
@@ -447,7 +447,7 @@ where
         conn_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         pf_debug!("connecting to peer {} '{}'...", id, conn_addr);
-        let mut stream = tcp_connect_with_retry(conn_addr, 10).await?;
+        let mut stream = tcp_connect_with_retry(conn_addr, 15).await?;
         stream.write_u8(self.me).await?; // send my ID
 
         let mut peer_messenger_handles_guard =

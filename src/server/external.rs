@@ -168,7 +168,7 @@ impl ExternalApi {
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = tcp_bind_with_retry(api_addr, 10).await?;
+        let client_listener = tcp_bind_with_retry(api_addr, 15).await?;
         let mut acceptor = ExternalApiAcceptorTask::new(
             tx_req,
             client_listener,

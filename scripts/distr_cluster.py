@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import signal
 import argparse
 
@@ -209,6 +210,7 @@ def launch_servers(
     file_midfix,
     fresh_files,
     pin_cores,
+    launch_wait,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -258,6 +260,9 @@ def launch_servers(
                 cd_dir=cd_dir,
             )
         server_procs.append(proc)
+
+        if launch_wait:
+            time.sleep(1)  # NOTE: helps enforce server ID assignment
 
     return server_procs
 
@@ -311,6 +316,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--launch_wait", action="store_true", help="if set, wait 1s between launches"
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -415,6 +423,7 @@ if __name__ == "__main__":
         file_midfix,
         not args.keep_files,
         args.pin_cores,
+        args.launch_wait,
     )
 
     # register termination signals handler

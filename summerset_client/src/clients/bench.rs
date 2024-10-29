@@ -21,8 +21,8 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    logged_err, parsed_config, pf_debug, pf_error, GenericEndpoint, RequestId,
-    SummersetError,
+    logged_err, parsed_config, pf_debug, pf_error, CommandResult,
+    GenericEndpoint, RequestId, SummersetError,
 };
 
 /// Fixed length in bytes of key.
@@ -145,8 +145,11 @@ pub(crate) struct ClientBench {
     /// Total number of replies received in last print interval.
     chunk_cnt: u64,
 
-    /// Latencies of requests in last print interval.
-    chunk_lats: Vec<f64>,
+    /// Latencies of Put requests in last print interval.
+    chunk_wlats: Vec<f64>,
+
+    /// Latencies of Get requests in last print interval.
+    chunk_rlats: Vec<f64>,
 
     /// True if the next issue should be a retry.
     retrying: bool,
@@ -292,7 +295,8 @@ impl ClientBench {
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
-            chunk_lats: vec![],
+            chunk_wlats: vec![],
+            chunk_rlats: vec![],
             retrying: false,
             slowdown: 0,
             start: Instant::now(),
@@ -529,8 +533,16 @@ impl ClientBench {
                 } => {
                     self.reply_cnt += 1;
                     self.chunk_cnt += 1;
+
                     let lat_us = latency.as_secs_f64() * 1_000_000.0;
-                    self.chunk_lats.push(lat_us);
+                    match cmd_result {
+                        CommandResult::Put { .. } => {
+                            self.chunk_wlats.push(lat_us);
+                        }
+                        CommandResult::Get { .. } => {
+                            self.chunk_rlats.push(lat_us);
+                        }
+                    }
                 }
 
                 DriverReply::Timeout => {
@@ -553,11 +565,19 @@ impl ClientBench {
             // receive next reply
             result = self.driver.wait_reply() => {
                 match result? {
-                    DriverReply::Success { latency, .. } => {
+                    DriverReply::Success { latency, cmd_result, .. } => {
                         self.reply_cnt += 1;
                         self.chunk_cnt += 1;
+
                         let lat_us = latency.as_secs_f64() * 1_000_000.0;
-                        self.chunk_lats.push(lat_us);
+                        match cmd_result {
+                            CommandResult::Put { .. } => {
+                                self.chunk_wlats.push(lat_us);
+                            }
+                            CommandResult::Get { .. } => {
+                                self.chunk_rlats.push(lat_us);
+                            }
+                        }
 
                         if self.slowdown > 0 {
                             self.slowdown -= 1;
@@ -596,7 +616,8 @@ impl ClientBench {
         Ok(())
     }
 
-    /// If not using trace, preload values for all keys.
+    /// If not using trace, preload values for all keys. Allowing a few retries
+    /// in cases of redirections and if servers weren't fully launched up.
     async fn do_preload(&mut self) -> Result<(), SummersetError> {
         let val = self.gen_value_at_now()?;
 
@@ -619,6 +640,7 @@ impl ClientBench {
                                     "unsuccessful preload reply, no retries left"
                                 );
                             }
+                            time::sleep(Duration::from_millis(200)).await;
                         }
                     }
                 }
@@ -668,14 +690,22 @@ impl ClientBench {
         self.total_cnt = 0;
         self.reply_cnt = 0;
         self.chunk_cnt = 0;
-        self.chunk_lats.clear();
+        self.chunk_wlats.clear();
+        self.chunk_rlats.clear();
         self.retrying = false;
         self.slowdown = 0;
 
         // run for specified length
         println!(
-            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
+            "{:^11} | {:^12} | {:^12} : {:^12} ~ {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)",
+            "Tput (ops/s)",
+            "Lat (us)",
+            "WLat (us)",
+            "RLat (us)",
+            "Freq",
+            "Reply",
+            "Total"
         );
         let mut elapsed = self.now.duration_since(self.start);
         while elapsed < length {
@@ -694,57 +724,75 @@ impl ClientBench {
                 || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
                 || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
             {
-                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if self.chunk_lats.is_empty() {
+                let tput = self.chunk_cnt as f64 / print_elapsed.as_secs_f64();
+                let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_lats.iter().sum::<f64>()
-                        / (self.chunk_lats.len() as f64)
+                    self.chunk_wlats.iter().sum::<f64>()
+                        / self.chunk_wlats.len() as f64
                 };
+                let rlat = if self.chunk_rlats.is_empty() {
+                    0.0
+                } else {
+                    self.chunk_rlats.iter().sum::<f64>()
+                        / self.chunk_rlats.len() as f64
+                };
+                let lat =
+                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                        0.0
+                    } else {
+                        (wlat * self.chunk_wlats.len() as f64
+                            + rlat * self.chunk_rlats.len() as f64)
+                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
+                                as f64
+                    };
                 println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} : {:>8} / {:<8}",
+                    "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
                     elapsed.as_secs_f64(),
-                    tpt,
+                    tput,
                     lat,
+                    wlat,
+                    rlat,
                     self.curr_freq,
                     self.reply_cnt,
                     self.total_cnt
                 );
                 last_print = self.now;
                 self.chunk_cnt = 0;
-                self.chunk_lats.clear();
+                self.chunk_wlats.clear();
+                self.chunk_rlats.clear();
 
                 // THE FOLLOWING IS EXPERIMENTAL:
                 // adaptively adjust issuing frequency according to number of
                 // pending requests; we try to maintain two ranges:
-                //   - curr_freq in (1 ~ 1.25) * tpt
-                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tpt
+                //   - curr_freq in (1 ~ 1.25) * tput
+                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tput
                 if self.params.freq_target > 0 {
                     let freq_changed = if self.slowdown > 0
-                        || self.curr_freq as f64 > 1.25 * tpt
-                        || self.reply_cnt as f64 + 0.1 * tpt
+                        || self.curr_freq as f64 > 1.25 * tput
+                        || self.reply_cnt as f64 + 0.1 * tput
                             < self.total_cnt as f64
                     {
                         // frequency too high, ramp down
-                        self.curr_freq -= (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 > 2.0 * tpt {
+                        self.curr_freq -= (0.01 * tput) as u64;
+                        if self.curr_freq as f64 > 2.0 * tput {
                             self.curr_freq /= 2;
-                        } else if self.curr_freq as f64 > 1.5 * tpt {
+                        } else if self.curr_freq as f64 > 1.5 * tput {
                             self.curr_freq =
                                 (0.67 * self.curr_freq as f64) as u64;
-                        } else if self.curr_freq as f64 > 1.25 * tpt {
+                        } else if self.curr_freq as f64 > 1.25 * tput {
                             self.curr_freq =
                                 (0.8 * self.curr_freq as f64) as u64;
                         }
                         true
-                    } else if self.curr_freq as f64 <= tpt
-                        || self.reply_cnt as f64 + 0.001 * tpt
+                    } else if self.curr_freq as f64 <= tput
+                        || self.reply_cnt as f64 + 0.001 * tput
                             >= self.total_cnt as f64
                     {
                         // frequency too conservative, ramp up a bit
-                        self.curr_freq += (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 <= tpt {
-                            self.curr_freq = tpt as u64;
+                        self.curr_freq += (0.01 * tput) as u64;
+                        if self.curr_freq as f64 <= tput {
+                            self.curr_freq = tput as u64;
                         }
                         if self.curr_freq > self.params.freq_target {
                             self.curr_freq = self.params.freq_target;

@@ -120,7 +120,7 @@ impl ClientReactor {
         let (client_responder_handles_write, client_responder_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
+        let client_listener = tcp_bind_with_retry(cli_addr, 15).await?;
         let mut acceptor = ClientReactorAcceptorTask::new(
             tx_req,
             tx_replies_write,
