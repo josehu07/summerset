@@ -42,6 +42,14 @@ mod crossword;
 pub use crossword::{ClientConfigCrossword, ReplicaConfigCrossword};
 use crossword::{CrosswordClient, CrosswordReplica};
 
+mod quorum_leases;
+pub use quorum_leases::{ClientConfigQuorumLeases, ReplicaConfigQuorumLeases};
+use quorum_leases::{QuorumLeasesClient, QuorumLeasesReplica};
+
+mod bodega;
+use bodega::{BodegaClient, BodegaReplica};
+pub use bodega::{ClientConfigBodega, ReplicaConfigBodega};
+
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum SmrProtocol {
@@ -53,6 +61,8 @@ pub enum SmrProtocol {
     RSPaxos,
     CRaft,
     Crossword,
+    QuorumLeases,
+    Bodega,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -76,6 +86,8 @@ impl SmrProtocol {
             "RSPaxos" => Some(Self::RSPaxos),
             "CRaft" => Some(Self::CRaft),
             "Crossword" => Some(Self::Crossword),
+            "QuorumLeases" => Some(Self::QuorumLeases),
+            "Bodega" => Some(Self::Bodega),
             _ => None,
         }
     }
@@ -164,6 +176,22 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::QuorumLeases => {
+                box_if_ok!(
+                    QuorumLeasesReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
+            Self::Bodega => {
+                box_if_ok!(
+                    BodegaReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
         }
     }
 
@@ -212,6 +240,17 @@ impl SmrProtocol {
                     CrosswordClient::new_and_setup(manager, config_str).await
                 )
             }
+            Self::QuorumLeases => {
+                box_if_ok!(
+                    QuorumLeasesClient::new_and_setup(manager, config_str)
+                        .await
+                )
+            }
+            Self::Bodega => {
+                box_if_ok!(
+                    BodegaClient::new_and_setup(manager, config_str).await
+                )
+            }
         }
     }
 }
@@ -245,6 +284,8 @@ mod name_tests {
         valid_name_test!(RSPaxos);
         valid_name_test!(CRaft);
         valid_name_test!(Crossword);
+        valid_name_test!(QuorumLeases);
+        valid_name_test!(Bodega);
     }
 
     #[test]

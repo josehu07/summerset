@@ -42,6 +42,8 @@ PROTOCOL_FEATURES = {
     "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
     "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
     "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n//2}"),
+    "QuorumLeases": ProtoFeats(True, True, None),
+    "Bodega": ProtoFeats(True, True, None),
 }
 
 

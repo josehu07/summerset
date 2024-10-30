@@ -67,7 +67,7 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 | `Raft` | Raft with explicit log and strong leadership ([paper](https://raft.github.io/raft.pdf)) |
 | `RSPaxos` | MultiPaxos w/ RS erasure code sharding ([paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf)) |
 | `CRaft` | Raft w/ erasure code sharding and fallback ([paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf)) |
-| `QuorumLeases` | TBD ([paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf)) |
+| `QuorumLeases` | Local reads at leaseholders when quiescent ([paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf)) |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
