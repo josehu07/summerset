@@ -343,6 +343,10 @@ impl GenericReplica for SimplePushReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -363,6 +367,9 @@ impl Default for ClientConfigSimplePush {
 pub(crate) struct SimplePushClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     config: ClientConfigSimplePush,
@@ -391,6 +398,7 @@ impl GenericEndpoint for SimplePushClient {
 
         Ok(SimplePushClient {
             id,
+            population: 0,
             config,
             ctrl_stub,
             api_stub: None,
@@ -416,6 +424,8 @@ impl GenericEndpoint for SimplePushClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // find a server to connect to, starting from provided server_id
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.config.server_id) {
@@ -486,6 +496,10 @@ impl GenericEndpoint for SimplePushClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

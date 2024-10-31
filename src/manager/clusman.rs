@@ -29,10 +29,10 @@ pub struct ServerInfo {
     pub is_leader: bool,
 
     /// This server is a read lease grantor? (only for relevant protocols)
-    pub is_rlease_grantor: bool,
+    pub is_grantor: bool,
 
     /// This server is a read lease grantee? (only for relevant protocols)
-    pub is_rlease_grantee: bool,
+    pub is_grantee: bool,
 
     /// This server is currently paused?
     pub is_paused: bool,
@@ -215,8 +215,8 @@ impl ClusterManager {
                 api_addr,
                 p2p_addr,
                 is_leader: false,
-                is_rlease_grantor: false,
-                is_rlease_grantee: false,
+                is_grantor: false,
+                is_grantee: false,
                 is_paused: false,
                 start_slot: 0,
             },
@@ -255,8 +255,8 @@ impl ClusterManager {
         }
     }
 
-    /// Handler of RLeaserStatus message.
-    fn handle_rleaser_status(
+    /// Handler of LeaserStatus message.
+    fn handle_leaser_status(
         &mut self,
         server: ReplicaId,
         is_grantor: bool,
@@ -268,8 +268,8 @@ impl ClusterManager {
 
         // update this server's info
         let info = self.servers_info.get_mut(&server).unwrap();
-        info.is_rlease_grantor = is_grantor;
-        info.is_rlease_grantee = is_grantee;
+        info.is_grantor = is_grantor;
+        info.is_grantee = is_grantee;
         Ok(())
     }
 
@@ -327,11 +327,11 @@ impl ClusterManager {
                 self.handle_leader_status(server, step_up)?;
             }
 
-            CtrlMsg::RLeaserStatus {
+            CtrlMsg::LeaserStatus {
                 is_grantor,
                 is_grantee,
             } => {
-                self.handle_rleaser_status(server, is_grantor, is_grantee)?;
+                self.handle_leaser_status(server, is_grantor, is_grantee)?;
             }
 
             CtrlMsg::SnapshotUpTo { new_start } => {

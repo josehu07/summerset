@@ -10,7 +10,7 @@ mod statemach;
 mod storage;
 mod transport;
 
-pub use external::{ApiReply, ApiRequest, RequestId};
+pub use external::{ApiReply, ApiRequest, LeaserRoles, RequestId};
 pub use replica::{GenericReplica, ReplicaId};
 pub use statemach::{Command, CommandId, CommandResult};
 

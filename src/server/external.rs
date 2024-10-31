@@ -1,5 +1,6 @@
 //! Summerset server external API module implementation.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -38,16 +39,13 @@ pub enum ApiRequest {
         cmd: Command,
     },
 
-    /// Read leaser configuration change. (only used by relevant protocols)
+    /// Leaser roles configuration change. (only used by relevant protocols)
     Conf {
-        /// Read lease grantors. (if relevant)
-        grantors: Bitmap,
+        /// Client request ID.
+        id: RequestId,
 
-        /// Read lease grantees. (if relevant)
-        grantees: Bitmap,
-
-        /// If not `None`, attempts a leader change as well.
-        leader: Option<ReplicaId>,
+        /// Leaser roles configuration to apply.
+        conf: LeaserRoles,
     },
 
     /// Client leave notification.
@@ -93,6 +91,9 @@ pub enum ApiReply {
 
     /// Reply to leaser configuration change. (only for relevant protocols)
     Conf {
+        /// ID of the corresponding client request.
+        id: RequestId,
+
         /// True if successful; false otherwise (e.g., if config not valid or
         /// concurrent changes detected).
         success: bool,
@@ -134,6 +135,65 @@ impl ApiReply {
             redirect: None,
             rq_retry: Some(read_cmd),
         }
+    }
+}
+
+/// Leaser roles configuration for relevant protocols.
+#[derive(PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+pub struct LeaserRoles {
+    /// Grantors set.
+    pub grantors: Bitmap,
+
+    /// Supposed leaseholders set.
+    pub grantees: Bitmap,
+
+    /// If not `None`, supposed leader.
+    pub leader: Option<ReplicaId>,
+}
+
+impl LeaserRoles {
+    /// Creates a new empty leaser roles configuration.
+    #[inline]
+    pub fn empty(population: u8) -> Self {
+        LeaserRoles {
+            grantors: Bitmap::new(population, false),
+            grantees: Bitmap::new(population, false),
+            leader: None,
+        }
+    }
+
+    /// Returns if a server is a grantor.
+    #[inline]
+    pub fn is_grantor(&self, id: ReplicaId) -> Result<bool, SummersetError> {
+        self.grantors.get(id)
+    }
+
+    /// Returns if a server is a supposed grantee.
+    #[inline]
+    pub fn is_grantee(&self, id: ReplicaId) -> Result<bool, SummersetError> {
+        self.grantees.get(id)
+    }
+
+    /// Returns if a server is the supposed leader.
+    #[inline]
+    pub fn is_leader(&self, id: ReplicaId) -> Result<bool, SummersetError> {
+        Ok(self.leader.map(|leader| leader == id).unwrap_or(false))
+    }
+}
+
+impl fmt::Debug for LeaserRoles {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "<{}> {:?} => {:?}",
+            if let Some(leader) = self.leader {
+                leader.to_string()
+            } else {
+                "_".into()
+            },
+            self.grantors,
+            self.grantees
+        )
     }
 }
 

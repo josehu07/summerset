@@ -44,7 +44,7 @@ pub(crate) enum CtrlMsg {
 
     /// Server -> Manager: tell the manager that my read lease grantor and/or
     /// grantee role status has changed. (only for relevant protocols)
-    RLeaserStatus { is_grantor: bool, is_grantee: bool },
+    LeaserStatus { is_grantor: bool, is_grantee: bool },
 
     /// Manager -> Server: reset to initial state. If durable is false, cleans
     /// durable storage state as well.

@@ -418,6 +418,10 @@ impl GenericReplica for ChainRepReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -444,6 +448,9 @@ impl Default for ClientConfigChainRep {
 pub(crate) struct ChainRepClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     _config: ClientConfigChainRep,
@@ -494,6 +501,7 @@ impl GenericEndpoint for ChainRepClient {
 
         Ok(ChainRepClient {
             id,
+            population: 0,
             _config: config,
             servers: HashMap::new(),
             head_id: init_head_id,
@@ -525,6 +533,8 @@ impl GenericEndpoint for ChainRepClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new head_id/tail_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.head_id)
@@ -646,6 +656,10 @@ impl GenericEndpoint for ChainRepClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

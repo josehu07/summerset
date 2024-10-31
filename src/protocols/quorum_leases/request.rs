@@ -20,7 +20,7 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         let mut strip_read_only = false;
 
-        if self.is_rlease_holder() {
+        if self.is_local_reader() {
             // conditions of majority-leased local reader met, can reply
             // read-only commands directly back to clients
             for (client, req) in req_batch.iter() {
@@ -98,7 +98,12 @@ impl QuorumLeasesReplica {
         // if I'm not a prepared leader, ignore client requests
         if !self.is_leader() || self.bal_prepared == 0 {
             for (client, req) in req_batch {
-                if let ApiRequest::Req { id: req_id, .. } = req {
+                let req_id = match req {
+                    ApiRequest::Req { id: req_id, .. } => Some(req_id),
+                    ApiRequest::Conf { id: req_id, .. } => Some(req_id),
+                    _ => None,
+                };
+                if let Some(req_id) = req_id {
                     // tell the client to try on known leader or just the
                     // next ID replica
                     let target = if let Some(peer) = self.leader {

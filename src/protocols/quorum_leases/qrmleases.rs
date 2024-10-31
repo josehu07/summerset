@@ -6,9 +6,17 @@ use crate::server::LeaseAction;
 
 // QuorumLeasesReplica lease-related actions logic
 impl QuorumLeasesReplica {
+    /// Checks if a leaser roles configuration is valid.
+    #[inline]
+    pub(super) fn is_valid_conf(&self, conf: &LeaserRoles) -> bool {
+        conf.grantors.size() == self.population
+            && conf.grantees.size() == self.population
+            && conf.grantors.count() >= self.quorum_cnt
+    }
+
     /// Checks if I'm a majority-leased local reader.
     #[inline]
-    pub(super) fn is_rlease_holder(&self) -> bool {
+    pub(super) fn is_local_reader(&self) -> bool {
         // TODO:
         // self.is_leader()
         //     && self.bal_prepared > 0
@@ -18,6 +26,78 @@ impl QuorumLeasesReplica {
         //        // [for benchmarking purposes only]
         //        || self.config.sim_read_lease)
         false
+    }
+
+    /// Processes a batch of leaser roles config change requests (taken off
+    /// from a committed instance's request batch). Replies to all of them, and
+    /// applies the last valid one as current config.
+    pub(super) fn commit_conf_changes(
+        &mut self,
+        slot: usize,
+        external: bool,
+        conf_changes: Vec<(ClientId, RequestId, LeaserRoles)>,
+    ) -> Result<(), SummersetError> {
+        debug_assert!(!conf_changes.is_empty());
+
+        // find the last valid one, if any
+        let mut apply_idx = conf_changes.len();
+        for (idx, (_, _, conf)) in conf_changes.iter().enumerate().rev() {
+            if self.is_valid_conf(conf) {
+                apply_idx = idx;
+                break;
+            }
+        }
+
+        // reply to all of them
+        for (idx, (client, req_id, conf)) in
+            conf_changes.into_iter().enumerate()
+        {
+            if idx != apply_idx {
+                // not applied
+                self.external_api.send_reply(
+                    ApiReply::Conf {
+                        id: req_id,
+                        success: false,
+                    },
+                    client,
+                )?;
+                pf_trace!(
+                    "replied -> client {} slot {} conf ignored",
+                    client,
+                    slot
+                );
+            } else {
+                // applied
+                pf_debug!(
+                    "leaser_roles changed: v{} {:?}",
+                    self.commit_bar,
+                    conf
+                );
+                self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
+                    is_grantor: conf.grantors.get(self.id)?,
+                    is_grantee: conf.grantees.get(self.id)?,
+                })?;
+                self.leasers_cfg = conf;
+                self.leasers_ver = self.commit_bar;
+
+                if external {
+                    self.external_api.send_reply(
+                        ApiReply::Conf {
+                            id: req_id,
+                            success: true,
+                        },
+                        client,
+                    )?;
+                    pf_trace!(
+                        "replied -> client {} slot {} conf applied",
+                        client,
+                        slot
+                    );
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Wait on lease actions until I'm sure I'm no longer granting to a peer.

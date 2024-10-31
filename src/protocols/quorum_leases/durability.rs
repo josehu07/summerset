@@ -159,8 +159,9 @@ impl QuorumLeasesReplica {
                 if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
-                    let mut rlease_roles = None;
-                    for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
+                    let mut conf_changes = vec![];
+                    for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate()
+                    {
                         match req {
                             ApiRequest::Req { cmd, .. } => {
                                 self.state_machine.submit_cmd(
@@ -171,13 +172,12 @@ impl QuorumLeasesReplica {
                                     cmd.clone(),
                                 )?;
                             }
-                            ApiRequest::Conf {
-                                grantors, grantees, ..
-                            } => {
-                                rlease_roles = Some(RLeaseRoles {
-                                    grantors: grantors.clone(),
-                                    grantees: grantees.clone(),
-                                });
+                            ApiRequest::Conf { id: req_id, conf } => {
+                                conf_changes.push((
+                                    *client,
+                                    *req_id,
+                                    conf.clone(),
+                                ));
                             }
                             _ => {} // ignore other types of requests
                         }
@@ -189,20 +189,14 @@ impl QuorumLeasesReplica {
                     );
 
                     // if there're read leaser roles config changes in the
-                    // request batch, take the last one and apply it
-                    if let Some(rlease_roles) = rlease_roles {
-                        pf_debug!(
-                            "rlease_roles changed: v{} {:?}",
+                    // request batch, maybe apply
+                    if !conf_changes.is_empty() {
+                        let external = inst.external;
+                        self.commit_conf_changes(
                             self.commit_bar,
-                            rlease_roles
-                        );
-
-                        self.control_hub.send_ctrl(CtrlMsg::RLeaserStatus {
-                            is_grantor: rlease_roles.grantors.get(self.id)?,
-                            is_grantee: rlease_roles.grantees.get(self.id)?,
-                        })?;
-                        self.rlease_roles_cfg = rlease_roles;
-                        self.rlease_roles_ver = self.commit_bar;
+                            external,
+                            conf_changes,
+                        )?;
                     }
                 }
 

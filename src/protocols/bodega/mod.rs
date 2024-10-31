@@ -880,6 +880,10 @@ impl GenericReplica for BodegaReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -890,9 +894,6 @@ pub struct ClientConfigBodega {
 
     /// App-designated nearest server ID for near read attempts.
     pub near_server_id: ReplicaId,
-
-    /// Enable nearest majority quorum read optimization?
-    pub enable_quorum_reads: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -901,7 +902,6 @@ impl Default for ClientConfigBodega {
         ClientConfigBodega {
             init_server_id: 0,
             near_server_id: 0,
-            enable_quorum_reads: false,
         }
     }
 }
@@ -911,8 +911,11 @@ pub(crate) struct BodegaClient {
     /// Client ID.
     id: ClientId,
 
+    /// Number of servers in the cluster.
+    population: u8,
+
     /// Configuration parameters struct.
-    config: ClientConfigBodega,
+    _config: ClientConfigBodega,
 
     /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -948,14 +951,14 @@ impl GenericEndpoint for BodegaClient {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ClientConfigBodega;
-                                    init_server_id, near_server_id,
-                                    enable_quorum_reads)?;
+                                    init_server_id, near_server_id)?;
         let curr_server_id = config.init_server_id;
         let near_server_id = config.near_server_id;
 
         Ok(BodegaClient {
             id,
-            config,
+            population: 0,
+            _config: config,
             servers: HashMap::new(),
             curr_server_id,
             near_server_id,
@@ -984,6 +987,8 @@ impl GenericEndpoint for BodegaClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.curr_server_id)
@@ -1062,7 +1067,7 @@ impl GenericEndpoint for BodegaClient {
                     return logged_err!("last_server_id not set when retrying");
                 }
             }
-            Some(req) if req.read_only() && self.config.enable_quorum_reads => {
+            Some(req) if req.read_only() => {
                 // read-only request and doing near quorum reads
                 self.near_server_id
             }
@@ -1178,6 +1183,10 @@ impl GenericEndpoint for BodegaClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

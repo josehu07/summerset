@@ -23,6 +23,14 @@ pub(crate) enum DriverReply {
         latency: Duration,
     },
 
+    /// Leaser roles config change reply. (only for relevant protocols)
+    Leasers {
+        /// Request ID.
+        req_id: RequestId,
+        /// Successfully changed.
+        changed: bool,
+    },
+
     /// Service indicated redirection.
     Redirect { server: ReplicaId },
 

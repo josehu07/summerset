@@ -11,7 +11,8 @@ use color_print::{cprint, cprintln};
 use tokio::time::Duration;
 
 use summerset::{
-    Command, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
+    Command, CtrlReply, CtrlRequest, GenericEndpoint, LeaserRoles, ReplicaId,
+    SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -22,14 +23,17 @@ enum ReplCommand {
     /// Normal state machine replication command.
     Normal(Command),
 
+    /// Leaser configuration change request. (only for relevant protocols)
+    Leasers(LeaserRoles),
+
+    /// Control request to the manager.
+    Control(CtrlRequest),
+
     /// Reconnect to the service.
     Reconnect,
 
     /// Print help message.
     PrintHelp,
-
-    /// Control request to the manager.
-    Control(CtrlRequest),
 
     /// Client exit.
     Exit,
@@ -48,6 +52,9 @@ pub(crate) struct ClientRepl {
 
     /// User input buffer.
     input_buf: String,
+
+    /// Current leaser role config I want.
+    leaser_roles: Option<LeaserRoles>,
 }
 
 impl ClientRepl {
@@ -60,6 +67,7 @@ impl ClientRepl {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
             input_buf: String::new(),
+            leaser_roles: None,
         }
     }
 
@@ -75,11 +83,15 @@ impl ClientRepl {
         if let Some(e) = err {
             cprintln!("<bright-red>✗</> {}", e);
         }
-        println!("HELP: Supported normal commands are:");
+        println!("HELP: Commands for normal operations:");
         println!("          get <key>");
         println!("          put <key> <value>");
         println!("          help");
         println!("          exit");
+        println!("      Commands for leaser roles config:");
+        println!("          grantor [servers]");
+        println!("          grantee [servers]");
+        println!("          leader <server>");
         println!("      Commands for control/testing:");
         println!("          reconnect");
         println!("          reset [servers]");
@@ -138,6 +150,7 @@ impl ClientRepl {
         // get command type, match case-insensitively
         let cmd_type = segs.next();
         debug_assert!(cmd_type.is_some());
+        debug_assert!(self.leaser_roles.is_some());
 
         match &cmd_type.unwrap().to_lowercase()[..] {
             "get" => {
@@ -159,6 +172,42 @@ impl ClientRepl {
             "help" => Ok(ReplCommand::PrintHelp),
 
             "reconnect" => Ok(ReplCommand::Reconnect),
+
+            "grantor" => {
+                let servers = Self::drain_server_ids(&mut segs)?;
+                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                leaser_roles.grantors.clear();
+                for server in servers {
+                    leaser_roles.grantors.set(server, true)?;
+                } // applies on top of current leaser roles config
+                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+            }
+
+            "grantee" => {
+                let servers = Self::drain_server_ids(&mut segs)?;
+                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                leaser_roles.grantees.clear();
+                for server in servers {
+                    leaser_roles.grantees.set(server, true)?;
+                } // applies on top of current leaser roles config
+                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+            }
+
+            "leader" => {
+                let mut servers = Self::drain_server_ids(&mut segs)?;
+                let leader = if servers.is_empty() {
+                    None
+                } else if servers.len() > 1 {
+                    let err = SummersetError::msg("too many args");
+                    Self::print_help(Some(&err));
+                    return Err(err);
+                } else {
+                    Some(servers.drain().next().unwrap())
+                };
+                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                leaser_roles.leader = leader; // applies on top of current
+                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+            }
 
             "reset" => {
                 let servers = Self::drain_server_ids(&mut segs)?;
@@ -226,6 +275,20 @@ impl ClientRepl {
                 );
             }
 
+            DriverReply::Leasers { req_id, changed } => {
+                if changed {
+                    cprintln!(
+                        "<bright-yellow>✓</> ({}) leaser roles config changed",
+                        req_id
+                    );
+                } else {
+                    cprintln!(
+                        "<bright-red>✗</> ({}) leaser roles change unsuccessful",
+                        req_id
+                    );
+                }
+            }
+
             DriverReply::Failure => {
                 cprintln!("<bright-red>✗</> service replied unknown error");
             }
@@ -285,7 +348,8 @@ impl ClientRepl {
         }
     }
 
-    /// One iteration of the REPL loop.
+    /// One iteration of the REPL loop. On success, returns a boolean that's
+    /// false only when exitting.
     async fn iter(&mut self) -> Result<bool, SummersetError> {
         Self::print_prompt();
 
@@ -316,6 +380,12 @@ impl ClientRepl {
                 Ok(true)
             }
 
+            ReplCommand::Leasers(conf) => {
+                let result = self.driver.conf(conf).await?;
+                self.print_result(result);
+                Ok(true)
+            }
+
             ReplCommand::Control(req) => {
                 let reply = self.make_ctrl_req(req).await?;
                 self.print_ctrl_reply(reply);
@@ -327,11 +397,20 @@ impl ClientRepl {
     /// Runs the infinite REPL loop.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
+        self.leaser_roles = Some(LeaserRoles::empty(self.driver.population()));
 
         loop {
-            if let Ok(false) = self.iter().await {
-                self.driver.leave(true).await?;
-                break;
+            match self.iter().await {
+                Ok(true) => {}
+
+                Ok(false) => {
+                    self.driver.leave(true).await?;
+                    break;
+                }
+
+                Err(err) => {
+                    cprintln!("<bright-red>✗</> error: {}", err);
+                }
             }
         }
 

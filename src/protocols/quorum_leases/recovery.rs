@@ -92,12 +92,9 @@ impl QuorumLeasesReplica {
                                         )
                                         .await?;
                                 }
-                                ApiRequest::Conf {
-                                    grantors, grantees, ..
-                                } => {
-                                    self.rlease_roles_cfg =
-                                        RLeaseRoles { grantors, grantees };
-                                    self.rlease_roles_ver = self.commit_bar;
+                                ApiRequest::Conf { conf, .. } => {
+                                    self.leasers_cfg = conf;
+                                    self.leasers_ver = self.commit_bar;
                                 }
                                 _ => {} // ignore other request types
                             }
@@ -150,10 +147,10 @@ impl QuorumLeasesReplica {
         }
 
         // tell manager about read lease roles if changed
-        if self.rlease_roles_ver > 0 {
-            self.control_hub.send_ctrl(CtrlMsg::RLeaserStatus {
-                is_grantor: self.rlease_roles_cfg.grantors.get(self.id)?,
-                is_grantee: self.rlease_roles_cfg.grantees.get(self.id)?,
+        if self.leasers_ver > 0 {
+            self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
+                is_grantor: self.leasers_cfg.is_grantor(self.id)?,
+                is_grantee: self.leasers_cfg.is_grantee(self.id)?,
             })?;
         }
 

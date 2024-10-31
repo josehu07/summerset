@@ -669,6 +669,10 @@ impl GenericReplica for RaftReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -689,6 +693,9 @@ impl Default for ClientConfigRaft {
 pub(crate) struct RaftClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     _config: ClientConfigRaft,
@@ -724,6 +731,7 @@ impl GenericEndpoint for RaftClient {
 
         Ok(RaftClient {
             id,
+            population: 0,
             _config: config,
             servers: HashMap::new(),
             server_id: init_server_id,
@@ -751,6 +759,8 @@ impl GenericEndpoint for RaftClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.server_id)
@@ -860,6 +870,10 @@ impl GenericEndpoint for RaftClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

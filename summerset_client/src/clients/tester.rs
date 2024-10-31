@@ -144,6 +144,12 @@ impl ClientTester {
                     );
                 }
 
+                DriverReply::Leasers { .. } => {
+                    return logged_err!(
+                        "DriverReply type mismatch: expect normal command"
+                    );
+                }
+
                 DriverReply::Failure => {
                     return logged_err!("service replied unknown error");
                 }
@@ -199,6 +205,12 @@ impl ClientTester {
                     }
                     return logged_err!(
                         "CommandResult type mismatch: expect Put"
+                    );
+                }
+
+                DriverReply::Leasers { .. } => {
+                    return logged_err!(
+                        "DriverReply type mismatch: expect normal command"
                     );
                 }
 

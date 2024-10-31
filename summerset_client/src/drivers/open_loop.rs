@@ -13,7 +13,7 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
-    Command, GenericEndpoint, RequestId, SummersetError, Timer,
+    ClientId, Command, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Open-loop driver struct.
@@ -212,6 +212,20 @@ impl DriverOpenLoop {
                 }
             }
         }
+    }
+
+    // Note: not supporting leaser roles config change for open-loop yet...
+
+    /// Gets my Client ID.
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> ClientId {
+        self.endpoint.id()
+    }
+
+    /// Gets current cluster size.
+    #[allow(dead_code)]
+    pub(crate) fn population(&self) -> u8 {
+        self.endpoint.population()
     }
 
     /// Gets a mutable reference to the endpoint's control stub.

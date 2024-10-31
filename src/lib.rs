@@ -23,8 +23,8 @@ pub use crate::manager::{ClusterManager, CtrlReply, CtrlRequest, ServerInfo};
 
 #[doc(inline)]
 pub use crate::server::{
-    ApiReply, ApiRequest, Command, CommandResult, GenericReplica, ReplicaId,
-    RequestId,
+    ApiReply, ApiRequest, Command, CommandResult, GenericReplica, LeaserRoles,
+    ReplicaId, RequestId,
 };
 
 #[doc(inline)]

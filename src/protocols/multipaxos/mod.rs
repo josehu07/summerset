@@ -916,6 +916,10 @@ impl GenericReplica for MultiPaxosReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -946,6 +950,9 @@ impl Default for ClientConfigMultiPaxos {
 pub(crate) struct MultiPaxosClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     config: ClientConfigMultiPaxos,
@@ -991,6 +998,7 @@ impl GenericEndpoint for MultiPaxosClient {
 
         Ok(MultiPaxosClient {
             id,
+            population: 0,
             config,
             servers: HashMap::new(),
             curr_server_id,
@@ -1020,6 +1028,8 @@ impl GenericEndpoint for MultiPaxosClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.curr_server_id)
@@ -1214,6 +1224,10 @@ impl GenericEndpoint for MultiPaxosClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

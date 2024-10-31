@@ -77,6 +77,9 @@ pub(crate) struct RepNothingReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
 
+    /// Total number of replicas in cluster.
+    population: u8,
+
     /// Configuration parameters struct.
     config: ReplicaConfigRepNothing,
 
@@ -135,6 +138,7 @@ impl GenericReplica for RepNothingReplica {
         // connect to the cluster manager and get assigned a server ID
         let mut control_hub = ControlHub::new_and_setup(manager).await?;
         let id = control_hub.me;
+        let population = control_hub.population;
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ReplicaConfigRepNothing;
@@ -177,6 +181,7 @@ impl GenericReplica for RepNothingReplica {
 
         Ok(RepNothingReplica {
             id,
+            population,
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
@@ -270,6 +275,10 @@ impl GenericReplica for RepNothingReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -290,6 +299,9 @@ impl Default for ClientConfigRepNothing {
 pub(crate) struct RepNothingClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     config: ClientConfigRepNothing,
@@ -318,6 +330,7 @@ impl GenericEndpoint for RepNothingClient {
 
         Ok(RepNothingClient {
             id,
+            population: 0,
             config,
             ctrl_stub,
             api_stub: None,
@@ -343,6 +356,8 @@ impl GenericEndpoint for RepNothingClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // find a server to connect to, starting from provided server_id
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.config.server_id) {
@@ -413,6 +428,10 @@ impl GenericEndpoint for RepNothingClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

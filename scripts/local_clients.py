@@ -32,8 +32,18 @@ UTILITY_PARAM_NAMES = {
         "unif_interval_ms",
         "unif_upper_bound",
     ],
-    "tester": ["test_name", "keep_going", "logger_on"],
-    "mess": ["pause", "resume"],
+    "tester": [
+        "test_name",
+        "keep_going",
+        "logger_on",
+    ],
+    "mess": [
+        "pause",
+        "resume",
+        "grantor",
+        "grantee",
+        "leader",
+    ],
 }
 
 
@@ -244,6 +254,21 @@ if __name__ == "__main__":
     )
     parser_mess.add_argument(
         "--resume", type=str, help="comma-separated list of servers to resume"
+    )
+    parser_mess.add_argument(
+        "--grantor",
+        type=str,
+        help="comma-separated list of servers as configured grantors",
+    )
+    parser_mess.add_argument(
+        "--grantee",
+        type=str,
+        help="comma-separated list of servers as configured grantees",
+    )
+    parser_mess.add_argument(
+        "--leader",
+        type=str,
+        help="string form of configured leader ID (or empty string)",
     )
 
     args = parser.parse_args()

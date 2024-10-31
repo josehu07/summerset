@@ -1,5 +1,6 @@
 //! Bitmap data structure helper.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::Range;
 
@@ -79,7 +80,13 @@ impl Bitmap {
     /// Flips all flags in the bitmap.
     #[inline]
     pub fn flip(&mut self) {
-        self.0.toggle_range(..)
+        self.0.toggle_range(..);
+    }
+
+    /// Clears all flags in the bitmap to 0.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 
     /// Allows `for (id, bit) in map.iter()`.
@@ -95,9 +102,7 @@ impl From<(u8, Range<u8>)> for Bitmap {
         let (size, ones) = tup;
         let mut bitmap = Self::new(size, false);
         for idx in ones {
-            if let Err(e) = bitmap.set(idx, true) {
-                panic!("{}", e);
-            }
+            bitmap.set(idx, true).unwrap();
         }
         bitmap
     }
@@ -109,9 +114,7 @@ impl From<(u8, Vec<u8>)> for Bitmap {
         let (size, ones) = tup;
         let mut bitmap = Self::new(size, false);
         for idx in ones {
-            if let Err(e) = bitmap.set(idx, true) {
-                panic!("{}", e);
-            }
+            bitmap.set(idx, true).unwrap();
         }
         bitmap
     }
@@ -123,9 +126,31 @@ impl From<(u8, &Vec<u8>)> for Bitmap {
         let (size, ones) = tup;
         let mut bitmap = Self::new(size, false);
         for &idx in ones {
-            if let Err(e) = bitmap.set(idx, true) {
-                panic!("{}", e);
-            }
+            bitmap.set(idx, true).unwrap();
+        }
+        bitmap
+    }
+}
+
+// Convert <- (size, set of indexes where the flag is true).
+impl From<(u8, HashSet<u8>)> for Bitmap {
+    fn from(tup: (u8, HashSet<u8>)) -> Self {
+        let (size, ones) = tup;
+        let mut bitmap = Self::new(size, false);
+        for idx in ones {
+            bitmap.set(idx, true).unwrap();
+        }
+        bitmap
+    }
+}
+
+// Convert <- (size, set of indexes where the flag is true).
+impl From<(u8, &HashSet<u8>)> for Bitmap {
+    fn from(tup: (u8, &HashSet<u8>)) -> Self {
+        let (size, ones) = tup;
+        let mut bitmap = Self::new(size, false);
+        for &idx in ones {
+            bitmap.set(idx, true).unwrap();
         }
         bitmap
     }
@@ -143,6 +168,26 @@ impl From<Bitmap> for Vec<u8> {
 
 // Convert -> vec of indexes where the flag is true.
 impl From<&Bitmap> for Vec<u8> {
+    fn from(bitmap: &Bitmap) -> Self {
+        bitmap
+            .iter()
+            .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
+            .collect()
+    }
+}
+
+// Convert -> set of indexes where the flag is true.
+impl From<Bitmap> for HashSet<u8> {
+    fn from(bitmap: Bitmap) -> Self {
+        bitmap
+            .iter()
+            .filter_map(|(idx, flag)| if flag { Some(idx) } else { None })
+            .collect()
+    }
+}
+
+// Convert -> set of indexes where the flag is true.
+impl From<&Bitmap> for HashSet<u8> {
     fn from(bitmap: &Bitmap) -> Self {
         bitmap
             .iter()
@@ -172,7 +217,6 @@ impl Iterator for BitmapIter<'_> {
     }
 }
 
-// Implement `Debug` trait manually for better trace printing.
 impl fmt::Debug for Bitmap {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{{{}; [", self.size())?;
@@ -212,6 +256,22 @@ mod tests {
     #[should_panic]
     fn new_invalid() {
         Bitmap::new(0, true);
+    }
+
+    #[test]
+    fn conversions() {
+        let ref_map = Bitmap::from((5, 1..4));
+        assert_eq!(Bitmap::from((5, vec![1, 2, 3])), ref_map);
+        assert_eq!(Bitmap::from((5, &vec![1, 2, 3])), ref_map);
+        assert_eq!(Bitmap::from((5, HashSet::from([1, 2, 3]))), ref_map);
+        assert_eq!(Bitmap::from((5, &HashSet::from([1, 2, 3]))), ref_map);
+        assert_eq!(Vec::<u8>::from(ref_map.clone()), vec![1, 2, 3]);
+        assert_eq!(Vec::<u8>::from(&ref_map), vec![1, 2, 3]);
+        assert_eq!(
+            HashSet::<u8>::from(ref_map.clone()),
+            HashSet::from([1, 2, 3])
+        );
+        assert_eq!(HashSet::<u8>::from(&ref_map), HashSet::from([1, 2, 3]));
     }
 
     #[test]

@@ -17,7 +17,6 @@ mod request;
 mod snapshot;
 
 use std::collections::HashMap;
-use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::SystemTime;
@@ -28,8 +27,8 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
-    LeaseMsg, LeaseNum, LogActionId, ReplicaId, RequestId, StateMachine,
-    StorageHub, TransportHub,
+    LeaseMsg, LeaseNum, LeaserRoles, LogActionId, ReplicaId, RequestId,
+    StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -298,23 +297,6 @@ enum PeerMsg {
     },
 }
 
-/// Roles assignment for quorum leases.
-#[derive(Clone, Serialize, Deserialize, GetSize)]
-pub(super) struct RLeaseRoles {
-    /// Grantors set.
-    grantors: Bitmap,
-
-    /// Supposed leaseholders set.
-    grantees: Bitmap,
-}
-
-// Implement `Debug` trait manually for better trace printing.
-impl fmt::Debug for RLeaseRoles {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?} => {:?}", self.grantors, self.grantees)
-    }
-}
-
 /// QuorumLeases server replica module.
 pub(crate) struct QuorumLeasesReplica {
     /// Replica ID in cluster.
@@ -365,10 +347,10 @@ pub(crate) struct QuorumLeasesReplica {
     /// The current role assignment's version (committed slot number).
     /// Using committed instance slot number in which this config was committed
     /// as the "version" of this config.
-    rlease_roles_ver: usize,
+    leasers_ver: usize,
 
     /// The current role assignment for quorum leases.
-    rlease_roles_cfg: RLeaseRoles,
+    leasers_cfg: LeaserRoles,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -688,11 +670,8 @@ impl GenericReplica for QuorumLeasesReplica {
             heartbeater,
             lease_manager,
             leader: None,
-            rlease_roles_ver: 0,
-            rlease_roles_cfg: RLeaseRoles {
-                grantors: Bitmap::new(population, false),
-                grantees: Bitmap::new(population, false),
-            },
+            leasers_ver: 0,
+            leasers_cfg: LeaserRoles::empty(population),
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -888,6 +867,10 @@ impl GenericReplica for QuorumLeasesReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -898,9 +881,6 @@ pub struct ClientConfigQuorumLeases {
 
     /// App-designated nearest server ID for near read attempts.
     pub near_server_id: ReplicaId,
-
-    /// Enable nearest majority quorum read optimization?
-    pub enable_quorum_reads: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -909,7 +889,6 @@ impl Default for ClientConfigQuorumLeases {
         ClientConfigQuorumLeases {
             init_server_id: 0,
             near_server_id: 0,
-            enable_quorum_reads: false,
         }
     }
 }
@@ -919,8 +898,11 @@ pub(crate) struct QuorumLeasesClient {
     /// Client ID.
     id: ClientId,
 
+    /// Number of servers in the cluster.
+    population: u8,
+
     /// Configuration parameters struct.
-    config: ClientConfigQuorumLeases,
+    _config: ClientConfigQuorumLeases,
 
     /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -956,14 +938,14 @@ impl GenericEndpoint for QuorumLeasesClient {
 
         // parse protocol-specific configs
         let config = parsed_config!(config_str => ClientConfigQuorumLeases;
-                                    init_server_id, near_server_id,
-                                    enable_quorum_reads)?;
+                                    init_server_id, near_server_id)?;
         let curr_server_id = config.init_server_id;
         let near_server_id = config.near_server_id;
 
         Ok(QuorumLeasesClient {
             id,
-            config,
+            population: 0,
+            _config: config,
             servers: HashMap::new(),
             curr_server_id,
             near_server_id,
@@ -992,6 +974,8 @@ impl GenericEndpoint for QuorumLeasesClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.curr_server_id)
@@ -1070,7 +1054,7 @@ impl GenericEndpoint for QuorumLeasesClient {
                     return logged_err!("last_server_id not set when retrying");
                 }
             }
-            Some(req) if req.read_only() && self.config.enable_quorum_reads => {
+            Some(req) if req.read_only() => {
                 // read-only request and doing near quorum reads
                 self.near_server_id
             }
@@ -1186,6 +1170,10 @@ impl GenericEndpoint for QuorumLeasesClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
