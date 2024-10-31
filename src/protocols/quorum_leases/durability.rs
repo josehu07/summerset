@@ -133,7 +133,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Handler of CommitSlot logging result chan recv.
-    fn handle_logged_commit_slot(
+    async fn handle_logged_commit_slot(
         &mut self,
         slot: usize,
     ) -> Result<(), SummersetError> {
@@ -196,7 +196,8 @@ impl QuorumLeasesReplica {
                             self.commit_bar,
                             external,
                             conf_changes,
-                        )?;
+                        )
+                        .await?;
                     }
                 }
 
@@ -236,7 +237,7 @@ impl QuorumLeasesReplica {
         match entry_type {
             Status::Preparing => self.handle_logged_prepare_bal(slot),
             Status::Accepting => self.handle_logged_accept_data(slot),
-            Status::Committed => self.handle_logged_commit_slot(slot),
+            Status::Committed => self.handle_logged_commit_slot(slot).await,
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)
             }

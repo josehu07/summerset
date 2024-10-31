@@ -183,6 +183,11 @@ impl QuorumLeasesReplica {
                     if bal > leader_bk.prepare_max_bal {
                         leader_bk.prepare_max_bal = bal;
                         inst.reqs = val;
+                        Self::refresh_highest_slot(
+                            slot,
+                            &inst.reqs,
+                            &mut self.highest_slot,
+                        );
                     }
                 }
             }
@@ -300,6 +305,7 @@ impl QuorumLeasesReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_slot(slot, &reqs, &mut self.highest_slot);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {

@@ -20,7 +20,7 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         let mut strip_read_only = false;
 
-        if self.is_local_reader() {
+        if self.is_local_reader()? {
             // conditions of majority-leased local reader met, can reply
             // read-only commands directly back to clients
             for (client, req) in req_batch.iter() {
@@ -29,6 +29,12 @@ impl QuorumLeasesReplica {
                     cmd: Command::Get { key },
                 } = req
                 {
+                    let highest_slot = self.inspect_highest_slot(key)?;
+                    debug_assert!(
+                        highest_slot.is_none()
+                            || highest_slot.unwrap().1.is_some()
+                    );
+
                     // has to use the `do_sync_cmd()` API
                     let (old_results, cmd_result) = self
                         .state_machine
@@ -132,6 +138,11 @@ impl QuorumLeasesReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
             inst.reqs.clone_from(&req_batch);
+            Self::refresh_highest_slot(
+                slot,
+                &req_batch,
+                &mut self.highest_slot,
+            );
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,

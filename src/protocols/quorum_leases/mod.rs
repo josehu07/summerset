@@ -11,7 +11,7 @@ mod durability;
 mod execution;
 mod leadership;
 mod messages;
-mod qrmleases;
+mod quorumlease;
 mod recovery;
 mod request;
 mod snapshot;
@@ -27,8 +27,8 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
-    LeaseMsg, LeaseNum, LeaserRoles, LogActionId, ReplicaId, RequestId,
-    StateMachine, StorageHub, TransportHub,
+    LeaserRoles, LogActionId, ReplicaId, RequestId, StateMachine, StorageHub,
+    TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -387,6 +387,12 @@ pub(crate) struct QuorumLeasesReplica {
     //       committed (and executed) that entry.
     snap_bar: usize,
 
+    /// Map from key -> the highest slot number that (might) contain a write
+    /// to that key. Useful for read optimizations.
+    // NOTE: there probably are better ways to do such bookkeeping, but this is
+    //       good enough for now unless the key space is disgustingly huge
+    highest_slot: HashMap<String, usize>,
+
     /// Current durable WAL log file offset.
     wal_offset: usize,
 
@@ -684,6 +690,7 @@ impl GenericReplica for QuorumLeasesReplica {
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
             snap_bar: 0,
+            highest_slot: HashMap::new(),
             wal_offset: 0,
             snap_offset: 0,
             startup_time: Instant::now(),
