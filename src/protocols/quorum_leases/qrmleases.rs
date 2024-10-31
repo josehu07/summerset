@@ -6,9 +6,9 @@ use crate::server::LeaseAction;
 
 // QuorumLeasesReplica lease-related actions logic
 impl QuorumLeasesReplica {
-    /// Checks if I'm a stable majority-leased leader.
+    /// Checks if I'm a majority-leased local reader.
     #[inline]
-    pub(super) fn is_stable_leader(&self) -> bool {
+    pub(super) fn is_rlease_holder(&self) -> bool {
         // TODO:
         // self.is_leader()
         //     && self.bal_prepared > 0

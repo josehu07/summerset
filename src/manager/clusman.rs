@@ -28,6 +28,12 @@ pub struct ServerInfo {
     /// This server is a leader? (leader could be non-unique)
     pub is_leader: bool,
 
+    /// This server is a read lease grantor? (only for relevant protocols)
+    pub is_rlease_grantor: bool,
+
+    /// This server is a read lease grantee? (only for relevant protocols)
+    pub is_rlease_grantee: bool,
+
     /// This server is currently paused?
     pub is_paused: bool,
 
@@ -209,6 +215,8 @@ impl ClusterManager {
                 api_addr,
                 p2p_addr,
                 is_leader: false,
+                is_rlease_grantor: false,
+                is_rlease_grantee: false,
                 is_paused: false,
                 start_slot: 0,
             },
@@ -245,6 +253,24 @@ impl ClusterManager {
             info.is_leader = step_up;
             Ok(())
         }
+    }
+
+    /// Handler of RLeaserStatus message.
+    fn handle_rleaser_status(
+        &mut self,
+        server: ReplicaId,
+        is_grantor: bool,
+        is_grantee: bool,
+    ) -> Result<(), SummersetError> {
+        if !self.servers_info.contains_key(&server) {
+            return logged_err!("leader status got unknown ID: {}", server);
+        }
+
+        // update this server's info
+        let info = self.servers_info.get_mut(&server).unwrap();
+        info.is_rlease_grantor = is_grantor;
+        info.is_rlease_grantee = is_grantee;
+        Ok(())
     }
 
     /// Handler of autonomous SnapshotUpTo message.
@@ -299,6 +325,13 @@ impl ClusterManager {
 
             CtrlMsg::LeaderStatus { step_up } => {
                 self.handle_leader_status(server, step_up)?;
+            }
+
+            CtrlMsg::RLeaserStatus {
+                is_grantor,
+                is_grantee,
+            } => {
+                self.handle_rleaser_status(server, is_grantor, is_grantee)?;
             }
 
             CtrlMsg::SnapshotUpTo { new_start } => {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::client::ClientId;
 use crate::server::{Command, CommandResult, ReplicaId};
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, Bitmap, SummersetError,
 };
 
 use get_size::GetSize;
@@ -38,6 +38,18 @@ pub enum ApiRequest {
         cmd: Command,
     },
 
+    /// Read leaser configuration change. (only used by relevant protocols)
+    Conf {
+        /// Read lease grantors. (if relevant)
+        grantors: Bitmap,
+
+        /// Read lease grantees. (if relevant)
+        grantees: Bitmap,
+
+        /// If not `None`, attempts a leader change as well.
+        leader: Option<ReplicaId>,
+    },
+
     /// Client leave notification.
     Leave,
 }
@@ -51,6 +63,12 @@ impl ApiRequest {
         } else {
             false
         }
+    }
+
+    /// Is the request a configuration change request?
+    #[inline]
+    pub fn conf_change(&self) -> bool {
+        matches!(self, ApiRequest::Conf { .. })
     }
 }
 
@@ -71,6 +89,13 @@ pub enum ApiReply {
         /// Set if failed read-only attempt when near quorum read (or
         /// some other read-only optimization) enabled and retry indicated.
         rq_retry: Option<Command>,
+    },
+
+    /// Reply to leaser configuration change. (only for relevant protocols)
+    Conf {
+        /// True if successful; false otherwise (e.g., if config not valid or
+        /// concurrent changes detected).
+        success: bool,
     },
 
     /// Reply to client leave notification.

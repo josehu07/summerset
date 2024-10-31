@@ -83,13 +83,23 @@ impl QuorumLeasesReplica {
                         // execute all commands in this instance on state machine
                         // synchronously
                         for (_, req) in inst.reqs.clone() {
-                            if let ApiRequest::Req { cmd, .. } = req {
-                                self.state_machine
-                                    .do_sync_cmd(
-                                        0, // using 0 as dummy command ID
-                                        cmd,
-                                    )
-                                    .await?;
+                            match req {
+                                ApiRequest::Req { cmd, .. } => {
+                                    self.state_machine
+                                        .do_sync_cmd(
+                                            0, // using 0 as dummy command ID
+                                            cmd,
+                                        )
+                                        .await?;
+                                }
+                                ApiRequest::Conf {
+                                    grantors, grantees, ..
+                                } => {
+                                    self.rlease_roles_cfg =
+                                        RLeaseRoles { grantors, grantees };
+                                    self.rlease_roles_ver = self.commit_bar;
+                                }
+                                _ => {} // ignore other request types
                             }
                         }
                         // update instance status, commit_bar and exec_bar
@@ -137,6 +147,14 @@ impl QuorumLeasesReplica {
                     return logged_err!("unexpected log result type");
                 }
             }
+        }
+
+        // tell manager about read lease roles if changed
+        if self.rlease_roles_ver > 0 {
+            self.control_hub.send_ctrl(CtrlMsg::RLeaserStatus {
+                is_grantor: self.rlease_roles_cfg.grantors.get(self.id)?,
+                is_grantee: self.rlease_roles_cfg.grantees.get(self.id)?,
+            })?;
         }
 
         // do an extra Truncate to remove partial entry at the end if any

@@ -20,8 +20,8 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         let mut strip_read_only = false;
 
-        if self.is_stable_leader() {
-            // conditions of majority-leased stable leader met, can reply
+        if self.is_rlease_holder() {
+            // conditions of majority-leased local reader met, can reply
             // read-only commands directly back to clients
             for (client, req) in req_batch.iter() {
                 if let ApiRequest::Req {
@@ -50,10 +50,27 @@ impl QuorumLeasesReplica {
                     strip_read_only = true;
                 }
             }
-        } else if (!self.is_leader() || self.bal_prepared == 0)
-        // && self.config.enable_quorum_reads
-        {
-            // TODO:
+        } else if !self.is_leader() || self.bal_prepared == 0 {
+            // not a leader and not holding enough read leases, then promptly
+            // reply to read-only requests early to let clients retry on leader
+            for (client, req) in req_batch.iter() {
+                if let ApiRequest::Req {
+                    id: req_id,
+                    cmd: Command::Get { key },
+                } = req
+                {
+                    self.external_api.send_reply(
+                        ApiReply::rq_retry(
+                            *req_id,
+                            Command::Get { key: key.clone() },
+                        ),
+                        *client,
+                    )?;
+                    pf_trace!("replied -> client {} retry read-only", client);
+
+                    strip_read_only = true;
+                }
+            }
         }
 
         if strip_read_only {

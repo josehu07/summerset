@@ -159,14 +159,27 @@ impl QuorumLeasesReplica {
                 if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
+                    let mut rlease_roles = None;
                     for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
-                                cmd.clone(),
-                            )?;
-                        } else {
-                            continue; // ignore other types of requests
+                        match req {
+                            ApiRequest::Req { cmd, .. } => {
+                                self.state_machine.submit_cmd(
+                                    Self::make_command_id(
+                                        self.commit_bar,
+                                        cmd_idx,
+                                    ),
+                                    cmd.clone(),
+                                )?;
+                            }
+                            ApiRequest::Conf {
+                                grantors, grantees, ..
+                            } => {
+                                rlease_roles = Some(RLeaseRoles {
+                                    grantors: grantors.clone(),
+                                    grantees: grantees.clone(),
+                                });
+                            }
+                            _ => {} // ignore other types of requests
                         }
                     }
                     pf_trace!(
@@ -174,6 +187,23 @@ impl QuorumLeasesReplica {
                         inst.reqs.len(),
                         self.commit_bar
                     );
+
+                    // if there're read leaser roles config changes in the
+                    // request batch, take the last one and apply it
+                    if let Some(rlease_roles) = rlease_roles {
+                        pf_debug!(
+                            "rlease_roles changed: v{} {:?}",
+                            self.commit_bar,
+                            rlease_roles
+                        );
+
+                        self.control_hub.send_ctrl(CtrlMsg::RLeaserStatus {
+                            is_grantor: rlease_roles.grantors.get(self.id)?,
+                            is_grantee: rlease_roles.grantees.get(self.id)?,
+                        })?;
+                        self.rlease_roles_cfg = rlease_roles;
+                        self.rlease_roles_ver = self.commit_bar;
+                    }
                 }
 
                 self.commit_bar += 1;

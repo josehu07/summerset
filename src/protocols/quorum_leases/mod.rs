@@ -10,13 +10,14 @@ mod control;
 mod durability;
 mod execution;
 mod leadership;
-mod leasing;
 mod messages;
+mod qrmleases;
 mod recovery;
 mod request;
 mod snapshot;
 
 use std::collections::HashMap;
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::SystemTime;
@@ -173,20 +174,6 @@ struct ReplicaBookkeeping {
     endprep_slot: usize,
 }
 
-/// Bookkeeping info for near quorum reads if enabled.
-#[derive(Debug, Clone)]
-struct ReadQueryBookkeeping {
-    /// The batch of read-only requests (technically get need to remember
-    /// a vec of client IDs but nah doesn't matter).
-    reads: ReqBatch,
-
-    /// Replicas from which I have received ReadQuery replies.
-    rq_acks: Bitmap,
-
-    /// The reply with the highest slot number found for each key.
-    max_replies: Vec<Option<(usize, Option<String>)>>,
-}
-
 /// In-memory instance containing a commands batch.
 #[derive(Debug, Clone)]
 struct Instance {
@@ -311,6 +298,23 @@ enum PeerMsg {
     },
 }
 
+/// Roles assignment for quorum leases.
+#[derive(Clone, Serialize, Deserialize, GetSize)]
+pub(super) struct RLeaseRoles {
+    /// Grantors set.
+    grantors: Bitmap,
+
+    /// Supposed leaseholders set.
+    grantees: Bitmap,
+}
+
+// Implement `Debug` trait manually for better trace printing.
+impl fmt::Debug for RLeaseRoles {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?} => {:?}", self.grantors, self.grantees)
+    }
+}
+
 /// QuorumLeases server replica module.
 pub(crate) struct QuorumLeasesReplica {
     /// Replica ID in cluster.
@@ -358,6 +362,14 @@ pub(crate) struct QuorumLeasesReplica {
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
 
+    /// The current role assignment's version (committed slot number).
+    /// Using committed instance slot number in which this config was committed
+    /// as the "version" of this config.
+    rlease_roles_ver: usize,
+
+    /// The current role assignment for quorum leases.
+    rlease_roles_cfg: RLeaseRoles,
+
     /// In-memory log of instances.
     insts: Vec<Instance>,
 
@@ -392,16 +404,6 @@ pub(crate) struct QuorumLeasesReplica {
     //       covering an entry can be taken only when all servers have durably
     //       committed (and executed) that entry.
     snap_bar: usize,
-
-    /// Map from key -> the highest slot number that (might) contain a write
-    /// to that key. Useful for read optimizations.
-    // NOTE: there probably are better ways to do such bookkeeping, but this is
-    //       good enough for now unless the key space is disgustingly huge
-    highest_slot: HashMap<String, usize>,
-
-    /// Ongoing attempts of near quorum reads.
-    // NOTE: may add (easy) garbage collection for outdated stuck attempts.
-    quorum_reads: HashMap<(ClientId, RequestId), ReadQueryBookkeeping>,
 
     /// Current durable WAL log file offset.
     wal_offset: usize,
@@ -686,6 +688,11 @@ impl GenericReplica for QuorumLeasesReplica {
             heartbeater,
             lease_manager,
             leader: None,
+            rlease_roles_ver: 0,
+            rlease_roles_cfg: RLeaseRoles {
+                grantors: Bitmap::new(population, false),
+                grantees: Bitmap::new(population, false),
+            },
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -698,8 +705,6 @@ impl GenericReplica for QuorumLeasesReplica {
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
             snap_bar: 0,
-            highest_slot: HashMap::new(),
-            quorum_reads: HashMap::new(),
             wal_offset: 0,
             snap_offset: 0,
             startup_time: Instant::now(),
