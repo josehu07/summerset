@@ -29,29 +29,50 @@ impl QuorumLeasesReplica {
                     cmd: Command::Get { key },
                 } = req
                 {
-                    let highest_slot = self.inspect_highest_slot(key)?;
-                    debug_assert!(
-                        highest_slot.is_none()
-                            || highest_slot.unwrap().1.is_some()
+                    let (api_reply, is_retry) = match self
+                        .inspect_highest_slot(key)?
+                    {
+                        None => {
+                            // key not seen at all
+                            (
+                                ApiReply::normal(
+                                    *req_id,
+                                    Some(CommandResult::Get { value: None }),
+                                ),
+                                false,
+                            )
+                        }
+                        Some((_, None)) => {
+                            // highest slot not committed (rare case as leases
+                            // should get actively revoked upon writes)
+                            (
+                                ApiReply::rq_retry(
+                                    *req_id,
+                                    Command::Get { key: key.clone() },
+                                ),
+                                true,
+                            )
+                        }
+                        Some((_, Some(value))) => {
+                            // highest slot committed (should be almost always
+                            // the case), can directly reply
+                            (
+                                ApiReply::normal(
+                                    *req_id,
+                                    Some(CommandResult::Get {
+                                        value: Some(value),
+                                    }),
+                                ),
+                                false,
+                            )
+                        }
+                    };
+                    self.external_api.send_reply(api_reply, *client)?;
+                    pf_trace!(
+                        "replied -> client {} read-only {}",
+                        client,
+                        if is_retry { "retry" } else { "rgood" }
                     );
-
-                    // has to use the `do_sync_cmd()` API
-                    let (old_results, cmd_result) = self
-                        .state_machine
-                        .do_sync_cmd(
-                            Self::make_ro_command_id(*client, *req_id),
-                            Command::Get { key: key.clone() },
-                        )
-                        .await?;
-                    for (old_id, old_result) in old_results {
-                        self.handle_cmd_result(old_id, old_result).await?;
-                    }
-
-                    self.external_api.send_reply(
-                        ApiReply::normal(*req_id, Some(cmd_result)),
-                        *client,
-                    )?;
-                    pf_trace!("replied -> client {} for read-only cmd", client);
 
                     strip_read_only = true;
                 }
@@ -72,7 +93,7 @@ impl QuorumLeasesReplica {
                         ),
                         *client,
                     )?;
-                    pf_trace!("replied -> client {} retry read-only", client);
+                    pf_trace!("replied -> client {} read-only nlead", client);
 
                     strip_read_only = true;
                 }

@@ -500,14 +500,6 @@ impl QuorumLeasesReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
-
-    /// Special composition of a command ID used at read-only shortcuts.
-    #[inline]
-    fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
-        debug_assert!(client <= (u32::MAX as ClientId));
-        debug_assert!(req_id <= (u32::MAX as RequestId) / 2);
-        ((client << 32) | 1 << 31 | req_id) as CommandId
-    }
 }
 
 #[async_trait]
@@ -788,18 +780,17 @@ impl GenericReplica for QuorumLeasesReplica {
                     }
                 },
 
-                // TODO: lease-related action
-                // lease_action = self.lease_manager.get_action(), if !paused
-                //                                                    && self.config.enable_leader_leases => {
-                //     if let Err(e) = lease_action {
-                //         pf_error!("error getting lease action: {}", e);
-                //         continue;
-                //     }
-                //     let (lease_num, lease_action) = lease_action.unwrap();
-                //     if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
-                //         pf_error!("error handling lease action @ {}: {}", lease_num, e);
-                //     }
-                // },
+                // lease-related action
+                lease_action = self.lease_manager.get_action(), if !paused => {
+                    if let Err(e) = lease_action {
+                        pf_error!("error getting lease action: {}", e);
+                        continue;
+                    }
+                    let (lease_num, lease_action) = lease_action.unwrap();
+                    if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
+                        pf_error!("error handling lease action @ {}: {}", lease_num, e);
+                    }
+                },
 
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused

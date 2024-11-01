@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{LeaseNotice, LogAction, ReplicaId};
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
 // QuorumLeasesReplica leadership related logic
