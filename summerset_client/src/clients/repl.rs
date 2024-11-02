@@ -374,7 +374,7 @@ impl ClientRepl {
     }
 
     /// One iteration of the REPL loop. On success, returns a boolean that's
-    /// false only when exitting.
+    /// false only when exiting.
     async fn iter(&mut self) -> Result<bool, SummersetError> {
         Self::print_prompt();
 
