@@ -97,16 +97,16 @@ impl QuorumLeasesReplica {
         // revoke read leases I've been granted and am granting to
         debug_assert!(slot > self.qlease_ver);
         if self.qlease_cfg.is_grantee(self.id)? {
-            self.qlease_manager.add_notice(
-                self.qlease_num as LeaseNum,
-                LeaseNotice::ClearHeld,
-            )?;
+            self.qlease_manager
+                .add_notice(self.qlease_num, LeaseNotice::ClearHeld)?;
             self.ensure_qlease_cleared().await?;
         }
         if self.qlease_cfg.is_grantor(self.id)? {
             self.qlease_manager.add_notice(
-                self.qlease_num as LeaseNum,
-                LeaseNotice::DoRevoke { peers: None },
+                self.qlease_num,
+                LeaseNotice::DoRevoke {
+                    peers: Some(self.qlease_cfg.grantees.clone()),
+                },
             )?;
             // synchronous ensurance not needed here, because in normal case,
             // Accepts should arrive at all grantees normally and they will

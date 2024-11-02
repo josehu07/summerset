@@ -11,8 +11,8 @@ use color_print::{cprint, cprintln};
 use tokio::time::Duration;
 
 use summerset::{
-    Command, CtrlReply, CtrlRequest, GenericEndpoint, LeaserRoles, ReplicaId,
-    SummersetError,
+    logged_err, pf_error, Command, CtrlReply, CtrlRequest, GenericEndpoint,
+    LeaserRoles, ReplicaId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -52,9 +52,6 @@ pub(crate) struct ClientRepl {
 
     /// User input buffer.
     input_buf: String,
-
-    /// Current leaser role config I want.
-    leaser_roles: Option<LeaserRoles>,
 }
 
 impl ClientRepl {
@@ -67,7 +64,6 @@ impl ClientRepl {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
             input_buf: String::new(),
-            leaser_roles: None,
         }
     }
 
@@ -132,7 +128,7 @@ impl ClientRepl {
     }
 
     /// Reads in user input and parses into a command.
-    fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
+    async fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
         self.input_buf.clear();
         let nread = io::stdin().read_line(&mut self.input_buf)?;
         if nread == 0 {
@@ -150,7 +146,6 @@ impl ClientRepl {
         // get command type, match case-insensitively
         let cmd_type = segs.next();
         debug_assert!(cmd_type.is_some());
-        debug_assert!(self.leaser_roles.is_some());
 
         match &cmd_type.unwrap().to_lowercase()[..] {
             "get" => {
@@ -175,22 +170,22 @@ impl ClientRepl {
 
             "grantor" => {
                 let servers = Self::drain_server_ids(&mut segs)?;
-                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                let mut leaser_roles = self.leaser_roles().await?;
                 leaser_roles.grantors.clear();
                 for server in servers {
                     leaser_roles.grantors.set(server, true)?;
                 } // applies on top of current leaser roles config
-                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+                Ok(ReplCommand::Leasers(leaser_roles))
             }
 
             "grantee" => {
                 let servers = Self::drain_server_ids(&mut segs)?;
-                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                let mut leaser_roles = self.leaser_roles().await?;
                 leaser_roles.grantees.clear();
                 for server in servers {
                     leaser_roles.grantees.set(server, true)?;
                 } // applies on top of current leaser roles config
-                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+                Ok(ReplCommand::Leasers(leaser_roles))
             }
 
             "leader" => {
@@ -204,9 +199,9 @@ impl ClientRepl {
                 } else {
                     Some(servers.drain().next().unwrap())
                 };
-                let leaser_roles = self.leaser_roles.as_mut().unwrap();
+                let mut leaser_roles = self.leaser_roles().await?;
                 leaser_roles.leader = leader; // applies on top of current
-                Ok(ReplCommand::Leasers(self.leaser_roles.clone().unwrap()))
+                Ok(ReplCommand::Leasers(leaser_roles))
             }
 
             "reset" => {
@@ -245,6 +240,36 @@ impl ClientRepl {
         }
     }
 
+    /// Fetches current leaser roles configuration from manager oracle.
+    async fn leaser_roles(&mut self) -> Result<LeaserRoles, SummersetError> {
+        self.driver
+            .ctrl_stub()
+            .send_req_insist(&CtrlRequest::QueryInfo)?;
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
+
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            let mut leaser_roles = LeaserRoles::empty(population);
+            for (id, server) in servers_info {
+                if server.is_leader {
+                    leaser_roles.leader = Some(id);
+                }
+                if server.is_grantor {
+                    leaser_roles.grantors.set(id, true)?;
+                }
+                if server.is_grantee {
+                    leaser_roles.grantees.set(id, true)?;
+                }
+            }
+            Ok(leaser_roles)
+        } else {
+            logged_err!("ctrl reply type mismatch: expect QueryInfo")
+        }
+    }
+
     /// Issues the command to the service and wait for the reply.
     async fn eval_command(
         &mut self,
@@ -278,7 +303,7 @@ impl ClientRepl {
             DriverReply::Leasers { req_id, changed } => {
                 if changed {
                     cprintln!(
-                        "<bright-yellow>✓</> ({}) leaser roles config changed",
+                        "<bright-cyan>✓</> ({}) leaser roles configuration changed",
                         req_id
                     );
                 } else {
@@ -353,7 +378,7 @@ impl ClientRepl {
     async fn iter(&mut self) -> Result<bool, SummersetError> {
         Self::print_prompt();
 
-        let cmd = self.read_command()?;
+        let cmd = self.read_command().await?;
         match cmd {
             ReplCommand::Exit => {
                 println!("Exiting...");
@@ -397,7 +422,6 @@ impl ClientRepl {
     /// Runs the infinite REPL loop.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
-        self.leaser_roles = Some(LeaserRoles::empty(self.driver.population()));
 
         loop {
             match self.iter().await {

@@ -547,7 +547,7 @@ impl LeaseManagerLogicTask {
             let timer = self.guards_held.remove(&peer).unwrap();
             timer.kickoff(self.lease_timeout)?;
             promises_held.insert(peer, timer);
-            pf_info!("lease promise held @ {} <- {}", lease_num, peer);
+            pf_debug!("lease promise held @ {} <- {}", lease_num, peer);
 
             // send PromiseReply back
             pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
@@ -649,7 +649,7 @@ impl LeaseManagerLogicTask {
         self.guards_held.remove(&peer);
         let held = self.promises_held.guard().remove(peer).is_some();
         if held {
-            pf_info!("lease revoked drop @ {} <- {}", lease_num, peer);
+            pf_debug!("lease revoked drop @ {} <- {}", lease_num, peer);
         }
 
         // send RevokeReply back
@@ -723,7 +723,7 @@ impl LeaseManagerLogicTask {
         self.guards_held.remove(&peer);
         let held = self.promises_held.guard().remove(peer).is_some();
         if held {
-            pf_info!("lease expired drop @ {} <- {}", lease_num, peer);
+            pf_debug!("lease expired drop @ {} <- {}", lease_num, peer);
         }
 
         // tell the protocol module about this timeout
@@ -809,7 +809,7 @@ impl LeaseManagerLogicTask {
                     let mut promises_held_guard = self.promises_held.guard();
                     for peer in (0..self.population).filter(|&p| p != self.me) {
                         if promises_held_guard.remove(peer).is_some() {
-                            pf_info!(
+                            pf_debug!(
                                 "lease highnum drop @ {} <- {}",
                                 self.active_num,
                                 peer

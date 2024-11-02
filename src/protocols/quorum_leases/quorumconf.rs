@@ -141,11 +141,19 @@ impl QuorumLeasesReplica {
                 }
 
                 // then apply the new config
-                pf_debug!(
-                    "leaser_roles changed: v{} {:?}",
-                    self.commit_bar,
-                    conf
-                );
+                if self.is_leader() {
+                    pf_info!(
+                        "qlease_cfg changed: v{} {:?}",
+                        self.commit_bar,
+                        conf
+                    );
+                } else {
+                    pf_debug!(
+                        "qlease_cfg changed: v{} {:?}",
+                        self.commit_bar,
+                        conf
+                    );
+                }
                 self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
                     is_grantor: conf.grantors.get(self.id)?,
                     is_grantee: conf.grantees.get(self.id)?,
@@ -168,15 +176,6 @@ impl QuorumLeasesReplica {
                         slot
                     );
                 }
-
-                // if self.leasers_cfg.is_grantor(self.id)? {
-                //     let mut peers = self.leasers_cfg.grantees.clone();
-                //     peers.set(self.id, false)?;
-                //     self.lease_manager.add_notice(
-                //         self.leasers_ver as LeaseNum,
-                //         LeaseNotice::NewGrants { peers: Some(peers) },
-                //     )?;
-                // }
             }
         }
 
