@@ -346,7 +346,11 @@ impl CrosswordReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!("heartbeat commit <- {} < slot {}", peer, commit_bar);
+                pf_trace!(
+                    "heartbeat commit <- {} until slot {}",
+                    peer,
+                    commit_bar
+                );
             }
         }
 

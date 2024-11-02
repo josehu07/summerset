@@ -141,6 +141,12 @@ impl QuorumLeasesReplica {
                                 self.bal_max_seen,
                                 lease_num
                             );
+                        } else {
+                            self.handle_msg_no_grants(
+                                self.id,
+                                self.bal_max_seen,
+                                lease_num,
+                            )?;
                         }
                     }
                 }
