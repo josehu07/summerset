@@ -177,7 +177,7 @@ impl QuorumLeasesReplica {
         pf_trace!(
             "finished CommitSlot logging for slot {} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            self.insts[slot - self.start_slot].bal,
         );
 
         // update index of the first non-committed instance

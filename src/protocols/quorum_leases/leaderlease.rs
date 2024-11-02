@@ -27,6 +27,7 @@ impl QuorumLeasesReplica {
             loop {
                 let (lease_num, lease_action) =
                     self.llease_manager.get_action().await?;
+
                 if self.handle_llease_action(lease_num, lease_action).await? {
                     break;
                 }

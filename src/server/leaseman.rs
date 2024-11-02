@@ -642,7 +642,7 @@ impl LeaseManagerLogicTask {
             // refresh timer for T_lease
             timer.kickoff(self.lease_timeout)?;
 
-            // let protocol module mark next heartbeat as a promise refresh
+            // allow next heartbeat be marked as a promise refresh
             // pf_trace!("lease mark NextRefresh @ {} -> {}", lease_num, peer);
             self.tx_action
                 .send((lease_num, LeaseAction::NextRefresh { peer }))?

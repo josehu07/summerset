@@ -365,7 +365,11 @@ impl QuorumLeasesReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!("heartbeat commit <- {} < slot {}", peer, commit_bar);
+                pf_trace!(
+                    "heartbeat commit <- {} commit_bar {}",
+                    peer,
+                    commit_bar
+                );
             }
         }
 

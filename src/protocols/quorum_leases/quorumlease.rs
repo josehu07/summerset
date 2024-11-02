@@ -55,10 +55,14 @@ impl QuorumLeasesReplica {
         loop {
             let (lease_num, lease_action) =
                 self.qlease_manager.get_action().await?;
-            if let LeaseAction::LeaseCleared = lease_action {
+
+            let cleared = matches!(
+                lease_action,
+                LeaseAction::LeaseCleared | LeaseAction::HigherNumber
+            );
+            self.handle_qlease_action(lease_num, lease_action).await?;
+            if cleared {
                 break;
-            } else {
-                self.handle_qlease_action(lease_num, lease_action).await?;
             }
         }
 
@@ -74,6 +78,7 @@ impl QuorumLeasesReplica {
             loop {
                 let (lease_num, lease_action) =
                     self.qlease_manager.get_action().await?;
+
                 if self.handle_qlease_action(lease_num, lease_action).await? {
                     break;
                 }
