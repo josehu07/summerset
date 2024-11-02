@@ -46,7 +46,10 @@ impl QuorumLeasesReplica {
                         ApiReply::normal(*req_id, Some(cmd_result)),
                         *client,
                     )?;
-                    pf_trace!("replied -> client {} for read-only cmd", client);
+                    pf_trace!(
+                        "replied -> client {} for read-only slead",
+                        client
+                    );
 
                     strip_read_only = true;
                 }

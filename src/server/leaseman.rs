@@ -415,6 +415,7 @@ impl LeaseManagerLogicTask {
     ) -> Result<(), SummersetError> {
         let peers = peers.unwrap_or(Bitmap::new(self.population, true));
         let mut bcast_peers = peers.clone();
+        let promises_sent = self.promises_sent.guard();
 
         for (peer, flag) in peers.iter() {
             if peer == self.me || !flag {
@@ -424,6 +425,12 @@ impl LeaseManagerLogicTask {
 
             // remove existing guard about this peer if exists
             self.guards_sent.remove(&peer);
+
+            // also ignore if not currently in promises_sent
+            if !promises_sent.contains_key(&peer) {
+                bcast_peers.set(peer, false)?;
+                continue;
+            }
         }
 
         // broadcast Revoke messages to these peers

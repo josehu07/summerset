@@ -63,7 +63,7 @@ def gather_outputs(
                 and t + tb > outputs[c]["time"][cidxs[c]]
             ):
                 cidxs[c] += 1
-            if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
+            if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:  # conservative
                 tputs.append(0.0)
                 lats.append(0.0)
                 wlats.append(0.0)
@@ -73,24 +73,27 @@ def gather_outputs(
                 lats.append(outputs[c]["lat"][cidxs[c]])
                 wlats.append(outputs[c]["wlat"][cidxs[c]])
                 rlats.append(outputs[c]["rlat"][cidxs[c]])
+        lats = [l for l in lats if l != 0.0]  # lat 0.0 means no data
+        wlats = [l for l in wlats if l != 0.0]
+        rlats = [l for l in rlats if l != 0.0]
         result["time"].append(t)
         result["tput_sum"].append(sum(tputs))
         result["tput_min"].append(min(tputs))
         result["tput_max"].append(max(tputs))
         result["tput_avg"].append(sum(tputs) / len(tputs))
-        result["tput_stdev"].append(statistics.stdev(tputs) if num_clients > 1 else 0.0)
+        result["tput_stdev"].append(statistics.stdev(tputs) if len(tputs) > 1 else 0.0)
         result["lat_min"].append(min(lats))
         result["lat_max"].append(max(lats))
-        result["lat_avg"].append(sum(lats) / len(lats))
-        result["lat_stdev"].append(statistics.stdev(lats) if num_clients > 1 else 0.0)
+        result["lat_avg"].append(sum(lats) / len(lats) if len(lats) > 0 else None)
+        result["lat_stdev"].append(statistics.stdev(lats) if len(lats) > 1 else 0.0)
         result["wlat_min"].append(min(wlats))
         result["wlat_max"].append(max(wlats))
-        result["wlat_avg"].append(sum(wlats) / len(wlats))
-        result["wlat_stdev"].append(statistics.stdev(wlats) if num_clients > 1 else 0.0)
+        result["wlat_avg"].append(sum(wlats) / len(wlats) if len(wlats) > 0 else None)
+        result["wlat_stdev"].append(statistics.stdev(wlats) if len(wlats) > 1 else 0.0)
         result["rlat_min"].append(min(rlats))
         result["rlat_max"].append(max(rlats))
-        result["rlat_avg"].append(sum(rlats) / len(rlats))
-        result["rlat_stdev"].append(statistics.stdev(rlats) if num_clients > 1 else 0.0)
+        result["rlat_avg"].append(sum(rlats) / len(rlats) if len(rlats) > 0 else None)
+        result["rlat_stdev"].append(statistics.stdev(rlats) if len(rlats) > 1 else 0.0)
         t += tgap
 
     return result
