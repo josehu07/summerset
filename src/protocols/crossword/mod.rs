@@ -345,7 +345,7 @@ enum PeerMsg {
         ballot: Ballot,
         /// Data size in bytes that the corresponding Accept carried.
         size: usize,
-        /// [for perf breakdown]
+        /// [for perf breakdown only]
         reply_ts: Option<SystemTime>,
     },
 
@@ -742,8 +742,13 @@ impl GenericReplica for CrosswordReplica {
         )?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -891,6 +896,7 @@ impl GenericReplica for CrosswordReplica {
             time::interval(Duration::from_millis(config.linreg_interval_ms));
         linreg_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        // [for perf breakdown only]
         let bd_stopwatch = if config.record_breakdown {
             Some(Stopwatch::new())
         } else {

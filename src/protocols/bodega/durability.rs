@@ -100,7 +100,7 @@ impl BodegaReplica {
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
             self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
                 let _ = sw.record_now(slot, 1, None);
             }

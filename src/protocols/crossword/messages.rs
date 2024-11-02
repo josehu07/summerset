@@ -443,6 +443,7 @@ impl CrosswordReplica {
                 endprep_slot: 0,
             });
 
+            // [for perf breakdown only]
             if self.config.record_breakdown && self.config.record_size_recv {
                 (*self
                     .bw_accumulators
@@ -546,7 +547,7 @@ impl CrosswordReplica {
                     inst.bal
                 );
 
-                // [for perf breakdown]
+                // [for perf breakdown only]
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 3, reply_ts);
                     let _ = sw.record_now(slot, 4, None);
@@ -652,6 +653,7 @@ impl CrosswordReplica {
             );
             let inst = &mut self.insts[slot - self.start_slot];
 
+            // [for perf breakdown only]
             if self.config.record_breakdown && self.config.record_size_recv {
                 (*self
                     .bw_accumulators

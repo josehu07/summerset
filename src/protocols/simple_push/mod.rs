@@ -11,6 +11,7 @@ mod messages;
 mod recovery;
 mod request;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -186,8 +187,13 @@ impl GenericReplica for SimplePushReplica {
                 .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept

@@ -11,8 +11,8 @@
 mod control;
 mod durability;
 mod execution;
+mod leaderlease;
 mod leadership;
-mod leasing;
 mod messages;
 mod quorumread;
 mod recovery;
@@ -305,7 +305,7 @@ enum PeerMsg {
     AcceptReply {
         slot: usize,
         ballot: Ballot,
-        /// [for perf breakdown]
+        /// [for perf breakdown only]
         reply_ts: Option<SystemTime>,
     },
 
@@ -644,7 +644,10 @@ impl GenericReplica for MultiPaxosReplica {
             id,
             population,
             p2p_addr,
-            Some(tx_lease_msg),
+            HashMap::from([(
+                0, // only one lease purpose exists in the system
+                tx_lease_msg,
+            )]),
         )
         .await?;
 
@@ -695,6 +698,7 @@ impl GenericReplica for MultiPaxosReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        // [for perf breakdown only]
         let bd_stopwatch = if config.record_breakdown {
             Some(Stopwatch::new())
         } else {

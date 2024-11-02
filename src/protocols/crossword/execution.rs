@@ -49,7 +49,7 @@ impl CrosswordReplica {
             inst.status = Status::Executed;
             pf_debug!("executed all cmds in instance at slot {}", slot);
 
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if self.is_leader() {
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 5, None);

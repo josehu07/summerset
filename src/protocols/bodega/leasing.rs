@@ -49,10 +49,14 @@ impl BodegaReplica {
     ) -> Result<bool, SummersetError> {
         match lease_action {
             LeaseAction::SendLeaseMsg { peer, msg } => {
-                self.transport_hub.send_lease_msg(lease_num, msg, peer)?;
+                self.transport_hub.send_lease_msg(
+                    0, // FIXME:
+                    lease_num, msg, peer,
+                )?;
             }
             LeaseAction::BcastLeaseMsgs { peers, msg } => {
                 self.transport_hub.bcast_lease_msg(
+                    0, // FIXME:
                     lease_num,
                     msg,
                     Some(peers),

@@ -100,7 +100,7 @@ impl CrosswordReplica {
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
             self.handle_msg_accept_reply(self.id, slot, inst.bal, 0, None)?;
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
                 let _ = sw.record_now(slot, 2, None);
             }

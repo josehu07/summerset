@@ -9,8 +9,10 @@
 mod control;
 mod durability;
 mod execution;
+mod leaderlease;
 mod leadership;
 mod messages;
+mod quorumconf;
 mod quorumlease;
 mod recovery;
 mod request;
@@ -27,8 +29,8 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
-    LeaserRoles, LogActionId, ReplicaId, RequestId, StateMachine, StorageHub,
-    TransportHub,
+    LeaseMsg, LeaseNum, LeaserRoles, LogActionId, ReplicaId, RequestId,
+    StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -72,6 +74,9 @@ pub struct ReplicaConfigQuorumLeases {
     /// Lease-related timeout duration in millisecs.
     pub lease_expire_ms: u64,
 
+    /// Enable stable leader leases for leader local reads?
+    pub enable_leader_leases: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -111,6 +116,7 @@ impl Default for ReplicaConfigQuorumLeases {
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
             lease_expire_ms: 2000, // need proper hb settings if leasing
+            enable_leader_leases: false,
             snapshot_path: "/tmp/summerset.quorum_leases.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -158,6 +164,12 @@ struct LeaderBookkeeping {
 
     /// Replicas from which I have received Accept confirmations.
     accept_acks: Bitmap,
+
+    /// The grant_sets replied from grantors through their AcceptReplies (or
+    /// updated through NoGrants message in cases of grantee unresponsiveness).
+    /// Commit status cannot be reached until AcceptReplies from everyone in
+    /// these sets have been received.
+    accept_grant_sets: HashMap<ReplicaId, Bitmap>,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -280,8 +292,18 @@ enum PeerMsg {
     AcceptReply {
         slot: usize,
         ballot: Ballot,
-        /// [for perf breakdown]
+        /// Set of peers that possibly hold a lease granted from me during
+        /// the Accept phase.
+        grant_set: Bitmap,
+        /// [for perf breakdown only]
         reply_ts: Option<SystemTime>,
+    },
+
+    /// Revocation confirmation from quorum lease grantor replica to leader,
+    /// as a safety net against grantee unresponsiveness.
+    NoGrants {
+        ballot: Ballot,
+        qlease_num: LeaseNum,
     },
 
     /// Peer-to-peer periodic heartbeat.
@@ -338,19 +360,30 @@ pub(crate) struct QuorumLeasesReplica {
     /// Heartbeater module.
     heartbeater: Heartbeater,
 
-    /// LeaseManager module.
-    lease_manager: LeaseManager,
+    /// LeaseManager module for leader leases (i.e., the "default lease").
+    llease_manager: LeaseManager,
+
+    /// LeaseManager module for quorum leases.
+    // NOTE: Technically, there should be multiple LeaseManager modules, each
+    // for a keyspace partition with a different leaser roles configuration.
+    // But this is non-essential for our evaluations for now and will be
+    // simulated by launching multiple consensus groups whenever needed.
+    qlease_manager: LeaseManager,
 
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
 
-    /// The current role assignment's version (committed slot number).
-    /// Using committed instance slot number in which this config was committed
-    /// as the "version" of this config.
-    leasers_ver: usize,
+    /// The latest quorum leases number used in granting. It is always true
+    /// that commit_bar > qlease_num >= qlease_ver
+    qlease_num: LeaseNum,
+
+    /// The current quorum lease role assignment's version. Using committed
+    /// instance slot number in which this config's committed as the "version"
+    /// of this config.
+    qlease_ver: usize,
 
     /// The current role assignment for quorum leases.
-    leasers_cfg: LeaserRoles,
+    qlease_cfg: LeaserRoles,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -500,6 +533,14 @@ impl QuorumLeasesReplica {
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
     }
+
+    /// Special composition of a command ID used at read-only shortcuts.
+    #[inline]
+    fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
+        debug_assert!(client <= (u32::MAX as ClientId));
+        debug_assert!(req_id <= (u32::MAX as RequestId) / 2);
+        ((client << 32) | 1 << 31 | req_id) as CommandId
+    }
 }
 
 #[async_trait]
@@ -521,10 +562,11 @@ impl GenericReplica for QuorumLeasesReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
-                                    lease_expire_ms, snapshot_path,
-                                    snapshot_interval_s, msg_chunk_size,
-                                    record_breakdown, record_value_ver,
-                                    record_size_recv, sim_read_lease)?;
+                                    lease_expire_ms, enable_leader_leases,
+                                    snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size, record_breakdown,
+                                    record_value_ver, record_size_recv,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -580,8 +622,16 @@ impl GenericReplica for QuorumLeasesReplica {
         )?;
         heartbeater.set_sending(true); // doing all-to-all heartbeating
 
-        // setup lease management module
-        let (lease_manager, tx_lease_msg) = LeaseManager::new_and_setup(
+        // setup leader leases management module
+        let (llease_manager, tx_llease_msg) = LeaseManager::new_and_setup(
+            id,
+            population,
+            Duration::from_millis(config.lease_expire_ms),
+            Duration::from_millis(config.hb_send_interval_ms),
+        )?;
+
+        // setup leader leases management module
+        let (qlease_manager, tx_qlease_msg) = LeaseManager::new_and_setup(
             id,
             population,
             Duration::from_millis(config.lease_expire_ms),
@@ -593,7 +643,16 @@ impl GenericReplica for QuorumLeasesReplica {
             id,
             population,
             p2p_addr,
-            Some(tx_lease_msg),
+            HashMap::from([
+                (
+                    0, // gid 0 for leader leases
+                    tx_llease_msg,
+                ),
+                (
+                    1, // gid 1 for quorum leases
+                    tx_qlease_msg,
+                ),
+            ]),
         )
         .await?;
 
@@ -644,6 +703,7 @@ impl GenericReplica for QuorumLeasesReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        // [for perf breakdown only]
         let bd_stopwatch = if config.record_breakdown {
             Some(Stopwatch::new())
         } else {
@@ -666,10 +726,12 @@ impl GenericReplica for QuorumLeasesReplica {
             snapshot_hub,
             transport_hub,
             heartbeater,
-            lease_manager,
+            llease_manager,
+            qlease_manager,
             leader: None,
-            leasers_ver: 0,
-            leasers_cfg: LeaserRoles::empty(population),
+            qlease_num: 0,
+            qlease_ver: 0,
+            qlease_cfg: LeaserRoles::empty(population),
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -780,15 +842,28 @@ impl GenericReplica for QuorumLeasesReplica {
                     }
                 },
 
-                // lease-related action
-                lease_action = self.lease_manager.get_action(), if !paused => {
+                // leader lease-related action
+                lease_action = self.llease_manager.get_action(), if !paused
+                                                                    && self.config.enable_leader_leases => {
                     if let Err(e) = lease_action {
-                        pf_error!("error getting lease action: {}", e);
+                        pf_error!("error getting llease action: {}", e);
                         continue;
                     }
                     let (lease_num, lease_action) = lease_action.unwrap();
-                    if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
-                        pf_error!("error handling lease action @ {}: {}", lease_num, e);
+                    if let Err(e) = self.handle_llease_action(lease_num, lease_action).await {
+                        pf_error!("error handling llease action @ {}: {}", lease_num, e);
+                    }
+                },
+
+                // quorum lease-related action
+                lease_action = self.qlease_manager.get_action(), if !paused => {
+                    if let Err(e) = lease_action {
+                        pf_error!("error getting qlease action: {}", e);
+                        continue;
+                    }
+                    let (lease_num, lease_action) = lease_action.unwrap();
+                    if let Err(e) = self.handle_qlease_action(lease_num, lease_action).await {
+                        pf_error!("error handling qlease action @ {}: {}", lease_num, e);
                     }
                 },
 

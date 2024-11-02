@@ -174,7 +174,7 @@ impl MultiPaxosReplica {
         inst.status = Status::Accepting;
         pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
-        // [for perf breakdown]
+        // [for perf breakdown only]
         if let Some(sw) = self.bd_stopwatch.as_mut() {
             sw.record_now(slot, 0, None)?;
         }

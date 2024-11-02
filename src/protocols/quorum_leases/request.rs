@@ -20,7 +20,38 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         let mut strip_read_only = false;
 
-        if self.is_local_reader()? {
+        if self.is_stable_leader() {
+            // conditions of majority-leased stable leader met, can reply
+            // read-only commands directly back to clients by simply using
+            // the last committed value
+            for (client, req) in req_batch.iter() {
+                if let ApiRequest::Req {
+                    id: req_id,
+                    cmd: Command::Get { key },
+                } = req
+                {
+                    // has to use the `do_sync_cmd()` API
+                    let (old_results, cmd_result) = self
+                        .state_machine
+                        .do_sync_cmd(
+                            Self::make_ro_command_id(*client, *req_id),
+                            Command::Get { key: key.clone() },
+                        )
+                        .await?;
+                    for (old_id, old_result) in old_results {
+                        self.handle_cmd_result(old_id, old_result).await?;
+                    }
+
+                    self.external_api.send_reply(
+                        ApiReply::normal(*req_id, Some(cmd_result)),
+                        *client,
+                    )?;
+                    pf_trace!("replied -> client {} for read-only cmd", client);
+
+                    strip_read_only = true;
+                }
+            }
+        } else if self.is_local_reader()? {
             // conditions of majority-leased local reader met, can reply
             // read-only commands directly back to clients
             for (client, req) in req_batch.iter() {
@@ -170,6 +201,7 @@ impl QuorumLeasesReplica {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: Bitmap::new(self.population, false),
+                accept_grant_sets: HashMap::new(),
             });
             inst.external = true;
         }
@@ -180,7 +212,7 @@ impl QuorumLeasesReplica {
         inst.status = Status::Accepting;
         pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
-        // [for perf breakdown]
+        // [for perf breakdown only]
         if let Some(sw) = self.bd_stopwatch.as_mut() {
             sw.record_now(slot, 0, None)?;
         }

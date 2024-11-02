@@ -13,6 +13,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+/// Lease group ID that's unique per lease purpose.
+pub(crate) type LeaseGid = u16;
+
 /// Monotonically non-decreasing lease number type.
 pub(crate) type LeaseNum = u64;
 
@@ -59,6 +62,9 @@ pub(crate) enum LeaseAction {
     /// active RevokeReply (or any other reason).
     GrantRemoved { peer: ReplicaId, held: bool },
 
+    /// To indicate that promises_held has been cleared.
+    LeaseCleared,
+
     /// In case the protocol logic needs it:
     /// Timed-out as a grantor (either in guard phase or in repeated promise).
     GrantTimeout { peer: ReplicaId },
@@ -84,6 +90,9 @@ pub(crate) enum LeaseNotice {
     /// Want to actively revoke leases made to peers. If `peers` is `None`,
     /// then granting to all peers.
     DoRevoke { peers: Option<Bitmap> },
+
+    /// Force clear promises held from all peers.
+    ClearHeld,
 
     /// Received a lease-related message from a peer.
     RecvLeaseMsg { peer: ReplicaId, msg: LeaseMsg },
@@ -429,6 +438,24 @@ impl LeaseManagerLogicTask {
         Ok(())
     }
 
+    /// Clears all promises held forcefully.
+    fn handle_clear_held(
+        &mut self,
+        lease_num: LeaseNum,
+    ) -> Result<(), SummersetError> {
+        self.guards_held.clear();
+
+        let mut promises_held = self.promises_held.guard();
+        for peer in (0..self.population).filter(|&p| p != self.me) {
+            promises_held.remove(peer);
+        }
+
+        pf_debug!("lease all held cleared @ {}", lease_num);
+        self.tx_action
+            .send((lease_num, LeaseAction::LeaseCleared))?;
+        Ok(())
+    }
+
     /// Received a Guard message.
     fn handle_msg_guard(
         &mut self,
@@ -718,6 +745,7 @@ impl LeaseManagerLogicTask {
             LeaseNotice::DoRevoke { peers } => {
                 self.handle_do_revoke(lease_num, peers)
             }
+            LeaseNotice::ClearHeld => self.handle_clear_held(lease_num),
             LeaseNotice::RecvLeaseMsg { peer, msg } => {
                 debug_assert_ne!(peer, self.me);
                 match msg {
@@ -2098,7 +2126,8 @@ mod tests {
                                         i
                                     )));
                                 },
-                                LeaseAction::NextRefresh { .. } => {},
+                                LeaseAction::NextRefresh { .. }
+                                | LeaseAction::LeaseCleared => {},
                             }
                         }
                         msg = n.transport.recv_msg() => {

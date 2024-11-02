@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::server::{ApiRequest, LogActionId, LogResult};
+use crate::server::{ApiRequest, LeaseNotice, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
 // QuorumLeasesReplica durable WAL logging
@@ -81,7 +81,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Handler of AcceptData logging result chan recv.
-    fn handle_logged_accept_data(
+    async fn handle_logged_accept_data(
         &mut self,
         slot: usize,
     ) -> Result<(), SummersetError> {
@@ -93,25 +93,55 @@ impl QuorumLeasesReplica {
             slot,
             self.insts[slot - self.start_slot].bal
         );
-        let inst = &self.insts[slot - self.start_slot];
+
+        // revoke read leases I've been granted and am granting to
+        debug_assert!(slot > self.qlease_ver);
+        if self.qlease_cfg.is_grantee(self.id)? {
+            self.qlease_manager.add_notice(
+                self.qlease_num as LeaseNum,
+                LeaseNotice::ClearHeld,
+            )?;
+            self.ensure_qlease_cleared().await?;
+        }
+        if self.qlease_cfg.is_grantor(self.id)? {
+            self.qlease_manager.add_notice(
+                self.qlease_num as LeaseNum,
+                LeaseNotice::DoRevoke { peers: None },
+            )?;
+            // synchronous ensurance not needed here, because in normal case,
+            // Accepts should arrive at all grantees normally and they will
+            // honor the revocations and reply to the leader by themselves;
+            // this revocation is just a trigger for the safety path in cases
+            // of leaseholder unresponsiveness
+        }
 
         if self.is_leader() {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
-            // [for perf breakdown]
+            let inst = &self.insts[slot - self.start_slot];
+            self.handle_msg_accept_reply(
+                self.id,
+                slot,
+                inst.bal,
+                self.qlease_manager.grant_set(),
+                None,
+            )?;
+            // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
                 let _ = sw.record_now(slot, 1, None);
             }
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
+            let inst = &self.insts[slot - self.start_slot];
             if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
+                let grant_set = self.qlease_manager.grant_set();
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,
                         ballot: inst.bal,
+                        grant_set: grant_set.clone(),
                         reply_ts: if self.config.record_breakdown {
                             Some(SystemTime::now())
                         } else {
@@ -121,10 +151,11 @@ impl QuorumLeasesReplica {
                     source,
                 )?;
                 pf_trace!(
-                    "sent AcceptReply -> {} for slot {} bal {}",
+                    "sent AcceptReply -> {} for slot {} bal {} grants {:?}",
                     source,
                     slot,
-                    inst.bal
+                    inst.bal,
+                    grant_set,
                 );
             }
         }
@@ -205,6 +236,21 @@ impl QuorumLeasesReplica {
             }
         }
 
+        // if the end of my log has been committed, it's time to initiate
+        // granting read leases if I'm a grantor in current config
+        if self.qlease_cfg.is_grantor(self.id)?
+            && self.commit_bar == self.start_slot + self.insts.len()
+        {
+            debug_assert!(self.commit_bar > 1);
+            self.qlease_num = self.commit_bar as LeaseNum - 1;
+            self.qlease_manager.add_notice(
+                self.qlease_num,
+                LeaseNotice::NewGrants {
+                    peers: Some(self.qlease_cfg.grantees.clone()),
+                },
+            )?;
+        }
+
         Ok(())
     }
 
@@ -236,7 +282,7 @@ impl QuorumLeasesReplica {
 
         match entry_type {
             Status::Preparing => self.handle_logged_prepare_bal(slot),
-            Status::Accepting => self.handle_logged_accept_data(slot),
+            Status::Accepting => self.handle_logged_accept_data(slot).await,
             Status::Committed => self.handle_logged_commit_slot(slot).await,
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)

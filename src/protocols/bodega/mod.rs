@@ -291,7 +291,7 @@ enum PeerMsg {
     AcceptReply {
         slot: usize,
         ballot: Ballot,
-        /// [for perf breakdown]
+        /// [for perf breakdown only]
         reply_ts: Option<SystemTime>,
     },
 
@@ -608,7 +608,7 @@ impl GenericReplica for BodegaReplica {
             id,
             population,
             p2p_addr,
-            Some(tx_lease_msg),
+            HashMap::from([(0, tx_lease_msg)]), // FIXME:
         )
         .await?;
 
@@ -659,6 +659,7 @@ impl GenericReplica for BodegaReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        // [for perf breakdown only]
         let bd_stopwatch = if config.record_breakdown {
             Some(Stopwatch::new())
         } else {

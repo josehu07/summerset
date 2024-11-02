@@ -146,6 +146,7 @@ impl QuorumLeasesReplica {
                     prepare_acks: Bitmap::new(self.population, false),
                     prepare_max_bal: 0,
                     accept_acks: Bitmap::new(self.population, false),
+                    accept_grant_sets: HashMap::new(),
                 });
 
                 // record update to largest prepare ballot
@@ -316,6 +317,7 @@ impl QuorumLeasesReplica {
                 });
             }
 
+            // [for perf breakdown only]
             if self.config.record_breakdown && self.config.record_size_recv {
                 (*self
                     .bw_accumulators
@@ -349,16 +351,18 @@ impl QuorumLeasesReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
+        grant_set: Bitmap,
         reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received AcceptReply <- {} for slot {} bal {}",
+            "received AcceptReply <- {} for slot {} bal {} grants {:?}",
             peer,
             slot,
-            ballot
+            ballot,
+            grant_set,
         );
 
         // if ballot is what I'm currently waiting on for Accept replies:
@@ -384,9 +388,10 @@ impl QuorumLeasesReplica {
 
             // bookkeep this Accept reply
             leader_bk.accept_acks.set(peer, true)?;
+            leader_bk.accept_grant_sets.entry(peer).or_insert(grant_set);
 
-            // if quorum size reached, mark this instance as committed
-            if leader_bk.accept_acks.count() >= self.quorum_cnt {
+            // if commit condition is reached, mark this instance as committed
+            if Self::commit_condition(leader_bk, self.quorum_cnt)? {
                 inst.status = Status::Committed;
                 pf_debug!(
                     "committed instance at slot {} bal {}",
@@ -394,7 +399,7 @@ impl QuorumLeasesReplica {
                     inst.bal
                 );
 
-                // [for perf breakdown]
+                // [for perf breakdown only]
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 2, reply_ts);
                     let _ = sw.record_now(slot, 3, None);
@@ -413,6 +418,72 @@ impl QuorumLeasesReplica {
                     slot,
                     inst.bal
                 );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handler of NoGrants message from grantor replica.
+    pub(super) fn handle_msg_no_grants(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+        qlease_num: LeaseNum,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(
+            "received NoGrants <- {} for bal {} qlease_num {}",
+            peer,
+            ballot,
+            qlease_num,
+        );
+
+        // if both ballot and quorum lease number are up-to-date:
+        if ballot == self.bal_prepared && qlease_num == self.qlease_num {
+            if !self.is_leader() {
+                return Ok(());
+            }
+
+            // loop through all instances that are currently still waiting on
+            // AcceptReplies, and update their accept_grant_sets
+            for slot in self.commit_bar..(self.start_slot + self.insts.len()) {
+                let inst = &mut self.insts[slot - self.start_slot];
+                if inst.status == Status::Accepting && ballot == inst.bal {
+                    if let Some(leader_bk) = inst.leader_bk.as_mut() {
+                        leader_bk
+                            .accept_grant_sets
+                            .entry(peer)
+                            .and_modify(|grant_set| grant_set.clear())
+                            .or_insert(Bitmap::new(self.population, false));
+
+                        // if commit condition is now reached, proceed to commit
+                        if Self::commit_condition(leader_bk, self.quorum_cnt)? {
+                            inst.status = Status::Committed;
+                            pf_debug!(
+                                "committed instance at slot {} bal {}",
+                                slot,
+                                inst.bal
+                            );
+
+                            // record commit event
+                            self.storage_hub.submit_action(
+                                Self::make_log_action_id(
+                                    slot,
+                                    Status::Committed,
+                                ),
+                                LogAction::Append {
+                                    entry: WalEntry::CommitSlot { slot },
+                                    sync: self.config.logger_sync,
+                                },
+                            )?;
+                            pf_trace!(
+                                "submitted CommitSlot log action for slot {} bal {}",
+                                slot,
+                                inst.bal
+                            );
+                        }
+                    }
+                }
             }
         }
 
@@ -450,8 +521,14 @@ impl QuorumLeasesReplica {
             PeerMsg::AcceptReply {
                 slot,
                 ballot,
+                grant_set,
                 reply_ts,
-            } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
+            } => self.handle_msg_accept_reply(
+                peer, slot, ballot, grant_set, reply_ts,
+            ),
+            PeerMsg::NoGrants { ballot, qlease_num } => {
+                self.handle_msg_no_grants(peer, ballot, qlease_num)
+            }
             PeerMsg::Heartbeat {
                 ballot,
                 commit_bar,

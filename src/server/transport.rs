@@ -6,10 +6,11 @@
 //! effect of "every message a sender wants to send will be retried until
 //! eventually delivered".
 
+use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::server::{LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
+use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
     safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
     Bitmap, SummersetError,
@@ -36,6 +37,9 @@ enum PeerMessage<Msg> {
 
     /// Lease-related message.
     LeaseMsg {
+        /// Lease group ID that differentiates between lease groups for
+        /// different lease purposes.
+        lease_gid: LeaseGid,
         lease_num: LeaseNum,
         lease_msg: LeaseMsg,
     },
@@ -101,7 +105,10 @@ where
         population: u8,
         p2p_addr: SocketAddr,
         // if non-null, a shortcut channel to feed lease messages directly in:
-        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+        tx_leases: HashMap<
+            LeaseGid,
+            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
+        >,
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!("invalid population {}", population);
@@ -132,7 +139,7 @@ where
             peer_messenger_handles_write,
             rx_connect,
             tx_connack,
-            tx_lease,
+            tx_leases,
         );
         let peer_acceptor_handle =
             tokio::spawn(async move { acceptor.run().await });
@@ -276,12 +283,14 @@ where
     /// send channel.
     pub(crate) fn send_lease_msg(
         &mut self,
+        lease_gid: LeaseGid,
         lease_num: LeaseNum,
         lease_msg: LeaseMsg,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         self.send_msg_inner(
             PeerMessage::LeaseMsg {
+                lease_gid,
                 lease_num,
                 lease_msg,
             },
@@ -293,12 +302,14 @@ where
     /// send channel. If `target` is `None`, broadcast to all current peers.
     pub(crate) fn bcast_lease_msg(
         &mut self,
+        lease_gid: LeaseGid,
         lease_num: LeaseNum,
         lease_msg: LeaseMsg,
         target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
         self.bcast_msg_inner(
             PeerMessage::LeaseMsg {
+                lease_gid,
                 lease_num,
                 lease_msg,
             },
@@ -388,7 +399,8 @@ struct TransportHubAcceptorTask<Msg> {
     rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
     tx_connack: mpsc::UnboundedSender<ReplicaId>,
 
-    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+    tx_leases:
+        HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
     rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
@@ -420,7 +432,10 @@ where
         >,
         rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
         tx_connack: mpsc::UnboundedSender<ReplicaId>,
-        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+        tx_leases: HashMap<
+            LeaseGid,
+            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
+        >,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
         // of peer messenger tasks
@@ -434,7 +449,7 @@ where
             peer_messenger_handles,
             rx_connect,
             tx_connack,
-            tx_lease,
+            tx_leases,
             tx_exit,
             rx_exit,
         }
@@ -466,7 +481,7 @@ where
             stream,
             rx_send,
             self.tx_recv.clone(),
-            self.tx_lease.clone(),
+            self.tx_leases.clone(),
             self.tx_exit.clone(),
         );
         let peer_messenger_handle =
@@ -505,7 +520,7 @@ where
             stream,
             rx_send,
             self.tx_recv.clone(),
-            self.tx_lease.clone(),
+            self.tx_leases.clone(),
             self.tx_exit.clone(),
         );
         let peer_messenger_handle =
@@ -609,7 +624,8 @@ struct TransportHubMessengerTask<Msg> {
     write_buf_cursor: usize,
     retrying: bool,
 
-    tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+    tx_leases:
+        HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
 }
@@ -632,7 +648,10 @@ where
         conn: TcpStream,
         rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        tx_lease: Option<mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+        tx_leases: HashMap<
+            LeaseGid,
+            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
+        >,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
@@ -653,7 +672,7 @@ where
             write_buf,
             write_buf_cursor,
             retrying,
-            tx_lease,
+            tx_leases,
             tx_exit,
         }
     }
@@ -790,17 +809,23 @@ where
                             break;
                         }
 
-                        Ok(PeerMessage::LeaseMsg { lease_num, lease_msg }) => {
+                        Ok(PeerMessage::LeaseMsg { lease_gid, lease_num, lease_msg }) => {
                             // pf_trace!("recv <- {} msg {:?}", id, msg);
-                            if let Some(tx_lease) = self.tx_lease.as_ref() {
+                            if let Some(tx_lease) = self.tx_leases.get(&lease_gid) {
                                 if let Err(e) = tx_lease.send((
                                     lease_num,
                                     LeaseNotice::RecvLeaseMsg { peer: self.id, msg: lease_msg }
                                 )) {
-                                    pf_error!("error sending to tx_lease for {}: {}", self.id, e);
+                                    pf_error!(
+                                        "error sending to tx_lease {} for {}: {}",
+                                        lease_gid, self.id, e
+                                    );
                                 }
                             } else {
-                                pf_error!("received LeaseMsg <- {} but tx_lease is None", self.id);
+                                pf_error!(
+                                    "received LeaseMsg <- {} but unknown gid {}",
+                                    self.id, lease_gid
+                                );
                             }
                         },
 
@@ -851,7 +876,7 @@ mod tests {
                 1,
                 3,
                 "127.0.0.1:30011".parse()?,
-                Some(tx_lease),
+                HashMap::from([(0, tx_lease)]),
             )
             .await?;
             barrier1.wait().await;
@@ -890,7 +915,7 @@ mod tests {
                 2,
                 3,
                 "127.0.0.1:30012".parse()?,
-                None,
+                HashMap::new(),
             )
             .await?;
             barrier2.wait().await;
@@ -907,9 +932,13 @@ mod tests {
             Ok::<(), SummersetError>(())
         });
         // replica 0
-        let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?, None)
-                .await?;
+        let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+            0,
+            3,
+            "127.0.0.1:30010".parse()?,
+            HashMap::new(),
+        )
+        .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30011".parse()?).await?;
         hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
@@ -931,7 +960,7 @@ mod tests {
         // send a lease message to 1 only
         let mut map = Bitmap::new(3, false);
         map.set(1, true)?;
-        hub.bcast_lease_msg(7, LeaseMsg::Guard, Some(map))?;
+        hub.bcast_lease_msg(0, 7, LeaseMsg::Guard, Some(map))?;
         // send termination message to 1 and 2
         hub.bcast_msg(TestMsg("terminate".into()), None)?;
         Ok(())
@@ -947,7 +976,7 @@ mod tests {
                 1,
                 3,
                 "127.0.0.1:30111".parse()?,
-                None,
+                HashMap::new(),
             )
             .await?;
             barrier2.wait().await;
@@ -963,7 +992,7 @@ mod tests {
                 2,
                 3,
                 "127.0.0.1:30112".parse()?,
-                None,
+                HashMap::new(),
             )
             .await?;
             hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
@@ -972,9 +1001,13 @@ mod tests {
             Ok::<(), SummersetError>(())
         });
         // replica 0
-        let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?, None)
-                .await?;
+        let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
+            0,
+            3,
+            "127.0.0.1:30110".parse()?,
+            HashMap::new(),
+        )
+        .await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30111".parse()?).await?;
         assert!(hub.current_peers()?.get(1)?);

@@ -219,6 +219,7 @@ impl MultiPaxosReplica {
                     )?;
                     if to_refresh.count() > 0 {
                         self.transport_hub.bcast_lease_msg(
+                            0, // only one lease purpose exists in the system
                             self.bal_max_seen,
                             LeaseMsg::Promise,
                             Some(to_refresh),

@@ -70,7 +70,7 @@ impl CrosswordReplica {
             }
         }
 
-        // [for perf breakdown]
+        // [for perf breakdown only]
         let slot = self.first_null_slot()?;
         if self.bal_prepared > 0 {
             if let Some(sw) = self.bd_stopwatch.as_mut() {
@@ -107,7 +107,7 @@ impl CrosswordReplica {
         inst.bal = self.bal_prepared;
         inst.status = Status::Accepting;
 
-        // [for perf breakdown]
+        // [for perf breakdown only]
         if let Some(sw) = self.bd_stopwatch.as_mut() {
             sw.record_now(slot, 1, None)?;
         }

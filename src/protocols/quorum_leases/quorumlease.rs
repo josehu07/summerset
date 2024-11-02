@@ -1,190 +1,64 @@
-//! QuorumLeases -- lease-related operations.
+//! QuorumLeases -- quorum lease-related operations.
 
 use super::*;
 
-use crate::server::{LeaseAction, LeaseNotice, LeaseNum};
+use crate::server::{LeaseAction, LeaseNum};
 
-// QuorumLeasesReplica lease-related actions logic
+// QuorumLeasesReplica quorum lease-related actions logic
 impl QuorumLeasesReplica {
-    /// Update the highest_slot tracking info given a new request batch about
-    /// to be saved into a slot.
-    pub(super) fn refresh_highest_slot(
-        slot: usize,
-        reqs: &ReqBatch,
-        highest_slot: &mut HashMap<String, usize>,
-    ) {
-        for (_, req) in reqs {
-            if let ApiRequest::Req {
-                cmd: Command::Put { key, .. },
-                ..
-            } = req
-            {
-                if let Some(highest_slot) = highest_slot.get_mut(key) {
-                    *highest_slot = slot.max(*highest_slot);
-                } else {
-                    highest_slot.insert(key.clone(), slot);
-                }
-            }
-        }
-    }
-
-    /// Get the value at the highest slot index ever seen for a key and its
-    /// current commit status.
-    // NOTE: current implementation might loop through requests in the batch of
-    //       that slot at each inspect call; good enough but can be improved
-    pub(super) fn inspect_highest_slot(
-        &self,
-        key: &String,
-    ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
-        if let Some(&slot) = self.highest_slot.get(key) {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.insts.len()
-            {
-                // slot has been GCed or not locatable for some reason; we play
-                // safe and return with not-committed status
-                Ok(Some((slot, None)))
-            } else {
-                let inst = &self.insts[slot - self.start_slot];
-                if inst.status < Status::Committed {
-                    // instance not committed on me yet
-                    Ok(Some((slot, None)))
-                } else {
-                    // instance committed, return the latest value for the key
-                    // in batch
-                    for (_, req) in inst.reqs.iter().rev() {
-                        if let ApiRequest::Req {
-                            cmd: Command::Put { key: k, value },
-                            ..
-                        } = req
-                        {
-                            if k == key {
-                                return Ok(Some((slot, Some(value.clone()))));
-                            }
-                        }
-                    }
-                    logged_err!(
-                        "no write to key '{}' at slot {}; wrong highest_slot",
-                        key,
-                        slot
-                    )
-                }
-            }
-        } else {
-            // never seen this key
-            Ok(None)
-        }
-    }
-
-    /// Checks if a leaser roles configuration is valid.
-    #[inline]
-    pub(super) fn is_valid_conf(&self, conf: &LeaserRoles) -> bool {
-        conf.grantors.size() == self.population
-            && conf.grantees.size() == self.population
-            && conf.grantors.count() >= self.quorum_cnt
-    }
-
     /// Checks if I'm a majority-leased local reader.
     #[inline]
     pub(super) fn is_local_reader(&self) -> Result<bool, SummersetError> {
-        Ok((self.leasers_cfg.is_grantee(self.id)?
-                && self.lease_manager.lease_cnt() + 1 >= self.quorum_cnt)
+        Ok((self.qlease_num as usize + 1 == self.commit_bar
+                && self.qlease_cfg.is_grantee(self.id)?
+                && self.qlease_manager.lease_cnt() + 1 >= self.quorum_cnt)
             // [for benchmarking purposes only]
             || self.config.sim_read_lease)
     }
 
-    /// Processes a batch of leaser roles config change requests (taken off
-    /// from a committed instance's request batch). Replies to all of them, and
-    /// applies the last valid one as current config.
-    pub(super) async fn commit_conf_changes(
-        &mut self,
-        slot: usize,
-        external: bool,
-        conf_changes: Vec<(ClientId, RequestId, LeaserRoles)>,
-    ) -> Result<(), SummersetError> {
-        debug_assert!(!conf_changes.is_empty());
+    /// The commit condition check. Besides requiring an AcceptReply quorum
+    /// size of at least majority, it also requires that replies from all
+    /// possible grantees have been received.
+    pub(super) fn commit_condition(
+        leader_bk: &LeaderBookkeeping,
+        quorum_cnt: u8,
+    ) -> Result<bool, SummersetError> {
+        if leader_bk.accept_acks.count() < quorum_cnt {
+            return Ok(false);
+        }
 
-        // find the last valid one, if any
-        let mut apply_idx = conf_changes.len();
-        for (idx, (_, _, conf)) in conf_changes.iter().enumerate().rev() {
-            if self.is_valid_conf(conf) {
-                apply_idx = idx;
-                break;
+        for grant_set in leader_bk.accept_grant_sets.values() {
+            for grantee in
+                grant_set.iter().filter_map(
+                    |(p, flag)| {
+                        if flag {
+                            Some(p)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            {
+                if !leader_bk.accept_acks.get(grantee)? {
+                    return Ok(false);
+                }
             }
         }
 
-        // reply to all of them
-        for (idx, (client, req_id, conf)) in
-            conf_changes.into_iter().enumerate()
-        {
-            if idx != apply_idx {
-                // not applied
-                self.external_api.send_reply(
-                    ApiReply::Conf {
-                        id: req_id,
-                        success: false,
-                    },
-                    client,
-                )?;
-                pf_trace!(
-                    "replied -> client {} slot {} conf ignored",
-                    client,
-                    slot
-                );
+        Ok(true)
+    }
+
+    /// Wait on lease actions until I'm sure I've cleared all promises I held.
+    pub(super) async fn ensure_qlease_cleared(
+        &mut self,
+    ) -> Result<(), SummersetError> {
+        loop {
+            let (lease_num, lease_action) =
+                self.qlease_manager.get_action().await?;
+            if let LeaseAction::LeaseCleared = lease_action {
+                break;
             } else {
-                // to apply, revoke old leases if I was granting any
-                debug_assert!(self.leasers_ver < self.commit_bar);
-                if self.leasers_cfg.is_grantor(self.id)? {
-                    let peers = self.leasers_cfg.grantees.clone();
-                    self.lease_manager.add_notice(
-                        self.bal_max_seen,
-                        LeaseNotice::DoRevoke {
-                            peers: Some(peers.clone()),
-                        },
-                    )?;
-                    for (peer, flag) in peers.iter() {
-                        if peer != self.id && flag {
-                            self.ensure_lease_revoked(peer).await?;
-                        }
-                    }
-                }
-
-                // then apply new config
-                pf_debug!(
-                    "leaser_roles changed: v{} {:?}",
-                    self.commit_bar,
-                    conf
-                );
-                self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
-                    is_grantor: conf.grantors.get(self.id)?,
-                    is_grantee: conf.grantees.get(self.id)?,
-                })?;
-                self.leasers_cfg = conf;
-                self.leasers_ver = self.commit_bar;
-
-                if external {
-                    self.external_api.send_reply(
-                        ApiReply::Conf {
-                            id: req_id,
-                            success: true,
-                        },
-                        client,
-                    )?;
-                    pf_trace!(
-                        "replied -> client {} slot {} conf applied",
-                        client,
-                        slot
-                    );
-                }
-
-                // initiate granting if I'm a grantor in committed config
-                if self.leasers_cfg.is_grantor(self.id)? {
-                    let mut peers = self.leasers_cfg.grantees.clone();
-                    peers.set(self.id, false)?;
-                    self.lease_manager.add_notice(
-                        self.leasers_ver as LeaseNum,
-                        LeaseNotice::NewGrants { peers: Some(peers) },
-                    )?;
-                }
+                self.handle_qlease_action(lease_num, lease_action).await?;
             }
         }
 
@@ -192,15 +66,15 @@ impl QuorumLeasesReplica {
     }
 
     /// Wait on lease actions until I'm sure I'm no longer granting to a peer.
-    pub(super) async fn ensure_lease_revoked(
+    pub(super) async fn ensure_qlease_revoked(
         &mut self,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        while self.lease_manager.grant_set().get(peer)? {
+        while self.qlease_manager.grant_set().get(peer)? {
             loop {
                 let (lease_num, lease_action) =
-                    self.lease_manager.get_action().await?;
-                if self.handle_lease_action(lease_num, lease_action).await? {
+                    self.qlease_manager.get_action().await?;
+                if self.handle_qlease_action(lease_num, lease_action).await? {
                     break;
                 }
             }
@@ -210,20 +84,24 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Synthesized handler of lease-related actions from LeaseManager.
+    /// Synthesized handler of quorum leasing actions from its LeaseManager.
     /// Returns true if this action is a possible indicator that the grant_set
     /// shrunk; otherwise returns false.
-    pub(super) async fn handle_lease_action(
+    pub(super) async fn handle_qlease_action(
         &mut self,
         lease_num: LeaseNum,
         lease_action: LeaseAction,
     ) -> Result<bool, SummersetError> {
         match lease_action {
             LeaseAction::SendLeaseMsg { peer, msg } => {
-                self.transport_hub.send_lease_msg(lease_num, msg, peer)?;
+                self.transport_hub.send_lease_msg(
+                    1, // gid 1 for quorum leases
+                    lease_num, msg, peer,
+                )?;
             }
             LeaseAction::BcastLeaseMsgs { peers, msg } => {
                 self.transport_hub.bcast_lease_msg(
+                    1, // gid 1 for quorum leases
                     lease_num,
                     msg,
                     Some(peers),
@@ -231,8 +109,46 @@ impl QuorumLeasesReplica {
             }
 
             LeaseAction::GrantRemoved { .. }
-            | LeaseAction::GrantTimeout { .. }
-            | LeaseAction::HigherNumber => {
+            | LeaseAction::GrantTimeout { .. } => {
+                // if I'm a grantor in current leaser roles config, promptly
+                // let leader know about my grant_set becoming empty so that
+                // it may proceed with instances that stuck in gathering
+                // AcceptReplies
+                // NOTE: this is an equivalent way of handling leaseholder
+                //       unresponsiveness as what's described in the paper;
+                //       we just let client do configuration changes explicitly
+                if self.qlease_cfg.is_grantor(self.id)?
+                    && self.qlease_num == lease_num
+                    && self.qlease_manager.grant_set().count() == 0
+                {
+                    if let Some(leader) = self.leader {
+                        if leader != self.id {
+                            self.transport_hub.send_msg(
+                                PeerMsg::NoGrants {
+                                    ballot: self.bal_max_seen,
+                                    qlease_num: lease_num,
+                                },
+                                leader,
+                            )?;
+                            pf_trace!(
+                                "sent NoGrants -> {} for bal {} qlease_num {}",
+                                leader,
+                                self.bal_max_seen,
+                                lease_num
+                            );
+                        }
+                    }
+                }
+
+                // tell revoker that it might want to double check grant_set
+                return Ok(true);
+            }
+
+            LeaseAction::HigherNumber => {
+                if self.qlease_num < lease_num {
+                    self.qlease_num = lease_num;
+                }
+
                 // tell revoker that it might want to double check grant_set
                 return Ok(true);
             }

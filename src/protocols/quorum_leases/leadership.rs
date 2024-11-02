@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{LogAction, ReplicaId};
+use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
 // QuorumLeasesReplica leadership related logic
@@ -27,6 +27,36 @@ impl QuorumLeasesReplica {
                 self.heartbeater.kickoff_hear_timer()?;
             }
 
+            // if leasing enabled, revoke old lease if any made to old leader,
+            // then initiate granting to the new leader
+            if self.config.enable_leader_leases {
+                if let Some(old_leader) = self.leader {
+                    if old_leader != self.id {
+                        self.llease_manager.add_notice(
+                            self.bal_max_seen,
+                            LeaseNotice::DoRevoke {
+                                peers: Some(Bitmap::from((
+                                    self.population,
+                                    vec![old_leader],
+                                ))),
+                            },
+                        )?;
+                        self.ensure_llease_revoked(old_leader).await?;
+                    }
+                }
+
+                // initiate granting to new leader
+                self.llease_manager.add_notice(
+                    ballot, // use new ballot as lease_num
+                    LeaseNotice::NewGrants {
+                        peers: Some(Bitmap::from((
+                            self.population,
+                            vec![peer],
+                        ))),
+                    },
+                )?;
+            }
+
             // set this peer to be the believed leader
             debug_assert_ne!(peer, self.id);
             self.leader = Some(peer);
@@ -43,6 +73,25 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         if self.is_leader() {
             return Ok(());
+        }
+
+        // if leasing enabled, start to revoke old lease
+        let mut old_leader = None;
+        if self.config.enable_leader_leases {
+            if let Some(leader) = self.leader {
+                if leader != self.id {
+                    self.llease_manager.add_notice(
+                        self.bal_max_seen,
+                        LeaseNotice::DoRevoke {
+                            peers: Some(Bitmap::from((
+                                self.population,
+                                vec![leader],
+                            ))),
+                        },
+                    )?;
+                    old_leader = Some(leader);
+                }
+            }
         }
 
         self.leader = Some(self.id);
@@ -112,6 +161,7 @@ impl QuorumLeasesReplica {
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
                 accept_acks: Bitmap::new(self.population, false),
+                accept_grant_sets: HashMap::new(),
             });
 
             // record update to largest prepare ballot
@@ -146,6 +196,14 @@ impl QuorumLeasesReplica {
             self.bal_prep_sent
         );
 
+        // before moving on, ensure that any lease to old leader has either
+        // been RevokeReplied or timed out
+        if self.config.enable_leader_leases {
+            if let Some(old_leader) = old_leader {
+                self.ensure_llease_revoked(old_leader).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -153,6 +211,40 @@ impl QuorumLeasesReplica {
     pub(super) async fn bcast_heartbeats(
         &mut self,
     ) -> Result<(), SummersetError> {
+        // check and send leader lease promise refresh to leader
+        if self.config.enable_leader_leases {
+            if let Some(leader) = self.leader {
+                if leader != self.id {
+                    let to_refresh = self.llease_manager.attempt_refresh(
+                        Some(&Bitmap::from((self.population, vec![leader]))),
+                    )?;
+                    if to_refresh.count() > 0 {
+                        self.transport_hub.bcast_lease_msg(
+                            0, // gid 0 for leader leases
+                            self.bal_max_seen,
+                            LeaseMsg::Promise,
+                            Some(to_refresh),
+                        )?;
+                    }
+                }
+            }
+        }
+
+        // check and send quorum lease promise refresh to active grantees
+        if self.qlease_num as usize + 1 == self.commit_bar {
+            let to_refresh = self
+                .qlease_manager
+                .attempt_refresh(Some(&self.qlease_cfg.grantees))?;
+            if to_refresh.count() > 0 {
+                self.transport_hub.bcast_lease_msg(
+                    1, // gid 1 for quorum leases
+                    self.qlease_num,
+                    LeaseMsg::Promise,
+                    Some(to_refresh),
+                )?;
+            }
+        }
+
         // broadcast heartbeat to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {

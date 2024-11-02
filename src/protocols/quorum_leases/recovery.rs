@@ -94,8 +94,10 @@ impl QuorumLeasesReplica {
                                         .await?;
                                 }
                                 ApiRequest::Conf { conf, .. } => {
-                                    self.leasers_cfg = conf;
-                                    self.leasers_ver = self.commit_bar;
+                                    self.qlease_cfg = conf;
+                                    self.qlease_ver = self.commit_bar;
+                                    self.qlease_num =
+                                        self.commit_bar as LeaseNum;
                                 }
                                 _ => {} // ignore other request types
                             }
@@ -148,10 +150,10 @@ impl QuorumLeasesReplica {
         }
 
         // tell manager about read lease roles if changed
-        if self.leasers_ver > 0 {
+        if self.qlease_ver > 0 {
             self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
-                is_grantor: self.leasers_cfg.is_grantor(self.id)?,
-                is_grantee: self.leasers_cfg.is_grantee(self.id)?,
+                is_grantor: self.qlease_cfg.is_grantor(self.id)?,
+                is_grantee: self.qlease_cfg.is_grantee(self.id)?,
             })?;
         }
 
