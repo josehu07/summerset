@@ -96,12 +96,17 @@ impl QuorumLeasesReplica {
 
         // revoke read leases I've been granted and am granting to
         debug_assert!(slot > self.qlease_ver);
-        if self.qlease_cfg.is_grantee(self.id)? {
+        if slot == self.qlease_num as usize + 1 // first Accept after qleased
+            && self.qlease_cfg.is_grantee(self.id)?
+        {
             self.qlease_manager
                 .add_notice(self.qlease_num, LeaseNotice::ClearHeld)?;
             self.ensure_qlease_cleared().await?;
         }
-        if self.qlease_cfg.is_grantor(self.id)? {
+        let grant_set = if slot == self.qlease_num as usize + 1 // first Accept after qleased
+            && self.qlease_cfg.is_grantor(self.id)?
+        {
+            let grant_set = self.qlease_manager.grant_set();
             self.qlease_manager.add_notice(
                 self.qlease_num,
                 LeaseNotice::DoRevoke {
@@ -113,7 +118,10 @@ impl QuorumLeasesReplica {
             // honor the revocations and reply to the leader by themselves;
             // this revocation is just a trigger for the safety path in cases
             // of leaseholder unresponsiveness
-        }
+            grant_set
+        } else {
+            Bitmap::new(self.population, false)
+        };
 
         if self.is_leader() {
             // on leader, finishing the logging of an AcceptData entry
@@ -121,11 +129,7 @@ impl QuorumLeasesReplica {
             // (as an acceptor role)
             let inst = &self.insts[slot - self.start_slot];
             self.handle_msg_accept_reply(
-                self.id,
-                slot,
-                inst.bal,
-                self.qlease_manager.grant_set(),
-                None,
+                self.id, slot, inst.bal, grant_set, None,
             )?;
             // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
@@ -136,7 +140,6 @@ impl QuorumLeasesReplica {
             // AcceptData entry leads to sending back an Accept reply
             let inst = &self.insts[slot - self.start_slot];
             if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
-                let grant_set = self.qlease_manager.grant_set();
                 self.transport_hub.send_msg(
                     PeerMsg::AcceptReply {
                         slot,
@@ -233,22 +236,22 @@ impl QuorumLeasesReplica {
                 }
 
                 self.commit_bar += 1;
-            }
-        }
 
-        // if the end of my log has been committed, it's time to initiate
-        // granting read leases if I'm a grantor in current config
-        if self.qlease_cfg.is_grantor(self.id)?
-            && self.commit_bar == self.start_slot + self.insts.len()
-        {
-            debug_assert!(self.commit_bar > 1);
-            self.qlease_num = self.commit_bar as LeaseNum - 1;
-            self.qlease_manager.add_notice(
-                self.qlease_num,
-                LeaseNotice::NewGrants {
-                    peers: Some(self.qlease_cfg.grantees.clone()),
-                },
-            )?;
+                // if the end of my log has been committed, it's time to initiate
+                // granting read leases if I'm a grantor in current config
+                if self.qlease_cfg.is_grantor(self.id)?
+                    && self.commit_bar == self.start_slot + self.insts.len()
+                {
+                    debug_assert!(self.commit_bar > 1);
+                    self.qlease_num = self.commit_bar as LeaseNum - 1;
+                    self.qlease_manager.add_notice(
+                        self.qlease_num,
+                        LeaseNotice::NewGrants {
+                            peers: Some(self.qlease_cfg.grantees.clone()),
+                        },
+                    )?;
+                }
+            }
         }
 
         Ok(())

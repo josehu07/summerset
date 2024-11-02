@@ -434,14 +434,20 @@ impl LeaseManagerLogicTask {
         }
 
         // broadcast Revoke messages to these peers
-        pf_debug!("leases bcast Revoke @ {} -> {:?}", lease_num, bcast_peers);
-        self.tx_action.send((
-            lease_num,
-            LeaseAction::BcastLeaseMsgs {
-                peers: bcast_peers,
-                msg: LeaseMsg::Revoke,
-            },
-        ))?;
+        if bcast_peers.count() > 0 {
+            pf_debug!(
+                "leases bcast Revoke @ {} -> {:?}",
+                lease_num,
+                bcast_peers
+            );
+            self.tx_action.send((
+                lease_num,
+                LeaseAction::BcastLeaseMsgs {
+                    peers: bcast_peers,
+                    msg: LeaseMsg::Revoke,
+                },
+            ))?;
+        }
         Ok(())
     }
 

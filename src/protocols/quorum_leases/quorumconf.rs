@@ -142,17 +142,9 @@ impl QuorumLeasesReplica {
 
                 // then apply the new config
                 if self.is_leader() {
-                    pf_info!(
-                        "qlease_cfg changed: v{} {:?}",
-                        self.commit_bar,
-                        conf
-                    );
+                    pf_info!("qlease_cfg: v{} {:?}", self.commit_bar, conf);
                 } else {
-                    pf_debug!(
-                        "qlease_cfg changed: v{} {:?}",
-                        self.commit_bar,
-                        conf
-                    );
+                    pf_debug!("qlease_cfg: v{} {:?}", self.commit_bar, conf);
                 }
                 self.control_hub.send_ctrl(CtrlMsg::LeaserStatus {
                     is_grantor: conf.grantors.get(self.id)?,
