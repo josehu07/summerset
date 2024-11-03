@@ -55,6 +55,16 @@ PROTOCOLS_NAME_CONFIGS = {
             "near_server_id=0",  # placeholder; set by distr_clients.py
         ],
     ),
+    "QuorumLeases": (
+        "QuorumLeases",
+        [
+            "enable_leader_leases=true",
+            "lease_expire_ms=2000",
+        ],
+        [
+            "near_server_id=0",  # placeholder; set by distr_clients.py
+        ],
+    ),
 }
 
 MIN_HOST0_CPUS = 30

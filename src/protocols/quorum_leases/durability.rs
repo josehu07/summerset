@@ -238,19 +238,36 @@ impl QuorumLeasesReplica {
 
                 self.commit_bar += 1;
 
-                // if the end of my log has been committed, it's time to initiate
-                // granting read leases if I'm a grantor in current config
-                if self.qlease_cfg.is_grantor(self.id)?
-                    && self.commit_bar == self.start_slot + self.insts.len()
-                {
-                    debug_assert!(self.commit_bar > 1);
-                    self.qlease_num = self.commit_bar as LeaseNum - 1;
-                    self.qlease_manager.add_notice(
-                        self.qlease_num,
-                        LeaseNotice::NewGrants {
-                            peers: Some(self.qlease_cfg.grantees.clone()),
-                        },
-                    )?;
+                // if the end of my log has been committed
+                if self.commit_bar == self.start_slot + self.insts.len() {
+                    // if I'm a grantor in current quorum leases config, it's
+                    // time to initiate granting read leases
+                    if self.qlease_cfg.is_grantor(self.id)? {
+                        debug_assert!(self.commit_bar > 1);
+                        self.qlease_num = self.commit_bar as LeaseNum - 1;
+                        self.qlease_manager.add_notice(
+                            self.qlease_num,
+                            LeaseNotice::NewGrants {
+                                peers: Some(self.qlease_cfg.grantees.clone()),
+                            },
+                        )?;
+                    }
+
+                    // if I'm the leader and urgent CommitNotice is on,
+                    // broadcast CommitNotice messages
+                    if self.is_leader()
+                        && self.bal_prepared > 0
+                        && self.bal_prepared == self.bal_max_seen
+                        && self.config.urgent_commit_notice
+                    {
+                        self.transport_hub.bcast_msg(
+                            PeerMsg::CommitNotice {
+                                ballot: self.bal_max_seen,
+                                commit_bar: self.commit_bar,
+                            },
+                            None,
+                        )?;
+                    }
                 }
             }
         }
