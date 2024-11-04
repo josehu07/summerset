@@ -22,7 +22,8 @@ impl BodegaReplica {
 
         if self.is_stable_leader() {
             // conditions of majority-leased stable leader met, can reply
-            // read-only commands directly back to clients
+            // read-only commands directly back to clients by simply using
+            // the last committed value
             for (client, req) in req_batch.iter() {
                 if let ApiRequest::Req {
                     id: req_id,
@@ -45,15 +46,93 @@ impl BodegaReplica {
                         ApiReply::normal(*req_id, Some(cmd_result)),
                         *client,
                     )?;
-                    pf_trace!("replied -> client {} for read-only cmd", client);
+                    pf_trace!(
+                        "replied -> client {} for read-only slead",
+                        client
+                    );
 
                     strip_read_only = true;
                 }
             }
-        } else if (!self.is_leader() || self.bal_prepared == 0)
-        // && self.config.enable_quorum_reads
-        {
-            // TODO:
+        } else if self.is_local_reader()? {
+            // conditions of stable local reader met, can reply read-only
+            // commands directly back to clients if highest version value for
+            // key is committed, or FIXME: fixme
+            for (client, req) in req_batch.iter() {
+                if let ApiRequest::Req {
+                    id: req_id,
+                    cmd: Command::Get { key },
+                } = req
+                {
+                    let (api_reply, is_retry) = match self
+                        .inspect_highest_slot(key)?
+                    {
+                        None => {
+                            // key not seen at all
+                            (
+                                ApiReply::normal(
+                                    *req_id,
+                                    Some(CommandResult::Get { value: None }),
+                                ),
+                                false,
+                            )
+                        }
+                        Some((_, None)) => {
+                            // highest slot not committed (rare case as leases
+                            // should get actively revoked upon writes)
+                            (
+                                ApiReply::rq_retry(
+                                    *req_id,
+                                    Command::Get { key: key.clone() },
+                                ),
+                                true,
+                            )
+                        }
+                        Some((_, Some(value))) => {
+                            // highest slot committed (should be almost always
+                            // the case), can directly reply
+                            (
+                                ApiReply::normal(
+                                    *req_id,
+                                    Some(CommandResult::Get {
+                                        value: Some(value),
+                                    }),
+                                ),
+                                false,
+                            )
+                        }
+                    };
+                    self.external_api.send_reply(api_reply, *client)?;
+                    pf_trace!(
+                        "replied -> client {} read-only {}",
+                        client,
+                        if is_retry { "retry" } else { "rgood" }
+                    );
+
+                    strip_read_only = true;
+                }
+            }
+        } else if !self.is_leader() || self.bal_prepared == 0 {
+            // not a leader and not holding enough read leases, then promptly
+            // reply to read-only requests early to let clients retry on leader
+            for (client, req) in req_batch.iter() {
+                if let ApiRequest::Req {
+                    id: req_id,
+                    cmd: Command::Get { key },
+                } = req
+                {
+                    self.external_api.send_reply(
+                        ApiReply::rq_retry(
+                            *req_id,
+                            Command::Get { key: key.clone() },
+                        ),
+                        *client,
+                    )?;
+                    pf_trace!("replied -> client {} read-only nlead", client);
+
+                    strip_read_only = true;
+                }
+            }
         }
 
         if strip_read_only {

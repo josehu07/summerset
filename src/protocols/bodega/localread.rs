@@ -3,6 +3,53 @@
 use super::*;
 
 impl BodegaReplica {
+    /// Checks if I'm a stable leader as in a majority-leased config.
+    /// FIXME: fixme
+    #[inline]
+    pub(super) fn is_stable_leader(&self) -> bool {
+        // self.is_leader()
+        //     && self.bal_prepared > 0
+        //     && (true
+        //         // [for benchmarking purposes only]
+        //         || self.config.sim_read_lease)
+        true
+    }
+
+    /// Checks if I'm a local reader as in a majority-leased config.
+    /// FIXME: fixme
+    #[inline]
+    pub(super) fn is_local_reader(&self) -> Result<bool, SummersetError> {
+        // Ok((self.bodega_cfg.is_grantee(self.id)?
+        //         && self.lease_manager.lease_cnt() + 1 >= self.quorum_cnt)
+        //     // [for benchmarking purposes only]
+        //     || self.config.sim_read_lease)
+        Ok(self.bodega_cfg.is_grantee(self.id)?
+            // [for benchmarking purposes only]
+            || self.config.sim_read_lease)
+    }
+
+    /// The commit condition check. Besides requiring an AcceptReply quorum
+    /// size of at least majority, it also requires that replies from all
+    /// lease grantees have been received.
+    /// FIXME: fixme
+    pub(super) fn commit_condition(
+        leader_bk: &LeaderBookkeeping,
+        quorum_cnt: u8,
+        bodega_cfg: &LeaserRoles,
+    ) -> Result<bool, SummersetError> {
+        if leader_bk.accept_acks.count() < quorum_cnt {
+            return Ok(false);
+        }
+
+        for (grantee, flag) in bodega_cfg.grantees.iter() {
+            if flag && !leader_bk.accept_acks.get(grantee)? {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
     /// Update the highest_slot tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_slot(
@@ -70,5 +117,19 @@ impl BodegaReplica {
             // never seen this key
             Ok(None)
         }
+    }
+
+    /// React to a CommitNotice message from leader.
+    pub(super) fn heard_commit_notice(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+        commit_bar: usize,
+    ) -> Result<(), SummersetError> {
+        if ballot == self.bal_max_seen {
+            self.advance_commit_bar(peer, commit_bar)?;
+        }
+
+        Ok(())
     }
 }

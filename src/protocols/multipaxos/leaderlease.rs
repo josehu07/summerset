@@ -14,8 +14,8 @@ impl MultiPaxosReplica {
             && ((self.config.enable_leader_leases
                  && self.bal_max_seen == self.bal_prepared
                  && self.lease_manager.lease_cnt() + 1 >= self.quorum_cnt)
-               // [for benchmarking purposes only]
-               || self.config.sim_read_lease)
+                // [for benchmarking purposes only]
+                || self.config.sim_read_lease)
     }
 
     /// Wait on lease actions until I'm sure I'm no longer granting to a peer.

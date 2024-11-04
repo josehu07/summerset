@@ -3,7 +3,7 @@
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{LeaseNotice, LogAction, ReplicaId};
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
 // BodegaReplica leadership related logic
@@ -233,6 +233,43 @@ impl BodegaReplica {
 
         // all slots up to received commit_bar are safe to commit; submit their
         // commands for execution
+        self.advance_commit_bar(peer, commit_bar)?;
+
+        if peer != self.id {
+            // update peer_exec_bar if larger then known; if all servers'
+            // exec_bar (including myself) have passed a slot, that slot
+            // is definitely safe to be snapshotted
+            if exec_bar > self.peer_exec_bar[&peer] {
+                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                let passed_cnt = 1 + self
+                    .peer_exec_bar
+                    .values()
+                    .filter(|&&e| e >= exec_bar)
+                    .count() as u8;
+                if passed_cnt == self.population {
+                    // all servers have executed up to exec_bar
+                    self.snap_bar = exec_bar;
+                }
+            }
+
+            // if snap_bar is larger than mine, update snap_bar
+            if snap_bar > self.snap_bar {
+                self.snap_bar = snap_bar;
+            }
+        }
+
+        // pf_trace!("heard heartbeat <- {} bal {}", peer, ballot);
+        Ok(())
+    }
+
+    /// React to an updated commit_bar received from (probably) leader. Slots
+    /// up to received commit_bar are safe to commit; submit their commands
+    /// for execution.
+    pub(super) fn advance_commit_bar(
+        &mut self,
+        peer: ReplicaId,
+        commit_bar: usize,
+    ) -> Result<(), SummersetError> {
         if commit_bar > self.commit_bar {
             while self.start_slot + self.insts.len() < commit_bar {
                 self.insts.push(self.null_instance());
@@ -274,37 +311,13 @@ impl BodegaReplica {
 
             if commit_cnt > 0 {
                 pf_trace!(
-                    "heartbeat commit <- {} until slot {}",
+                    "advancing commit <- {} until slot {}",
                     peer,
                     commit_bar
                 );
             }
         }
 
-        if peer != self.id {
-            // update peer_exec_bar if larger then known; if all servers'
-            // exec_bar (including myself) have passed a slot, that slot
-            // is definitely safe to be snapshotted
-            if exec_bar > self.peer_exec_bar[&peer] {
-                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
-                let passed_cnt = 1 + self
-                    .peer_exec_bar
-                    .values()
-                    .filter(|&&e| e >= exec_bar)
-                    .count() as u8;
-                if passed_cnt == self.population {
-                    // all servers have executed up to exec_bar
-                    self.snap_bar = exec_bar;
-                }
-            }
-
-            // if snap_bar is larger than mine, update snap_bar
-            if snap_bar > self.snap_bar {
-                self.snap_bar = snap_bar;
-            }
-        }
-
-        // pf_trace!("heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
 }

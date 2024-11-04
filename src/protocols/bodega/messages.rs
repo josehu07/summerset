@@ -386,8 +386,12 @@ impl BodegaReplica {
             // bookkeep this Accept reply
             leader_bk.accept_acks.set(peer, true)?;
 
-            // if quorum size reached, mark this instance as committed
-            if leader_bk.accept_acks.count() >= self.quorum_cnt {
+            // if commit condition is reached, mark this instance as committed
+            if Self::commit_condition(
+                leader_bk,
+                self.quorum_cnt,
+                &self.bodega_cfg,
+            )? {
                 inst.status = Status::Committed;
                 pf_debug!(
                     "committed instance at slot {} bal {}",
@@ -463,6 +467,9 @@ impl BodegaReplica {
                     peer, ballot, commit_bar, exec_bar, snap_bar,
                 )
                 .await
+            }
+            PeerMsg::CommitNotice { ballot, commit_bar } => {
+                self.heard_commit_notice(peer, ballot, commit_bar)
             }
         }
     }

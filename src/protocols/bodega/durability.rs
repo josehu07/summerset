@@ -177,6 +177,23 @@ impl BodegaReplica {
                 }
 
                 self.commit_bar += 1;
+
+                // if it's the end of log, I'm the leader, and urgent CommitNotice
+                // is on, broadcast CommitNotice messages
+                if self.commit_bar == self.start_slot + self.insts.len()
+                    && self.is_leader()
+                    && self.bal_prepared > 0
+                    && self.bal_prepared == self.bal_max_seen
+                    && self.config.urgent_commit_notice
+                {
+                    self.transport_hub.bcast_msg(
+                        PeerMsg::CommitNotice {
+                            ballot: self.bal_max_seen,
+                            commit_bar: self.commit_bar,
+                        },
+                        None,
+                    )?;
+                }
             }
         }
 

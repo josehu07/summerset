@@ -2,11 +2,11 @@
 //!
 //! TODO: description
 
+mod conflease;
 mod control;
 mod durability;
 mod execution;
 mod leadership;
-mod leasing;
 mod localread;
 mod messages;
 mod recovery;
@@ -24,8 +24,8 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager,
-    LeaseMsg, LeaseNum, LogActionId, ReplicaId, RequestId, StateMachine,
-    StorageHub, TransportHub,
+    LeaserRoles, LogActionId, ReplicaId, RequestId, StateMachine, StorageHub,
+    TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -69,6 +69,13 @@ pub struct ReplicaConfigBodega {
     /// Lease-related timeout duration in millisecs.
     pub lease_expire_ms: u64,
 
+    /// Enable promptive CommitNotice sending for committed instances?
+    pub urgent_commit_notice: bool,
+
+    /// Enable promptive AcceptReply broadcast among non-leader peers?
+    /// FIXME: useme
+    pub urgent_accept_notice: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -108,6 +115,8 @@ impl Default for ReplicaConfigBodega {
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
             lease_expire_ms: 2000, // need proper hb settings if leasing
+            urgent_commit_notice: false,
+            urgent_accept_notice: false,
             snapshot_path: "/tmp/summerset.bodega.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -168,20 +177,6 @@ struct ReplicaBookkeeping {
 
     /// If in Preparing status, the endprep_slot of this Prepare phase.
     endprep_slot: usize,
-}
-
-/// Bookkeeping info for near quorum reads if enabled.
-#[derive(Debug, Clone)]
-struct ReadQueryBookkeeping {
-    /// The batch of read-only requests (technically get need to remember
-    /// a vec of client IDs but nah doesn't matter).
-    reads: ReqBatch,
-
-    /// Replicas from which I have received ReadQuery replies.
-    rq_acks: Bitmap,
-
-    /// The reply with the highest slot number found for each key.
-    max_replies: Vec<Option<(usize, Option<String>)>>,
 }
 
 /// In-memory instance containing a commands batch.
@@ -306,6 +301,9 @@ enum PeerMsg {
         /// For conservative snapshotting purpose.
         snap_bar: usize,
     },
+
+    /// Promptive notification of commits from leader to replicas.
+    CommitNotice { ballot: Ballot, commit_bar: usize },
 }
 
 /// Bodega server replica module.
@@ -353,7 +351,12 @@ pub(crate) struct BodegaReplica {
     lease_manager: LeaseManager,
 
     /// Who do I think is the effective leader of the cluster right now?
+    /// FIXME: remove
     leader: Option<ReplicaId>,
+
+    /// Most up-to-date cluster roles config that I know of. A config includes:
+    ///   - FIXME: describe
+    bodega_cfg: LeaserRoles,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -395,10 +398,6 @@ pub(crate) struct BodegaReplica {
     // NOTE: there probably are better ways to do such bookkeeping, but this is
     //       good enough for now unless the key space is disgustingly huge
     highest_slot: HashMap<String, usize>,
-
-    /// Ongoing attempts of near quorum reads.
-    // NOTE: may add (easy) garbage collection for outdated stuck attempts.
-    quorum_reads: HashMap<(ClientId, RequestId), ReadQueryBookkeeping>,
 
     /// Current durable WAL log file offset.
     wal_offset: usize,
@@ -536,7 +535,8 @@ impl GenericReplica for BodegaReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
-                                    lease_expire_ms, snapshot_path,
+                                    lease_expire_ms, urgent_commit_notice,
+                                    urgent_accept_notice, snapshot_path,
                                     snapshot_interval_s, msg_chunk_size,
                                     record_breakdown, record_value_ver,
                                     record_size_recv, sim_read_lease)?;
@@ -608,7 +608,10 @@ impl GenericReplica for BodegaReplica {
             id,
             population,
             p2p_addr,
-            HashMap::from([(0, tx_lease_msg)]), // FIXME:
+            HashMap::from([(
+                0, // only one type of leases exist in Bodega
+                tx_lease_msg,
+            )]),
         )
         .await?;
 
@@ -684,6 +687,13 @@ impl GenericReplica for BodegaReplica {
             heartbeater,
             lease_manager,
             leader: None,
+            // FIXME: empty
+            // bodega_cfg: LeaserRoles::empty(population),
+            bodega_cfg: LeaserRoles {
+                grantors: Bitmap::new(population, true),
+                grantees: Bitmap::new(population, true),
+                leader: None,
+            },
             insts: vec![],
             start_slot: 0,
             snapshot_interval,
@@ -697,7 +707,6 @@ impl GenericReplica for BodegaReplica {
                 .collect(),
             snap_bar: 0,
             highest_slot: HashMap::new(),
-            quorum_reads: HashMap::new(),
             wal_offset: 0,
             snap_offset: 0,
             startup_time: Instant::now(),
@@ -795,18 +804,17 @@ impl GenericReplica for BodegaReplica {
                     }
                 },
 
-                // TODO: lease-related action
-                // lease_action = self.lease_manager.get_action(), if !paused
-                //                                                    && self.config.enable_leader_leases => {
-                //     if let Err(e) = lease_action {
-                //         pf_error!("error getting lease action: {}", e);
-                //         continue;
-                //     }
-                //     let (lease_num, lease_action) = lease_action.unwrap();
-                //     if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
-                //         pf_error!("error handling lease action @ {}: {}", lease_num, e);
-                //     }
-                // },
+                // lease-related action
+                lease_action = self.lease_manager.get_action(), if !paused => {
+                    if let Err(e) = lease_action {
+                        pf_error!("error getting lease action: {}", e);
+                        continue;
+                    }
+                    let (lease_num, lease_action) = lease_action.unwrap();
+                    if let Err(e) = self.handle_lease_action(lease_num, lease_action).await {
+                        pf_error!("error handling lease action @ {}: {}", lease_num, e);
+                    }
+                },
 
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused
