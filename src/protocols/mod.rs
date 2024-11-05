@@ -26,13 +26,17 @@ mod multipaxos;
 pub use multipaxos::{ClientConfigMultiPaxos, ReplicaConfigMultiPaxos};
 use multipaxos::{MultiPaxosClient, MultiPaxosReplica};
 
-mod raft;
-pub use raft::{ClientConfigRaft, ReplicaConfigRaft};
-use raft::{RaftClient, RaftReplica};
+mod epaxos;
+pub use epaxos::{ClientConfigEPaxos, ReplicaConfigEPaxos};
+use epaxos::{EPaxosClient, EPaxosReplica};
 
 mod rspaxos;
 pub use rspaxos::{ClientConfigRSPaxos, ReplicaConfigRSPaxos};
 use rspaxos::{RSPaxosClient, RSPaxosReplica};
+
+mod raft;
+pub use raft::{ClientConfigRaft, ReplicaConfigRaft};
+use raft::{RaftClient, RaftReplica};
 
 mod craft;
 use craft::{CRaftClient, CRaftReplica};
@@ -57,8 +61,9 @@ pub enum SmrProtocol {
     SimplePush,
     ChainRep,
     MultiPaxos,
-    Raft,
+    EPaxos,
     RSPaxos,
+    Raft,
     CRaft,
     Crossword,
     QuorumLeases,
@@ -82,8 +87,9 @@ impl SmrProtocol {
             "SimplePush" => Some(Self::SimplePush),
             "ChainRep" => Some(Self::ChainRep),
             "MultiPaxos" => Some(Self::MultiPaxos),
-            "Raft" => Some(Self::Raft),
+            "EPaxos" => Some(Self::EPaxos),
             "RSPaxos" => Some(Self::RSPaxos),
+            "Raft" => Some(Self::Raft),
             "CRaft" => Some(Self::CRaft),
             "Crossword" => Some(Self::Crossword),
             "QuorumLeases" => Some(Self::QuorumLeases),
@@ -144,9 +150,9 @@ impl SmrProtocol {
                     .await
                 )
             }
-            Self::Raft => {
+            Self::EPaxos => {
                 box_if_ok!(
-                    RaftReplica::new_and_setup(
+                    EPaxosReplica::new_and_setup(
                         api_addr, p2p_addr, manager, config_str
                     )
                     .await
@@ -155,6 +161,14 @@ impl SmrProtocol {
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
+            Self::Raft => {
+                box_if_ok!(
+                    RaftReplica::new_and_setup(
                         api_addr, p2p_addr, manager, config_str
                     )
                     .await
@@ -222,13 +236,18 @@ impl SmrProtocol {
                     MultiPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
-            Self::Raft => {
-                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
+            Self::EPaxos => {
+                box_if_ok!(
+                    EPaxosClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosClient::new_and_setup(manager, config_str).await
                 )
+            }
+            Self::Raft => {
+                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
             }
             Self::CRaft => {
                 box_if_ok!(
@@ -280,8 +299,9 @@ mod name_tests {
         valid_name_test!(SimplePush);
         valid_name_test!(ChainRep);
         valid_name_test!(MultiPaxos);
-        valid_name_test!(Raft);
+        valid_name_test!(EPaxos);
         valid_name_test!(RSPaxos);
+        valid_name_test!(Raft);
         valid_name_test!(CRaft);
         valid_name_test!(Crossword);
         valid_name_test!(QuorumLeases);
