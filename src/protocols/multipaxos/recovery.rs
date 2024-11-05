@@ -63,19 +63,30 @@ impl MultiPaxosReplica {
                     self.bal_max_seen = ballot;
                 }
                 debug_assert!(self.bal_prepared <= self.bal_prep_sent);
+                // update accept_bar
+                if slot == self.accept_bar {
+                    while self.accept_bar < self.start_slot + self.insts.len() {
+                        let inst =
+                            &self.insts[self.accept_bar - self.start_slot];
+                        if inst.status < Status::Accepting {
+                            break;
+                        }
+                        self.accept_bar += 1;
+                    }
+                }
             }
 
             WalEntry::CommitSlot { slot } => {
                 if slot < self.start_slot {
                     return Ok(()); // ignore if slot index outdated
                 }
-                debug_assert!(slot < self.start_slot + self.insts.len());
+                debug_assert!(slot < self.accept_bar);
                 // update instance status
                 self.insts[slot - self.start_slot].status = Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
                 if slot == self.commit_bar {
-                    while self.commit_bar < self.start_slot + self.insts.len() {
+                    while self.commit_bar < self.accept_bar {
                         let inst =
                             &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed {

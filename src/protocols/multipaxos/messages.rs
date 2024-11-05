@@ -84,6 +84,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -92,16 +93,18 @@ impl MultiPaxosReplica {
         endprep_slot: usize,
         ballot: Ballot,
         voted: Option<(Ballot, ReqBatch)>,
+        accept_bar: usize,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received PrepareReply <- {} for slot {} / {} bal {}",
+            "received PrepareReply <- {} for slot {} / {} bal {} accept_bar {}",
             peer,
             slot,
             endprep_slot,
-            ballot
+            ballot,
+            accept_bar,
         );
 
         // if ballot is what I'm currently waiting on for Prepare replies:
@@ -120,6 +123,26 @@ impl MultiPaxosReplica {
                 .is_none()
             {
                 return Ok(());
+            }
+
+            // update this peer's accept_bar information, and then update
+            // peer_accept_max as the minimum of the maximums of majority sets
+            if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
+            {
+                if accept_bar < old_bar {
+                    let mut peer_accept_bars: Vec<usize> =
+                        self.peer_accept_bar.values().copied().collect();
+                    peer_accept_bars.sort_unstable();
+                    let peer_accept_max =
+                        peer_accept_bars[self.quorum_cnt as usize - 1];
+                    if peer_accept_max < self.peer_accept_max {
+                        self.peer_accept_max = peer_accept_max;
+                        pf_debug!(
+                            "peer_accept_max updated: {}",
+                            self.peer_accept_max
+                        );
+                    }
+                }
             }
 
             // locate instance in memory, filling in null instance if needed
@@ -437,6 +460,7 @@ impl MultiPaxosReplica {
                 endprep_slot,
                 ballot,
                 voted,
+                accept_bar,
             } => self.handle_msg_prepare_reply(
                 peer,
                 slot,
@@ -444,6 +468,7 @@ impl MultiPaxosReplica {
                 endprep_slot,
                 ballot,
                 voted,
+                accept_bar,
             ),
             PeerMsg::Accept { slot, ballot, reqs } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs).await

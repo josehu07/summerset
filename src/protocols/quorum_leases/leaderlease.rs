@@ -13,7 +13,8 @@ impl QuorumLeasesReplica {
             && self.bal_prepared > 0
             && ((self.config.enable_leader_leases
                  && self.bal_max_seen == self.bal_prepared
-                 && self.llease_manager.lease_cnt() + 1 >= self.quorum_cnt)
+                 && self.llease_manager.lease_cnt() + 1 >= self.quorum_cnt
+                 && self.commit_bar >= self.peer_accept_max)
                 // [for benchmarking purposes only]
                 || self.config.sim_read_lease)
     }

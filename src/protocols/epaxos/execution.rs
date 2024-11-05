@@ -1,4 +1,10 @@
 //! EPaxos -- command execution.
+//!
+//! NOTE: since Summerset Put commands always return the old value, they are
+//!       effectively RMW commands; thus the commit vs. execute distinction in
+//!       original EPaxos paper does not make a difference here. Put commands
+//!       get replied to client only after execution. This does not make any
+//!       difference to the read-side performance that we are interested in.
 
 use super::*;
 

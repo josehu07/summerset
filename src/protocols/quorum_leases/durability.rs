@@ -45,6 +45,7 @@ impl QuorumLeasesReplica {
                         endprep_slot,
                         inst.bal,
                         voted,
+                        self.accept_bar,
                     )?;
                 }
             }
@@ -64,15 +65,17 @@ impl QuorumLeasesReplica {
                         endprep_slot,
                         ballot: inst.bal,
                         voted,
+                        accept_bar: self.accept_bar,
                     },
                     source,
                 )?;
                 pf_trace!(
-                    "sent PrepareReply -> {} for slot {} / {} bal {}",
+                    "sent PrepareReply -> {} for slot {} / {} bal {} accept_bar {}",
                     source,
                     slot,
                     endprep_slot,
-                    inst.bal
+                    inst.bal,
+                    self.accept_bar,
                 );
             }
         }
@@ -163,6 +166,17 @@ impl QuorumLeasesReplica {
             }
         }
 
+        // update index of the first non-accepting instance
+        if slot == self.accept_bar {
+            while self.accept_bar < self.start_slot + self.insts.len() {
+                let inst = &mut self.insts[self.accept_bar - self.start_slot];
+                if inst.status < Status::Accepting {
+                    break;
+                }
+                self.accept_bar += 1;
+            }
+        }
+
         Ok(())
     }
 
@@ -183,7 +197,7 @@ impl QuorumLeasesReplica {
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
-            while self.commit_bar < self.start_slot + self.insts.len() {
+            while self.commit_bar < self.accept_bar {
                 let inst = &mut self.insts[self.commit_bar - self.start_slot];
                 if inst.status < Status::Committed {
                     break;

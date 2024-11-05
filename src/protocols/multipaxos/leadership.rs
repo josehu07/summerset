@@ -181,6 +181,12 @@ impl MultiPaxosReplica {
             );
         }
 
+        // clear peers' accept_bar information
+        for bar in self.peer_accept_bar.values_mut() {
+            *bar = usize::MAX;
+        }
+        self.peer_accept_max = usize::MAX;
+
         // send Prepare message to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Prepare {

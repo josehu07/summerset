@@ -292,6 +292,9 @@ enum PeerMsg {
         /// Map from slot index -> the accepted ballot number for that
         /// instance and the corresponding request batch value.
         voted: Option<(Ballot, ReqBatch)>,
+        /// For stable majority-leased leader to determined when it is safe to
+        /// start serving reads single-handedly.
+        accept_bar: usize,
     },
 
     /// Accept message from leader to replicas.
@@ -408,11 +411,23 @@ pub(crate) struct MultiPaxosReplica {
     /// Largest ballot number seen as acceptor.
     bal_max_seen: Ballot,
 
+    /// Index of the first non-Accepted instance.
+    accept_bar: usize,
+
+    /// Map from peer ID (including my self) who replied to my Prepare -> its
+    /// accept_bar then; this is for safe stable leader leases purpose.
+    peer_accept_bar: HashMap<ReplicaId, usize>,
+
+    /// Minimum of the max accept_bar among any majority set of peer_accept_bar;
+    /// this is for safe stable leader leases purpose.
+    peer_accept_max: usize,
+
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
+    /// It is always true that
+    ///   exec_bar <= commit_bar <= accept_bar <= start_slot + insts.len()
     exec_bar: usize,
 
     /// Map from peer ID -> its latest exec_bar I know; this is for conservative
@@ -729,6 +744,13 @@ impl GenericReplica for MultiPaxosReplica {
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
+            accept_bar: 0,
+            peer_accept_bar: (0..population)
+                .filter_map(
+                    |s| if s == id { None } else { Some((s, usize::MAX)) },
+                )
+                .collect(),
+            peer_accept_max: usize::MAX,
             commit_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)

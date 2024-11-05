@@ -228,6 +228,16 @@ impl LeaseManager {
         map
     }
 
+    /// Gets the set of replicas I'm currently holding promises from.
+    #[allow(dead_code)]
+    pub(crate) fn lease_set(&self) -> Bitmap {
+        let mut map = Bitmap::new(self.population, false);
+        for &r in self.promises_held.guard().keys() {
+            map.set(r, true).unwrap();
+        }
+        map
+    }
+
     /// Gets the number of promises currently held (self not included).
     pub(crate) fn lease_cnt(&self) -> u8 {
         self.promises_held.guard().len() as u8

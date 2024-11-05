@@ -1,6 +1,10 @@
 //! Replication protocol: EPaxos.
 //!
-//! Leaderless Egalitarian Paxos that allows any replica to be a command leader. References:
+//! Leaderless Egalitarian Paxos that allows any replica to be command leader.
+//! Since KV-store commands can easily be partitioned by non-conflicting keys,
+//! we assume interferences as defined by the Generalize-Paxos style are solved
+//! at the upper layer, and that all commands in a Summerset consensus cluster
+//! depend on each other serially (i.e., need a total order). References:
 //!   - <https://www.cs.cmu.edu/~dga/papers/epaxos-sosp2013.pdf>
 //!   - <https://www.usenix.org/system/files/nsdi21-tollman.pdf>
 

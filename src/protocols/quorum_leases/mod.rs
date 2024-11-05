@@ -283,6 +283,9 @@ enum PeerMsg {
         /// Map from slot index -> the accepted ballot number for that
         /// instance and the corresponding request batch value.
         voted: Option<(Ballot, ReqBatch)>,
+        /// For stable majority-leased leader to determined when it is safe to
+        /// start serving reads single-handedly.
+        accept_bar: usize,
     },
 
     /// Accept message from leader to replicas.
@@ -372,16 +375,16 @@ pub(crate) struct QuorumLeasesReplica {
 
     /// LeaseManager module for quorum leases.
     // NOTE: Technically, there should be multiple LeaseManager modules, each
-    // for a keyspace partition with a different leaser roles configuration.
-    // But this is non-essential for our evaluations for now and will be
-    // simulated by launching multiple consensus groups whenever needed.
+    //       for a keyspace partition with a different leaser roles config.
+    //       But this is non-essential for our evaluations for now and will be
+    //       simulated by launching multiple consensus groups whenever needed.
     qlease_manager: LeaseManager,
 
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
 
-    /// The latest quorum leases number used in granting. It is always true
-    /// that commit_bar > qlease_num >= qlease_ver
+    /// The latest quorum lease number used in granting. It is always true that
+    ///   commit_bar > qlease_num >= qlease_ver
     qlease_num: LeaseNum,
 
     /// The current quorum lease role assignment's version. Using committed
@@ -410,11 +413,23 @@ pub(crate) struct QuorumLeasesReplica {
     /// Largest ballot number seen as acceptor.
     bal_max_seen: Ballot,
 
+    /// Index of the first non-Accepted instance.
+    accept_bar: usize,
+
+    /// Map from peer ID (including my self) who replied to my Prepare -> its
+    /// accept_bar then; this is for safe stable leader leases purpose.
+    peer_accept_bar: HashMap<ReplicaId, usize>,
+
+    /// Minimum of the max accept_bar among any majority set of peer_accept_bar;
+    /// this is for safe stable leader leases purpose.
+    peer_accept_max: usize,
+
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
+    /// It is always true that
+    ///   exec_bar <= commit_bar <= accept_bar <= start_slot + insts.len()
     exec_bar: usize,
 
     /// Map from peer ID -> its latest exec_bar I know; this is for conservative
@@ -745,6 +760,13 @@ impl GenericReplica for QuorumLeasesReplica {
             bal_prep_sent: 0,
             bal_prepared: 0,
             bal_max_seen: 0,
+            accept_bar: 0,
+            peer_accept_bar: (0..population)
+                .filter_map(
+                    |s| if s == id { None } else { Some((s, usize::MAX)) },
+                )
+                .collect(),
+            peer_accept_max: usize::MAX,
             commit_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)
