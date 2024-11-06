@@ -245,6 +245,9 @@ enum PeerMsg {
         voted: Option<(Ballot, ReqBatch)>,
     },
 
+    /// PreAccept message from command leader to replicas.
+    PreAccept {},
+
     /// Accept message from leader to replicas.
     Accept {
         slot: usize,
@@ -317,8 +320,8 @@ pub(crate) struct EPaxosReplica {
     /// Who do I think is the effective leader of the cluster right now?
     leader: Option<ReplicaId>,
 
-    /// In-memory log of instances.
-    insts: Vec<Instance>,
+    /// In-memory 2D-array instance space, one row per replica.
+    insts: Vec<Vec<Instance>>,
 
     /// Start slot index of in-mem log after latest snapshot.
     start_slot: usize,
@@ -590,7 +593,7 @@ impl GenericReplica for EPaxosReplica {
             transport_hub,
             heartbeater,
             leader: None,
-            insts: vec![],
+            insts: (0..population).map(|_| vec![]).collect(),
             start_slot: 0,
             snapshot_interval,
             bal_prep_sent: 0,

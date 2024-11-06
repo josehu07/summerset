@@ -745,11 +745,7 @@ impl GenericReplica for MultiPaxosReplica {
             bal_prepared: 0,
             bal_max_seen: 0,
             accept_bar: 0,
-            peer_accept_bar: (0..population)
-                .filter_map(
-                    |s| if s == id { None } else { Some((s, usize::MAX)) },
-                )
-                .collect(),
+            peer_accept_bar: (0..population).map(|s| (s, usize::MAX)).collect(),
             peer_accept_max: usize::MAX,
             commit_bar: 0,
             exec_bar: 0,
