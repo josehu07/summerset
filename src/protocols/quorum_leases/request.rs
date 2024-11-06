@@ -215,11 +215,6 @@ impl QuorumLeasesReplica {
         inst.status = Status::Accepting;
         pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
-        // [for perf breakdown only]
-        if let Some(sw) = self.bd_stopwatch.as_mut() {
-            sw.record_now(slot, 0, None)?;
-        }
-
         // record update to largest accepted ballot and corresponding data
         inst.voted = (inst.bal, req_batch.clone());
         self.storage_hub.submit_action(
@@ -255,31 +250,5 @@ impl QuorumLeasesReplica {
         );
 
         Ok(())
-    }
-
-    /// [for stale read profiling]
-    pub(super) fn val_ver_of_first_key(
-        &mut self,
-    ) -> Result<Option<(String, usize)>, SummersetError> {
-        let (mut key, mut ver) = (None, 0);
-        for inst in self.insts.iter_mut() {
-            if inst.status >= Status::Committed {
-                for (_, req) in &inst.reqs {
-                    if let ApiRequest::Req {
-                        cmd: Command::Put { key: k, .. },
-                        ..
-                    } = req
-                    {
-                        if key.is_none() {
-                            key = Some(k.into());
-                        } else if key.as_ref().unwrap() == k {
-                            ver += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(key.map(|k| (k, ver)))
     }
 }

@@ -1,4 +1,4 @@
-//! MultiPaxos -- leader election.
+//! MultiPaxos -- leader election & heartbeats.
 
 use super::*;
 
@@ -6,7 +6,7 @@ use crate::manager::CtrlMsg;
 use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-// MultiPaxosReplica leadership related logic
+// MultiPaxosReplica heartbeats related logic
 impl MultiPaxosReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
     pub(super) async fn check_leader(
@@ -66,8 +66,8 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Becomes a leader, sends self-initiated Prepare messages to followers
-    /// for all in-progress instances, and starts broadcasting heartbeats.
+    /// Becomes a leader and sends self-initiated Prepare messages to followers
+    /// for all in-progress instances.
     pub(super) async fn become_a_leader(
         &mut self,
     ) -> Result<(), SummersetError> {

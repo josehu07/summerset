@@ -100,10 +100,6 @@ impl EPaxosReplica {
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
             self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
-            // [for perf breakdown only]
-            if let Some(sw) = self.bd_stopwatch.as_mut() {
-                let _ = sw.record_now(slot, 1, None);
-            }
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
@@ -112,11 +108,7 @@ impl EPaxosReplica {
                     PeerMsg::AcceptReply {
                         slot,
                         ballot: inst.bal,
-                        reply_ts: if self.config.record_breakdown {
-                            Some(SystemTime::now())
-                        } else {
-                            None
-                        },
+                        reply_ts: None,
                     },
                     source,
                 )?;

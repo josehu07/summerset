@@ -679,7 +679,7 @@ impl CRaftReplica {
         let shadow_last_commit = {
             let mut match_slots: Vec<usize> =
                 self.match_slot.values().copied().collect();
-            match_slots.sort();
+            match_slots.sort_unstable();
             match_slots.reverse();
             if self.full_copy_mode {
                 match_slots[(self.majority - 2) as usize]

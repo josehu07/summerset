@@ -61,15 +61,15 @@ pub struct ReplicaConfigMultiPaxos {
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 
-    /// Min timeout of not hearing any heartbeat from leader in millisecs.
+    /// Min timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_min: u64,
-    /// Max timeout of not hearing any heartbeat from leader in millisecs.
+    /// Max timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_max: u64,
 
-    /// Interval of leader sending heartbeats to followers.
+    /// Interval of sending heartbeats to peers in millisecs.
     pub hb_send_interval_ms: u64,
 
-    /// Disable heartbeat timer (to force a deterministic leader during tests).
+    /// Disable heartbeat timer (to e.g., force a known leader during tests).
     pub disable_hb_timer: bool,
 
     /// Lease-related timeout duration in millisecs.

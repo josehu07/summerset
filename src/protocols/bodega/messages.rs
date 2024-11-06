@@ -316,15 +316,6 @@ impl BodegaReplica {
                 });
             }
 
-            // [for perf breakdown only]
-            if self.config.record_breakdown && self.config.record_size_recv {
-                (*self
-                    .bw_accumulators
-                    .get_mut(&peer)
-                    .expect("peer should exist in experiments")) +=
-                    inst.reqs.get_size();
-            }
-
             // record update to instance ballot & data
             inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(
@@ -350,7 +341,7 @@ impl BodegaReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
-        reply_ts: Option<SystemTime>,
+        _reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -398,12 +389,6 @@ impl BodegaReplica {
                     slot,
                     inst.bal
                 );
-
-                // [for perf breakdown only]
-                if let Some(sw) = self.bd_stopwatch.as_mut() {
-                    let _ = sw.record_now(slot, 2, reply_ts);
-                    let _ = sw.record_now(slot, 3, None);
-                }
 
                 // record commit event
                 self.storage_hub.submit_action(

@@ -1,10 +1,8 @@
 //! Replication protocol: EPaxos.
 //!
 //! Leaderless Egalitarian Paxos that allows any replica to be command leader.
-//! Since KV-store commands can easily be partitioned by non-conflicting keys,
-//! we assume interferences as defined by the Generalize-Paxos style are solved
-//! at the upper layer, and that all commands in a Summerset consensus cluster
-//! depend on each other serially (i.e., need a total order). References:
+//! There's' no distinction between commit vs. execute latency now in Summerset
+//! (see comments in 'execution.rs'). References:
 //!   - <https://www.cs.cmu.edu/~dga/papers/epaxos-sosp2013.pdf>
 //!   - <https://www.usenix.org/system/files/nsdi21-tollman.pdf>
 
@@ -30,7 +28,7 @@ use crate::server::{
     ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LogActionId,
     ReplicaId, StateMachine, StorageHub, TransportHub,
 };
-use crate::utils::{Bitmap, Stopwatch, SummersetError};
+use crate::utils::{Bitmap, SummersetError};
 
 use atomic_refcell::AtomicRefCell;
 
@@ -41,7 +39,7 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 
 use tokio::sync::watch;
-use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -78,17 +76,6 @@ pub struct ReplicaConfigEPaxos {
 
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
-
-    /// Recording performance breakdown statistics?
-    pub record_breakdown: bool,
-
-    /// Recording the latest committed value version of a key?
-    /// Only effective if record_breakdown is set to true.
-    pub record_value_ver: bool,
-
-    /// Recording total payload size received from per peer?
-    /// Only effective if record_breakdown is set to true.
-    pub record_size_recv: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -106,9 +93,6 @@ impl Default for ReplicaConfigEPaxos {
             snapshot_path: "/tmp/summerset.epaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
-            record_breakdown: false,
-            record_value_ver: false,
-            record_size_recv: false,
         }
     }
 }
@@ -372,18 +356,6 @@ pub(crate) struct EPaxosReplica {
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
-
-    /// Base time instant at startup, used as a reference zero timestamp.
-    startup_time: Instant,
-
-    /// Performance breakdown stopwatch if doing recording.
-    bd_stopwatch: Option<Stopwatch>,
-
-    /// Performance breakdown printing interval.
-    bd_print_interval: Interval,
-
-    /// Bandwidth utilization total bytes accumulators.
-    bw_accumulators: HashMap<ReplicaId, usize>,
 }
 
 // EPaxosReplica common helpers
@@ -496,8 +468,7 @@ impl GenericReplica for EPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
                                     snapshot_path, snapshot_interval_s,
-                                    msg_chunk_size, record_breakdown,
-                                    record_value_ver, record_size_recv)?;
+                                    msg_chunk_size)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -603,15 +574,6 @@ impl GenericReplica for EPaxosReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        // [for perf breakdown only]
-        let bd_stopwatch = if config.record_breakdown {
-            Some(Stopwatch::new())
-        } else {
-            None
-        };
-        let mut bd_print_interval = time::interval(Duration::from_secs(5));
-        bd_print_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
         Ok(EPaxosReplica {
             id,
             population,
@@ -641,12 +603,6 @@ impl GenericReplica for EPaxosReplica {
             snap_bar: 0,
             wal_offset: 0,
             snap_offset: 0,
-            startup_time: Instant::now(),
-            bd_stopwatch,
-            bd_print_interval,
-            bw_accumulators: (0..population)
-                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
-                .collect(),
         })
     }
 
@@ -745,36 +701,6 @@ impl GenericReplica for EPaxosReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
-                    }
-                },
-
-                // performance breakdown stats printing
-                _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
-                    if self.is_leader() {
-                        if let Some(sw) = self.bd_stopwatch.as_mut() {
-                            let (cnt, stats) = sw.summarize(4);
-                            pf_info!("bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
-                                                qrum {:.2} {:.2} exec {:.2} {:.2}",
-                                      cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
-                                           stats[2].0, stats[2].1, stats[3].0, stats[3].1);
-                            sw.remove_all();
-                        }
-                    }
-                    if self.config.record_value_ver {
-                        if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
-                            pf_info!("ver of {} @ {} ms is {}",
-                                              key,
-                                              Instant::now()
-                                                .duration_since(self.startup_time)
-                                                .as_millis(),
-                                              ver);
-                        }
-                    }
-                    if self.config.record_size_recv {
-                        for (peer, recv) in &mut self.bw_accumulators {
-                            pf_info!("bw period bytes recv <- {} : {}", peer, recv);
-                            *recv = 0;
-                        }
                     }
                 },
 

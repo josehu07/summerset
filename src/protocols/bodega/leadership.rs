@@ -1,4 +1,4 @@
-//! Bodega -- leader election.
+//! Bodega -- leader election & heartbeats.
 
 use super::*;
 
@@ -6,7 +6,7 @@ use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-// BodegaReplica leadership related logic
+// BodegaReplica heartbeats related logic
 impl BodegaReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
     pub(super) async fn check_leader(
@@ -37,7 +37,7 @@ impl BodegaReplica {
     }
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
-    /// for all in-progress instances, and starts broadcasting heartbeats.
+    /// for all in-progress instances.
     pub(super) async fn become_a_leader(
         &mut self,
     ) -> Result<(), SummersetError> {

@@ -32,7 +32,7 @@ use crate::server::{
     LeaseMsg, LeaseNum, LeaserRoles, LogActionId, ReplicaId, RequestId,
     StateMachine, StorageHub, TransportHub,
 };
-use crate::utils::{Bitmap, Stopwatch, SummersetError};
+use crate::utils::{Bitmap, SummersetError};
 
 use atomic_refcell::AtomicRefCell;
 
@@ -43,7 +43,7 @@ use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 
 use tokio::sync::watch;
-use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -60,12 +60,12 @@ pub struct ReplicaConfigQuorumLeases {
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 
-    /// Min timeout of not hearing any heartbeat from leader in millisecs.
+    /// Min timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_min: u64,
-    /// Max timeout of not hearing any heartbeat from leader in millisecs.
+    /// Max timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_max: u64,
 
-    /// Interval of leader sending heartbeats to followers.
+    /// Interval of leader sending heartbeats to peers in millisecs.
     pub hb_send_interval_ms: u64,
 
     /// Disable heartbeat timer (to force a deterministic leader during tests).
@@ -90,17 +90,6 @@ pub struct ReplicaConfigQuorumLeases {
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
-    /// Recording performance breakdown statistics?
-    pub record_breakdown: bool,
-
-    /// Recording the latest committed value version of a key?
-    /// Only effective if record_breakdown is set to true.
-    pub record_value_ver: bool,
-
-    /// Recording total payload size received from per peer?
-    /// Only effective if record_breakdown is set to true.
-    pub record_size_recv: bool,
-
     // [for benchmarking purposes only]
     /// Simulate local read lease implementation?
     pub sim_read_lease: bool,
@@ -124,9 +113,6 @@ impl Default for ReplicaConfigQuorumLeases {
             snapshot_path: "/tmp/summerset.quorum_leases.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
-            record_breakdown: false,
-            record_value_ver: false,
-            record_size_recv: false,
             sim_read_lease: false,
         }
     }
@@ -453,18 +439,6 @@ pub(crate) struct QuorumLeasesReplica {
 
     /// Current durable snapshot file offset.
     snap_offset: usize,
-
-    /// Base time instant at startup, used as a reference zero timestamp.
-    startup_time: Instant,
-
-    /// Performance breakdown stopwatch if doing recording.
-    bd_stopwatch: Option<Stopwatch>,
-
-    /// Performance breakdown printing interval.
-    bd_print_interval: Interval,
-
-    /// Bandwidth utilization total bytes accumulators.
-    bw_accumulators: HashMap<ReplicaId, usize>,
 }
 
 // QuorumLeasesReplica common helpers
@@ -587,8 +561,7 @@ impl GenericReplica for QuorumLeasesReplica {
                                     lease_expire_ms, enable_leader_leases,
                                     urgent_commit_notice, snapshot_path,
                                     snapshot_interval_s, msg_chunk_size,
-                                    record_breakdown, record_value_ver,
-                                    record_size_recv, sim_read_lease)?;
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",
@@ -725,15 +698,6 @@ impl GenericReplica for QuorumLeasesReplica {
         ));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        // [for perf breakdown only]
-        let bd_stopwatch = if config.record_breakdown {
-            Some(Stopwatch::new())
-        } else {
-            None
-        };
-        let mut bd_print_interval = time::interval(Duration::from_secs(5));
-        bd_print_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
         Ok(QuorumLeasesReplica {
             id,
             population,
@@ -776,12 +740,6 @@ impl GenericReplica for QuorumLeasesReplica {
             highest_slot: HashMap::new(),
             wal_offset: 0,
             snap_offset: 0,
-            startup_time: Instant::now(),
-            bd_stopwatch,
-            bd_print_interval,
-            bw_accumulators: (0..population)
-                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
-                .collect(),
         })
     }
 
@@ -905,36 +863,6 @@ impl GenericReplica for QuorumLeasesReplica {
                         self.control_hub.send_ctrl(
                             CtrlMsg::SnapshotUpTo { new_start: self.start_slot }
                         )?;
-                    }
-                },
-
-                // performance breakdown stats printing
-                _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
-                    if self.is_leader() {
-                        if let Some(sw) = self.bd_stopwatch.as_mut() {
-                            let (cnt, stats) = sw.summarize(4);
-                            pf_info!("bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
-                                                qrum {:.2} {:.2} exec {:.2} {:.2}",
-                                      cnt, stats[0].0, stats[0].1, stats[1].0, stats[1].1,
-                                           stats[2].0, stats[2].1, stats[3].0, stats[3].1);
-                            sw.remove_all();
-                        }
-                    }
-                    if self.config.record_value_ver {
-                        if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
-                            pf_info!("ver of {} @ {} ms is {}",
-                                              key,
-                                              Instant::now()
-                                                .duration_since(self.startup_time)
-                                                .as_millis(),
-                                              ver);
-                        }
-                    }
-                    if self.config.record_size_recv {
-                        for (peer, recv) in &mut self.bw_accumulators {
-                            pf_info!("bw period bytes recv <- {} : {}", peer, recv);
-                            *recv = 0;
-                        }
                     }
                 },
 

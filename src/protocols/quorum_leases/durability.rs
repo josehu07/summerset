@@ -134,10 +134,6 @@ impl QuorumLeasesReplica {
             self.handle_msg_accept_reply(
                 self.id, slot, inst.bal, grant_set, None,
             )?;
-            // [for perf breakdown only]
-            if let Some(sw) = self.bd_stopwatch.as_mut() {
-                let _ = sw.record_now(slot, 1, None);
-            }
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
@@ -148,11 +144,7 @@ impl QuorumLeasesReplica {
                         slot,
                         ballot: inst.bal,
                         grant_set: grant_set.clone(),
-                        reply_ts: if self.config.record_breakdown {
-                            Some(SystemTime::now())
-                        } else {
-                            None
-                        },
+                        reply_ts: None,
                     },
                     source,
                 )?;

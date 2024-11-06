@@ -6,7 +6,7 @@ use crate::server::LeaseAction;
 
 // MultiPaxosReplica lease-related actions logic
 impl MultiPaxosReplica {
-    /// Checks if I'm a stable majority-leased leader.
+    /// Checks if I'm a stable, majority-leased, up-to-date leader.
     #[inline]
     pub(super) fn is_stable_leader(&self) -> bool {
         self.is_leader()

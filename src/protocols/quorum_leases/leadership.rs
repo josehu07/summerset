@@ -1,4 +1,4 @@
-//! QuorumLeases -- leader election.
+//! QuorumLeases -- leader election & heartbeats.
 
 use super::*;
 
@@ -6,7 +6,7 @@ use crate::manager::CtrlMsg;
 use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-// QuorumLeasesReplica leadership related logic
+// QuorumLeasesReplica heartbeats related logic
 impl QuorumLeasesReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
     pub(super) async fn check_leader(
@@ -67,7 +67,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Becomes a leader, sends self-initiated Prepare messages to followers
-    /// for all in-progress instances, and starts broadcasting heartbeats.
+    /// for all in-progress instances.
     pub(super) async fn become_a_leader(
         &mut self,
     ) -> Result<(), SummersetError> {
