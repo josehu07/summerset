@@ -107,15 +107,16 @@ type Ballot = u64;
 enum Status {
     Null = 0,
     Preparing = 1,
-    Accepting = 2,
-    Committed = 3,
-    Executed = 4,
+    PreAccepting = 2,
+    Accepting = 3,
+    Committed = 4,
+    Executed = 5,
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
 type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
-/// Leader-side bookkeeping info for each instance initiated.
+/// Command leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
