@@ -191,6 +191,30 @@ impl MultiPaxosReplica {
                 }
 
                 self.commit_bar += 1;
+
+                // if the end of my log has been committed
+                if self.commit_bar == self.start_slot + self.insts.len() {
+                    // if I'm the leader and urgent CommitNotice is on,
+                    // broadcast CommitNotice messages
+                    if self.is_leader()
+                        && self.bal_prepared > 0
+                        && self.bal_prepared == self.bal_max_seen
+                        && self.config.urgent_commit_notice
+                    {
+                        self.transport_hub.bcast_msg(
+                            PeerMsg::CommitNotice {
+                                ballot: self.bal_max_seen,
+                                commit_bar: self.commit_bar,
+                            },
+                            None,
+                        )?;
+                        pf_trace!(
+                            "broadcast CommitNotice messages at bal {} commit_bar {}",
+                            self.bal_max_seen,
+                            self.commit_bar
+                        );
+                    }
+                }
             }
         }
 

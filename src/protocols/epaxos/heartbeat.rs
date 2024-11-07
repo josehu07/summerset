@@ -105,7 +105,7 @@ impl EPaxosReplica {
             }
 
             inst.bal = self.bal_prep_sent;
-            inst.status = Status::Preparing;
+            inst.status = Status::ExpPreparing;
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot,
                 endprep_slot,
@@ -116,7 +116,7 @@ impl EPaxosReplica {
 
             // record update to largest prepare ballot
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Preparing),
+                Self::make_log_action_id(slot, Status::ExpPreparing),
                 LogAction::Append {
                     entry: WalEntry::PrepareBal {
                         slot,

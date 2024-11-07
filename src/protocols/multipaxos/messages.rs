@@ -502,6 +502,9 @@ impl MultiPaxosReplica {
                 )
                 .await
             }
+            PeerMsg::CommitNotice { ballot, commit_bar } => {
+                self.heard_commit_notice(peer, ballot, commit_bar)
+            }
         }
     }
 }

@@ -81,6 +81,9 @@ pub struct ReplicaConfigMultiPaxos {
     /// Enable nearest majority quorum read optimization?
     pub enable_quorum_reads: bool,
 
+    /// Enable promptive CommitNotice sending for committed instances?
+    pub urgent_commit_notice: bool,
+
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -122,6 +125,7 @@ impl Default for ReplicaConfigMultiPaxos {
             lease_expire_ms: 2000, // need proper hb settings if leasing
             enable_leader_leases: false,
             enable_quorum_reads: false,
+            urgent_commit_notice: false,
             snapshot_path: "/tmp/summerset.multipaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -347,6 +351,9 @@ enum PeerMsg {
         /// For conservative snapshotting purpose.
         snap_bar: usize,
     },
+
+    /// Promptive notification of commits from leader to replicas.
+    CommitNotice { ballot: Ballot, commit_bar: usize },
 }
 
 /// MultiPaxos server replica module.
@@ -590,10 +597,11 @@ impl GenericReplica for MultiPaxosReplica {
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
                                     lease_expire_ms, enable_leader_leases,
-                                    enable_quorum_reads, snapshot_path,
-                                    snapshot_interval_s, msg_chunk_size,
-                                    record_breakdown, record_value_ver,
-                                    record_size_recv, sim_read_lease)?;
+                                    enable_quorum_reads, urgent_commit_notice,
+                                    snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size, record_breakdown,
+                                    record_value_ver, record_size_recv,
+                                    sim_read_lease)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",

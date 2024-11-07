@@ -28,8 +28,8 @@ PROTOCOLS_NAME_CONFIGS = {
     "LeaderLs": (
         "MultiPaxos",
         [
-            "enable_leader_leases=true",
             "lease_expire_ms=2000",
+            "enable_leader_leases=true",
         ],
         [],
     ),
@@ -37,6 +37,7 @@ PROTOCOLS_NAME_CONFIGS = {
         "MultiPaxos",
         [
             "enable_quorum_reads=true",
+            "urgent_commit_notice=true",
         ],
         [
             "enable_quorum_reads=true",
@@ -46,9 +47,10 @@ PROTOCOLS_NAME_CONFIGS = {
     "LeaderLsPQR": (
         "MultiPaxos",
         [
-            "enable_leader_leases=true",
             "lease_expire_ms=2000",
+            "enable_leader_leases=true",
             "enable_quorum_reads=true",
+            "urgent_commit_notice=true",
         ],
         [
             "enable_quorum_reads=true",
@@ -58,8 +60,9 @@ PROTOCOLS_NAME_CONFIGS = {
     "QuorumLeases": (
         "QuorumLeases",
         [
-            "enable_leader_leases=true",
             "lease_expire_ms=2000",
+            "enable_leader_leases=true",
+            "urgent_commit_notice=true",
         ],
         [
             "near_server_id=0",  # placeholder; set by distr_clients.py

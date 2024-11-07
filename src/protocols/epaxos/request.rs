@@ -23,8 +23,12 @@ impl EPaxosReplica {
         {
             // compute the dependencies set of this request batch and proper
             // sequence number
-            let ballot = self.my_default_ballot();
-            let deps = self.identify_deps(&req_batch);
+            let ballot = Self::make_default_ballot(self.id);
+            let deps = Self::identify_deps(
+                &req_batch,
+                self.population,
+                &self.highest_cols,
+            );
             let seq = 1 + self.max_seq_num(&deps);
 
             let inst = &mut self.insts[row][col - self.start_col];
@@ -43,9 +47,9 @@ impl EPaxosReplica {
                 pre_accept_acks: Bitmap::new(self.population, false),
                 pre_accept_replies: vec![],
                 accept_acks: Bitmap::new(self.population, false),
-                prepare_acks: Bitmap::new(self.population, false),
-                prepare_max_bal: 0,
-                prepare_voteds: vec![],
+                exp_prepare_acks: Bitmap::new(self.population, false),
+                exp_prepare_max_bal: 0,
+                exp_prepare_voteds: vec![],
             });
             inst.external = true;
         }
@@ -55,7 +59,7 @@ impl EPaxosReplica {
         inst.status = Status::PreAccepting;
         pf_debug!("enter PreAccept phase for slot {} bal {}", slot, inst.bal);
 
-        // record update to largest accepted ballot and corresponding data
+        // record update to instance status & data
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::PreAccepting),
             LogAction::Append {
@@ -77,7 +81,7 @@ impl EPaxosReplica {
             inst.deps,
         );
 
-        // send Accept messages to all peers
+        // broadcast PreAccept messages to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::PreAccept {
                 slot,

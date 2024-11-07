@@ -22,7 +22,6 @@ use std::net::SocketAddr;
 use std::ops;
 use std::path::Path;
 use std::slice;
-use std::time::SystemTime;
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -69,9 +68,6 @@ pub struct ReplicaConfigEPaxos {
     /// Disable heartbeat timer (to force a deterministic leader during tests).
     pub disable_hb_timer: bool,
 
-    /// Enable promptive CommitNotice sending for committed instances?
-    pub urgent_commit_notice: bool,
-
     /// Path to snapshot file.
     pub snapshot_path: String,
 
@@ -95,7 +91,6 @@ impl Default for ReplicaConfigEPaxos {
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
-            urgent_commit_notice: false,
             snapshot_path: "/tmp/summerset.epaxos.snap".into(),
             snapshot_interval_s: 0,
             msg_chunk_size: 10,
@@ -107,13 +102,15 @@ impl Default for ReplicaConfigEPaxos {
 type Ballot = u64;
 
 /// Sequence number type for PreAccepts. Use 0 as a dummy number.
-pub(super) type SeqNum = u64;
+type SeqNum = u64;
 
 /// Dependency set type with the assumption that, since dependencies here are
 /// naturally transitive, we just need to record the highest interfering column
 /// index for each row.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(super) struct DepSet(Vec<Option<usize>>); // length always == population
+#[derive(
+    Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, GetSize,
+)]
+struct DepSet(Vec<Option<usize>>); // length always == population
 
 /// Instance status enum.
 #[derive(
@@ -121,11 +118,10 @@ pub(super) struct DepSet(Vec<Option<usize>>); // length always == population
 )]
 enum Status {
     Null = 0,
-    Preparing = 1,
-    PreAccepting = 2,
-    Accepting = 3,
-    Committed = 4,
-    Executed = 5,
+    PreAccepting = 1,
+    Accepting = 2,
+    Committed = 3,
+    Executed = 4,
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
@@ -144,13 +140,13 @@ struct LeaderBookkeeping {
     accept_acks: Bitmap,
 
     /// Replicas from which I have received ExpPrepare confirmations.
-    prepare_acks: Bitmap,
+    exp_prepare_acks: Bitmap,
 
     /// Max ballot among received ExpPrepare replies.
-    prepare_max_bal: Ballot,
+    exp_prepare_max_bal: Ballot,
 
     /// The set of ExpPrepare replies with the highest ballot number.
-    prepare_voteds: Vec<(SeqNum, DepSet, ReqBatch)>,
+    exp_prepare_voteds: Vec<(SeqNum, DepSet, ReqBatch)>,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -242,7 +238,13 @@ enum WalEntry {
     },
 
     /// Records an event of committing the instance at index.
-    CommitSlot { slot: SlotIdx },
+    CommitSlot {
+        slot: SlotIdx,
+        ballot: Ballot,
+        seq: SeqNum,
+        deps: DepSet,
+        reqs: ReqBatch,
+    },
 }
 
 /// Snapshot file entry type.
@@ -301,13 +303,23 @@ enum PeerMsg {
     /// Slow-path Accept reply from replica to command leader.
     AcceptReply { slot: SlotIdx, ballot: Ballot },
 
+    /// Notification of commit from command leader to replicas.
+    CommitNotice {
+        slot: SlotIdx,
+        ballot: Ballot,
+        seq: SeqNum,
+        deps: DepSet,
+        reqs: ReqBatch,
+    },
+
     /// ExpPrepare message from replica that suspects a failure to others.
     ExpPrepare { slot: SlotIdx, ballot: Ballot },
 
     /// ExpPrepare reply from replica to sender.
     ExpPrepareReply {
         slot: SlotIdx,
-        /// Highest ballot seen before the one in ExpPrepare.
+        ballot: Ballot,
+        /// Highest ballot *accepted* before the one in ExpPrepare.
         voted_bal: Ballot,
         // My knowledge of the instance:
         voted_seq: SeqNum,
@@ -327,9 +339,6 @@ enum PeerMsg {
         /// For conservative snapshotting purpose.
         snap_bar: usize,
     },
-
-    /// Promptive notification of commit from command leader to replicas.
-    CommitNotice { slot: SlotIdx, ballot: Ballot },
 }
 
 /// EPaxos server replica module.
@@ -449,22 +458,22 @@ impl EPaxosReplica {
         SlotIdx(row as ReplicaId, self.start_col + self.insts[row].len() - 1)
     }
 
-    /// Returns the default ballot number I'll use.
-    #[inline]
-    fn my_default_ballot(&self) -> Ballot {
-        self.make_unique_ballot(0)
-    }
-
     /// Compose a unique ballot number from base.
     #[inline]
-    fn make_unique_ballot(&self, base: u64) -> Ballot {
-        ((base << 8) | ((self.id + 1) as u64)) as Ballot
+    fn make_unique_ballot(id: ReplicaId, base: u64) -> Ballot {
+        ((base << 8) | ((id + 1) as u64)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
     #[inline]
-    fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
-        self.make_unique_ballot((bal >> 8) + 1)
+    fn make_greater_ballot(id: ReplicaId, bal: Ballot) -> Ballot {
+        Self::make_unique_ballot(id, (bal >> 8) + 1)
+    }
+
+    /// Returns the default ballot number for replica ID
+    #[inline]
+    fn make_default_ballot(id: ReplicaId) -> Ballot {
+        Self::make_unique_ballot(id, 0)
     }
 
     /// Compose LogActionId from slot index & entry type.
@@ -536,8 +545,8 @@ impl GenericReplica for EPaxosReplica {
                                     backer_path, logger_sync,
                                     hb_hear_timeout_min, hb_hear_timeout_max,
                                     hb_send_interval_ms, disable_hb_timer,
-                                    urgent_commit_notice, snapshot_path,
-                                    snapshot_interval_s, msg_chunk_size)?;
+                                    snapshot_path, snapshot_interval_s,
+                                    msg_chunk_size)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",

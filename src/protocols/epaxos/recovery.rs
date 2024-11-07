@@ -75,15 +75,35 @@ impl EPaxosReplica {
                 );
             }
 
-            WalEntry::CommitSlot { slot } => {
+            WalEntry::CommitSlot {
+                slot,
+                ballot,
+                seq,
+                deps,
+                reqs,
+            } => {
                 let (row, col) = slot.unpack();
                 if col < self.start_col {
                     return Ok(()); // ignore if slot index outdated
                 }
-                debug_assert!(col < self.start_col + self.insts[row].len());
-                // update instance status
-                self.insts[row][col - self.start_col].status =
-                    Status::Committed;
+                // locate instance in memory, filling in null instances if needed
+                while self.start_col + self.insts.len() <= col {
+                    let inst = self.null_instance();
+                    self.insts[row].push(inst);
+                }
+                // update instance state
+                let inst = &mut self.insts[row][col - self.start_col];
+                inst.bal = ballot;
+                inst.status = Status::Committed;
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs = reqs;
+                Self::refresh_highest_cols(
+                    slot,
+                    &inst.reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
                 // submit commands in contiguously committed instance to the
                 // state machine
                 if col == self.commit_bars[row] {

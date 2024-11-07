@@ -8,14 +8,14 @@ impl fmt::Display for DepSet {
         let mut first_idx = true;
         for c in &self.0 {
             if !first_idx {
-                write!(f, ", ")?;
+                write!(f, ",")?;
             } else {
                 first_idx = false;
             }
             if let Some(c) = c {
                 write!(f, "{}", c)?;
             } else {
-                write!(f, "-")?;
+                write!(f, "_")?;
             }
         }
         write!(f, "]")
@@ -87,7 +87,45 @@ impl DepSet {
 
 // EPaxosReplica dependencies set helpers
 impl EPaxosReplica {
-    /// Update the highest_cols tracking info given a new request batch about
+    /// Computes the maximum sequence number of a dependencies set.
+    pub(super) fn max_seq_num(&self, deps: &DepSet) -> SeqNum {
+        debug_assert_eq!(deps.len(), self.population);
+        deps.iter()
+            .enumerate()
+            .filter_map(|(r, c)| {
+                if let Some(c) = c {
+                    Some(self.insts[r][*c].seq)
+                } else {
+                    None
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Identifies the dependencies set of a request batch based my current
+    /// instance space state.
+    pub(super) fn identify_deps(
+        reqs: &ReqBatch,
+        population: u8,
+        highest_cols: &HashMap<String, DepSet>,
+    ) -> DepSet {
+        let mut deps = DepSet::empty(population);
+        for (_, req) in reqs {
+            if let ApiRequest::Req {
+                cmd: Command::Put { key, .. },
+                ..
+            } = req
+            {
+                if let Some(cols) = highest_cols.get(key) {
+                    deps.union(cols);
+                }
+            }
+        }
+        deps
+    }
+
+    /// Updates the highest_cols tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_cols(
         slot: SlotIdx,
@@ -118,37 +156,51 @@ impl EPaxosReplica {
         }
     }
 
-    /// Identify the dependencies set of a request batch based my current
-    /// instance space state.
-    pub(super) fn identify_deps(&self, req_batch: &ReqBatch) -> DepSet {
-        let mut deps = DepSet::empty(self.population);
-        for (_, req) in req_batch {
-            if let ApiRequest::Req {
-                cmd: Command::Put { key, .. },
-                ..
-            } = req
-            {
-                if let Some(cols) = self.highest_cols.get(key) {
-                    deps.union(cols);
-                }
-            }
+    /// Checks the fast-path quorum eligibility for a set of received
+    /// PreAccept replies. Returns:
+    ///   - `None` if can't decide yet
+    ///   - `Some(true)` if conflict-free fast quorum formed
+    ///   - `Some(false)` if fast quorum impossible
+    pub(super) fn fast_quorum_eligibility(
+        leader_bk: &LeaderBookkeeping,
+        population: u8,
+        super_quorum_cnt: u8,
+    ) -> Option<bool> {
+        let mut repeats = HashMap::new();
+        for reply in leader_bk.pre_accept_replies.iter().cloned() {
+            *repeats.entry(reply).or_insert(0) += 1;
         }
-        deps
+        let max_cnt = repeats.into_values().max().unwrap_or(0) as u8;
+        let all_cnt = leader_bk.pre_accept_acks.count();
+        debug_assert!(super_quorum_cnt <= population);
+        debug_assert!(all_cnt <= population);
+        debug_assert!(max_cnt <= all_cnt);
+
+        if max_cnt >= super_quorum_cnt {
+            Some(true)
+        } else if max_cnt + (population - all_cnt) < super_quorum_cnt {
+            Some(false)
+        } else {
+            None
+        }
     }
 
-    /// Compute the maximum sequence number of a dependencies set.
-    pub(super) fn max_seq_num(&self, deps: &DepSet) -> SeqNum {
-        debug_assert_eq!(deps.len(), self.population);
-        deps.iter()
-            .enumerate()
-            .filter_map(|(r, c)| {
-                if let Some(c) = c {
-                    Some(self.insts[r][*c].seq)
-                } else {
-                    None
-                }
-            })
-            .max()
-            .unwrap_or(0)
+    /// Checks the set of highest-ballot ExpPrepare replies and returns the
+    /// proper next phase to run. Returns `None` if can't decide yet, otherwise
+    /// returns:
+    ///   - `Status::Committed` if can commit
+    ///   - `Status::Accepting` if need slow-path Accept
+    ///   - `Status::PreAccepting` if need to start over from PreAccept
+    /// Also returns the instance state to feed into the next phase.
+    pub(super) fn exp_prepare_next_step(
+        row: ReplicaId,
+        leader_bk: &LeaderBookkeeping,
+        simple_quorum_cnt: u8,
+    ) -> Option<(Status, SeqNum, DepSet, ReqBatch)> {
+        if leader_bk.exp_prepare_acks.count() < simple_quorum_cnt {
+            return None;
+        }
+
+        None
     }
 }

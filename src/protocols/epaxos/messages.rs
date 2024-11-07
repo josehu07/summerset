@@ -9,320 +9,324 @@ use crate::utils::SummersetError;
 
 // EPaxosReplica peer-peer messages handling
 impl EPaxosReplica {
-    /// Handler of Prepare message from leader.
-    async fn handle_msg_prepare(
+    /// Handler of PreAccept message from command leader.
+    fn handle_msg_pre_accept(
         &mut self,
         peer: ReplicaId,
-        trigger_slot: usize,
+        slot: SlotIdx,
         ballot: Ballot,
+        mut seq: SeqNum,
+        mut deps: DepSet,
+        reqs: ReqBatch,
     ) -> Result<(), SummersetError> {
-        if trigger_slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received Prepare <- {} trigger_slot {} bal {}",
+            "received PreAccept <- {} for slot {} bal {} seq {} deps {}",
             peer,
-            trigger_slot,
-            ballot
+            slot,
+            ballot,
+            seq,
+            deps
         );
 
-        // if ballot is not smaller than what I have seen:
-        if ballot >= self.bal_max_seen {
-            // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot).await?;
-            if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
-            }
+        // locate instance in memory, filling in null instances if needed
+        while self.start_col + self.insts[row].len() <= col {
+            let inst = self.null_instance();
+            self.insts[row].push(inst);
+        }
+        let inst_bal = self.insts[row][col - self.start_col].bal;
 
-            // locate instance in memory, filling in null instances if needed
-            while self.start_slot + self.insts.len() <= trigger_slot {
-                self.insts.push(self.null_instance());
-            }
+        // if ballot is up-to-date:
+        if ballot >= inst_bal {
+            // update seq and deps according to my knowledge
+            deps.union(&Self::identify_deps(
+                &reqs,
+                self.population,
+                &self.highest_cols,
+            ));
+            seq = seq.max(1 + self.max_seq_num(&deps));
 
-            // find the last non-null slot and use as endprep_slot; if none
-            // found, use trigger_slot as a dummy entry
-            let endprep_slot = cmp::max(
-                self.start_slot
-                    + self
-                        .insts
-                        .iter()
-                        .rposition(|i| i.status > Status::Null)
-                        .unwrap_or(0),
-                trigger_slot,
+            let inst = &mut self.insts[row][col - self.start_col];
+            inst.bal = ballot;
+            inst.status = Status::PreAccepting;
+            inst.seq = seq;
+            inst.deps = deps.clone();
+            inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_cols(
+                slot,
+                &reqs,
+                self.population,
+                &mut self.highest_cols,
             );
-
-            // react to this Prepare for all slots >= trigger_slot
-            for slot in trigger_slot..=endprep_slot {
-                let inst = &mut self.insts[slot - self.start_slot];
-                debug_assert!(inst.bal <= ballot);
-
-                inst.bal = ballot;
-                inst.status = Status::Preparing;
-                inst.replica_bk = Some(ReplicaBookkeeping {
-                    source: peer,
-                    trigger_slot,
-                    endprep_slot,
-                });
-
-                // record update to largest prepare ballot
-                self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Preparing),
-                    LogAction::Append {
-                        entry: WalEntry::PrepareBal { slot, ballot },
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                pf_trace!(
-                    "submitted PrepareBal log action for slot {} bal {}",
-                    slot,
-                    ballot
-                );
+            if let Some(replica_bk) = inst.replica_bk.as_mut() {
+                replica_bk.source = peer;
+            } else {
+                inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
             }
+
+            //  record update to instance status & data
+            self.storage_hub.submit_action(
+                Self::make_log_action_id(slot, Status::PreAccepting),
+                LogAction::Append {
+                    entry: WalEntry::PreAcceptSlot {
+                        slot,
+                        ballot,
+                        seq,
+                        deps,
+                        reqs,
+                    },
+                    sync: self.config.logger_sync,
+                },
+            )?;
+            pf_trace!(
+                "submitted PreAcceptSlot log action for slot {} bal {} seq {} deps {}",
+                slot,
+                ballot,
+                inst.seq,
+                inst.deps
+            );
         }
 
         Ok(())
     }
 
-    /// Handler of Prepare reply from replica.
-    pub(super) fn handle_msg_prepare_reply(
+    /// Handler of PreAccept reply from replica.
+    pub(super) fn handle_msg_pre_accept_reply(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
-        trigger_slot: usize,
-        endprep_slot: usize,
+        slot: SlotIdx,
         ballot: Ballot,
-        voted: Option<(Ballot, ReqBatch)>,
+        seq: SeqNum,
+        deps: DepSet,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received PrepareReply <- {} for slot {} / {} bal {}",
+            "received PreAcceptReply <- {} for slot {} bal {} seq {} deps {}",
             peer,
             slot,
-            endprep_slot,
-            ballot
+            ballot,
+            seq,
+            deps
         );
 
-        // if ballot is what I'm currently waiting on for Prepare replies:
-        if ballot == self.bal_prep_sent {
-            // ignore spurious duplications and outdated replies
-            if !self.is_leader() {
-                return Ok(());
-            }
-            debug_assert!(slot >= trigger_slot && slot <= endprep_slot);
-            debug_assert!(
-                trigger_slot >= self.start_slot
-                    && trigger_slot < self.start_slot + self.insts.len()
-            );
-            if self.insts[trigger_slot - self.start_slot]
-                .leader_bk
-                .is_none()
-            {
-                return Ok(());
-            }
+        // ignore spurious duplications and outdated replies
+        if col >= self.start_col + self.insts[row].len() {
+            return Ok(());
+        }
+        let inst = &mut self.insts[row][col - self.start_col];
+        if inst.status != Status::PreAccepting
+            || inst.bal != ballot
+            || inst.leader_bk.is_none()
+        {
+            return Ok(());
+        }
+        let leader_bk = inst.leader_bk.as_mut().unwrap();
+        if leader_bk.pre_accept_acks.get(peer)? {
+            return Ok(());
+        }
 
-            // locate instance in memory, filling in null instance if needed
-            // if slot is outside the tail of my current log, this means I did
-            // not know at `become_leader()` that this slot existed on peers
-            let my_endprep_slot = self.insts[trigger_slot - self.start_slot]
-                .leader_bk
-                .as_ref()
-                .unwrap()
-                .endprep_slot;
-            while self.start_slot + self.insts.len() <= slot {
-                let this_slot = self.start_slot + self.insts.len();
-                self.insts.push(self.null_instance());
-                let inst = &mut self.insts[this_slot - self.start_slot];
+        // bookkeep this PreAccept reply
+        leader_bk.pre_accept_replies.push((seq, deps.clone()));
+        leader_bk.pre_accept_acks.set(peer, true)?;
 
-                // since this slot was not known at `become_leader()`, need to
-                // fill necessary information here and make durable
-                inst.external = true;
-                inst.bal = self.bal_prep_sent;
-                inst.status = Status::Preparing;
-                inst.leader_bk = Some(LeaderBookkeeping {
-                    trigger_slot,
-                    endprep_slot: my_endprep_slot,
-                    prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
-                    accept_acks: Bitmap::new(self.population, false),
-                });
+        // check the set of replies received so far:
+        // NOTE: move the start-phase blocks into common helper functions
+        match Self::fast_quorum_eligibility(
+            leader_bk,
+            self.population,
+            self.super_quorum_cnt,
+        ) {
+            Some(true) => {
+                // fast quorum size reached and has enough non-conflicting replies,
+                // mark this instance as committed
+                inst.status = Status::Committed;
+                pf_debug!(
+                    "committed instance at slot {} bal {} fast path",
+                    slot,
+                    inst.bal
+                );
 
-                // record update to largest prepare ballot
+                // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(this_slot, Status::Preparing),
+                    Self::make_log_action_id(slot, Status::Committed),
                     LogAction::Append {
-                        entry: WalEntry::PrepareBal {
-                            slot: this_slot,
-                            ballot: self.bal_prep_sent,
+                        entry: WalEntry::CommitSlot {
+                            slot,
+                            ballot: inst.bal,
+                            seq: inst.seq,
+                            deps: inst.deps.clone(),
+                            reqs: inst.reqs.clone(),
                         },
                         sync: self.config.logger_sync,
                     },
                 )?;
                 pf_trace!(
-                    "submitted PrepareBal log action for slot {} bal {}",
-                    this_slot,
-                    inst.bal
+                    "submitted CommitSlot log action for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps
+                );
+
+                // broadcast CommitNotice messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::CommitNotice {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs: inst.reqs.clone(),
+                    },
+                    None,
+                )?;
+                pf_trace!(
+                    "broadcast CommitNotice messages for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
                 );
             }
 
-            {
-                let inst = &mut self.insts[slot - self.start_slot];
+            Some(false) => {
+                // enough replies received such that the fast-path commit condition
+                // will never be reached; initiate slow-path Accepts directly
+                inst.status = Status::Accepting;
+                pf_debug!(
+                    "enter Accept phase for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
 
-                // ignore spurious duplications and outdated replies
-                if (inst.status != Status::Preparing) || (ballot < inst.bal) {
-                    return Ok(());
+                // take union of all deps from all replies
+                for (rseq, rdeps) in leader_bk.pre_accept_replies.iter() {
+                    inst.deps.union(rdeps);
+                    inst.seq = inst.seq.max(*rseq);
                 }
-                debug_assert_eq!(inst.bal, ballot);
-                debug_assert!(self.bal_max_seen >= ballot);
 
-                // bookkeep this Prepare reply
-                if let Some((bal, val)) = voted {
-                    debug_assert!(inst.leader_bk.is_some());
-                    let leader_bk = inst.leader_bk.as_mut().unwrap();
-                    if bal > leader_bk.prepare_max_bal {
-                        leader_bk.prepare_max_bal = bal;
-                        inst.reqs = val;
-                    }
-                }
+                // record update to instance status & data
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogAction::Append {
+                        entry: WalEntry::AcceptSlot {
+                            slot,
+                            ballot,
+                            seq: inst.seq,
+                            deps: inst.deps.clone(),
+                            reqs: inst.reqs.clone(),
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(
+                    "submitted AcceptSlot log action for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps
+                );
+
+                // broadcast Accept messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs: inst.reqs.clone(),
+                    },
+                    None,
+                )?;
+                pf_trace!(
+                    "broadcast Accept messages for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
+                );
             }
 
-            // if all PrepareReplies up to endprep_slot have been received,
-            // include the sender peer into the quorum (by updating the
-            // prepare_acks field in the trigger_slot entry)
-            if slot == endprep_slot {
-                let trigger_inst =
-                    &mut self.insts[trigger_slot - self.start_slot];
-                debug_assert!(trigger_inst.leader_bk.is_some());
-                let trigger_leader_bk =
-                    trigger_inst.leader_bk.as_mut().unwrap();
-                trigger_leader_bk.prepare_acks.set(peer, true)?;
-
-                // if quorum size reached, enter Accept phase for all instances
-                // at and after trigger_slot; for each entry, use the request
-                // batch value with the highest ballot number in quorum
-                if trigger_leader_bk.prepare_acks.count() >= self.quorum_cnt {
-                    // update bal_prepared
-                    debug_assert!(self.bal_prepared <= ballot);
-                    self.bal_prepared = ballot;
-
-                    for (this_slot, inst) in self
-                        .insts
-                        .iter_mut()
-                        .enumerate()
-                        .map(|(s, i)| (self.start_slot + s, i))
-                        .skip(trigger_slot - self.start_slot)
-                        .filter(|(_, i)| i.status == Status::Preparing)
-                    {
-                        inst.status = Status::Accepting;
-                        pf_debug!(
-                            "enter Accept phase for slot {} bal {}",
-                            this_slot,
-                            inst.bal
-                        );
-
-                        // record update to largest accepted ballot and its
-                        // corresponding data
-                        self.storage_hub.submit_action(
-                            Self::make_log_action_id(
-                                this_slot,
-                                Status::Accepting,
-                            ),
-                            LogAction::Append {
-                                entry: WalEntry::AcceptData {
-                                    slot: this_slot,
-                                    ballot,
-                                    reqs: inst.reqs.clone(),
-                                },
-                                sync: self.config.logger_sync,
-                            },
-                        )?;
-                        pf_trace!(
-                            "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
-                        );
-
-                        // send Accept messages to all peers
-                        self.transport_hub.bcast_msg(
-                            PeerMsg::Accept {
-                                slot: this_slot,
-                                ballot,
-                                reqs: inst.reqs.clone(),
-                            },
-                            None,
-                        )?;
-                        pf_trace!(
-                            "broadcast Accept messages for slot {} bal {}",
-                            this_slot,
-                            ballot
-                        );
-                    }
-                }
-            }
+            None => {} // not enough information from replies yet
         }
 
         Ok(())
     }
 
-    /// Handler of Accept message from leader.
-    async fn handle_msg_accept(
+    /// Handler of Accept message from command leader.
+    fn handle_msg_accept(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
+        slot: SlotIdx,
         ballot: Ballot,
+        seq: SeqNum,
+        deps: DepSet,
         reqs: ReqBatch,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received Accept <- {} for slot {} bal {}",
+            "received Accept <- {} for slot {} bal {} seq {} deps {}",
             peer,
             slot,
-            ballot
+            ballot,
+            seq,
+            deps,
         );
 
-        // if ballot is not smaller than what I have made promises for:
-        if ballot >= self.bal_max_seen {
-            // update largest ballot seen and assumed leader
-            self.check_leader(peer, ballot).await?;
-            if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
-            }
+        // locate instance in memory, filling in null instances if needed
+        while self.start_col + self.insts[row].len() <= col {
+            let inst = self.null_instance();
+            self.insts[row].push(inst);
+        }
+        let inst = &mut self.insts[row][col - self.start_col];
 
-            // locate instance in memory, filling in null instances if needed
-            while self.start_slot + self.insts.len() <= slot {
-                self.insts.push(self.null_instance());
-            }
-            let inst = &mut self.insts[slot - self.start_slot];
-            debug_assert!(inst.bal <= ballot);
-
+        // if ballot is up-to-date:
+        if ballot >= inst.bal {
             inst.bal = ballot;
             inst.status = Status::Accepting;
+            inst.seq = seq;
+            inst.deps = deps.clone();
             inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_cols(
+                slot,
+                &reqs,
+                self.population,
+                &mut self.highest_cols,
+            );
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
-                inst.replica_bk = Some(ReplicaBookkeeping {
-                    source: peer,
-                    trigger_slot: 0,
-                    endprep_slot: 0,
-                });
+                inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
             }
 
-            // record update to instance ballot & data
-            inst.voted = (ballot, reqs.clone());
+            // record update to instance status & data
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
-                    entry: WalEntry::AcceptData { slot, ballot, reqs },
+                    entry: WalEntry::AcceptSlot {
+                        slot,
+                        ballot,
+                        seq,
+                        deps,
+                        reqs,
+                    },
                     sync: self.config.logger_sync,
                 },
             )?;
             pf_trace!(
-                "submitted AcceptData log action for slot {} bal {}",
+                "submitted AcceptSlot log action for slot {} bal {} seq {} deps {}",
                 slot,
-                ballot
+                ballot,
+                inst.seq,
+                inst.deps
             );
         }
 
@@ -333,49 +337,287 @@ impl EPaxosReplica {
     pub(super) fn handle_msg_accept_reply(
         &mut self,
         peer: ReplicaId,
-        slot: usize,
+        slot: SlotIdx,
         ballot: Ballot,
-        _reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
             "received AcceptReply <- {} for slot {} bal {}",
             peer,
             slot,
-            ballot
+            ballot,
         );
 
-        // if ballot is what I'm currently waiting on for Accept replies:
-        if ballot == self.bal_prepared {
-            debug_assert!(slot < self.start_slot + self.insts.len());
-            let is_leader = self.is_leader();
-            let inst = &mut self.insts[slot - self.start_slot];
+        // ignore spurious duplications and outdated replies
+        if col >= self.start_col + self.insts[row].len() {
+            return Ok(());
+        }
+        let inst = &mut self.insts[row][col - self.start_col];
+        if inst.status != Status::Accepting
+            || inst.bal != ballot
+            || inst.leader_bk.is_none()
+        {
+            return Ok(());
+        }
+        let leader_bk = inst.leader_bk.as_mut().unwrap();
+        if leader_bk.accept_acks.get(peer)? {
+            return Ok(());
+        }
 
-            // ignore spurious duplications and outdated replies
-            if !is_leader
-                || (inst.status != Status::Accepting)
-                || (ballot < inst.bal)
-            {
-                return Ok(());
-            }
-            debug_assert_eq!(inst.bal, ballot);
-            debug_assert!(self.bal_max_seen >= ballot);
-            debug_assert!(inst.leader_bk.is_some());
-            let leader_bk = inst.leader_bk.as_mut().unwrap();
-            if leader_bk.accept_acks.get(peer)? {
-                return Ok(());
-            }
+        // bookkeep this Accept reply
+        leader_bk.accept_acks.set(peer, true)?;
 
-            // bookkeep this Accept reply
-            leader_bk.accept_acks.set(peer, true)?;
+        // if enough Accept replies received, mark this instance as Committed
+        if leader_bk.accept_acks.count() >= self.simple_quorum_cnt {
+            inst.status = Status::Committed;
+            pf_debug!(
+                "committed instance at slot {} bal {} slow path",
+                slot,
+                inst.bal
+            );
 
-            // if quorum size reached, mark this instance as committed
-            if leader_bk.accept_acks.count() >= self.quorum_cnt {
+            // record commit event
+            self.storage_hub.submit_action(
+                Self::make_log_action_id(slot, Status::Committed),
+                LogAction::Append {
+                    entry: WalEntry::CommitSlot {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs: inst.reqs.clone(),
+                    },
+                    sync: self.config.logger_sync,
+                },
+            )?;
+            pf_trace!(
+                "submitted CommitSlot log action for slot {} bal {} seq {} deps {}",
+                slot,
+                inst.bal,
+                inst.seq,
+                inst.deps
+            );
+
+            // broadcast CommitNotice messages to all peers
+            self.transport_hub.bcast_msg(
+                PeerMsg::CommitNotice {
+                    slot,
+                    ballot: inst.bal,
+                    seq: inst.seq,
+                    deps: inst.deps.clone(),
+                    reqs: inst.reqs.clone(),
+                },
+                None,
+            )?;
+            pf_trace!(
+                "broadcast CommitNotice messages for slot {} bal {} seq {} deps {}",
+                slot,
+                inst.bal,
+                inst.seq,
+                inst.deps,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handler of CommitNotice message from command leader.
+    fn handle_msg_commit_notice(
+        &mut self,
+        peer: ReplicaId,
+        slot: SlotIdx,
+        ballot: Ballot,
+        seq: SeqNum,
+        deps: DepSet,
+        reqs: ReqBatch,
+    ) -> Result<(), SummersetError> {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
+            return Ok(()); // ignore if slot index outdated
+        }
+        pf_trace!(
+            "received CommitNotice <- {} for slot {} bal {} seq {} deps {}",
+            peer,
+            slot,
+            ballot,
+            seq,
+            deps
+        );
+
+        // locate instance in memory, filling in null instances if needed
+        while self.start_col + self.insts[row].len() <= col {
+            let inst = self.null_instance();
+            self.insts[row].push(inst);
+        }
+        let inst_bal = self.insts[row][col - self.start_col].bal;
+
+        // if ballot is up-to-date
+        if ballot >= inst_bal {
+            let inst = &mut self.insts[row][col - self.start_col];
+            inst.bal = ballot;
+            inst.status = Status::Committed;
+            inst.seq = seq;
+            inst.deps = deps.clone();
+            inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_cols(
+                slot,
+                &reqs,
+                self.population,
+                &mut self.highest_cols,
+            );
+
+            // record commit event
+            self.storage_hub.submit_action(
+                Self::make_log_action_id(slot, Status::Committed),
+                LogAction::Append {
+                    entry: WalEntry::CommitSlot {
+                        slot,
+                        ballot: inst.bal,
+                        seq,
+                        deps: deps.clone(),
+                        reqs,
+                    },
+                    sync: self.config.logger_sync,
+                },
+            )?;
+            pf_trace!(
+                "submitted CommitSlot log action for slot {} bal {} seq {} deps {}",
+                slot,
+                inst.bal,
+                seq,
+                deps
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handler of ExpPrepare message from leader.
+    fn handle_msg_exp_prepare(
+        &mut self,
+        peer: ReplicaId,
+        slot: SlotIdx,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
+            return Ok(()); // ignore if slot index outdated
+        }
+        pf_trace!(
+            "received Prepare <- {} for slot {} bal {}",
+            peer,
+            slot,
+            ballot,
+        );
+
+        // locate instance in memory, filling in null instances if needed
+        while self.start_col + self.insts[row].len() <= col {
+            let inst = self.null_instance();
+            self.insts[row].push(inst);
+        }
+        let inst = &self.insts[row][col - self.start_col];
+
+        // if ballot is larger than what I've ever seen for this instance:
+        if ballot > inst.bal {
+            // send back ExpPrepare reply
+            self.transport_hub.send_msg(
+                PeerMsg::ExpPrepareReply {
+                    slot,
+                    ballot,
+                    voted_bal: inst.bal,
+                    voted_seq: inst.seq,
+                    voted_deps: inst.deps.clone(),
+                    voted_reqs: inst.reqs.clone(),
+                },
+                peer,
+            )?;
+            pf_trace!(
+                "sent ExpPrepareReply -> {} for slot {} bal {} seq {} deps {}",
+                peer,
+                slot,
+                inst.bal,
+                inst.seq,
+                inst.deps,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Handler of ExpPrepare reply from replica.
+    pub(super) fn handle_msg_exp_prepare_reply(
+        &mut self,
+        peer: ReplicaId,
+        slot: SlotIdx,
+        ballot: Ballot,
+        voted_bal: Ballot,
+        voted_seq: SeqNum,
+        voted_deps: DepSet,
+        voted_reqs: ReqBatch,
+    ) -> Result<(), SummersetError> {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
+            return Ok(()); // ignore if slot index outdated
+        }
+        pf_trace!(
+            "received ExpPrepareReply <- {} for slot {} bal {} seq {} deps {}",
+            peer,
+            slot,
+            voted_bal,
+            voted_seq,
+            voted_deps,
+        );
+
+        // ignore spurious duplications and outdated replies
+        debug_assert!(ballot > voted_bal);
+        if col >= self.start_col + self.insts[row].len() {
+            return Ok(());
+        }
+        let inst = &mut self.insts[row][col - self.start_col];
+        if ballot <= inst.bal || inst.leader_bk.is_none() {
+            return Ok(());
+        }
+        let leader_bk = inst.leader_bk.as_mut().unwrap();
+        if leader_bk.exp_prepare_acks.get(peer)? {
+            return Ok(());
+        }
+
+        // bookkeep this ExpPrepare reply
+        if voted_bal > leader_bk.exp_prepare_max_bal {
+            leader_bk.exp_prepare_voteds =
+                vec![(voted_seq, voted_deps, voted_reqs)];
+        } else if voted_bal == leader_bk.exp_prepare_max_bal {
+            leader_bk
+                .exp_prepare_voteds
+                .push((voted_seq, voted_deps, voted_reqs));
+        }
+        leader_bk.exp_prepare_acks.set(peer, true)?;
+
+        // check the set of replies with highest ballot received so far:
+        // NOTE: move the start-phase blocks into common helper functions
+        match Self::exp_prepare_next_step(
+            row as ReplicaId,
+            leader_bk,
+            self.simple_quorum_cnt,
+        ) {
+            Some((Status::Committed, seq, deps, reqs)) => {
+                // can commit this slot
+                inst.bal = ballot;
                 inst.status = Status::Committed;
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs.clone_from(&reqs);
+                Self::refresh_highest_cols(
+                    slot,
+                    &reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
                 pf_debug!(
-                    "committed instance at slot {} bal {}",
+                    "committed instance at slot {} bal {} by prepare",
                     slot,
                     inst.bal
                 );
@@ -384,16 +626,162 @@ impl EPaxosReplica {
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Committed),
                     LogAction::Append {
-                        entry: WalEntry::CommitSlot { slot },
+                        entry: WalEntry::CommitSlot {
+                            slot,
+                            ballot: inst.bal,
+                            seq: inst.seq,
+                            deps: inst.deps.clone(),
+                            reqs: reqs.clone(),
+                        },
                         sync: self.config.logger_sync,
                     },
                 )?;
                 pf_trace!(
-                    "submitted CommitSlot log action for slot {} bal {}",
+                    "submitted CommitSlot log action for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps
+                );
+
+                // broadcast CommitNotice messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::CommitNotice {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs,
+                    },
+                    None,
+                )?;
+                pf_trace!(
+                    "broadcast CommitNotice messages for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
+                );
+            }
+
+            Some((Status::Accepting, seq, deps, reqs)) => {
+                // need to run Accept phase
+                inst.bal = ballot;
+                inst.status = Status::Accepting;
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs.clone_from(&reqs);
+                Self::refresh_highest_cols(
+                    slot,
+                    &reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
+                pf_debug!(
+                    "enter Accept phase for slot {} bal {}",
                     slot,
                     inst.bal
                 );
+
+                // record update to instance status & data
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogAction::Append {
+                        entry: WalEntry::AcceptSlot {
+                            slot,
+                            ballot,
+                            seq: inst.seq,
+                            deps: inst.deps.clone(),
+                            reqs: reqs.clone(),
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(
+                    "submitted AcceptSlot log action for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps
+                );
+
+                // broadcast Accept messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs,
+                    },
+                    None,
+                )?;
+                pf_trace!(
+                    "broadcast Accept messages for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
+                );
             }
+
+            Some((Status::PreAccepting, seq, deps, reqs)) => {
+                // need to start over from PreAccept
+                inst.bal = ballot;
+                inst.status = Status::PreAccepting;
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs.clone_from(&reqs);
+                Self::refresh_highest_cols(
+                    slot,
+                    &reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
+
+                // record update to instance status & data
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::PreAccepting),
+                    LogAction::Append {
+                        entry: WalEntry::PreAcceptSlot {
+                            slot,
+                            ballot: inst.bal,
+                            seq: inst.seq,
+                            deps: inst.deps.clone(),
+                            reqs: reqs.clone(),
+                        },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(
+                    "submitted PreAcceptSlot log action for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
+                );
+
+                // broadcast PreAccept messages to all peers
+                self.transport_hub.bcast_msg(
+                    PeerMsg::PreAccept {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs,
+                    },
+                    None,
+                )?;
+                pf_trace!(
+                    "broadcast PreAccept messages for slot {} bal {} seq {} deps {}",
+                    slot,
+                    inst.bal,
+                    inst.seq,
+                    inst.deps,
+                );
+            }
+
+            _ => {} // not enough information from replies yet
         }
 
         Ok(())
@@ -406,43 +794,67 @@ impl EPaxosReplica {
         msg: PeerMsg,
     ) -> Result<(), SummersetError> {
         match msg {
-            PeerMsg::Prepare {
-                trigger_slot,
-                ballot,
-            } => self.handle_msg_prepare(peer, trigger_slot, ballot).await,
-            PeerMsg::PrepareReply {
+            PeerMsg::PreAccept {
                 slot,
-                trigger_slot,
-                endprep_slot,
                 ballot,
-                voted,
-            } => self.handle_msg_prepare_reply(
-                peer,
-                slot,
-                trigger_slot,
-                endprep_slot,
-                ballot,
-                voted,
-            ),
-            PeerMsg::Accept { slot, ballot, reqs } => {
-                self.handle_msg_accept(peer, slot, ballot, reqs).await
+                seq,
+                deps,
+                reqs,
+            } => {
+                self.handle_msg_pre_accept(peer, slot, ballot, seq, deps, reqs)
             }
-            PeerMsg::AcceptReply {
+            PeerMsg::PreAcceptReply {
                 slot,
                 ballot,
-                reply_ts,
-            } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
+                seq,
+                deps,
+            } => {
+                self.handle_msg_pre_accept_reply(peer, slot, ballot, seq, deps)
+            }
+            PeerMsg::Accept {
+                slot,
+                ballot,
+                seq,
+                deps,
+                reqs,
+            } => self.handle_msg_accept(peer, slot, ballot, seq, deps, reqs),
+            PeerMsg::AcceptReply { slot, ballot } => {
+                self.handle_msg_accept_reply(peer, slot, ballot)
+            }
+            PeerMsg::CommitNotice {
+                slot,
+                ballot,
+                seq,
+                deps,
+                reqs,
+            } => self
+                .handle_msg_commit_notice(peer, slot, ballot, seq, deps, reqs),
+            PeerMsg::ExpPrepare { slot, ballot } => {
+                self.handle_msg_exp_prepare(peer, slot, ballot)
+            }
+            PeerMsg::ExpPrepareReply {
+                slot,
+                ballot,
+                voted_bal,
+                voted_seq,
+                voted_deps,
+                voted_reqs,
+            } => self.handle_msg_exp_prepare_reply(
+                peer, slot, ballot, voted_bal, voted_seq, voted_deps,
+                voted_reqs,
+            ),
             PeerMsg::Heartbeat {
                 ballot,
-                commit_bar,
-                exec_bar,
+                commit_bars,
+                exec_bars,
                 snap_bar,
-            } => {
-                self.heard_heartbeat(
-                    peer, ballot, commit_bar, exec_bar, snap_bar,
-                )
-                .await
-            }
+            } => self.heard_heartbeat(
+                peer,
+                ballot,
+                commit_bars,
+                exec_bars,
+                snap_bar,
+            ),
         }
     }
 }

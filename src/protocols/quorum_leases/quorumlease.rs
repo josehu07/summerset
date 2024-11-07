@@ -171,18 +171,4 @@ impl QuorumLeasesReplica {
 
         Ok(false)
     }
-
-    /// React to a CommitNotice message from leader.
-    pub(super) fn heard_commit_notice(
-        &mut self,
-        peer: ReplicaId,
-        ballot: Ballot,
-        commit_bar: usize,
-    ) -> Result<(), SummersetError> {
-        if ballot == self.bal_max_seen {
-            self.advance_commit_bar(peer, commit_bar)?;
-        }
-
-        Ok(())
-    }
 }

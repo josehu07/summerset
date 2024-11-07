@@ -17,7 +17,7 @@ impl EPaxosReplica {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "finished PreAcceptSlot logging for slot {:?} bal {}",
+            "finished PreAcceptSlot logging for slot {} bal {}",
             slot,
             self.insts[row][col - self.start_col].bal
         );

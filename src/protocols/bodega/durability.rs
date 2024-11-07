@@ -184,6 +184,11 @@ impl BodegaReplica {
                         },
                         None,
                     )?;
+                    pf_trace!(
+                        "broadcast CommitNotice messages at bal {} commit_bar {}",
+                        self.bal_max_seen,
+                        self.commit_bar
+                    );
                 }
             }
         }
