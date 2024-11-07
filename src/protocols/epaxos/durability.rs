@@ -7,118 +7,95 @@ use crate::utils::SummersetError;
 
 // EPaxosReplica durable WAL logging
 impl EPaxosReplica {
-    /// Handler of PrepareBal logging result chan recv.
-    fn handle_logged_prepare_bal(
+    /// Handler of PreAcceptSlot logging result chan recv.
+    fn handle_logged_pre_accept_slot(
         &mut self,
-        slot: usize,
+        slot: SlotIdx,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "finished PrepareBal logging for slot {} bal {}",
+            "finished PreAcceptSlot logging for slot {:?} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            self.insts[row][col - self.start_col].bal
         );
-        let inst = &self.insts[slot - self.start_slot];
-        let voted = if inst.voted.0 > 0 {
-            Some(inst.voted.clone())
-        } else {
-            None
-        };
+        let inst = &self.insts[row][col - self.start_col];
 
-        if self.is_leader() {
-            // on leader, finishing the logging of a PrepareBal entry
-            // is equivalent to receiving a Prepare reply from myself
+        if let Some(LeaderBookkeeping { .. }) = inst.leader_bk {
+            // on command leader, finishing the logging of a PreAcceptSlot
+            // entry is equivalent to receiving a PreAccept reply from myself
             // (as an acceptor role)
-            if let Some(LeaderBookkeeping {
-                trigger_slot,
-                endprep_slot,
-                ..
-            }) = inst.leader_bk
-            {
-                if slot <= endprep_slot {
-                    self.handle_msg_prepare_reply(
-                        self.id,
-                        slot,
-                        trigger_slot,
-                        endprep_slot,
-                        inst.bal,
-                        voted,
-                    )?;
-                }
-            }
-        } else {
-            // on follower replica, finishing the logging of a
-            // PrepareBal entry leads to sending back a Prepare reply
-            if let Some(ReplicaBookkeeping {
-                source,
-                trigger_slot,
-                endprep_slot,
-            }) = inst.replica_bk
-            {
-                self.transport_hub.send_msg(
-                    PeerMsg::PrepareReply {
-                        slot,
-                        trigger_slot,
-                        endprep_slot,
-                        ballot: inst.bal,
-                        voted,
-                    },
-                    source,
-                )?;
-                pf_trace!(
-                    "sent PrepareReply -> {} for slot {} / {} bal {}",
-                    source,
+            self.handle_msg_pre_accept_reply(
+                self.id,
+                slot,
+                inst.bal,
+                inst.seq,
+                inst.deps.clone(),
+            )?;
+        } else if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            // on follower replica, finishing the logging of a PreAcceptSlot
+            // entry leads to sending back a PreAccept reply
+            self.transport_hub.send_msg(
+                PeerMsg::PreAcceptReply {
                     slot,
-                    endprep_slot,
-                    inst.bal
-                );
-            }
+                    ballot: inst.bal,
+                    seq: inst.seq,
+                    deps: inst.deps.clone(),
+                },
+                source,
+            )?;
+            pf_trace!(
+                "sent PreAcceptReply -> {} for slot {} bal {} seq {} deps {}",
+                source,
+                slot,
+                inst.bal,
+                inst.seq,
+                inst.deps,
+            );
         }
 
         Ok(())
     }
 
-    /// Handler of AcceptData logging result chan recv.
-    fn handle_logged_accept_data(
+    /// Handler of AcceptSlot logging result chan recv.
+    fn handle_logged_accept_slot(
         &mut self,
-        slot: usize,
+        slot: SlotIdx,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "finished AcceptData logging for slot {} bal {}",
+            "finished AcceptSlot logging for slot {} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            self.insts[row][col - self.start_col].bal
         );
-        let inst = &self.insts[slot - self.start_slot];
+        let inst = &self.insts[row][col - self.start_col];
 
-        if self.is_leader() {
-            // on leader, finishing the logging of an AcceptData entry
-            // is equivalent to receiving an Accept reply from myself
-            // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
-        } else {
-            // on follower replica, finishing the logging of an
-            // AcceptData entry leads to sending back an Accept reply
-            if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
-                self.transport_hub.send_msg(
-                    PeerMsg::AcceptReply {
-                        slot,
-                        ballot: inst.bal,
-                        reply_ts: None,
-                    },
-                    source,
-                )?;
-                pf_trace!(
-                    "sent AcceptReply -> {} for slot {} bal {}",
-                    source,
+        if let Some(LeaderBookkeeping { .. }) = inst.leader_bk {
+            // on command leader, finishing the logging of an AcceptSlot entry
+            // is equivalent to receiving an Accept reply from myself (as an
+            // acceptor role)
+            self.handle_msg_accept_reply(self.id, slot, inst.bal)?;
+        } else if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            // on follower replica, finishing the logging of an AcceptSlot
+            // entry leads to sending back an Accept reply
+            self.transport_hub.send_msg(
+                PeerMsg::AcceptReply {
                     slot,
-                    inst.bal
-                );
-            }
+                    ballot: inst.bal,
+                },
+                source,
+            )?;
+            pf_trace!(
+                "sent AcceptReply -> {} for slot {} bal {}",
+                source,
+                slot,
+                inst.bal
+            );
         }
 
         Ok(())
@@ -127,21 +104,24 @@ impl EPaxosReplica {
     /// Handler of CommitSlot logging result chan recv.
     fn handle_logged_commit_slot(
         &mut self,
-        slot: usize,
+        slot: SlotIdx,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
             "finished CommitSlot logging for slot {} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            self.insts[row][col - self.start_col].bal
         );
 
         // update index of the first non-committed instance
-        if slot == self.commit_bar {
-            while self.commit_bar < self.start_slot + self.insts.len() {
-                let inst = &mut self.insts[self.commit_bar - self.start_slot];
+        if col == self.commit_bars[row] {
+            while self.commit_bars[row] < self.start_col + self.insts[row].len()
+            {
+                let inst = &mut self.insts[row]
+                    [self.commit_bars[row] - self.start_col];
                 if inst.status < Status::Committed {
                     break;
                 }
@@ -151,24 +131,25 @@ impl EPaxosReplica {
                 if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
-                    for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
-                                cmd.clone(),
-                            )?;
-                        } else {
-                            continue; // ignore other types of requests
-                        }
-                    }
-                    pf_trace!(
-                        "submitted {} exec commands for slot {}",
-                        inst.reqs.len(),
-                        self.commit_bar
-                    );
+                    // FIXME: correct execution algo.
+                    // for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
+                    //     if let ApiRequest::Req { cmd, .. } = req {
+                    //         self.state_machine.submit_cmd(
+                    //             Self::make_command_id(self.commit_bar, cmd_idx),
+                    //             cmd.clone(),
+                    //         )?;
+                    //     } else {
+                    //         continue; // ignore other types of requests
+                    //     }
+                    // }
+                    // pf_trace!(
+                    //     "submitted {} exec commands for slot {}",
+                    //     inst.reqs.len(),
+                    //     self.commit_bar
+                    // );
                 }
 
-                self.commit_bar += 1;
+                self.commit_bars[row] += 1;
             }
         }
 
@@ -182,15 +163,16 @@ impl EPaxosReplica {
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
         let (slot, entry_type) = Self::split_log_action_id(action_id);
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
-        debug_assert!(slot < self.start_slot + self.insts.len());
+        debug_assert!(col < self.start_col + self.insts[row].len());
 
         if let LogResult::Append { now_size } = log_result {
             debug_assert!(now_size >= self.wal_offset);
             // update first wal_offset of slot
-            let inst = &mut self.insts[slot - self.start_slot];
+            let inst = &mut self.insts[row][col - self.start_col];
             if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
                 inst.wal_offset = self.wal_offset;
             }
@@ -202,8 +184,8 @@ impl EPaxosReplica {
         }
 
         match entry_type {
-            Status::Preparing => self.handle_logged_prepare_bal(slot),
-            Status::Accepting => self.handle_logged_accept_data(slot),
+            Status::PreAccepting => self.handle_logged_pre_accept_slot(slot),
+            Status::Accepting => self.handle_logged_accept_slot(slot),
             Status::Committed => self.handle_logged_commit_slot(slot),
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)

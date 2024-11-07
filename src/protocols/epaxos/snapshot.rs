@@ -18,18 +18,19 @@ impl EPaxosReplica {
     ) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
         let mut pairs = HashMap::new();
-        for slot in self.start_slot..new_start_slot {
-            let inst = &self.insts[slot - self.start_slot];
-            for (_, req) in inst.reqs.clone() {
-                if let ApiRequest::Req {
-                    cmd: Command::Put { key, value },
-                    ..
-                } = req
-                {
-                    pairs.insert(key, value);
-                }
-            }
-        }
+        // FIXME: use correct order from execution algo.
+        // for slot in self.start_slot..new_start_slot {
+        //     let inst = &self.insts[slot - self.start_slot];
+        //     for (_, req) in inst.reqs.clone() {
+        //         if let ApiRequest::Req {
+        //             cmd: Command::Put { key, value },
+        //             ..
+        //         } = req
+        //         {
+        //             pairs.insert(key, value);
+        //         }
+        //     }
+        // }
 
         // write the collection to snapshot file
         if let LogResult::Append { now_size } = self
@@ -51,7 +52,7 @@ impl EPaxosReplica {
         }
     }
 
-    /// Discard everything older than start_slot in durable WAL log.
+    /// Discard everything older than start_col in durable WAL log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         // do a dummy sync read to force all previously submitted log actions
         // to be processed
@@ -64,11 +65,18 @@ impl EPaxosReplica {
         }
 
         // get offset to cut the WAL at
-        let cut_offset = if !self.insts.is_empty() {
-            self.insts[0].wal_offset
-        } else {
-            self.wal_offset
-        };
+        let cut_offset = self
+            .insts
+            .iter()
+            .map(|inst| {
+                if inst.is_empty() {
+                    self.wal_offset
+                } else {
+                    inst[0].wal_offset
+                }
+            })
+            .min()
+            .unwrap();
 
         // discard the log before cut_offset
         if cut_offset > 0 {
@@ -97,18 +105,20 @@ impl EPaxosReplica {
         }
 
         // update inst.wal_offset for all remaining in-mem instances
-        for inst in &mut self.insts {
-            if inst.wal_offset > 0 {
-                debug_assert!(inst.wal_offset >= cut_offset);
-                inst.wal_offset -= cut_offset;
+        for insts in &mut self.insts {
+            for inst in insts {
+                if inst.wal_offset > 0 {
+                    debug_assert!(inst.wal_offset >= cut_offset);
+                    inst.wal_offset -= cut_offset;
+                }
             }
         }
 
         Ok(())
     }
 
-    /// Take a snapshot up to current exec_bar, then discard the in-mem log up
-    /// to that index as well as outdate entries in the durable WAL log file.
+    /// Take a snapshot up to current min(exec_bars), then discard the in-mem
+    /// log up to that index as well as outdate entries in the durable WAL file.
     //
     // NOTE: the current implementation does not guard against crashes in the
     //       middle of taking a snapshot. Production quality implementations
@@ -122,25 +132,25 @@ impl EPaxosReplica {
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
+        let exec_min = *self.exec_bars.iter().min().unwrap();
         pf_debug!(
             "taking new snapshot: start {} exec {} snap {}",
-            self.start_slot,
-            self.exec_bar,
+            self.start_col,
+            exec_min,
             self.snap_bar
         );
-        debug_assert!(self.exec_bar >= self.start_slot);
+        debug_assert!(exec_min >= self.start_col);
 
-        let new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
-        if new_start_slot == self.start_slot {
+        let new_start_col = cmp::min(self.snap_bar, exec_min);
+        if new_start_col == self.start_col {
             return Ok(());
         }
 
+        // NOTE: broadcast heartbeats here to appease peers
+        self.bcast_heartbeats().await?;
+
         // collect and dump all Puts in executed instances
-        if self.is_leader() {
-            // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats().await?;
-        }
-        self.snapshot_dump_kv_pairs(new_start_slot).await?;
+        self.snapshot_dump_kv_pairs(new_start_col).await?;
 
         // write new slot info entry to the head of snapshot
         match self
@@ -149,7 +159,7 @@ impl EPaxosReplica {
                 0, // using 0 as dummy log action ID
                 LogAction::Write {
                     entry: SnapEntry::SlotInfo {
-                        start_slot: new_start_slot,
+                        start_col: new_start_col,
                     },
                     offset: 0,
                     sync: self.config.logger_sync,
@@ -169,22 +179,23 @@ impl EPaxosReplica {
         }
 
         // update start_slot and discard all in-memory log instances up to exec_bar
-        self.insts.drain(0..(new_start_slot - self.start_slot));
-        self.start_slot = new_start_slot;
+        for insts in &mut self.insts {
+            insts.drain(0..(new_start_col - self.start_col));
+        }
+        self.start_col = new_start_col;
+
+        // NOTE: broadcast heartbeats here to appease peers
+        self.bcast_heartbeats().await?;
 
         // discarding everything older than start_slot in WAL log
-        if self.is_leader() {
-            // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats().await?;
-        }
         self.snapshot_discard_log().await?;
 
-        // reset the leader heartbeat hear timer
+        // reset the heartbeat hearing timer
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer()?;
         }
 
-        pf_info!("took snapshot up to: start {}", self.start_slot);
+        pf_info!("took snapshot up to: start {}", self.start_col);
         Ok(())
     }
 
@@ -206,16 +217,16 @@ impl EPaxosReplica {
             .1
         {
             LogResult::Read {
-                entry: Some(SnapEntry::SlotInfo { start_slot }),
+                entry: Some(SnapEntry::SlotInfo { start_col }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
 
                 // recover necessary slot indices info
-                self.start_slot = start_slot;
-                self.commit_bar = start_slot;
-                self.exec_bar = start_slot;
-                self.snap_bar = start_slot;
+                self.start_col = start_col;
+                self.commit_bars = vec![start_col; self.population as usize];
+                self.exec_bars = vec![start_col; self.population as usize];
+                self.snap_bar = start_col;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -256,24 +267,24 @@ impl EPaxosReplica {
                     }
                 }
 
-                // tell manager about my start_slot index
+                // tell manager about my start_col index
                 self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
-                    new_start: self.start_slot,
+                    new_start: self.start_col,
                 })?;
 
-                if self.start_slot > 0 {
+                if self.start_col > 0 {
                     pf_info!(
                         "recovered from snapshot: start {} commit {} exec {}",
-                        self.start_slot,
-                        self.commit_bar,
-                        self.exec_bar
+                        self.start_col,
+                        self.commit_bars[self.id as usize],
+                        self.exec_bars[self.id as usize]
                     );
                 }
                 Ok(())
             }
 
             LogResult::Read { entry: None, .. } => {
-                // snapshot file is empty. Write a 0 as start_slot and return
+                // snapshot file is empty. Write a 0 as start_col and return
                 if let LogResult::Write {
                     offset_ok: true,
                     now_size,
@@ -282,7 +293,7 @@ impl EPaxosReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: SnapEntry::SlotInfo { start_slot: 0 },
+                            entry: SnapEntry::SlotInfo { start_col: 0 },
                             offset: 0,
                             sync: self.config.logger_sync,
                         },

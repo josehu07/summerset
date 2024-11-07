@@ -62,7 +62,7 @@ impl BodegaReplica {
     ) -> Result<(), SummersetError> {
         pf_warn!("server got resume req");
 
-        // reset leader heartbeat timer
+        // reset heartbeat hearing timer
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer()?;
         }

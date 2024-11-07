@@ -16,86 +16,84 @@ impl EPaxosReplica {
         debug_assert!(batch_size > 0);
         pf_debug!("got request batch of size {}", batch_size);
 
-        // if I'm not a prepared leader, ignore client requests
-        if !self.is_leader() || self.bal_prepared == 0 {
-            for (client, req) in req_batch {
-                if let ApiRequest::Req { id: req_id, .. } = req {
-                    // tell the client to try on known leader or just the
-                    // next ID replica
-                    let target = if let Some(peer) = self.leader {
-                        peer
-                    } else {
-                        (self.id + 1) % self.population
-                    };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
-                }
-            }
-            return Ok(());
-        }
-
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist); fill it up with incoming data
-        let slot = self.first_null_slot();
+        let slot = self.first_null_slot(self.id);
+        let (row, col) = slot.unpack();
         {
-            let inst = &mut self.insts[slot - self.start_slot];
+            // compute the dependencies set of this request batch and proper
+            // sequence number
+            let ballot = self.my_default_ballot();
+            let deps = self.identify_deps(&req_batch);
+            let seq = 1 + self.max_seq_num(&deps);
+
+            let inst = &mut self.insts[row][col - self.start_col];
             debug_assert_eq!(inst.status, Status::Null);
+            inst.bal = ballot;
+            inst.seq = seq;
+            inst.deps = deps;
             inst.reqs.clone_from(&req_batch);
+            Self::refresh_highest_cols(
+                slot,
+                &req_batch,
+                self.population,
+                &mut self.highest_cols,
+            );
             inst.leader_bk = Some(LeaderBookkeeping {
-                trigger_slot: 0,
-                endprep_slot: 0,
+                pre_accept_acks: Bitmap::new(self.population, false),
+                pre_accept_replies: vec![],
+                accept_acks: Bitmap::new(self.population, false),
                 prepare_acks: Bitmap::new(self.population, false),
                 prepare_max_bal: 0,
-                accept_acks: Bitmap::new(self.population, false),
+                prepare_voteds: vec![],
             });
             inst.external = true;
         }
 
-        // start the Accept phase for this instance
-        let inst = &mut self.insts[slot - self.start_slot];
-        inst.bal = self.bal_prepared;
-        inst.status = Status::Accepting;
-        pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
+        // start the fast-path PreAccept phase for this instance
+        let inst = &mut self.insts[row][col - self.start_col];
+        inst.status = Status::PreAccepting;
+        pf_debug!("enter PreAccept phase for slot {} bal {}", slot, inst.bal);
 
         // record update to largest accepted ballot and corresponding data
-        inst.voted = (inst.bal, req_batch.clone());
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Accepting),
+            Self::make_log_action_id(slot, Status::PreAccepting),
             LogAction::Append {
-                entry: WalEntry::AcceptData {
+                entry: WalEntry::PreAcceptSlot {
                     slot,
                     ballot: inst.bal,
+                    seq: inst.seq,
+                    deps: inst.deps.clone(),
                     reqs: req_batch.clone(),
                 },
                 sync: self.config.logger_sync,
             },
         )?;
         pf_trace!(
-            "submitted AcceptData log action for slot {} bal {}",
+            "submitted PreAcceptSlot log action for slot {} bal {} seq {} deps {}",
             slot,
-            inst.bal
+            inst.bal,
+            inst.seq,
+            inst.deps,
         );
 
         // send Accept messages to all peers
         self.transport_hub.bcast_msg(
-            PeerMsg::Accept {
+            PeerMsg::PreAccept {
                 slot,
                 ballot: inst.bal,
+                seq: inst.seq,
+                deps: inst.deps.clone(),
                 reqs: req_batch,
             },
             None,
         )?;
         pf_trace!(
-            "broadcast Accept messages for slot {} bal {}",
+            "broadcast PreAccept messages for slot {} bal {} seq {} deps {}",
             slot,
-            inst.bal
+            inst.bal,
+            inst.seq,
+            inst.deps,
         );
 
         Ok(())

@@ -13,88 +13,104 @@ impl EPaxosReplica {
         entry: WalEntry,
     ) -> Result<(), SummersetError> {
         match entry {
-            WalEntry::PrepareBal { slot, ballot } => {
-                if slot < self.start_slot {
+            WalEntry::PreAcceptSlot {
+                slot,
+                ballot,
+                seq,
+                deps,
+                reqs,
+            } => {
+                let (row, col) = slot.unpack();
+                if col < self.start_col {
                     return Ok(()); // ignore if slot index outdated
                 }
                 // locate instance in memory, filling in null instances if needed
-                while self.start_slot + self.insts.len() <= slot {
-                    self.insts.push(self.null_instance());
+                while self.start_col + self.insts.len() <= col {
+                    let inst = self.null_instance();
+                    self.insts[row].push(inst);
                 }
                 // update instance state
-                let inst = &mut self.insts[slot - self.start_slot];
+                let inst = &mut self.insts[row][col - self.start_col];
                 inst.bal = ballot;
-                inst.status = Status::Preparing;
-                // update bal_prep_sent and bal_max_seen, reset bal_prepared
-                if self.bal_prep_sent < ballot {
-                    self.bal_prep_sent = ballot;
-                }
-                if self.bal_max_seen < ballot {
-                    self.bal_max_seen = ballot;
-                }
-                self.bal_prepared = 0;
+                inst.status = Status::PreAccepting;
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs = reqs;
+                Self::refresh_highest_cols(
+                    slot,
+                    &inst.reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
             }
 
-            WalEntry::AcceptData { slot, ballot, reqs } => {
-                if slot < self.start_slot {
+            WalEntry::AcceptSlot {
+                slot,
+                ballot,
+                seq,
+                deps,
+                reqs,
+            } => {
+                let (row, col) = slot.unpack();
+                if col < self.start_col {
                     return Ok(()); // ignore if slot index outdated
                 }
                 // locate instance in memory, filling in null instances if needed
-                while self.start_slot + self.insts.len() <= slot {
-                    self.insts.push(self.null_instance());
+                while self.start_col + self.insts.len() <= col {
+                    let inst = self.null_instance();
+                    self.insts[row].push(inst);
                 }
                 // update instance state
-                let inst = &mut self.insts[slot - self.start_slot];
+                let inst = &mut self.insts[row][col - self.start_col];
                 inst.bal = ballot;
                 inst.status = Status::Accepting;
-                inst.reqs.clone_from(&reqs);
-                inst.voted = (ballot, reqs);
-                // it could be the case that the PrepareBal action for this
-                // ballot has been snapshotted
-                if self.bal_prep_sent < ballot {
-                    self.bal_prep_sent = ballot;
-                }
-                // update bal_prepared and bal_max_seen
-                if self.bal_prepared < ballot {
-                    self.bal_prepared = ballot;
-                }
-                if self.bal_max_seen < ballot {
-                    self.bal_max_seen = ballot;
-                }
-                debug_assert!(self.bal_prepared <= self.bal_prep_sent);
+                inst.seq = seq;
+                inst.deps = deps;
+                inst.reqs = reqs;
+                Self::refresh_highest_cols(
+                    slot,
+                    &inst.reqs,
+                    self.population,
+                    &mut self.highest_cols,
+                );
             }
 
             WalEntry::CommitSlot { slot } => {
-                if slot < self.start_slot {
+                let (row, col) = slot.unpack();
+                if col < self.start_col {
                     return Ok(()); // ignore if slot index outdated
                 }
-                debug_assert!(slot < self.start_slot + self.insts.len());
+                debug_assert!(col < self.start_col + self.insts[row].len());
                 // update instance status
-                self.insts[slot - self.start_slot].status = Status::Committed;
+                self.insts[row][col - self.start_col].status =
+                    Status::Committed;
                 // submit commands in contiguously committed instance to the
                 // state machine
-                if slot == self.commit_bar {
-                    while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst =
-                            &mut self.insts[self.commit_bar - self.start_slot];
+                if col == self.commit_bars[row] {
+                    while self.commit_bars[row]
+                        < self.start_col + self.insts[row].len()
+                    {
+                        let inst = &mut self.insts[row]
+                            [self.commit_bars[row] - self.start_col];
                         if inst.status < Status::Committed {
                             break;
                         }
-                        // execute all commands in this instance on state machine
-                        // synchronously
-                        for (_, req) in inst.reqs.clone() {
-                            if let ApiRequest::Req { cmd, .. } = req {
-                                self.state_machine
-                                    .do_sync_cmd(
-                                        0, // using 0 as dummy command ID
-                                        cmd,
-                                    )
-                                    .await?;
-                            }
-                        }
+                        // FIXME: correct execution algo.
+                        // // execute all commands in this instance on state machine
+                        // // synchronously
+                        // for (_, req) in inst.reqs.clone() {
+                        //     if let ApiRequest::Req { cmd, .. } = req {
+                        //         self.state_machine
+                        //             .do_sync_cmd(
+                        //                 0, // using 0 as dummy command ID
+                        //                 cmd,
+                        //             )
+                        //             .await?;
+                        //     }
+                        // }
                         // update instance status, commit_bar and exec_bar
-                        self.commit_bar += 1;
-                        self.exec_bar += 1;
+                        self.commit_bars[row] += 1;
+                        self.exec_bars[row] += 1;
                         inst.status = Status::Executed;
                     }
                 }
@@ -156,8 +172,8 @@ impl EPaxosReplica {
             if self.wal_offset > 0 {
                 pf_info!(
                     "recovered from wal log: commit {} exec {}",
-                    self.commit_bar,
-                    self.exec_bar
+                    self.commit_bars[self.id as usize],
+                    self.exec_bars[self.id as usize]
                 );
             }
             Ok(())

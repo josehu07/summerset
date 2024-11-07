@@ -62,7 +62,7 @@ impl EPaxosReplica {
     ) -> Result<(), SummersetError> {
         pf_warn!("server got resume req");
 
-        // reset leader heartbeat timer
+        // reset heartbeat hearing timer
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer()?;
         }
@@ -80,7 +80,7 @@ impl EPaxosReplica {
         self.take_new_snapshot().await?;
 
         self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
-            new_start: self.start_slot,
+            new_start: self.start_col,
         })?;
         Ok(())
     }

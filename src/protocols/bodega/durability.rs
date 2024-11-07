@@ -99,7 +99,7 @@ impl BodegaReplica {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
+            self.handle_msg_accept_reply(self.id, slot, inst.bal)?;
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
@@ -108,7 +108,6 @@ impl BodegaReplica {
                     PeerMsg::AcceptReply {
                         slot,
                         ballot: inst.bal,
-                        reply_ts: None,
                     },
                     source,
                 )?;

@@ -131,9 +131,7 @@ impl QuorumLeasesReplica {
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
             let inst = &self.insts[slot - self.start_slot];
-            self.handle_msg_accept_reply(
-                self.id, slot, inst.bal, grant_set, None,
-            )?;
+            self.handle_msg_accept_reply(self.id, slot, inst.bal, grant_set)?;
         } else {
             // on follower replica, finishing the logging of an
             // AcceptData entry leads to sending back an Accept reply
@@ -144,7 +142,6 @@ impl QuorumLeasesReplica {
                         slot,
                         ballot: inst.bal,
                         grant_set: grant_set.clone(),
-                        reply_ts: None,
                     },
                     source,
                 )?;

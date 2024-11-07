@@ -366,7 +366,6 @@ impl QuorumLeasesReplica {
         slot: usize,
         ballot: Ballot,
         grant_set: Bitmap,
-        _reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -532,10 +531,7 @@ impl QuorumLeasesReplica {
                 slot,
                 ballot,
                 grant_set,
-                reply_ts,
-            } => self.handle_msg_accept_reply(
-                peer, slot, ballot, grant_set, reply_ts,
-            ),
+            } => self.handle_msg_accept_reply(peer, slot, ballot, grant_set),
             PeerMsg::NoGrants { ballot, qlease_num } => {
                 self.handle_msg_no_grants(peer, ballot, qlease_num)
             }

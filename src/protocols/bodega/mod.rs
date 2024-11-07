@@ -16,7 +16,6 @@ mod snapshot;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::time::SystemTime;
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -174,10 +173,13 @@ struct Instance {
     /// Instance status.
     status: Status,
 
-    /// Batch of client requests.
+    /// Batch of client requests. This field is overwritten directly when
+    /// receiving PrepareReplies; this is just a small engineering choice
+    /// to avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs: ReqBatch,
 
-    /// Highest ballot and associated value I have accepted.
+    /// Highest ballot and associated value I have accepted; this field is
+    /// required to support correct Prepare phase replies.
     voted: (Ballot, ReqBatch),
 
     /// Leader-side bookkeeping info.
@@ -269,12 +271,7 @@ enum PeerMsg {
     },
 
     /// Accept reply from replica to leader.
-    AcceptReply {
-        slot: usize,
-        ballot: Ballot,
-        /// [for perf breakdown only]
-        reply_ts: Option<SystemTime>,
-    },
+    AcceptReply { slot: usize, ballot: Ballot },
 
     /// Peer-to-peer periodic heartbeat.
     Heartbeat {
@@ -366,7 +363,8 @@ pub(crate) struct BodegaReplica {
     commit_bar: usize,
 
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
+    /// It is always true that
+    ///   exec_bar <= commit_bar <= start_slot + insts.len()
     exec_bar: usize,
 
     /// Map from peer ID -> its latest exec_bar I know; this is for conservative
@@ -406,8 +404,8 @@ impl BodegaReplica {
         Instance {
             bal: 0,
             status: Status::Null,
-            reqs: Vec::new(),
-            voted: (0, Vec::new()),
+            reqs: ReqBatch::new(),
+            voted: (0, ReqBatch::new()),
             leader_bk: None,
             replica_bk: None,
             external: false,
@@ -686,7 +684,7 @@ impl GenericReplica for BodegaReplica {
         // recover the tail-piece memory log & state from durable WAL log
         self.recover_from_wal().await?;
 
-        // kick off leader activity hearing timer
+        // kick off peer heartbeats hearing timer
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer()?;
         }

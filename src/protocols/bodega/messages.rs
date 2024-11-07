@@ -341,7 +341,6 @@ impl BodegaReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
-        _reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -437,11 +436,9 @@ impl BodegaReplica {
             PeerMsg::Accept { slot, ballot, reqs } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs).await
             }
-            PeerMsg::AcceptReply {
-                slot,
-                ballot,
-                reply_ts,
-            } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
+            PeerMsg::AcceptReply { slot, ballot } => {
+                self.handle_msg_accept_reply(peer, slot, ballot)
+            }
             PeerMsg::Heartbeat {
                 ballot,
                 commit_bar,

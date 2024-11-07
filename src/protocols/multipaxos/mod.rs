@@ -207,10 +207,13 @@ struct Instance {
     /// Instance status.
     status: Status,
 
-    /// Batch of client requests.
+    /// Batch of client requests. This field is overwritten directly when
+    /// receiving PrepareReplies; this is just a small engineering choice
+    /// to avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs: ReqBatch,
 
-    /// Highest ballot and associated value I have accepted.
+    /// Highest ballot and associated value I have accepted; this field is
+    /// required to support correct Prepare phase replies.
     voted: (Ballot, ReqBatch),
 
     /// Leader-side bookkeeping info.
@@ -483,8 +486,8 @@ impl MultiPaxosReplica {
         Instance {
             bal: 0,
             status: Status::Null,
-            reqs: Vec::new(),
-            voted: (0, Vec::new()),
+            reqs: ReqBatch::new(),
+            voted: (0, ReqBatch::new()),
             leader_bk: None,
             replica_bk: None,
             external: false,
@@ -776,7 +779,7 @@ impl GenericReplica for MultiPaxosReplica {
         // recover the tail-piece memory log & state from durable WAL log
         self.recover_from_wal().await?;
 
-        // kick off leader activity hearing timer
+        // kick off peer heartbeats hearing timer
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer()?;
         }

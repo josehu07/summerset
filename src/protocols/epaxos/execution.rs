@@ -4,7 +4,7 @@
 //!       effectively RMW commands; thus the commit vs. execute distinction in
 //!       original EPaxos paper does not make a difference here. Put commands
 //!       get replied to client only after execution. This does not make any
-//!       difference to the read-side performance that we are interested in.
+//!       difference to the performance metrics that we are interested in.
 
 use super::*;
 
@@ -13,6 +13,8 @@ use crate::utils::SummersetError;
 
 // EPaxosReplica state machine execution
 impl EPaxosReplica {
+    // FIXME: add correct execution algo. task
+
     /// Handler of state machine exec result chan recv.
     pub(super) async fn handle_cmd_result(
         &mut self,
@@ -20,13 +22,14 @@ impl EPaxosReplica {
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
         let (slot, cmd_idx) = Self::split_command_id(cmd_id);
-        if slot < self.start_slot {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
-        debug_assert!(slot < self.start_slot + self.insts.len());
+        debug_assert!(col < self.start_col + self.insts[row].len());
         pf_trace!("executed cmd in instance at slot {} idx {}", slot, cmd_idx);
 
-        let inst = &mut self.insts[slot - self.start_slot];
+        let inst = &mut self.insts[row][col - self.start_col];
         debug_assert!(cmd_idx < inst.reqs.len());
         let (client, ref req) = inst.reqs[cmd_idx];
 
@@ -55,13 +58,16 @@ impl EPaxosReplica {
             pf_debug!("executed all cmds in instance at slot {}", slot);
 
             // update index of the first non-executed instance
-            if slot == self.exec_bar {
-                while self.exec_bar < self.start_slot + self.insts.len() {
-                    let inst = &mut self.insts[self.exec_bar - self.start_slot];
+            if col == self.exec_bars[row] {
+                while self.exec_bars[row]
+                    < self.start_col + self.insts[row].len()
+                {
+                    let inst = &mut self.insts[row]
+                        [self.exec_bars[row] - self.start_col];
                     if inst.status < Status::Executed {
                         break;
                     }
-                    self.exec_bar += 1;
+                    self.exec_bars[row] += 1;
                 }
             }
         }

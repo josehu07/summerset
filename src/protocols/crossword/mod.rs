@@ -236,13 +236,16 @@ struct Instance {
     /// Instance status.
     status: Status,
 
-    /// Shards of a batch of client requests.
+    /// Shards of a batch of commands. This field is overwritten directly when
+    /// receiving PrepareReplies; this is just a small engineering choice to
+    /// avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs_cw: RSCodeword<ReqBatch>,
 
     /// Shards assignment map which the leader used.
     assignment: Vec<Bitmap>,
 
-    /// Highest ballot and associated value I have accepted.
+    /// Highest ballot and associated value I have accepted; this field is
+    /// required to support correct Prepare phase replies.
     voted: (Ballot, RSCodeword<ReqBatch>),
 
     /// Leader-side bookkeeping info.
