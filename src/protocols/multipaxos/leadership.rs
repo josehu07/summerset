@@ -264,65 +264,6 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// React to an updated commit_bar received from (probably) leader. Slots
-    /// up to received commit_bar are safe to commit; submit their commands
-    /// for execution.
-    fn advance_commit_bar(
-        &mut self,
-        peer: ReplicaId,
-        commit_bar: usize,
-    ) -> Result<(), SummersetError> {
-        if commit_bar > self.commit_bar {
-            while self.start_slot + self.insts.len() < commit_bar {
-                self.insts.push(self.null_instance());
-            }
-
-            let mut commit_cnt = 0;
-            for slot in self.commit_bar..commit_bar {
-                let inst = &mut self.insts[slot - self.start_slot];
-                if inst.status < Status::Accepting {
-                    break;
-                } else if inst.status >= Status::Committed {
-                    continue;
-                }
-
-                // mark this instance as committed
-                inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
-
-                // record commit event
-                self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
-                    LogAction::Append {
-                        entry: WalEntry::CommitSlot { slot },
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                pf_trace!(
-                    "submitted CommitSlot log action for slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
-
-                commit_cnt += 1;
-            }
-
-            if commit_cnt > 0 {
-                pf_trace!(
-                    "advancing commit <- {} until slot {}",
-                    peer,
-                    commit_bar
-                );
-            }
-        }
-
-        Ok(())
-    }
-
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
@@ -419,6 +360,65 @@ impl MultiPaxosReplica {
 
         if ballot == self.bal_max_seen {
             self.advance_commit_bar(peer, commit_bar)?;
+        }
+
+        Ok(())
+    }
+
+    /// React to an updated commit_bar received from (probably) leader. Slots
+    /// up to received commit_bar are safe to commit; submit their commands
+    /// for execution.
+    fn advance_commit_bar(
+        &mut self,
+        peer: ReplicaId,
+        commit_bar: usize,
+    ) -> Result<(), SummersetError> {
+        if commit_bar > self.commit_bar {
+            while self.start_slot + self.insts.len() < commit_bar {
+                self.insts.push(self.null_instance());
+            }
+
+            let mut commit_cnt = 0;
+            for slot in self.commit_bar..commit_bar {
+                let inst = &mut self.insts[slot - self.start_slot];
+                if inst.status < Status::Accepting {
+                    break;
+                } else if inst.status >= Status::Committed {
+                    continue;
+                }
+
+                // mark this instance as committed
+                inst.status = Status::Committed;
+                pf_debug!(
+                    "committed instance at slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
+
+                // record commit event
+                self.storage_hub.submit_action(
+                    Self::make_log_action_id(slot, Status::Committed),
+                    LogAction::Append {
+                        entry: WalEntry::CommitSlot { slot },
+                        sync: self.config.logger_sync,
+                    },
+                )?;
+                pf_trace!(
+                    "submitted CommitSlot log action for slot {} bal {}",
+                    slot,
+                    inst.bal
+                );
+
+                commit_cnt += 1;
+            }
+
+            if commit_cnt > 0 {
+                pf_trace!(
+                    "advancing commit <- {} until slot {}",
+                    peer,
+                    commit_bar
+                );
+            }
         }
 
         Ok(())

@@ -162,26 +162,42 @@ impl EPaxosReplica {
     ///   - `Some(true)` if conflict-free fast quorum formed
     ///   - `Some(false)` if fast quorum impossible
     pub(super) fn fast_quorum_eligibility(
+        avoid_fast_path: bool,
         leader_bk: &LeaderBookkeeping,
         population: u8,
+        simple_quorum_cnt: u8,
         super_quorum_cnt: u8,
     ) -> Option<bool> {
-        let mut repeats = HashMap::new();
-        for reply in leader_bk.pre_accept_replies.iter().cloned() {
-            *repeats.entry(reply).or_insert(0) += 1;
-        }
-        let max_cnt = repeats.into_values().max().unwrap_or(0) as u8;
         let all_cnt = leader_bk.pre_accept_acks.count();
-        debug_assert!(super_quorum_cnt <= population);
-        debug_assert!(all_cnt <= population);
-        debug_assert!(max_cnt <= all_cnt);
 
-        if max_cnt >= super_quorum_cnt {
-            Some(true)
-        } else if max_cnt + (population - all_cnt) < super_quorum_cnt {
-            Some(false)
+        if avoid_fast_path {
+            // don't consider fast path at all
+            if all_cnt >= simple_quorum_cnt {
+                return Some(false);
+            } else {
+                return None;
+            }
         } else {
-            None
+            // will consider fast path if eligible
+            let mut repeats = HashMap::new();
+            for reply in leader_bk.pre_accept_replies.values().cloned() {
+                *repeats.entry(reply).or_insert(0) += 1;
+            }
+            let max_cnt = repeats.into_values().max().unwrap_or(0) as u8;
+            debug_assert!(super_quorum_cnt <= population);
+            debug_assert!(simple_quorum_cnt <= super_quorum_cnt);
+            debug_assert!(all_cnt <= population);
+            debug_assert!(max_cnt <= all_cnt);
+
+            if max_cnt >= super_quorum_cnt {
+                Some(true)
+            } else if all_cnt >= simple_quorum_cnt
+                && max_cnt + (population - all_cnt) < super_quorum_cnt
+            {
+                Some(false)
+            } else {
+                None
+            }
         }
     }
 
@@ -193,12 +209,111 @@ impl EPaxosReplica {
     ///   - `Status::PreAccepting` if need to start over from PreAccept
     /// Also returns the instance state to feed into the next phase.
     pub(super) fn exp_prepare_next_step(
-        row: ReplicaId,
+        slot_row: ReplicaId,
         leader_bk: &LeaderBookkeeping,
+        population: u8,
         simple_quorum_cnt: u8,
     ) -> Option<(Status, SeqNum, DepSet, ReqBatch)> {
+        debug_assert!(simple_quorum_cnt <= population);
         if leader_bk.exp_prepare_acks.count() < simple_quorum_cnt {
             return None;
+        }
+
+        // has at least one Committed or Accepting or PreAccepting? records
+        // an index into replies vec that meets each
+        let (mut has_commit, mut has_accept, mut has_pre_accept) =
+            (None, None, None);
+        for (r, (status, _, _, _)) in leader_bk.exp_prepare_voteds.iter() {
+            match status {
+                Status::Committed => has_commit = Some(r),
+                Status::Accepting => has_accept = Some(r),
+                Status::PreAccepting => has_pre_accept = Some(r),
+                _ => {}
+            }
+        }
+
+        if let Some(r) = has_commit {
+            let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
+            return Some((Status::Committed, seq, deps, reqs));
+        }
+        if let Some(r) = has_accept {
+            let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
+            return Some((Status::Accepting, seq, deps, reqs));
+        }
+
+        // has at lease N/2 identical replies for row's default ballot and
+        // none of those are from row peer itself
+        let has_enough_identical = if leader_bk.exp_prepare_max_bal
+            != Self::make_default_ballot(slot_row)
+        {
+            None
+        } else {
+            let voteds: Vec<(SeqNum, DepSet, ReqBatch)> = leader_bk
+                .exp_prepare_voteds
+                .clone()
+                .into_iter()
+                .filter_map(|(r, (status, seq, deps, reqs))| {
+                    if r != slot_row && status == Status::PreAccepting {
+                        Some((seq, deps, reqs))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if voteds.len() + 1 < simple_quorum_cnt as usize {
+                None
+            } else {
+                Self::get_enough_identical(voteds, simple_quorum_cnt)
+            }
+        };
+
+        if let Some((seq, deps, reqs)) = has_enough_identical {
+            return Some((Status::Accepting, seq, deps, reqs));
+        }
+        if let Some(r) = has_pre_accept {
+            let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
+            return Some((Status::PreAccepting, seq, deps, reqs));
+        } else {
+            return Some((
+                Status::PreAccepting,
+                1,
+                DepSet::empty(population),
+                ReqBatch::new(),
+            ));
+        }
+    }
+
+    /// Returns the instance state among filtered ExpPrepare replies that
+    /// occurs at least N/2 times.
+    fn get_enough_identical(
+        mut voteds: Vec<(SeqNum, DepSet, ReqBatch)>,
+        simple_quorum_cnt: u8,
+    ) -> Option<(SeqNum, DepSet, ReqBatch)> {
+        debug_assert!(voteds.len() >= simple_quorum_cnt as usize);
+        let mut first = 0usize;
+        let mut visited = vec![false; voteds.len()];
+        visited[0] = true;
+
+        while first < voteds.len() {
+            let mut next_first = first;
+            let mut same_cnt = 1;
+            for i in (first + 1)..voteds.len() {
+                if !visited[i] {
+                    // not visited yet
+                    if voteds[i] == voteds[first] {
+                        visited[i] = true;
+                        same_cnt += 1;
+                    } else if next_first == first {
+                        next_first = i;
+                    }
+                }
+            }
+
+            if same_cnt + 1 >= simple_quorum_cnt {
+                return Some(voteds.remove(first));
+            } else {
+                first = next_first;
+            }
         }
 
         None

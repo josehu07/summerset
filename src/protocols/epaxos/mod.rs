@@ -114,7 +114,17 @@ struct DepSet(Vec<Option<usize>>); // length always == population
 
 /// Instance status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    GetSize,
 )]
 enum Status {
     Null = 0,
@@ -134,7 +144,7 @@ struct LeaderBookkeeping {
     pre_accept_acks: Bitmap,
 
     /// The set of PreAccept replies received so far.
-    pre_accept_replies: Vec<(SeqNum, DepSet)>,
+    pre_accept_replies: HashMap<ReplicaId, (SeqNum, DepSet)>,
 
     /// Replicas from which I have received Accept confirmations.
     accept_acks: Bitmap,
@@ -146,7 +156,7 @@ struct LeaderBookkeeping {
     exp_prepare_max_bal: Ballot,
 
     /// The set of ExpPrepare replies with the highest ballot number.
-    exp_prepare_voteds: Vec<(SeqNum, DepSet, ReqBatch)>,
+    exp_prepare_voteds: HashMap<ReplicaId, (Status, SeqNum, DepSet, ReqBatch)>,
 }
 
 /// Follower-side bookkeeping info for each instance received.
@@ -211,6 +221,9 @@ struct Instance {
 
     /// True if from external client, else false.
     external: bool,
+
+    /// True if explicitly avoiding fast path after the PreAccept phase.
+    avoid_fast_path: bool,
 
     /// Offset of first durable WAL log entry related to this instance.
     wal_offset: usize,
@@ -321,6 +334,8 @@ enum PeerMsg {
         ballot: Ballot,
         /// Highest ballot *accepted* before the one in ExpPrepare.
         voted_bal: Ballot,
+        /// Last accepted in which phase.
+        voted_status: Status,
         // My knowledge of the instance:
         voted_seq: SeqNum,
         voted_deps: DepSet,
@@ -439,6 +454,7 @@ impl EPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
+            avoid_fast_path: false,
             wal_offset: 0,
         }
     }

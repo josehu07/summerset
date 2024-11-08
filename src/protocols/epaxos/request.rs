@@ -45,11 +45,11 @@ impl EPaxosReplica {
             );
             inst.leader_bk = Some(LeaderBookkeeping {
                 pre_accept_acks: Bitmap::new(self.population, false),
-                pre_accept_replies: vec![],
+                pre_accept_replies: HashMap::new(),
                 accept_acks: Bitmap::new(self.population, false),
                 exp_prepare_acks: Bitmap::new(self.population, false),
                 exp_prepare_max_bal: 0,
-                exp_prepare_voteds: vec![],
+                exp_prepare_voteds: HashMap::new(),
             });
             inst.external = true;
         }

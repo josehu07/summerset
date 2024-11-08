@@ -132,14 +132,18 @@ impl EPaxosReplica {
         }
 
         // bookkeep this PreAccept reply
-        leader_bk.pre_accept_replies.push((seq, deps.clone()));
+        leader_bk
+            .pre_accept_replies
+            .insert(peer, (seq, deps.clone()));
         leader_bk.pre_accept_acks.set(peer, true)?;
 
         // check the set of replies received so far:
         // NOTE: move the start-phase blocks into common helper functions
         match Self::fast_quorum_eligibility(
+            inst.avoid_fast_path,
             leader_bk,
             self.population,
+            self.simple_quorum_cnt,
             self.super_quorum_cnt,
         ) {
             Some(true) => {
@@ -205,7 +209,7 @@ impl EPaxosReplica {
                 );
 
                 // take union of all deps from all replies
-                for (rseq, rdeps) in leader_bk.pre_accept_replies.iter() {
+                for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
                     inst.deps.union(rdeps);
                     inst.seq = inst.seq.max(*rseq);
                 }
@@ -528,6 +532,7 @@ impl EPaxosReplica {
                     slot,
                     ballot,
                     voted_bal: inst.bal,
+                    voted_status: inst.status,
                     voted_seq: inst.seq,
                     voted_deps: inst.deps.clone(),
                     voted_reqs: inst.reqs.clone(),
@@ -554,6 +559,7 @@ impl EPaxosReplica {
         slot: SlotIdx,
         ballot: Ballot,
         voted_bal: Ballot,
+        voted_status: Status,
         voted_seq: SeqNum,
         voted_deps: DepSet,
         voted_reqs: ReqBatch,
@@ -587,12 +593,14 @@ impl EPaxosReplica {
 
         // bookkeep this ExpPrepare reply
         if voted_bal > leader_bk.exp_prepare_max_bal {
-            leader_bk.exp_prepare_voteds =
-                vec![(voted_seq, voted_deps, voted_reqs)];
-        } else if voted_bal == leader_bk.exp_prepare_max_bal {
-            leader_bk
-                .exp_prepare_voteds
-                .push((voted_seq, voted_deps, voted_reqs));
+            leader_bk.exp_prepare_voteds.clear();
+            leader_bk.exp_prepare_max_bal = voted_bal;
+        }
+        if voted_bal >= leader_bk.exp_prepare_max_bal {
+            leader_bk.exp_prepare_voteds.insert(
+                peer,
+                (voted_status, voted_seq, voted_deps, voted_reqs),
+            );
         }
         leader_bk.exp_prepare_acks.set(peer, true)?;
 
@@ -601,6 +609,7 @@ impl EPaxosReplica {
         match Self::exp_prepare_next_step(
             row as ReplicaId,
             leader_bk,
+            self.population,
             self.simple_quorum_cnt,
         ) {
             Some((Status::Committed, seq, deps, reqs)) => {
@@ -739,6 +748,9 @@ impl EPaxosReplica {
                     &mut self.highest_cols,
                 );
 
+                // explicitly avoid fast path after this PreAccept phase
+                inst.avoid_fast_path = true;
+
                 // record update to instance status & data
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::PreAccepting),
@@ -836,11 +848,18 @@ impl EPaxosReplica {
                 slot,
                 ballot,
                 voted_bal,
+                voted_status,
                 voted_seq,
                 voted_deps,
                 voted_reqs,
             } => self.handle_msg_exp_prepare_reply(
-                peer, slot, ballot, voted_bal, voted_seq, voted_deps,
+                peer,
+                slot,
+                ballot,
+                voted_bal,
+                voted_status,
+                voted_seq,
+                voted_deps,
                 voted_reqs,
             ),
             PeerMsg::Heartbeat {
