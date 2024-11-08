@@ -42,12 +42,10 @@ impl EPaxosReplica {
         // if ballot is up-to-date:
         if ballot >= inst_bal {
             // update seq and deps according to my knowledge
-            deps.union(&Self::identify_deps(
-                &reqs,
-                self.population,
-                &self.highest_cols,
-            ));
-            seq = seq.max(1 + self.max_seq_num(&deps));
+            let my_deps =
+                Self::identify_deps(&reqs, self.population, &self.highest_cols);
+            deps.union(&my_deps);
+            seq = seq.max(1 + self.max_seq_num(&my_deps));
 
             let inst = &mut self.insts[row][col - self.start_col];
             inst.bal = ballot;
@@ -696,7 +694,7 @@ impl EPaxosReplica {
                     LogAction::Append {
                         entry: WalEntry::AcceptSlot {
                             slot,
-                            ballot,
+                            ballot: inst.bal,
                             seq: inst.seq,
                             deps: inst.deps.clone(),
                             reqs: reqs.clone(),

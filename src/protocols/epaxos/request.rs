@@ -14,7 +14,6 @@ impl EPaxosReplica {
     ) -> Result<(), SummersetError> {
         let batch_size = req_batch.len();
         debug_assert!(batch_size > 0);
-        pf_debug!("got request batch of size {}", batch_size);
 
         // create a new instance in the first null slot (or append a new one
         // at the end if no holes exist); fill it up with incoming data
@@ -30,6 +29,12 @@ impl EPaxosReplica {
                 &self.highest_cols,
             );
             let seq = 1 + self.max_seq_num(&deps);
+            pf_debug!(
+                "got request batch of size {} seq {} deps {}",
+                batch_size,
+                seq,
+                deps
+            );
 
             let inst = &mut self.insts[row][col - self.start_col];
             debug_assert_eq!(inst.status, Status::Null);

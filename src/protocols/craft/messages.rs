@@ -232,8 +232,6 @@ impl CRaftReplica {
                             Self::make_command_id(slot, cmd_idx),
                             cmd.clone(),
                         )?;
-                    } else {
-                        continue; // ignore other types of requests
                     }
                 }
                 pf_trace!(
@@ -347,8 +345,6 @@ impl CRaftReplica {
                                 Self::make_command_id(slot, cmd_idx),
                                 cmd.clone(),
                             )?;
-                        } else {
-                            continue; // ignore other types of requests
                         }
                     }
                     pf_trace!(
@@ -731,8 +727,6 @@ impl CRaftReplica {
                                 ),
                                 cmd.clone(),
                             )?;
-                        } else {
-                            continue; // ignore other types of requests
                         }
                     }
                     pf_trace!(

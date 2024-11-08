@@ -22,6 +22,13 @@ impl fmt::Display for DepSet {
     }
 }
 
+impl From<Vec<usize>> for DepSet {
+    fn from(v: Vec<usize>) -> Self {
+        DepSet(v.into_iter().map(|c| Some(c)).collect())
+    }
+}
+
+// Allow indexing using u8 ReplicaId:
 impl ops::Index<ReplicaId> for DepSet {
     type Output = Option<usize>;
 
@@ -36,6 +43,7 @@ impl ops::IndexMut<ReplicaId> for DepSet {
     }
 }
 
+// Allow indexing using normal usize:
 impl ops::Index<usize> for DepSet {
     type Output = Option<usize>;
 
@@ -87,7 +95,7 @@ impl DepSet {
 
 // EPaxosReplica dependencies set helpers
 impl EPaxosReplica {
-    /// Computes the maximum sequence number of a dependencies set.
+    /// Computes the maximum sequence number of a dependencies set, 0 if empty.
     pub(super) fn max_seq_num(&self, deps: &DepSet) -> SeqNum {
         debug_assert_eq!(deps.len(), self.population);
         deps.iter()
@@ -112,14 +120,24 @@ impl EPaxosReplica {
     ) -> DepSet {
         let mut deps = DepSet::empty(population);
         for (_, req) in reqs {
-            if let ApiRequest::Req {
-                cmd: Command::Put { key, .. },
-                ..
-            } = req
-            {
-                if let Some(cols) = highest_cols.get(key) {
-                    deps.union(cols);
+            match req {
+                ApiRequest::Req {
+                    cmd: Command::Put { key, .. },
+                    ..
+                } => {
+                    if let Some(cols) = highest_cols.get(key) {
+                        deps.union(cols);
+                    }
                 }
+                ApiRequest::Req {
+                    cmd: Command::Get { key },
+                    ..
+                } => {
+                    if let Some(cols) = highest_cols.get(key) {
+                        deps.union(cols);
+                    }
+                }
+                _ => {}
             }
         }
         deps
@@ -170,6 +188,10 @@ impl EPaxosReplica {
         super_quorum_cnt: u8,
     ) -> Option<(Status, SeqNum, DepSet)> {
         let all_cnt = leader_bk.pre_accept_acks.count();
+        debug_assert_ne!(simple_quorum_cnt, 0);
+        debug_assert!(simple_quorum_cnt <= super_quorum_cnt);
+        debug_assert!(super_quorum_cnt <= population);
+        debug_assert!(all_cnt <= population);
         if all_cnt < simple_quorum_cnt {
             // can't decide anything yet
             return None;
@@ -186,21 +208,16 @@ impl EPaxosReplica {
             return Some((Status::Accepting, seq, deps));
         } else {
             // will consider fast path if eligible
-            let mut repeats = HashMap::new();
-            for reply in leader_bk.pre_accept_replies.values().cloned() {
-                *repeats.entry(reply).or_insert(0) += 1;
-            }
-            let ((max_seq, max_deps), max_cnt) =
-                repeats.into_iter().max_by_key(|(_, cnt)| *cnt).unwrap();
-            debug_assert!(super_quorum_cnt <= population);
-            debug_assert!(simple_quorum_cnt <= super_quorum_cnt);
-            debug_assert!(all_cnt <= population);
-            debug_assert!(max_cnt <= all_cnt);
+            let (max_seq_deps, max_cnt) = Self::get_enough_identical(
+                leader_bk.pre_accept_replies.values().cloned().collect(),
+                super_quorum_cnt,
+            );
 
-            if max_cnt >= super_quorum_cnt {
+            if let Some((seq, deps)) = max_seq_deps {
                 // can commit on fast path, return the state corresponding to
                 // the max_cnt
-                Some((Status::Committed, max_seq, max_deps))
+                debug_assert!(max_cnt >= super_quorum_cnt);
+                Some((Status::Committed, seq, deps))
             } else if max_cnt + (population - all_cnt) < super_quorum_cnt {
                 // need slow-path Accept, take union of deps and max of seqs
                 let (mut seq, mut deps) = (0, DepSet::empty(population));
@@ -229,6 +246,7 @@ impl EPaxosReplica {
         population: u8,
         simple_quorum_cnt: u8,
     ) -> Option<(Status, SeqNum, DepSet, ReqBatch)> {
+        debug_assert_ne!(simple_quorum_cnt, 0);
         debug_assert!(simple_quorum_cnt <= population);
         if leader_bk.exp_prepare_acks.count() < simple_quorum_cnt {
             // can't decide yet
@@ -278,10 +296,10 @@ impl EPaxosReplica {
                     }
                 })
                 .collect();
-            if voteds.len() + 1 < simple_quorum_cnt as usize {
+            if voteds.len() < (simple_quorum_cnt - 1) as usize {
                 None
             } else {
-                Self::get_enough_identical(voteds, simple_quorum_cnt)
+                Self::get_enough_identical(voteds, simple_quorum_cnt).0
             }
         };
 
@@ -304,24 +322,28 @@ impl EPaxosReplica {
         }
     }
 
-    /// Returns the instance state among filtered ExpPrepare replies that
-    /// occurs at least N/2 times.
-    fn get_enough_identical(
-        mut voteds: Vec<(SeqNum, DepSet, ReqBatch)>,
-        simple_quorum_cnt: u8,
-    ) -> Option<(SeqNum, DepSet, ReqBatch)> {
-        debug_assert!(voteds.len() >= simple_quorum_cnt as usize);
-        let mut first = 0usize;
-        let mut visited = vec![false; voteds.len()];
-        visited[0] = true;
+    /// Returns an element in the input vec that occurs at least a given number
+    /// of times, along with the number of times it occurs. If no element meets
+    /// the threshold, returns `None` but with the max number of occurrences
+    /// across elements.
+    fn get_enough_identical<T: Eq>(
+        mut v: Vec<T>,
+        thresh: u8,
+    ) -> (Option<T>, u8) {
+        debug_assert_ne!(thresh, 0);
 
-        while first < voteds.len() {
+        let mut first = 0;
+        let mut visited = vec![false; v.len()];
+        visited[0] = true;
+        let mut max_cnt = 1;
+
+        while first < v.len() {
             let mut next_first = first;
             let mut same_cnt = 1;
-            for i in (first + 1)..voteds.len() {
+            for i in (first + 1)..v.len() {
                 if !visited[i] {
                     // not visited yet
-                    if voteds[i] == voteds[first] {
+                    if v[i] == v[first] {
                         visited[i] = true;
                         same_cnt += 1;
                     } else if next_first == first {
@@ -330,13 +352,13 @@ impl EPaxosReplica {
                 }
             }
 
-            if same_cnt + 1 >= simple_quorum_cnt {
-                return Some(voteds.remove(first));
-            } else {
-                first = next_first;
+            if same_cnt >= thresh {
+                return (Some(v.remove(first)), same_cnt);
             }
+            first = next_first;
+            max_cnt = max_cnt.max(same_cnt);
         }
 
-        None
+        (None, max_cnt)
     }
 }

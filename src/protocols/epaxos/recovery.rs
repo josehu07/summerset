@@ -107,6 +107,7 @@ impl EPaxosReplica {
                 // submit commands in contiguously committed instance to the
                 // state machine
                 if col == self.commit_bars[row] {
+                    let mut advanced = false;
                     while self.commit_bars[row]
                         < self.start_col + self.insts[row].len()
                     {
@@ -114,24 +115,18 @@ impl EPaxosReplica {
                             [self.commit_bars[row] - self.start_col];
                         if inst.status < Status::Committed {
                             break;
+                        } else if inst.reqs.is_empty() {
+                            inst.status = Status::Executed;
                         }
-                        // FIXME: correct execution algo.
-                        // // execute all commands in this instance on state machine
-                        // // synchronously
-                        // for (_, req) in inst.reqs.clone() {
-                        //     if let ApiRequest::Req { cmd, .. } = req {
-                        //         self.state_machine
-                        //             .do_sync_cmd(
-                        //                 0, // using 0 as dummy command ID
-                        //                 cmd,
-                        //             )
-                        //             .await?;
-                        //     }
-                        // }
-                        // update instance status, commit_bar and exec_bar
                         self.commit_bars[row] += 1;
-                        self.exec_bars[row] += 1;
-                        inst.status = Status::Executed;
+                        advanced = true;
+                    }
+                    if advanced {
+                        let tail_slot = SlotIdx(
+                            row as ReplicaId,
+                            self.commit_bars[row] - 1,
+                        );
+                        self.attempt_execution(tail_slot, true).await?;
                     }
                 }
             }
@@ -191,9 +186,9 @@ impl EPaxosReplica {
         {
             if self.wal_offset > 0 {
                 pf_info!(
-                    "recovered from wal log: commit {} exec {}",
-                    self.commit_bars[self.id as usize],
-                    self.exec_bars[self.id as usize]
+                    "recovered from wal log: commits {} execs {}",
+                    DepSet::from(self.commit_bars.clone()),
+                    DepSet::from(self.exec_bars.clone())
                 );
             }
             Ok(())

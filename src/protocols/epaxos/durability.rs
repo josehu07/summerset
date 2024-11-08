@@ -102,7 +102,7 @@ impl EPaxosReplica {
     }
 
     /// Handler of CommitSlot logging result chan recv.
-    fn handle_logged_commit_slot(
+    async fn handle_logged_commit_slot(
         &mut self,
         slot: SlotIdx,
     ) -> Result<(), SummersetError> {
@@ -116,40 +116,27 @@ impl EPaxosReplica {
             self.insts[row][col - self.start_col].bal
         );
 
-        // update index of the first non-committed instance
+        // update index of the first non-committed instance in this row
         if col == self.commit_bars[row] {
+            let mut advanced = false;
             while self.commit_bars[row] < self.start_col + self.insts[row].len()
             {
                 let inst = &mut self.insts[row]
                     [self.commit_bars[row] - self.start_col];
                 if inst.status < Status::Committed {
                     break;
-                }
-
-                // submit commands in committed instance to the state machine
-                // for execution
-                if inst.reqs.is_empty() {
+                } else if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
-                } else if inst.status == Status::Committed {
-                    // FIXME: correct execution algo.
-                    // for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                    //     if let ApiRequest::Req { cmd, .. } = req {
-                    //         self.state_machine.submit_cmd(
-                    //             Self::make_command_id(self.commit_bar, cmd_idx),
-                    //             cmd.clone(),
-                    //         )?;
-                    //     } else {
-                    //         continue; // ignore other types of requests
-                    //     }
-                    // }
-                    // pf_trace!(
-                    //     "submitted {} exec commands for slot {}",
-                    //     inst.reqs.len(),
-                    //     self.commit_bar
-                    // );
                 }
-
                 self.commit_bars[row] += 1;
+                advanced = true;
+            }
+
+            // attempt the execution algorithm on the new tail at commit_bar
+            if advanced {
+                let tail_slot =
+                    SlotIdx(row as ReplicaId, self.commit_bars[row] - 1);
+                self.attempt_execution(tail_slot, false).await?;
             }
         }
 
@@ -186,7 +173,7 @@ impl EPaxosReplica {
         match entry_type {
             Status::PreAccepting => self.handle_logged_pre_accept_slot(slot),
             Status::Accepting => self.handle_logged_accept_slot(slot),
-            Status::Committed => self.handle_logged_commit_slot(slot),
+            Status::Committed => self.handle_logged_commit_slot(slot).await,
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)
             }

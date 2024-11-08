@@ -6,31 +6,21 @@ use std::collections::HashMap;
 use super::*;
 
 use crate::manager::CtrlMsg;
-use crate::server::{ApiRequest, LogAction, LogResult};
+use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // EPaxosReplica snapshotting & GC logic
 impl EPaxosReplica {
     /// Dump new key-value pairs to snapshot file.
+    // TODO: the current snapshot dumping mechanism is not fully functional as
+    //       we need to take care of the case when there's a dependency from
+    //       the left side of new_start_col to the right side of it.
     async fn snapshot_dump_kv_pairs(
         &mut self,
-        new_start_slot: usize,
+        _new_start_col: usize,
     ) -> Result<(), SummersetError> {
         // collect all key-value pairs put up to exec_bar
-        let mut pairs = HashMap::new();
-        // FIXME: use correct order from execution algo.
-        // for slot in self.start_slot..new_start_slot {
-        //     let inst = &self.insts[slot - self.start_slot];
-        //     for (_, req) in inst.reqs.clone() {
-        //         if let ApiRequest::Req {
-        //             cmd: Command::Put { key, value },
-        //             ..
-        //         } = req
-        //         {
-        //             pairs.insert(key, value);
-        //         }
-        //     }
-        // }
+        let pairs = HashMap::new(); // dummy for now
 
         // write the collection to snapshot file
         if let LogResult::Append { now_size } = self
