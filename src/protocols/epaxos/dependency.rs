@@ -157,45 +157,60 @@ impl EPaxosReplica {
     }
 
     /// Checks the fast-path quorum eligibility for a set of received
-    /// PreAccept replies. Returns:
-    ///   - `None` if can't decide yet
-    ///   - `Some(true)` if conflict-free fast quorum formed
-    ///   - `Some(false)` if fast quorum impossible
+    /// PreAccept replies. Returns `None` if can't decide yet, otherwise
+    /// returns:
+    ///   - `Status::Committed` if conflict-free fast quorum formed
+    ///   - `Status::Accepting` if fast quorum already impossible
+    /// Also returns the instance state to feed into the next phase.
     pub(super) fn fast_quorum_eligibility(
         avoid_fast_path: bool,
         leader_bk: &LeaderBookkeeping,
         population: u8,
         simple_quorum_cnt: u8,
         super_quorum_cnt: u8,
-    ) -> Option<bool> {
+    ) -> Option<(Status, SeqNum, DepSet)> {
         let all_cnt = leader_bk.pre_accept_acks.count();
+        if all_cnt < simple_quorum_cnt {
+            // can't decide anything yet
+            return None;
+        }
 
         if avoid_fast_path {
             // don't consider fast path at all
-            if all_cnt >= simple_quorum_cnt {
-                return Some(false);
-            } else {
-                return None;
+            // need slow-path Accept, take union of deps and max of seqs
+            let (mut seq, mut deps) = (0, DepSet::empty(population));
+            for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
+                deps.union(rdeps);
+                seq = seq.max(*rseq);
             }
+            return Some((Status::Accepting, seq, deps));
         } else {
             // will consider fast path if eligible
             let mut repeats = HashMap::new();
             for reply in leader_bk.pre_accept_replies.values().cloned() {
                 *repeats.entry(reply).or_insert(0) += 1;
             }
-            let max_cnt = repeats.into_values().max().unwrap_or(0) as u8;
+            let ((max_seq, max_deps), max_cnt) =
+                repeats.into_iter().max_by_key(|(_, cnt)| *cnt).unwrap();
             debug_assert!(super_quorum_cnt <= population);
             debug_assert!(simple_quorum_cnt <= super_quorum_cnt);
             debug_assert!(all_cnt <= population);
             debug_assert!(max_cnt <= all_cnt);
 
             if max_cnt >= super_quorum_cnt {
-                Some(true)
-            } else if all_cnt >= simple_quorum_cnt
-                && max_cnt + (population - all_cnt) < super_quorum_cnt
-            {
-                Some(false)
+                // can commit on fast path, return the state corresponding to
+                // the max_cnt
+                Some((Status::Committed, max_seq, max_deps))
+            } else if max_cnt + (population - all_cnt) < super_quorum_cnt {
+                // need slow-path Accept, take union of deps and max of seqs
+                let (mut seq, mut deps) = (0, DepSet::empty(population));
+                for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
+                    deps.union(rdeps);
+                    seq = seq.max(*rseq);
+                }
+                Some((Status::Accepting, seq, deps))
             } else {
+                // can't decide fast path eligibility yet; wait for more
                 None
             }
         }
@@ -205,7 +220,7 @@ impl EPaxosReplica {
     /// proper next phase to run. Returns `None` if can't decide yet, otherwise
     /// returns:
     ///   - `Status::Committed` if can commit
-    ///   - `Status::Accepting` if need slow-path Accept
+    ///   - `Status::Accepting` if need a round of Accept
     ///   - `Status::PreAccepting` if need to start over from PreAccept
     /// Also returns the instance state to feed into the next phase.
     pub(super) fn exp_prepare_next_step(
@@ -216,6 +231,7 @@ impl EPaxosReplica {
     ) -> Option<(Status, SeqNum, DepSet, ReqBatch)> {
         debug_assert!(simple_quorum_cnt <= population);
         if leader_bk.exp_prepare_acks.count() < simple_quorum_cnt {
+            // can't decide yet
             return None;
         }
 
@@ -233,10 +249,12 @@ impl EPaxosReplica {
         }
 
         if let Some(r) = has_commit {
+            // can commit
             let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
             return Some((Status::Committed, seq, deps, reqs));
         }
         if let Some(r) = has_accept {
+            // need a round of Accept
             let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
             return Some((Status::Accepting, seq, deps, reqs));
         }
@@ -268,12 +286,15 @@ impl EPaxosReplica {
         };
 
         if let Some((seq, deps, reqs)) = has_enough_identical {
+            // need a round of Accept
             return Some((Status::Accepting, seq, deps, reqs));
         }
         if let Some(r) = has_pre_accept {
+            // need to start over from PreAccept
             let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
             return Some((Status::PreAccepting, seq, deps, reqs));
         } else {
+            // use no-op at this instance
             return Some((
                 Status::PreAccepting,
                 1,

@@ -67,7 +67,7 @@ impl EPaxosReplica {
                 inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
             }
 
-            //  record update to instance status & data
+            // record update to instance status & data
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::PreAccepting),
                 LogAction::Append {
@@ -146,10 +146,12 @@ impl EPaxosReplica {
             self.simple_quorum_cnt,
             self.super_quorum_cnt,
         ) {
-            Some(true) => {
+            Some((Status::Committed, seq, deps)) => {
                 // fast quorum size reached and has enough non-conflicting replies,
                 // mark this instance as committed
                 inst.status = Status::Committed;
+                inst.seq = seq;
+                inst.deps = deps;
                 pf_debug!(
                     "committed instance at slot {} bal {} fast path",
                     slot,
@@ -198,21 +200,17 @@ impl EPaxosReplica {
                 );
             }
 
-            Some(false) => {
+            Some((Status::Accepting, seq, deps)) => {
                 // enough replies received such that the fast-path commit condition
                 // will never be reached; initiate slow-path Accepts directly
                 inst.status = Status::Accepting;
+                inst.seq = seq;
+                inst.deps = deps;
                 pf_debug!(
                     "enter Accept phase for slot {} bal {}",
                     slot,
                     inst.bal
                 );
-
-                // take union of all deps from all replies
-                for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
-                    inst.deps.union(rdeps);
-                    inst.seq = inst.seq.max(*rseq);
-                }
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
@@ -256,7 +254,7 @@ impl EPaxosReplica {
                 );
             }
 
-            None => {} // not enough information from replies yet
+            _ => {} // not enough information from replies yet
         }
 
         Ok(())
