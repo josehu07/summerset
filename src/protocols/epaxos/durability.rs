@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::server::{ApiRequest, LogActionId, LogResult};
+use crate::server::{LogActionId, LogResult};
 use crate::utils::SummersetError;
 
 // EPaxosReplica durable WAL logging

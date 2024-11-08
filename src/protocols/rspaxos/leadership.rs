@@ -266,7 +266,7 @@ impl RSPaxosReplica {
             let mut commit_cnt = 0;
             for slot in self.commit_bar..commit_bar {
                 let inst = &mut self.insts[slot - self.start_slot];
-                if inst.status < Status::Accepting {
+                if inst.bal < ballot || inst.status < Status::Accepting {
                     break;
                 } else if inst.status >= Status::Committed {
                     continue;

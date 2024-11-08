@@ -6,7 +6,7 @@ mod conflease;
 mod control;
 mod durability;
 mod execution;
-mod leadership;
+mod heartbeat;
 mod localread;
 mod messages;
 mod recovery;

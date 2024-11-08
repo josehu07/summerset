@@ -1,7 +1,5 @@
 //! EPaxos -- peer-peer messaging.
 
-use std::cmp;
-
 use super::*;
 
 use crate::server::{LogAction, ReplicaId};
@@ -549,6 +547,7 @@ impl EPaxosReplica {
     }
 
     /// Handler of ExpPrepare reply from replica.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_msg_exp_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -859,17 +858,9 @@ impl EPaxosReplica {
                 voted_reqs,
             ),
             PeerMsg::Heartbeat {
-                ballot,
-                commit_bars,
                 exec_bars,
                 snap_bar,
-            } => self.heard_heartbeat(
-                peer,
-                ballot,
-                commit_bars,
-                exec_bars,
-                snap_bar,
-            ),
+            } => self.heard_heartbeat(peer, exec_bars, snap_bar),
         }
     }
 }

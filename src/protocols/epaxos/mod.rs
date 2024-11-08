@@ -231,6 +231,7 @@ struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[allow(clippy::enum_variant_names)]
 enum WalEntry {
     /// Records a newly initiated PreAccept phase instance.
     PreAcceptSlot {
@@ -344,10 +345,6 @@ enum PeerMsg {
 
     /// Peer-to-peer periodic heartbeat.
     Heartbeat {
-        ballot: Ballot,
-        /// commit_bar of each row of the instance space; for notifying
-        /// followers about safe-to-commit slots (in a bit conservative way).
-        commit_bars: Vec<usize>, // length always == population
         /// exec_bar of each row of the instance space; for conservative
         /// snapshotting purpose.
         exec_bars: Vec<usize>, // length always == population

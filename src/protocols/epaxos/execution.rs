@@ -33,46 +33,41 @@ impl EPaxosReplica {
         let mut dep_queue = VecDeque::new();
         dep_queue.push_back(tail_slot);
         let mut last_slot = None;
-        loop {
-            if let Some(slot) = dep_queue.pop_front() {
-                let (row, col) = slot.unpack();
-                debug_assert!(row < self.population as usize);
-                if col >= self.commit_bars[row] {
-                    // dependency not committed; can't proceed to execution
-                    return Ok(false);
-                }
-                if col < self.start_col
-                    || self.insts[row][col - self.start_col].status
-                        == Status::Executed
-                {
-                    // already executed, can prune it and all its transitive
-                    // dependencies
-                } else {
-                    // add to dependency graph
-                    dep_graph.add_node(slot);
-                    if let Some(last_slot) = last_slot {
-                        dep_graph.add_edge(last_slot, slot, ());
-                    }
-                    // push its dependencies to queue
-                    for (r, c) in self.insts[row][col - self.start_col]
-                        .deps
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.is_some())
-                    {
-                        dep_queue
-                            .push_back(SlotIdx(r as ReplicaId, c.unwrap()));
-                    }
-                    if col > self.start_col {
-                        // don't forget that R.c implicitly depends on R.(c-1)
-                        dep_queue.push_back(SlotIdx(row as ReplicaId, col - 1));
-                    }
-                }
-                last_slot = Some(slot);
-            } else {
-                // dependencies traversal complete
-                break;
+        while let Some(slot) = dep_queue.pop_front() {
+            let (row, col) = slot.unpack();
+            debug_assert!(row < self.population as usize);
+            if col >= self.commit_bars[row] {
+                // dependency not committed; can't proceed to execution
+                pf_trace!("execution attempt aborted due to dep slot {}", slot);
+                return Ok(false);
             }
+            if col < self.start_col
+                || self.insts[row][col - self.start_col].status
+                    == Status::Executed
+            {
+                // already executed, can prune it and all its transitive
+                // dependencies
+            } else {
+                // add to dependency graph
+                dep_graph.add_node(slot);
+                if let Some(last_slot) = last_slot {
+                    dep_graph.add_edge(last_slot, slot, ());
+                }
+                // push its dependencies to queue
+                for (r, c) in self.insts[row][col - self.start_col]
+                    .deps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.is_some())
+                {
+                    dep_queue.push_back(SlotIdx(r as ReplicaId, c.unwrap()));
+                }
+                if col > self.start_col {
+                    // don't forget that R.c implicitly depends on R.(c-1)
+                    dep_queue.push_back(SlotIdx(row as ReplicaId, col - 1));
+                }
+            }
+            last_slot = Some(slot);
         }
         let dep_graph = dep_graph.into_graph::<usize>();
 
@@ -81,6 +76,11 @@ impl EPaxosReplica {
         // nicely returns the condensed graph in reverse topological order
         // which is exactly what we need
         let scc_list = tarjan_scc(&dep_graph);
+        pf_trace!(
+            "execution attempt passed: |dep_graph| {} |scc_list| {}",
+            dep_graph.node_count(),
+            scc_list.len()
+        );
         for mut scc in scc_list {
             // sort instances in each SCC in seq order
             scc.sort_by_key(|&n| {

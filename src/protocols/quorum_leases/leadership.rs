@@ -301,7 +301,7 @@ impl QuorumLeasesReplica {
 
             // reply back with a Heartbeat message
             // NOTE: commented out to favor the new all-to-all heartbeats
-            //       pattern; performance-wise should have no impact
+            //       pattern; performance-wise should have little impact
             // if self.leader == Some(peer) {
             //     self.transport_hub.send_msg(
             //         PeerMsg::Heartbeat {
@@ -331,7 +331,7 @@ impl QuorumLeasesReplica {
 
         // all slots up to received commit_bar are safe to commit; submit their
         // commands for execution
-        self.advance_commit_bar(peer, commit_bar)?;
+        self.advance_commit_bar(peer, ballot, commit_bar)?;
 
         if peer != self.id {
             // update peer_exec_bar if larger then known; if all servers'
@@ -375,7 +375,7 @@ impl QuorumLeasesReplica {
         );
 
         if ballot == self.bal_max_seen {
-            self.advance_commit_bar(peer, commit_bar)?;
+            self.advance_commit_bar(peer, ballot, commit_bar)?;
         }
 
         Ok(())
@@ -387,6 +387,7 @@ impl QuorumLeasesReplica {
     fn advance_commit_bar(
         &mut self,
         peer: ReplicaId,
+        ballot: Ballot,
         commit_bar: usize,
     ) -> Result<(), SummersetError> {
         if commit_bar > self.commit_bar {
@@ -397,7 +398,7 @@ impl QuorumLeasesReplica {
             let mut commit_cnt = 0;
             for slot in self.commit_bar..commit_bar {
                 let inst = &mut self.insts[slot - self.start_slot];
-                if inst.status < Status::Accepting {
+                if inst.bal < ballot || inst.status < Status::Accepting {
                     break;
                 } else if inst.status >= Status::Committed {
                     continue;

@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::server::{ApiReply, ApiRequest, LogAction};
+use crate::server::LogAction;
 use crate::utils::{Bitmap, SummersetError};
 
 // EPaxosReplica client requests entrance

@@ -24,7 +24,7 @@ impl fmt::Display for DepSet {
 
 impl From<Vec<usize>> for DepSet {
     fn from(v: Vec<usize>) -> Self {
-        DepSet(v.into_iter().map(|c| Some(c)).collect())
+        DepSet(v.into_iter().map(Some).collect())
     }
 }
 
@@ -100,13 +100,7 @@ impl EPaxosReplica {
         debug_assert_eq!(deps.len(), self.population);
         deps.iter()
             .enumerate()
-            .filter_map(|(r, c)| {
-                if let Some(c) = c {
-                    Some(self.insts[r][*c].seq)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(r, c)| c.map(|c| self.insts[r][c].seq))
             .max()
             .unwrap_or(0)
     }
@@ -176,10 +170,10 @@ impl EPaxosReplica {
 
     /// Checks the fast-path quorum eligibility for a set of received
     /// PreAccept replies. Returns `None` if can't decide yet, otherwise
-    /// returns:
+    /// returns the following status enum to indicate which next phase should
+    /// we enter as well as the instance state to feed into the next phase:
     ///   - `Status::Committed` if conflict-free fast quorum formed
     ///   - `Status::Accepting` if fast quorum already impossible
-    /// Also returns the instance state to feed into the next phase.
     pub(super) fn fast_quorum_eligibility(
         avoid_fast_path: bool,
         leader_bk: &LeaderBookkeeping,
@@ -205,7 +199,7 @@ impl EPaxosReplica {
                 deps.union(rdeps);
                 seq = seq.max(*rseq);
             }
-            return Some((Status::Accepting, seq, deps));
+            Some((Status::Accepting, seq, deps))
         } else {
             // will consider fast path if eligible
             let (max_seq_deps, max_cnt) = Self::get_enough_identical(
@@ -235,11 +229,11 @@ impl EPaxosReplica {
 
     /// Checks the set of highest-ballot ExpPrepare replies and returns the
     /// proper next phase to run. Returns `None` if can't decide yet, otherwise
-    /// returns:
+    /// returns the following status enum to indicate which next phase should
+    /// we enter as well as the instance state to feed into the next phase:
     ///   - `Status::Committed` if can commit
     ///   - `Status::Accepting` if need a round of Accept
     ///   - `Status::PreAccepting` if need to start over from PreAccept
-    /// Also returns the instance state to feed into the next phase.
     pub(super) fn exp_prepare_next_step(
         slot_row: ReplicaId,
         leader_bk: &LeaderBookkeeping,
@@ -305,20 +299,19 @@ impl EPaxosReplica {
 
         if let Some((seq, deps, reqs)) = has_enough_identical {
             // need a round of Accept
-            return Some((Status::Accepting, seq, deps, reqs));
-        }
-        if let Some(r) = has_pre_accept {
+            Some((Status::Accepting, seq, deps, reqs))
+        } else if let Some(r) = has_pre_accept {
             // need to start over from PreAccept
             let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();
-            return Some((Status::PreAccepting, seq, deps, reqs));
+            Some((Status::PreAccepting, seq, deps, reqs))
         } else {
             // use no-op at this instance
-            return Some((
+            Some((
                 Status::PreAccepting,
                 1,
                 DepSet::empty(population),
                 ReqBatch::new(),
-            ));
+            ))
         }
     }
 

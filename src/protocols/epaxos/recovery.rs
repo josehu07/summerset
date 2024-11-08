@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::server::{ApiRequest, LogAction, LogResult};
+use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // EPaxosReplica recovery from WAL log
