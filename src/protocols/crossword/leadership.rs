@@ -29,7 +29,7 @@ impl CrosswordReplica {
             // reset heartbeat timeout timer to prevent me from trying to
             // compete with a new leader when it is doing reconstruction
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // set this peer to be the believed leader
@@ -41,12 +41,14 @@ impl CrosswordReplica {
         Ok(())
     }
 
-    /// Becomes a leader, sends self-initiated Prepare messages to followers
-    /// for all in-progress instances, and starts broadcasting heartbeats.
+    /// If current leader is not me but times out, steps up as leader, and
+    /// sends self-initiated Prepare messages to followers for all in-progress
+    /// instances.
     pub(super) async fn become_a_leader(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.is_leader() {
+        if self.leader.is_some() && self.leader != Some(timeout_source) {
             return Ok(());
         }
 
@@ -57,7 +59,7 @@ impl CrosswordReplica {
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts();
+        self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
@@ -298,7 +300,7 @@ impl CrosswordReplica {
             return Ok(());
         }
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
         if exec_bar < self.exec_bar {
             return Ok(());

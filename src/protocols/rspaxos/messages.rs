@@ -32,7 +32,7 @@ impl RSPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -348,7 +348,7 @@ impl RSPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed

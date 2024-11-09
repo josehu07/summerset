@@ -24,7 +24,7 @@ impl MultiPaxosReplica {
 
             // reset heartbeat timeout timer promptly
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // if leasing enabled, revoke old lease if any made to old leader,
@@ -66,12 +66,14 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Becomes a leader and sends self-initiated Prepare messages to followers
-    /// for all in-progress instances.
+    /// If current leader is not me but times out, steps up as leader, and
+    /// sends self-initiated Prepare messages to followers for all in-progress
+    /// instances.
     pub(super) async fn become_a_leader(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.is_leader() {
+        if self.leader.is_some() && self.leader != Some(timeout_source) {
             return Ok(());
         }
 
@@ -100,7 +102,7 @@ impl MultiPaxosReplica {
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts();
+        self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
@@ -307,7 +309,7 @@ impl MultiPaxosReplica {
             && self.leader == Some(peer)
             && self.bal_max_seen == ballot
         {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
         if exec_bar < self.exec_bar {
             return Ok(());

@@ -1018,7 +1018,7 @@ impl GenericReplica for CrosswordReplica {
 
         // kick off leader activity hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         // kick off follower gossiping trigger timer
@@ -1083,9 +1083,13 @@ impl GenericReplica for CrosswordReplica {
 
                 // heartbeat-related event
                 hb_event = self.heartbeater.get_event(), if !paused => {
-                    match hb_event {
-                        HeartbeatEvent::HearTimeout => {
-                            if let Err(e) = self.become_a_leader().await {
+                    if let Err(e) = hb_event {
+                        pf_error!("error getting heartbeat event: {}", e);
+                        continue;
+                    }
+                    match hb_event.unwrap() {
+                        HeartbeatEvent::HearTimeout { peer } => {
+                            if let Err(e) = self.become_a_leader(peer).await {
                                 pf_error!("error becoming a leader: {}", e);
                             }
                         }

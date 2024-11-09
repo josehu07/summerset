@@ -64,7 +64,7 @@ impl QuorumLeasesReplica {
 
         // reset heartbeat hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         *paused = false;

@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crate::server::{LogAction, ReplicaId};
+use crate::server::ReplicaId;
 use crate::utils::SummersetError;
 
 // EPaxosReplica leadership related logic
@@ -12,8 +12,58 @@ impl EPaxosReplica {
     /// instances in that peer's row of my instance space.
     pub(super) async fn heartbeat_timeout(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        // FIXME: actual logic
+        // clear peer's heartbeat reply counters, and broadcast a heartbeat now
+        self.heartbeater.clear_reply_cnts(Some(timeout_source))?;
+        self.bcast_heartbeats().await?;
+
+        // re-initialize peer_exec_bar information
+        if let Some(col) = self.peer_exec_min.get_mut(&timeout_source) {
+            *col = 0;
+        } else {
+            return logged_err!(
+                "peer {} not found in peer_exec_min",
+                timeout_source
+            );
+        }
+
+        // start the explicit ExpPrepare phase for all in-progress instances
+        // on that peer's row
+        let row = timeout_source as usize;
+        for (col, inst) in self.insts[row]
+            .iter_mut()
+            .enumerate()
+            .map(|(c, i)| (self.start_col + c, i))
+            .skip(self.exec_bars[row] - self.start_col)
+        {
+            if inst.status == Status::Executed {
+                continue;
+            }
+            inst.external = true; // so replies to clients can be triggered
+            if inst.status == Status::Committed {
+                continue;
+            }
+
+            // broadcast ExpPrepare messages to all peers. Note that the
+            // instance state on my own replica is not updated; my reply to
+            // myself will be part of the set of ExpPrepareReplies
+            let new_ballot =
+                Self::make_greater_ballot(timeout_source, inst.bal);
+            self.transport_hub.bcast_msg(
+                PeerMsg::ExpPrepare {
+                    slot: SlotIdx(timeout_source, col),
+                    ballot: new_ballot,
+                },
+                None,
+            )?;
+            pf_trace!(
+                "broadcast ExpPrepare messages slot {} bal {}",
+                SlotIdx(timeout_source, col),
+                new_ballot
+            );
+        }
+
         Ok(())
     }
 
@@ -71,7 +121,7 @@ impl EPaxosReplica {
         // reset hearing timer
         if !self.config.disable_hb_timer {
             // FIXME: correct per-peer timeouts
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
         if exec_bars.len() != self.exec_bars.len() || exec_bars < self.exec_bars
         {
