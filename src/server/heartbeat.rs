@@ -141,12 +141,32 @@ impl Heartbeater {
     pub(crate) async fn get_event(
         &mut self,
     ) -> Result<HeartbeatEvent, SummersetError> {
-        tokio::select! {
-            peer = self.rx_timeout.recv() => { if let Some(peer) = peer {
-                Ok(HeartbeatEvent::HearTimeout {peer})
-            } else {
-                logged_err!("all timeout channel senders closed") }},
-            _ = self.send_interval.tick(), if self.is_sending => { Ok(HeartbeatEvent::SendTicked) },
+        loop {
+            tokio::select! {
+                // a hearing timeout
+                peer = self.rx_timeout.recv() => {
+                    if let Some(peer) = peer {
+                        if let Some(timer) = self.hear_timers.get(&peer) {
+                            if !timer.exploded() {
+                                continue; // explosion already cancelled, ignore
+                            }
+                            return Ok(HeartbeatEvent::HearTimeout {peer});
+                        } else {
+                            return logged_err!(
+                                "peer {} not found in hear_timers",
+                                peer
+                            );
+                        }
+                    } else {
+                        return logged_err!("all timeout channel senders closed");
+                    }
+                },
+
+                // a sending tick
+                _ = self.send_interval.tick(), if self.is_sending => {
+                    return Ok(HeartbeatEvent::SendTicked);
+                },
+            }
         }
     }
 
