@@ -31,13 +31,19 @@ impl EPaxosReplica {
         // start the explicit ExpPrepare phase for all in-progress instances
         // on that peer's row
         let row = timeout_source as usize;
+        pf_info!("explicitly preparing row {}...", row);
         for (col, inst) in self.insts[row]
             .iter_mut()
             .enumerate()
             .map(|(c, i)| (self.start_col + c, i))
             .skip(self.exec_bars[row] - self.start_col)
         {
-            if inst.status == Status::Executed {
+            if inst.status >= Status::Executing
+                || (inst
+                    .replica_bk
+                    .as_ref()
+                    .is_some_and(|bk| bk.source != timeout_source))
+            {
                 continue;
             }
             inst.external = true; // so replies to clients can be triggered
@@ -120,7 +126,6 @@ impl EPaxosReplica {
 
         // reset hearing timer
         if !self.config.disable_hb_timer {
-            // FIXME: correct per-peer timeouts
             self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
         if exec_bars.len() != self.exec_bars.len() || exec_bars < self.exec_bars

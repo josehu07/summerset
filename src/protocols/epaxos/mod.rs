@@ -57,6 +57,9 @@ pub struct ReplicaConfigEPaxos {
     /// Whether to call `fsync()`/`fdatasync()` on logger.
     pub logger_sync: bool,
 
+    /// Use optimized fast-path quorum size with modified recovery procedure?
+    pub optimized_quorum: bool,
+
     /// Min timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_min: u64,
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
@@ -87,7 +90,8 @@ impl Default for ReplicaConfigEPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.epaxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 1500,
+            optimized_quorum: true,
+            hb_hear_timeout_min: 1200,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
@@ -127,10 +131,12 @@ struct DepSet(Vec<Option<usize>>); // length always == population
 )]
 enum Status {
     Null = 0,
+    // no Preparing status; explicit prepare is by messages only
     PreAccepting = 1,
     Accepting = 2,
     Committed = 3,
-    Executed = 4,
+    Executing = 4, // needed due to the intertwined execution algorithm
+    Executed = 5,
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
@@ -509,7 +515,7 @@ impl EPaxosReplica {
     /// Decompose LogActionId into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (SlotIdx, Status) {
-        let col = (log_action_id >> 10) as usize;
+        let col = (log_action_id >> 8) as usize;
         let row = ((log_action_id >> 2) & ((1 << 6) - 1)) as ReplicaId;
         let type_num = log_action_id & ((1 << 2) - 1);
         let entry_type = match type_num {
@@ -526,17 +532,17 @@ impl EPaxosReplica {
     fn make_command_id(slot: SlotIdx, cmd_idx: usize) -> CommandId {
         let (row, col) = slot.unpack();
         debug_assert!(row < (1 << 6));
-        debug_assert!(col < (1 << 29));
-        debug_assert!(cmd_idx < (1 << 29));
-        ((col << 35) | (row << 29) | cmd_idx) as CommandId
+        debug_assert!(col < (1 << 38));
+        debug_assert!(cmd_idx < (1 << 20));
+        ((col << 26) | (row << 20) | cmd_idx) as CommandId
     }
 
     /// Decompose CommandId into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (SlotIdx, usize) {
-        let col = (command_id >> 35) as usize;
-        let row = ((command_id >> 29) & ((1 << 6) - 1)) as ReplicaId;
-        let cmd_idx = (command_id & ((1 << 29) - 1)) as usize;
+        let col = (command_id >> 26) as usize;
+        let row = ((command_id >> 20) & ((1 << 6) - 1)) as ReplicaId;
+        let cmd_idx = (command_id & ((1 << 20) - 1)) as usize;
         (SlotIdx(row, col), cmd_idx)
     }
 }
@@ -558,10 +564,10 @@ impl GenericReplica for EPaxosReplica {
         let config = parsed_config!(config_str => ReplicaConfigEPaxos;
                                     batch_interval_ms, max_batch_size,
                                     backer_path, logger_sync,
-                                    hb_hear_timeout_min, hb_hear_timeout_max,
-                                    hb_send_interval_ms, disable_hb_timer,
-                                    snapshot_path, snapshot_interval_s,
-                                    msg_chunk_size)?;
+                                    optimized_quorum, hb_hear_timeout_min,
+                                    hb_hear_timeout_max, hb_send_interval_ms,
+                                    disable_hb_timer, snapshot_path,
+                                    snapshot_interval_s, msg_chunk_size)?;
         if config.batch_interval_ms == 0 {
             return logged_err!(
                 "invalid config.batch_interval_ms '{}'",

@@ -86,7 +86,7 @@ impl Default for ReplicaConfigRaft {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.raft.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_min: 1200,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,

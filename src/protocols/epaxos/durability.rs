@@ -136,7 +136,22 @@ impl EPaxosReplica {
             if advanced {
                 let tail_slot =
                     SlotIdx(row as ReplicaId, self.commit_bars[row] - 1);
-                self.attempt_execution(tail_slot, false).await?;
+                if self.attempt_execution(tail_slot, false).await? {
+                    // re-check each row and attempt execution of committed
+                    // instances in case they were previously blocked by me
+                    let mut reattempts = vec![];
+                    for (row, &col) in self.commit_bars.iter().enumerate() {
+                        if col > self.exec_bars[row]
+                            && self.insts[row][col - 1 - self.start_col].status
+                                == Status::Committed
+                        {
+                            reattempts.push(SlotIdx(row as ReplicaId, col - 1));
+                        }
+                    }
+                    for slot in reattempts {
+                        self.attempt_execution(slot, false).await?;
+                    }
+                }
             }
         }
 

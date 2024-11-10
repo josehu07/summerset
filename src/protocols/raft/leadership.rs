@@ -79,7 +79,7 @@ impl RaftReplica {
         timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
         if self.role != Role::Follower
-            || (self.leader.is_some() && self.leader != Some(timeout_source))
+            || self.leader.as_ref().is_some_and(|&l| l != timeout_source)
         {
             return Ok(());
         }

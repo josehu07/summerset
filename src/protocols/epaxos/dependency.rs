@@ -317,8 +317,8 @@ impl EPaxosReplica {
 
     /// Returns an element in the input vec that occurs at least a given number
     /// of times, along with the number of times it occurs. If no element meets
-    /// the threshold, returns `None` but with the max number of occurrences
-    /// across elements.
+    /// the threshold, returns `None` but with the max number of occurrences of
+    /// an element.
     fn get_enough_identical<T: Eq>(
         mut v: Vec<T>,
         thresh: u8,
@@ -331,7 +331,7 @@ impl EPaxosReplica {
         let mut max_cnt = 1;
 
         while first < v.len() {
-            let mut next_first = first;
+            let mut next_first = v.len();
             let mut same_cnt = 1;
             for i in (first + 1)..v.len() {
                 if !visited[i] {
@@ -339,7 +339,7 @@ impl EPaxosReplica {
                     if v[i] == v[first] {
                         visited[i] = true;
                         same_cnt += 1;
-                    } else if next_first == first {
+                    } else if next_first == v.len() {
                         next_first = i;
                     }
                 }

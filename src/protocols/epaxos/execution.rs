@@ -33,9 +33,11 @@ impl EPaxosReplica {
         let mut dep_queue = VecDeque::new();
         dep_queue.push_back(tail_slot);
         let mut last_slot = None;
+
         while let Some(slot) = dep_queue.pop_front() {
             let (row, col) = slot.unpack();
             debug_assert!(row < self.population as usize);
+
             if col >= self.commit_bars[row] {
                 // dependency not committed; can't proceed to execution
                 pf_trace!("execution attempt aborted due to dep slot {}", slot);
@@ -43,16 +45,20 @@ impl EPaxosReplica {
             }
             if col < self.start_col
                 || self.insts[row][col - self.start_col].status
-                    == Status::Executed
+                    >= Status::Executing
             {
-                // already executed, can prune it and all its transitive
-                // dependencies
+                // already submitted for execution, can prune it and all its
+                // transitive dependencies
+            } else if dep_graph.contains_node(slot) {
+                // already added to dependency graph (dependencies likely have
+                // cyclic loops and it's normal)
             } else {
                 // add to dependency graph
                 dep_graph.add_node(slot);
                 if let Some(last_slot) = last_slot {
                     dep_graph.add_edge(last_slot, slot, ());
                 }
+
                 // push its dependencies to queue
                 for (r, c) in self.insts[row][col - self.start_col]
                     .deps
@@ -87,6 +93,7 @@ impl EPaxosReplica {
                 let (row, col) = dep_graph[n].unpack();
                 self.insts[row][col - self.start_col].seq
             });
+
             // then execute one-by-one
             for n in scc {
                 let (row, col) = dep_graph[n].unpack();
@@ -98,26 +105,36 @@ impl EPaxosReplica {
                     if let ApiRequest::Req { cmd, .. } = req {
                         let cmd_id =
                             Self::make_command_id(dep_graph[n], cmd_idx);
-                        if sync_exec {
+                        if !sync_exec {
+                            self.state_machine
+                                .submit_cmd(cmd_id, cmd.clone())?;
+                        } else {
                             self.state_machine
                                 .do_sync_cmd(cmd_id, cmd.clone())
                                 .await?;
-                        } else {
-                            self.state_machine
-                                .submit_cmd(cmd_id, cmd.clone())?;
                         }
                     }
                 }
-                if sync_exec {
+
+                if !sync_exec {
+                    self.insts[row][col - self.start_col].status =
+                        Status::Executing;
+                } else {
                     self.insts[row][col - self.start_col].status =
                         Status::Executed;
+
+                    // update index of the first non-executed instance
                     if col == self.exec_bars[row] {
-                        while self.exec_bars[row] < self.commit_bars[row]
-                            && self.insts[row]
+                        while self.exec_bars[row]
+                            < self.start_col + self.insts[row].len()
+                        {
+                            if self.insts[row]
                                 [self.exec_bars[row] - self.start_col]
                                 .status
-                                == Status::Executed
-                        {
+                                < Status::Executed
+                            {
+                                break;
+                            }
                             self.exec_bars[row] += 1;
                         }
                     }
@@ -175,9 +192,10 @@ impl EPaxosReplica {
                 while self.exec_bars[row]
                     < self.start_col + self.insts[row].len()
                 {
-                    let inst = &mut self.insts[row]
-                        [self.exec_bars[row] - self.start_col];
-                    if inst.status < Status::Executed {
+                    if self.insts[row][self.exec_bars[row] - self.start_col]
+                        .status
+                        < Status::Executed
+                    {
                         break;
                     }
                     self.exec_bars[row] += 1;

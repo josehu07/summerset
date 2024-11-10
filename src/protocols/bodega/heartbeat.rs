@@ -43,7 +43,7 @@ impl BodegaReplica {
         &mut self,
         timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.leader.is_some() && self.leader != Some(timeout_source) {
+        if self.leader.as_ref().is_some_and(|&l| l != timeout_source) {
             return Ok(());
         }
 

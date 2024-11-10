@@ -21,17 +21,24 @@ EXPER_NAME = "loc_wr_grid"
 
 COMMON_CONFIGS = [
     "hb_hear_timeout_min=1200",
-    "hb_hear_timeout_max=2000",
-    "hb_send_interval_ms=100",
+    "hb_hear_timeout_max=2400",
+    "hb_send_interval_ms=150",
 ]
 PROTOCOLS_NAME_CONFIGS = {
     "LeaderLs": (
         "MultiPaxos",
         [
-            "lease_expire_ms=2000",
+            "lease_expire_ms=2500",
             "enable_leader_leases=true",
         ],
         [],
+    ),
+    "EPaxos": (
+        "EPaxos",
+        [],
+        [
+            "near_server_id=0",  # placeholder; set by distr_clients.py
+        ],
     ),
     "PQR": (
         "MultiPaxos",
@@ -47,7 +54,7 @@ PROTOCOLS_NAME_CONFIGS = {
     "LeaderLsPQR": (
         "MultiPaxos",
         [
-            "lease_expire_ms=2000",
+            "lease_expire_ms=2500",
             "enable_leader_leases=true",
             "enable_quorum_reads=true",
             "urgent_commit_notice=true",
@@ -60,7 +67,7 @@ PROTOCOLS_NAME_CONFIGS = {
     "QuorumLeases": (
         "QuorumLeases",
         [
-            "lease_expire_ms=2000",
+            "lease_expire_ms=2500",
             "enable_leader_leases=true",
             "urgent_commit_notice=true",
         ],
