@@ -134,8 +134,7 @@ def gather_ycsb_outputs(protocol_with_midfix, path_prefix, tb, te, partition=Non
     return {
         "tput": {
             "mean": sum(tputs) / len(tputs),
-            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs))
-            ** 0.5,
+            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs)) ** 0.5,
         },
         "lat": {
             "mean": sum(lats) / len(lats),
