@@ -52,8 +52,4 @@ pub use crate::protocols::{ClientConfigRaft, ReplicaConfigRaft};
 #[rustfmt::skip]
 pub use crate::protocols::{ClientConfigCRaft, ReplicaConfigCRaft};
 #[rustfmt::skip]
-pub use crate::protocols::{ClientConfigCrossword, ReplicaConfigCrossword};
-#[rustfmt::skip]
 pub use crate::protocols::{ClientConfigQuorumLeases, ReplicaConfigQuorumLeases};
-#[rustfmt::skip]
-pub use crate::protocols::{ClientConfigBodega, ReplicaConfigBodega};
