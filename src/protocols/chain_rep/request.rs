@@ -47,8 +47,6 @@ impl ChainRepReplica {
                         ),
                         cmd,
                     )?;
-                } else {
-                    continue; // ignore other types of requests
                 }
             }
             pf_trace!("submitted {} read-only commands to exec", num_reqs);

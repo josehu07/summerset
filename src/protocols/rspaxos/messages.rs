@@ -32,7 +32,7 @@ impl RSPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -348,7 +348,7 @@ impl RSPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -475,11 +475,12 @@ impl RSPaxosReplica {
         for slot in slots {
             if slot < self.start_slot {
                 // TODO: this has one caveat: a new leader trying to do
-                // reconstruction reads might find that all other peers have
-                // snapshotted that slot. Proper InstallSnapshot-style messages
-                // will be needed to deal with this; but since this scenario is
-                // just too rare, it will be implemented after a rework of the
-                // storage backend module
+                //       reconstruction reads might find that all other peers
+                //       have snapshotted that slot. Proper InstallSnapshot-
+                //       style messages will be needed to deal with this; but
+                //       since this scenario is just too rare and does not
+                //       affect evaluation at all, it will be implemented after
+                //       a rework of the storage backend module
                 continue;
             }
 
@@ -573,8 +574,6 @@ impl RSPaxosReplica {
                                         ),
                                         cmd.clone(),
                                     )?;
-                                } else {
-                                    continue; // ignore other types of requests
                                 }
                             }
                             pf_trace!(

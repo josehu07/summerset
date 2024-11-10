@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import signal
 import argparse
 
@@ -28,9 +29,9 @@ PROTOCOL_SNAPSHOT_PATH = (
 
 
 class ProtoFeats:
-    def __init__(self, may_snapshot, has_heartbeats, extra_defaults):
+    def __init__(self, may_snapshot, has_hb_leader, extra_defaults):
         self.may_snapshot = may_snapshot
-        self.has_heartbeats = has_heartbeats
+        self.has_hb_leader = has_hb_leader
         self.extra_defaults = extra_defaults
 
 
@@ -39,9 +40,11 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "Raft": ProtoFeats(True, True, None),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
     "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Raft": ProtoFeats(True, True, None),
     "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
 }
 
 
@@ -120,7 +123,7 @@ def config_with_defaults(
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
 
-    if PROTOCOL_FEATURES[protocol].has_heartbeats and hb_timer_off:
+    if PROTOCOL_FEATURES[protocol].has_hb_leader and hb_timer_off:
         config_dict["disable_hb_timer"] = "true"
 
     return config_dict_to_str(config_dict)
@@ -208,6 +211,7 @@ def launch_servers(
     file_midfix,
     fresh_files,
     pin_cores,
+    launch_wait,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -257,6 +261,9 @@ def launch_servers(
                 cd_dir=cd_dir,
             )
         server_procs.append(proc)
+
+        if launch_wait:
+            time.sleep(1)  # NOTE: helps enforce server ID assignment
 
     return server_procs
 
@@ -310,6 +317,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--launch_wait", action="store_true", help="if set, wait 1s between launches"
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -414,6 +424,7 @@ if __name__ == "__main__":
         file_midfix,
         not args.keep_files,
         args.pin_cores,
+        args.launch_wait,
     )
 
     # register termination signals handler

@@ -21,8 +21,8 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    logged_err, parsed_config, pf_debug, pf_error, GenericEndpoint, RequestId,
-    SummersetError,
+    logged_err, parsed_config, pf_debug, pf_error, CommandResult,
+    GenericEndpoint, RequestId, SummersetError,
 };
 
 /// Fixed length in bytes of key.
@@ -69,6 +69,12 @@ pub struct ModeParamsBench {
     /// Number of keys to choose from.
     pub num_keys: usize,
 
+    /// Whether to generate keys randomly or use predetermined sequence from 0.
+    pub use_random_keys: bool,
+
+    /// Whether to skip the preloading phase that loads values for all keys.
+    pub skip_preloading: bool,
+
     /// If non-zero, use a normal distribution of this standard deviation
     /// ratio for every write command.
     pub norm_stdev_ratio: f32,
@@ -92,6 +98,8 @@ impl Default for ModeParamsBench {
             ycsb_trace: "".into(),
             value_size: "1024".into(),
             num_keys: 5,
+            use_random_keys: false,
+            skip_preloading: false,
             norm_stdev_ratio: 0.0,
             unif_interval_ms: 0,
             unif_upper_bound: 128 * 1024,
@@ -137,8 +145,11 @@ pub(crate) struct ClientBench {
     /// Total number of replies received in last print interval.
     chunk_cnt: u64,
 
-    /// Latencies of requests in last print interval.
-    chunk_lats: Vec<f64>,
+    /// Latencies of Put requests in last print interval.
+    chunk_wlats: Vec<f64>,
+
+    /// Latencies of Get requests in last print interval.
+    chunk_rlats: Vec<f64>,
 
     /// True if the next issue should be a retry.
     retrying: bool,
@@ -170,12 +181,12 @@ impl ClientBench {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
-                                    freq_target, length_s,
-                                    put_ratio, ycsb_trace,
-                                    value_size, num_keys,
+                                    freq_target, length_s, put_ratio,
+                                    ycsb_trace, value_size, num_keys,
+                                    use_random_keys, skip_preloading,
                                     norm_stdev_ratio,
                                     unif_interval_ms, unif_upper_bound)?;
-        if params.freq_target > 1000000 {
+        if params.freq_target > 1_000_000 {
             return logged_err!(
                 "invalid params.freq_target '{}'",
                 params.freq_target
@@ -222,14 +233,16 @@ impl ClientBench {
 
         let keys_pool = if params.ycsb_trace.is_empty() {
             let mut pool = Vec::with_capacity(params.num_keys);
-            for _ in 0..params.num_keys {
-                pool.push(
+            for i in 0..params.num_keys {
+                pool.push(if params.use_random_keys {
                     rand::thread_rng()
                         .sample_iter(&Alphanumeric)
                         .take(KEY_LEN)
                         .map(char::from)
-                        .collect(),
-                );
+                        .collect()
+                } else {
+                    format!("key{:0w$}", i, w = KEY_LEN - 3)
+                });
             }
             Some(pool)
         } else {
@@ -282,7 +295,8 @@ impl ClientBench {
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
-            chunk_lats: vec![],
+            chunk_wlats: vec![],
+            chunk_rlats: vec![],
             retrying: false,
             slowdown: 0,
             start: Instant::now(),
@@ -447,7 +461,7 @@ impl ClientBench {
             .get(self.rng.gen_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..=100) <= self.params.put_ratio {
+        if self.rng.gen_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
             self.driver.issue_put(&key, val)
@@ -512,11 +526,23 @@ impl ClientBench {
         if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
             match result {
-                DriverReply::Success { latency, .. } => {
+                DriverReply::Success {
+                    latency,
+                    cmd_result,
+                    ..
+                } => {
                     self.reply_cnt += 1;
                     self.chunk_cnt += 1;
-                    let lat_us = latency.as_secs_f64() * 1000000.0;
-                    self.chunk_lats.push(lat_us);
+
+                    let lat_us = latency.as_secs_f64() * 1_000_000.0;
+                    match cmd_result {
+                        CommandResult::Put { .. } => {
+                            self.chunk_wlats.push(lat_us);
+                        }
+                        CommandResult::Get { .. } => {
+                            self.chunk_rlats.push(lat_us);
+                        }
+                    }
                 }
 
                 DriverReply::Timeout => {
@@ -539,11 +565,19 @@ impl ClientBench {
             // receive next reply
             result = self.driver.wait_reply() => {
                 match result? {
-                    DriverReply::Success { latency, .. } => {
+                    DriverReply::Success { latency, cmd_result, .. } => {
                         self.reply_cnt += 1;
                         self.chunk_cnt += 1;
-                        let lat_us = latency.as_secs_f64() * 1000000.0;
-                        self.chunk_lats.push(lat_us);
+
+                        let lat_us = latency.as_secs_f64() * 1_000_000.0;
+                        match cmd_result {
+                            CommandResult::Put { .. } => {
+                                self.chunk_wlats.push(lat_us);
+                            }
+                            CommandResult::Get { .. } => {
+                                self.chunk_rlats.push(lat_us);
+                            }
+                        }
 
                         if self.slowdown > 0 {
                             self.slowdown -= 1;
@@ -582,6 +616,42 @@ impl ClientBench {
         Ok(())
     }
 
+    /// If not using trace, preload values for all keys. Allowing a few retries
+    /// in cases of redirections and if servers weren't fully launched up.
+    async fn do_preload(&mut self) -> Result<(), SummersetError> {
+        let val = self.gen_value_at_now()?;
+
+        if let Some(keys_pool) = &self.keys_pool {
+            println!("Preloading all keys...");
+
+            let mut retries = 10; // hardcoded
+            for key in keys_pool {
+                loop {
+                    while self.driver.issue_put(key, val)?.is_none() {}
+
+                    match self.driver.wait_reply().await? {
+                        DriverReply::Success { .. } => {
+                            break;
+                        }
+                        _ => {
+                            retries -= 1;
+                            if retries == 0 {
+                                return logged_err!(
+                                    "unsuccessful preload reply, no retries left"
+                                );
+                            }
+                            time::sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                }
+            }
+
+            println!("  Done");
+        }
+
+        Ok(())
+    }
+
     /// Drops the current interval ticker and create a new one using the
     /// current frequency.
     fn reset_ticker(&mut self) {
@@ -589,7 +659,7 @@ impl ClientBench {
             self.curr_freq = 1; // avoid division-by-zero
         }
 
-        let period = Duration::from_nanos(1000000000 / self.curr_freq);
+        let period = Duration::from_nanos(1_000_000_000 / self.curr_freq);
         self.ticker = time::interval(period);
         self.ticker
             .set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -598,17 +668,15 @@ impl ClientBench {
     /// Runs the adaptive benchmark for given time length.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
-        println!(
-            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
-        );
 
         self.start = Instant::now();
         self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let mut last_print = self.start;
-        let (mut printed_1_100, mut printed_1_10) = (false, false);
+        // if not using trace, preload values for all keys
+        if !self.params.skip_preloading {
+            self.do_preload().await?;
+        }
 
         if self.params.freq_target > 0 {
             // is open-loop, set up interval ticker
@@ -616,14 +684,29 @@ impl ClientBench {
             self.reset_ticker();
         }
 
+        let mut last_print = self.start;
+        let (mut printed_1_100, mut printed_1_10) = (false, false);
+
         self.total_cnt = 0;
         self.reply_cnt = 0;
         self.chunk_cnt = 0;
-        self.chunk_lats.clear();
+        self.chunk_wlats.clear();
+        self.chunk_rlats.clear();
         self.retrying = false;
         self.slowdown = 0;
 
         // run for specified length
+        println!(
+            "{:^11} | {:^12} | {:^12} : {:^12} ~ {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)",
+            "Tput (ops/s)",
+            "Lat (us)",
+            "WLat (us)",
+            "RLat (us)",
+            "Freq",
+            "Reply",
+            "Total"
+        );
         let mut elapsed = self.now.duration_since(self.start);
         while elapsed < length {
             if self.params.freq_target == 0 {
@@ -641,57 +724,75 @@ impl ClientBench {
                 || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
                 || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
             {
-                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if self.chunk_lats.is_empty() {
+                let tput = self.chunk_cnt as f64 / print_elapsed.as_secs_f64();
+                let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_lats.iter().sum::<f64>()
-                        / (self.chunk_lats.len() as f64)
+                    self.chunk_wlats.iter().sum::<f64>()
+                        / self.chunk_wlats.len() as f64
                 };
+                let rlat = if self.chunk_rlats.is_empty() {
+                    0.0
+                } else {
+                    self.chunk_rlats.iter().sum::<f64>()
+                        / self.chunk_rlats.len() as f64
+                };
+                let lat =
+                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                        0.0
+                    } else {
+                        (wlat * self.chunk_wlats.len() as f64
+                            + rlat * self.chunk_rlats.len() as f64)
+                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
+                                as f64
+                    };
                 println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} : {:>8} / {:<8}",
+                    "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
                     elapsed.as_secs_f64(),
-                    tpt,
+                    tput,
                     lat,
+                    wlat,
+                    rlat,
                     self.curr_freq,
                     self.reply_cnt,
                     self.total_cnt
                 );
                 last_print = self.now;
                 self.chunk_cnt = 0;
-                self.chunk_lats.clear();
+                self.chunk_wlats.clear();
+                self.chunk_rlats.clear();
 
                 // THE FOLLOWING IS EXPERIMENTAL:
                 // adaptively adjust issuing frequency according to number of
                 // pending requests; we try to maintain two ranges:
-                //   - curr_freq in (1 ~ 1.25) * tpt
-                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tpt
+                //   - curr_freq in (1 ~ 1.25) * tput
+                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tput
                 if self.params.freq_target > 0 {
                     let freq_changed = if self.slowdown > 0
-                        || self.curr_freq as f64 > 1.25 * tpt
-                        || self.reply_cnt as f64 + 0.1 * tpt
+                        || self.curr_freq as f64 > 1.25 * tput
+                        || self.reply_cnt as f64 + 0.1 * tput
                             < self.total_cnt as f64
                     {
                         // frequency too high, ramp down
-                        self.curr_freq -= (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 > 2.0 * tpt {
+                        self.curr_freq -= (0.01 * tput) as u64;
+                        if self.curr_freq as f64 > 2.0 * tput {
                             self.curr_freq /= 2;
-                        } else if self.curr_freq as f64 > 1.5 * tpt {
+                        } else if self.curr_freq as f64 > 1.5 * tput {
                             self.curr_freq =
                                 (0.67 * self.curr_freq as f64) as u64;
-                        } else if self.curr_freq as f64 > 1.25 * tpt {
+                        } else if self.curr_freq as f64 > 1.25 * tput {
                             self.curr_freq =
                                 (0.8 * self.curr_freq as f64) as u64;
                         }
                         true
-                    } else if self.curr_freq as f64 <= tpt
-                        || self.reply_cnt as f64 + 0.001 * tpt
+                    } else if self.curr_freq as f64 <= tput
+                        || self.reply_cnt as f64 + 0.001 * tput
                             >= self.total_cnt as f64
                     {
                         // frequency too conservative, ramp up a bit
-                        self.curr_freq += (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 <= tpt {
-                            self.curr_freq = tpt as u64;
+                        self.curr_freq += (0.01 * tput) as u64;
+                        if self.curr_freq as f64 <= tput {
+                            self.curr_freq = tput as u64;
                         }
                         if self.curr_freq > self.params.freq_target {
                             self.curr_freq = self.params.freq_target;

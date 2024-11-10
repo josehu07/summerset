@@ -1,4 +1,4 @@
-//! MultiPaxos -- leader election.
+//! MultiPaxos -- leader election & heartbeats.
 
 use super::*;
 
@@ -6,7 +6,7 @@ use crate::manager::CtrlMsg;
 use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
-// MultiPaxosReplica leadership related logic
+// MultiPaxosReplica heartbeats related logic
 impl MultiPaxosReplica {
     /// If a larger ballot number is seen, consider that peer as new leader.
     pub(super) async fn check_leader(
@@ -24,12 +24,12 @@ impl MultiPaxosReplica {
 
             // reset heartbeat timeout timer promptly
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // if leasing enabled, revoke old lease if any made to old leader,
             // then initiate granting to the new leader
-            if !self.config.disable_leasing {
+            if self.config.enable_leader_leases {
                 if let Some(old_leader) = self.leader {
                     if old_leader != self.id {
                         self.lease_manager.add_notice(
@@ -66,18 +66,20 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Becomes a leader, sends self-initiated Prepare messages to followers
-    /// for all in-progress instances, and starts broadcasting heartbeats.
+    /// If current leader is not me but times out, steps up as leader, and
+    /// sends self-initiated Prepare messages to followers for all in-progress
+    /// instances.
     pub(super) async fn become_a_leader(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.is_leader() {
+        if self.leader.as_ref().is_some_and(|&l| l != timeout_source) {
             return Ok(());
         }
 
         // if leasing enabled, start to revoke old lease
         let mut old_leader = None;
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(leader) = self.leader {
                 if leader != self.id {
                     self.lease_manager.add_notice(
@@ -100,7 +102,7 @@ impl MultiPaxosReplica {
         pf_info!("becoming a leader...");
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts();
+        self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
         // re-initialize peer_exec_bar information
@@ -181,6 +183,12 @@ impl MultiPaxosReplica {
             );
         }
 
+        // clear peers' accept_bar information
+        for bar in self.peer_accept_bar.values_mut() {
+            *bar = usize::MAX;
+        }
+        self.peer_accept_max = usize::MAX;
+
         // send Prepare message to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Prepare {
@@ -197,7 +205,7 @@ impl MultiPaxosReplica {
 
         // before moving on, ensure that any lease to old leader has either
         // been RevokeReplied or timed out
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(old_leader) = old_leader {
                 self.ensure_lease_revoked(old_leader).await?;
             }
@@ -211,7 +219,7 @@ impl MultiPaxosReplica {
         &mut self,
     ) -> Result<(), SummersetError> {
         // check and send lease promise refresh to leader
-        if !self.config.disable_leasing {
+        if self.config.enable_leader_leases {
             if let Some(leader) = self.leader {
                 if leader != self.id {
                     let to_refresh = self.lease_manager.attempt_refresh(
@@ -219,6 +227,7 @@ impl MultiPaxosReplica {
                     )?;
                     if to_refresh.count() > 0 {
                         self.transport_hub.bcast_lease_msg(
+                            0, // only one lease purpose exists in the system
                             self.bal_max_seen,
                             LeaseMsg::Promise,
                             Some(to_refresh),
@@ -278,7 +287,7 @@ impl MultiPaxosReplica {
 
             // reply back with a Heartbeat message
             // NOTE: commented out to favor the new all-to-all heartbeats
-            //       pattern; performance-wise should have no impact
+            //       pattern; performance-wise should have little impact
             // if self.leader == Some(peer) {
             //     self.transport_hub.send_msg(
             //         PeerMsg::Heartbeat {
@@ -300,7 +309,7 @@ impl MultiPaxosReplica {
             && self.leader == Some(peer)
             && self.bal_max_seen == ballot
         {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
         if exec_bar < self.exec_bar {
             return Ok(());
@@ -308,6 +317,65 @@ impl MultiPaxosReplica {
 
         // all slots up to received commit_bar are safe to commit; submit their
         // commands for execution
+        self.advance_commit_bar(peer, ballot, commit_bar)?;
+
+        if peer != self.id {
+            // update peer_exec_bar if larger then known; if all servers'
+            // exec_bar (including myself) have passed a slot, that slot
+            // is definitely safe to be snapshotted
+            if exec_bar > self.peer_exec_bar[&peer] {
+                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                let passed_cnt = 1 + self
+                    .peer_exec_bar
+                    .values()
+                    .filter(|&&e| e >= exec_bar)
+                    .count() as u8;
+                if passed_cnt == self.population {
+                    // all servers have executed up to exec_bar
+                    self.snap_bar = exec_bar;
+                }
+            }
+
+            // if snap_bar is larger than mine, update snap_bar
+            if snap_bar > self.snap_bar {
+                self.snap_bar = snap_bar;
+            }
+        }
+
+        // pf_trace!("heard heartbeat <- {} bal {}", peer, ballot);
+        Ok(())
+    }
+
+    /// React to a CommitNotice message from leader.
+    pub(super) fn heard_commit_notice(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+        commit_bar: usize,
+    ) -> Result<(), SummersetError> {
+        pf_trace!(
+            "received CommitNotice <- {} for bal {} commit_bar {}",
+            peer,
+            ballot,
+            commit_bar
+        );
+
+        if ballot == self.bal_max_seen {
+            self.advance_commit_bar(peer, ballot, commit_bar)?;
+        }
+
+        Ok(())
+    }
+
+    /// React to an updated commit_bar received from (probably) leader. Slots
+    /// up to received commit_bar are safe to commit; submit their commands
+    /// for execution.
+    fn advance_commit_bar(
+        &mut self,
+        peer: ReplicaId,
+        ballot: Ballot,
+        commit_bar: usize,
+    ) -> Result<(), SummersetError> {
         if commit_bar > self.commit_bar {
             while self.start_slot + self.insts.len() < commit_bar {
                 self.insts.push(self.null_instance());
@@ -316,7 +384,7 @@ impl MultiPaxosReplica {
             let mut commit_cnt = 0;
             for slot in self.commit_bar..commit_bar {
                 let inst = &mut self.insts[slot - self.start_slot];
-                if inst.status < Status::Accepting {
+                if inst.bal < ballot || inst.status < Status::Accepting {
                     break;
                 } else if inst.status >= Status::Committed {
                     continue;
@@ -348,34 +416,14 @@ impl MultiPaxosReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!("heartbeat commit <- {} < slot {}", peer, commit_bar);
+                pf_trace!(
+                    "advancing commit <- {} until slot {}",
+                    peer,
+                    commit_bar
+                );
             }
         }
 
-        if peer != self.id {
-            // update peer_exec_bar if larger then known; if all servers'
-            // exec_bar (including myself) have passed a slot, that slot
-            // is definitely safe to be snapshotted
-            if exec_bar > self.peer_exec_bar[&peer] {
-                *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
-                let passed_cnt = 1 + self
-                    .peer_exec_bar
-                    .values()
-                    .filter(|&&e| e >= exec_bar)
-                    .count() as u8;
-                if passed_cnt == self.population {
-                    // all servers have executed up to exec_bar
-                    self.snap_bar = exec_bar;
-                }
-            }
-
-            // if snap_bar is larger than mine, update snap_bar
-            if snap_bar > self.snap_bar {
-                self.snap_bar = snap_bar;
-            }
-        }
-
-        // pf_trace!("heard heartbeat <- {} bal {}", peer, ballot);
         Ok(())
     }
 }

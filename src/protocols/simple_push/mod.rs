@@ -11,6 +11,7 @@ mod messages;
 mod recovery;
 mod request;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -62,7 +63,7 @@ impl Default for ReplicaConfigSimplePush {
 
 /// WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum WalEntry {
+enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
     },
@@ -75,7 +76,7 @@ pub(crate) enum WalEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PushMsg {
+enum PushMsg {
     Push {
         src_inst_idx: usize,
         reqs: Vec<(ClientId, ApiRequest)>,
@@ -87,7 +88,7 @@ pub(crate) enum PushMsg {
 }
 
 /// In-memory instance containing a commands batch.
-pub(crate) struct Instance {
+struct Instance {
     reqs: Vec<(ClientId, ApiRequest)>,
     durable: bool,
     pending_peers: Bitmap,
@@ -186,8 +187,13 @@ impl GenericReplica for SimplePushReplica {
                 .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -277,7 +283,7 @@ impl GenericReplica for SimplePushReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -343,6 +349,10 @@ impl GenericReplica for SimplePushReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -363,6 +373,9 @@ impl Default for ClientConfigSimplePush {
 pub(crate) struct SimplePushClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     config: ClientConfigSimplePush,
@@ -391,6 +404,7 @@ impl GenericEndpoint for SimplePushClient {
 
         Ok(SimplePushClient {
             id,
+            population: 0,
             config,
             ctrl_stub,
             api_stub: None,
@@ -416,6 +430,8 @@ impl GenericEndpoint for SimplePushClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // find a server to connect to, starting from provided server_id
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.config.server_id) {
@@ -486,6 +502,10 @@ impl GenericEndpoint for SimplePushClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

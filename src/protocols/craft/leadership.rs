@@ -95,13 +95,13 @@ impl CRaftReplica {
             // guarantee to guard against extra failures during this period
 
             // TODO: should re-persist all data shards, but not really that
-            // important for evaluation; skipped in current implementation
+            //       important for evaluation; skipped in current implementation
 
             // re-send AppendEntries covering all entries, containing all
             // data shards of each entry, to followers
             // NOTE: not doing this right now as the liveness guarantee under
-            // concurrent failures is already weakened; not necessary to guard
-            // against this corner case of non-concurrent failures
+            //       concurrent failures is already weakened; not necessary to
+            //       guard against this corner case of non-concurrent failures
             // let entries = self
             //     .log
             //     .iter()
@@ -138,11 +138,15 @@ impl CRaftReplica {
         Ok(())
     }
 
-    /// Becomes a candidate and starts the election procedure.
+    /// If current leader is not me but times out, becomes a candidate and
+    /// starts the election procedure.
     pub(super) async fn become_a_candidate(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.role != Role::Follower {
+        if self.role != Role::Follower
+            || self.leader.as_ref().is_some_and(|&l| l != timeout_source)
+        {
             return Ok(());
         }
 
@@ -214,7 +218,7 @@ impl CRaftReplica {
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts();
+        self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
         // re-initialize next_slot and match_slot information
@@ -306,7 +310,7 @@ impl CRaftReplica {
 
         // reset hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
 
         // pf_trace!("heard heartbeat <- {} term {}", peer, term);

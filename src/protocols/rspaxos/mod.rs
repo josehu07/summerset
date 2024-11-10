@@ -82,8 +82,8 @@ pub struct ReplicaConfigRSPaxos {
     pub perf_network_a: u64,
     pub perf_network_b: u64,
 
+    // [for benchmarking purposes only]
     /// Simulate local read lease implementation?
-    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -95,7 +95,7 @@ impl Default for ReplicaConfigRSPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.rs_paxos.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_min: 1200,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
@@ -113,13 +113,13 @@ impl Default for ReplicaConfigRSPaxos {
 }
 
 /// Ballot number type. Use 0 as a null ballot number.
-pub(crate) type Ballot = u64;
+type Ballot = u64;
 
 /// Instance status enum.
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Status {
+enum Status {
     Null = 0,
     Preparing = 1,
     Accepting = 2,
@@ -128,11 +128,11 @@ pub(crate) enum Status {
 }
 
 /// Request batch type (i.e., the "value" in Paxos).
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
-pub(crate) struct LeaderBookkeeping {
+struct LeaderBookkeeping {
     /// If in Preparing status, the trigger_slot of this Prepare phase.
     trigger_slot: usize,
 
@@ -151,7 +151,7 @@ pub(crate) struct LeaderBookkeeping {
 
 /// Follower-side bookkeeping info for each instance received.
 #[derive(Debug, Clone)]
-pub(crate) struct ReplicaBookkeeping {
+struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 
@@ -164,17 +164,20 @@ pub(crate) struct ReplicaBookkeeping {
 
 /// In-memory instance containing a (possibly partial) commands batch.
 #[derive(Debug, Clone)]
-pub(crate) struct Instance {
+struct Instance {
     /// Ballot number.
     bal: Ballot,
 
     /// Instance status.
     status: Status,
 
-    /// Shards of a batch of client requests.
+    /// Shards of a batch of commands. This field is overwritten directly when
+    /// receiving PrepareReplies; this is just a small engineering choice to
+    /// avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs_cw: RSCodeword<ReqBatch>,
 
-    /// Highest ballot and associated value I have accepted.
+    /// Highest ballot and associated value I have accepted; this field is
+    /// required to support correct Prepare phase replies.
     voted: (Ballot, RSCodeword<ReqBatch>),
 
     /// Leader-side bookkeeping info.
@@ -192,7 +195,7 @@ pub(crate) struct Instance {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum WalEntry {
+enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
 
@@ -208,12 +211,12 @@ pub(crate) enum WalEntry {
 }
 
 /// Snapshot file entry type.
-///
-/// NOTE: the current implementation simply appends a squashed log at the
-/// end of the snapshot file for simplicity. In production, the snapshot
-/// file should be a bounded-sized backend, e.g., an LSM-tree.
+//
+// NOTE: the current implementation simply appends a squashed log at the
+//       end of the snapshot file for simplicity. In production, the snapshot
+//       file should be a bounded-sized backend, e.g., an LSM-tree.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum SnapEntry {
+enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log instances covered
@@ -227,7 +230,7 @@ pub(crate) enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
         /// Slot index in Prepare message is the triggering slot of this
@@ -364,9 +367,9 @@ pub(crate) struct RSPaxosReplica {
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
     /// Slot index before which it is safe to take snapshot.
-    /// NOTE: we are taking a conservative approach here that a snapshot
-    /// covering an entry can be taken only when all servers have durably
-    /// committed (and executed) that entry.
+    // NOTE: we are taking a conservative approach here that a snapshot
+    //       covering an entry can be taken only when all servers have durably
+    //       committed (and executed) that entry.
     snap_bar: usize,
 
     /// Current durable WAL log file offset.
@@ -551,8 +554,13 @@ impl GenericReplica for RSPaxosReplica {
         )?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -660,7 +668,7 @@ impl GenericReplica for RSPaxosReplica {
 
         // kick off leader activity hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         // main event loop
@@ -696,7 +704,7 @@ impl GenericReplica for RSPaxosReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -720,9 +728,13 @@ impl GenericReplica for RSPaxosReplica {
 
                 // heartbeat-related event
                 hb_event = self.heartbeater.get_event(), if !paused => {
-                    match hb_event {
-                        HeartbeatEvent::HearTimeout => {
-                            if let Err(e) = self.become_a_leader().await {
+                    if let Err(e) = hb_event {
+                        pf_error!("error getting heartbeat event: {}", e);
+                        continue;
+                    }
+                    match hb_event.unwrap() {
+                        HeartbeatEvent::HearTimeout { peer } => {
+                            if let Err(e) = self.become_a_leader(peer).await {
                                 pf_error!("error becoming a leader: {}", e);
                             }
                         }
@@ -777,6 +789,10 @@ impl GenericReplica for RSPaxosReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -797,6 +813,9 @@ impl Default for ClientConfigRSPaxos {
 pub(crate) struct RSPaxosClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     _config: ClientConfigRSPaxos,
@@ -832,6 +851,7 @@ impl GenericEndpoint for RSPaxosClient {
 
         Ok(RSPaxosClient {
             id,
+            population: 0,
             _config: config,
             servers: HashMap::new(),
             server_id: init_server_id,
@@ -859,6 +879,8 @@ impl GenericEndpoint for RSPaxosClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.server_id)
@@ -892,7 +914,7 @@ impl GenericEndpoint for RSPaxosClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }
@@ -968,6 +990,10 @@ impl GenericEndpoint for RSPaxosClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

@@ -29,11 +29,7 @@ impl ChainRepReplica {
             // reply back to the client
             if self.external_api.has_client(client) {
                 self.external_api.send_reply(
-                    ApiReply::Reply {
-                        id: req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
+                    ApiReply::normal(req_id, Some(cmd_result)),
                     client,
                 )?;
                 pf_trace!(
@@ -62,11 +58,7 @@ impl ChainRepReplica {
                 if let ApiRequest::Req { id: req_id, .. } = req {
                     if self.external_api.has_client(client) {
                         self.external_api.send_reply(
-                            ApiReply::Reply {
-                                id: *req_id,
-                                result: Some(cmd_result),
-                                redirect: None,
-                            },
+                            ApiReply::normal(*req_id, Some(cmd_result)),
                             client,
                         )?;
                         pf_trace!(

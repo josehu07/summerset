@@ -76,8 +76,8 @@ pub struct ReplicaConfigCRaft {
     /// Maximum chunk size of any bulk of messages.
     pub msg_chunk_size: usize,
 
+    // [for benchmarking purposes only]
     /// Simulate local read lease implementation?
-    // NOTE: this is only for benchmarking purposes
     pub sim_read_lease: bool,
 }
 
@@ -89,7 +89,7 @@ impl Default for ReplicaConfigCRaft {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.craft.wal".into(),
             logger_sync: false,
-            hb_hear_timeout_min: 1500,
+            hb_hear_timeout_min: 1200,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
             disable_hb_timer: false,
@@ -103,21 +103,21 @@ impl Default for ReplicaConfigCRaft {
 }
 
 /// Term number type, defined for better code readability.
-pub(crate) type Term = u64;
+type Term = u64;
 
 /// Request batch type (i.e., the "command" in an entry).
-///
-/// NOTE: the originally presented Raft algorithm does not explicitly mention
-/// batching, but instead hides it with the heartbeats: every AppendEntries RPC
-/// from the leader basically batches all commands it has received since the
-/// last sent heartbeat. Here, to make this implementation more comparable to
-/// MultiPaxos, we trigger batching also explicitly.
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+//
+// NOTE: the originally presented Raft algorithm does not explicitly mention
+//       batching, but instead hides it with the heartbeats: every AppendEntries
+//       RPC from the leader basically batches all commands it has received
+//       since the last sent heartbeat. Here, to make this implementation more
+//       comparable to MultiPaxos, we trigger batching also explicitly.
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-mem + persistent entry of log, containing a term and a (possibly
 /// partial) commands batch.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) struct LogEntry {
+struct LogEntry {
     /// Term number.
     term: Term,
 
@@ -134,12 +134,12 @@ pub(crate) struct LogEntry {
 }
 
 /// Stable storage log entry type.
-///
-/// NOTE: Raft makes the persistent log exactly mirror the in-memory log, so
-/// the backer file is not a WAL log in runtime operation; it might get
-/// overwritten, etc.
+//
+// NOTE: Raft makes the persistent log exactly mirror the in-memory log, so
+//       the backer file is not a WAL log in runtime operation; it might get
+//       overwritten, etc.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum DurEntry {
+enum DurEntry {
     /// Durable metadata.
     Metadata {
         curr_term: Term,
@@ -180,7 +180,7 @@ impl DurEntry {
 
 /// Snapshot file entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum SnapEntry {
+enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
         /// First entry at the start of file: number of log entries covered
@@ -194,7 +194,7 @@ pub(crate) enum SnapEntry {
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// AppendEntries from leader to followers.
     AppendEntries {
         term: Term,
@@ -240,7 +240,7 @@ pub(crate) enum PeerMsg {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Role {
+enum Role {
     Follower,
     Candidate,
     Leader,
@@ -339,9 +339,9 @@ pub(crate) struct CRaftReplica {
     match_slot: HashMap<ReplicaId, usize>,
 
     /// Slot index up to which it is safe to take snapshot.
-    /// NOTE: we are taking a conservative approach here that a snapshot
-    /// covering an entry can be taken only when all servers have durably
-    /// committed that entry.
+    // NOTE: we are taking a conservative approach here that a snapshot
+    //       covering an entry can be taken only when all servers have durably
+    //       committed (and executed) that entry.
     last_snap: usize,
 
     /// Current durable log file end offset.
@@ -477,8 +477,13 @@ impl GenericReplica for CRaftReplica {
         )?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -596,7 +601,7 @@ impl GenericReplica for CRaftReplica {
 
         // kick off leader activity hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         // main event loop
@@ -632,7 +637,7 @@ impl GenericReplica for CRaftReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -656,9 +661,13 @@ impl GenericReplica for CRaftReplica {
 
                 // heartbeat-related event
                 hb_event = self.heartbeater.get_event(), if !paused => {
-                    match hb_event {
-                        HeartbeatEvent::HearTimeout => {
-                            if let Err(e) = self.become_a_candidate().await {
+                    if let Err(e) = hb_event {
+                        pf_error!("error getting heartbeat event: {}", e);
+                        continue;
+                    }
+                    match hb_event.unwrap() {
+                        HeartbeatEvent::HearTimeout { peer } => {
+                            if let Err(e) = self.become_a_candidate(peer).await {
                                 pf_error!("error becoming a candidate: {}", e);
                             }
                         }
@@ -713,6 +722,10 @@ impl GenericReplica for CRaftReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -733,6 +746,9 @@ impl Default for ClientConfigCRaft {
 pub(crate) struct CRaftClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     _config: ClientConfigCRaft,
@@ -768,6 +784,7 @@ impl GenericEndpoint for CRaftClient {
 
         Ok(CRaftClient {
             id,
+            population: 0,
             _config: config,
             servers: HashMap::new(),
             server_id: init_server_id,
@@ -795,6 +812,8 @@ impl GenericEndpoint for CRaftClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new server_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.server_id)
@@ -828,7 +847,7 @@ impl GenericEndpoint for CRaftClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }
@@ -904,6 +923,10 @@ impl GenericEndpoint for CRaftClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

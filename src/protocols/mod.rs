@@ -26,17 +26,25 @@ mod multipaxos;
 pub use multipaxos::{ClientConfigMultiPaxos, ReplicaConfigMultiPaxos};
 use multipaxos::{MultiPaxosClient, MultiPaxosReplica};
 
-mod raft;
-pub use raft::{ClientConfigRaft, ReplicaConfigRaft};
-use raft::{RaftClient, RaftReplica};
+mod epaxos;
+pub use epaxos::{ClientConfigEPaxos, ReplicaConfigEPaxos};
+use epaxos::{EPaxosClient, EPaxosReplica};
 
 mod rspaxos;
 pub use rspaxos::{ClientConfigRSPaxos, ReplicaConfigRSPaxos};
 use rspaxos::{RSPaxosClient, RSPaxosReplica};
 
+mod raft;
+pub use raft::{ClientConfigRaft, ReplicaConfigRaft};
+use raft::{RaftClient, RaftReplica};
+
 mod craft;
 use craft::{CRaftClient, CRaftReplica};
 pub use craft::{ClientConfigCRaft, ReplicaConfigCRaft};
+
+mod quorum_leases;
+pub use quorum_leases::{ClientConfigQuorumLeases, ReplicaConfigQuorumLeases};
+use quorum_leases::{QuorumLeasesClient, QuorumLeasesReplica};
 
 /// Enum of supported replication protocol types.
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
@@ -45,9 +53,11 @@ pub enum SmrProtocol {
     SimplePush,
     ChainRep,
     MultiPaxos,
-    Raft,
+    EPaxos,
     RSPaxos,
+    Raft,
     CRaft,
+    QuorumLeases,
 }
 
 /// Helper macro for saving boilder-plate `Box<dyn ..>` mapping in
@@ -67,9 +77,11 @@ impl SmrProtocol {
             "SimplePush" => Some(Self::SimplePush),
             "ChainRep" => Some(Self::ChainRep),
             "MultiPaxos" => Some(Self::MultiPaxos),
-            "Raft" => Some(Self::Raft),
+            "EPaxos" => Some(Self::EPaxos),
             "RSPaxos" => Some(Self::RSPaxos),
+            "Raft" => Some(Self::Raft),
             "CRaft" => Some(Self::CRaft),
+            "QuorumLeases" => Some(Self::QuorumLeases),
             _ => None,
         }
     }
@@ -126,9 +138,9 @@ impl SmrProtocol {
                     .await
                 )
             }
-            Self::Raft => {
+            Self::EPaxos => {
                 box_if_ok!(
-                    RaftReplica::new_and_setup(
+                    EPaxosReplica::new_and_setup(
                         api_addr, p2p_addr, manager, config_str
                     )
                     .await
@@ -142,9 +154,25 @@ impl SmrProtocol {
                     .await
                 )
             }
+            Self::Raft => {
+                box_if_ok!(
+                    RaftReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
             Self::CRaft => {
                 box_if_ok!(
                     CRaftReplica::new_and_setup(
+                        api_addr, p2p_addr, manager, config_str
+                    )
+                    .await
+                )
+            }
+            Self::QuorumLeases => {
+                box_if_ok!(
+                    QuorumLeasesReplica::new_and_setup(
                         api_addr, p2p_addr, manager, config_str
                     )
                     .await
@@ -180,17 +208,28 @@ impl SmrProtocol {
                     MultiPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
-            Self::Raft => {
-                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
+            Self::EPaxos => {
+                box_if_ok!(
+                    EPaxosClient::new_and_setup(manager, config_str).await
+                )
             }
             Self::RSPaxos => {
                 box_if_ok!(
                     RSPaxosClient::new_and_setup(manager, config_str).await
                 )
             }
+            Self::Raft => {
+                box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
+            }
             Self::CRaft => {
                 box_if_ok!(
                     CRaftClient::new_and_setup(manager, config_str).await
+                )
+            }
+            Self::QuorumLeases => {
+                box_if_ok!(
+                    QuorumLeasesClient::new_and_setup(manager, config_str)
+                        .await
                 )
             }
         }
@@ -222,9 +261,11 @@ mod name_tests {
         valid_name_test!(SimplePush);
         valid_name_test!(ChainRep);
         valid_name_test!(MultiPaxos);
-        valid_name_test!(Raft);
+        valid_name_test!(EPaxos);
         valid_name_test!(RSPaxos);
+        valid_name_test!(Raft);
         valid_name_test!(CRaft);
+        valid_name_test!(QuorumLeases);
     }
 
     #[test]

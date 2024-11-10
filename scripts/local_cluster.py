@@ -27,9 +27,9 @@ PROTOCOL_SNAPSHOT_PATH = (
 
 
 class ProtoFeats:
-    def __init__(self, may_snapshot, has_heartbeats, extra_defaults):
+    def __init__(self, may_snapshot, has_hb_leader, extra_defaults):
         self.may_snapshot = may_snapshot
-        self.has_heartbeats = has_heartbeats
+        self.has_hb_leader = has_hb_leader
         self.extra_defaults = extra_defaults
 
 
@@ -38,9 +38,11 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "Raft": ProtoFeats(True, True, None),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
     "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Raft": ProtoFeats(True, True, None),
     "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
 }
 
 
@@ -105,7 +107,7 @@ def config_with_defaults(
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
 
-    if PROTOCOL_FEATURES[protocol].has_heartbeats and hb_timer_off:
+    if PROTOCOL_FEATURES[protocol].has_hb_leader and hb_timer_off:
         config_dict["disable_hb_timer"] = "true"
 
     return config_dict_to_str(config_dict)

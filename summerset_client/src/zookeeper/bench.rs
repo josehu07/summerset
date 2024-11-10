@@ -227,7 +227,7 @@ impl ZooKeeperBench {
         self.chunk_cnt += 1;
 
         let lat_us =
-            Instant::now().duration_since(ts).as_secs_f64() * 1000000.0;
+            Instant::now().duration_since(ts).as_secs_f64() * 1_000_000.0;
         self.chunk_lats.push(lat_us);
 
         Ok(())
@@ -238,7 +238,7 @@ impl ZooKeeperBench {
         self.session.connect().await?;
         println!(
             "{:^11} | {:^12} | {:^12} | {:>8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Total"
+            "Elapsed (s)", "Tput (reqs/s)", "Lat (us)", "Total"
         );
 
         self.start = Instant::now();
@@ -262,7 +262,8 @@ impl ZooKeeperBench {
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
             if print_elapsed >= PRINT_INTERVAL {
-                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let tput =
+                    (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
                 let lat = if self.chunk_lats.is_empty() {
                     0.0
                 } else {
@@ -272,7 +273,7 @@ impl ZooKeeperBench {
                 println!(
                     "{:>11.2} | {:>12.2} | {:>12.2} | {:>8}",
                     elapsed.as_secs_f64(),
-                    tpt,
+                    tput,
                     lat,
                     self.total_cnt,
                 );

@@ -72,11 +72,15 @@ impl RaftReplica {
         }
     }
 
-    /// Becomes a candidate and starts the election procedure.
+    /// If current leader is not me but times out, becomes a candidate and
+    /// starts the election procedure.
     pub(super) async fn become_a_candidate(
         &mut self,
+        timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.role != Role::Follower {
+        if self.role != Role::Follower
+            || self.leader.as_ref().is_some_and(|&l| l != timeout_source)
+        {
             return Ok(());
         }
 
@@ -148,7 +152,7 @@ impl RaftReplica {
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
         // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts();
+        self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
         // re-initialize next_slot and match_slot information
@@ -225,7 +229,7 @@ impl RaftReplica {
 
         // reset hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
 
         // pf_trace!("heard heartbeat <- {} term {}", peer, term);

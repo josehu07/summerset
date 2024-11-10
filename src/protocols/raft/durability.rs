@@ -52,7 +52,7 @@ impl RaftReplica {
 
             if slot >= self.try_next_slot[&peer] {
                 // NOTE: here breaking long AppendEntries into chunks to keep
-                // peers heartbeated
+                //       peers heartbeated
                 let mut now_prev_slot = prev_slot;
                 while !entries.is_empty() {
                     let end =

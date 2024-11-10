@@ -2,15 +2,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::drivers::DriverClosedLoop;
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 use serde::Deserialize;
 
 use tokio::time::Duration;
 
 use summerset::{
-    logged_err, parsed_config, pf_error, pf_info, CtrlReply, CtrlRequest,
-    GenericEndpoint, ReplicaId, ServerInfo, SummersetError,
+    logged_err, parsed_config, pf_error, pf_info, Bitmap, CtrlReply,
+    CtrlRequest, GenericEndpoint, LeaserRoles, ReplicaId, ServerInfo,
+    SummersetError,
 };
 
 /// Mod parameters struct.
@@ -21,6 +22,18 @@ pub struct ModeParamsMess {
 
     /// Comma-separated list of servers to resume.
     pub resume: String,
+
+    /// Comma-separated list of servers as configured grantors.
+    /// Only used by relevant protocols.
+    pub grantor: String,
+
+    /// Comma-separated list of servers as configured grantees.
+    /// Only used by relevant protocols.
+    pub grantee: String,
+
+    /// String form of configured leader ID (or empty string).
+    /// Only used by relevant protocols.
+    pub leader: String,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -29,6 +42,9 @@ impl Default for ModeParamsMess {
         ModeParamsMess {
             pause: "".into(),
             resume: "".into(),
+            grantor: "/".into(),
+            grantee: "/".into(),
+            leader: "/".into(),
         }
     }
 }
@@ -53,7 +69,8 @@ impl ClientMess {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsMess;
-                                    pause, resume)?;
+                                    pause, resume,
+                                    grantor, grantee, leader)?;
 
         Ok(ClientMess {
             driver: DriverClosedLoop::new(endpoint, timeout),
@@ -62,13 +79,26 @@ impl ClientMess {
         })
     }
 
+    /// Parse string into optional server ID.
+    fn parse_optional_server(
+        &self,
+        id_str: &str,
+    ) -> Result<Option<ReplicaId>, SummersetError> {
+        let s = id_str.trim();
+        if s.is_empty() || s == "/" {
+            Ok(None)
+        } else {
+            Ok(Some(s.parse()?))
+        }
+    }
+
     /// Parse comma-separated string of server IDs.
     fn parse_comma_separated(
         &self,
         list_str: &str,
     ) -> Result<HashSet<ReplicaId>, SummersetError> {
         let mut servers = HashSet::new();
-        for s in list_str.split(',') {
+        for s in list_str.trim().split(',') {
             if s == "l" && self.servers_info.is_some() {
                 // special character 'l' means leader(s)
                 for (&id, info) in self.servers_info.as_ref().unwrap() {
@@ -81,7 +111,7 @@ impl ClientMess {
                 for &id in self.servers_info.as_ref().unwrap().keys() {
                     servers.insert(id);
                 }
-            } else {
+            } else if s != "/" {
                 // else, should be a numerical replica ID
                 servers.insert(s.parse()?);
             }
@@ -142,21 +172,64 @@ impl ClientMess {
         }
     }
 
+    /// Make a leaser roles configuration change.
+    async fn leasers_conf_change(
+        &mut self,
+        conf: LeaserRoles,
+    ) -> Result<(), SummersetError> {
+        loop {
+            match self.driver.conf(conf.clone()).await? {
+                DriverReply::Redirect { .. } => {
+                    // retry
+                }
+                DriverReply::Leasers { changed, .. } => {
+                    if changed {
+                        return Ok(());
+                    } else {
+                        return logged_err!("leaser roles conf change ignored");
+                    }
+                }
+                _ => {
+                    return logged_err!("unexpected driver reply type");
+                }
+            }
+        }
+    }
+
     /// Runs the one-shot client to make specified control requests.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
         self.get_servers_info().await?;
 
+        // pause and resume
         if !self.params.pause.is_empty() {
             let servers = self.parse_comma_separated(&self.params.pause)?;
             pf_info!("pausing servers {:?}", servers);
             self.pause_servers(servers).await?;
         }
-
         if !self.params.resume.is_empty() {
             let servers = self.parse_comma_separated(&self.params.resume)?;
             pf_info!("resuming servers {:?}", servers);
             self.resume_servers(servers).await?;
+        }
+
+        // leaser roles config change
+        // unless all three fields are the special character '/', they will
+        // be parsed at the same time
+        if !(self.params.grantor == "/"
+            && self.params.grantee == "/"
+            && self.params.leader == "/")
+        {
+            let grantors = self.parse_comma_separated(&self.params.grantor)?;
+            let grantees = self.parse_comma_separated(&self.params.grantee)?;
+            let leader = self.parse_optional_server(&self.params.leader)?;
+            let conf = LeaserRoles {
+                grantors: Bitmap::from((self.driver.population(), grantors)),
+                grantees: Bitmap::from((self.driver.population(), grantees)),
+                leader,
+            };
+            pf_info!("leasers conf {:?}", conf);
+            self.leasers_conf_change(conf).await?;
         }
 
         self.driver.leave(true).await?;

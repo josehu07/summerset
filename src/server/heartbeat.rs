@@ -7,31 +7,35 @@ use crate::utils::{Bitmap, SummersetError, Timer};
 
 use rand::prelude::*;
 
+use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 
 /// Multiplexed heartbeat timeout events type.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub(crate) enum HeartbeatEvent {
     /// Peer inactivity timeout.
-    HearTimeout,
+    HearTimeout { peer: ReplicaId },
 
     /// Sending interval tick.
     SendTicked,
 }
 
 /// The heartbeats management module.
-///
-/// TODO: make this module channel-oriented like other modules and manage more
-///       common things inherently, avoid polluting protocol modules
+//
+// TODO: make this module channel-oriented like other modules and manage more
+//       common things inherently, avoid polluting protocol modules
 pub(crate) struct Heartbeater {
     /// My replica ID.
-    _me: ReplicaId,
+    me: ReplicaId,
 
     /// Total number of replicas in the cluster.
     _population: u8,
 
     /// Timer for hearing heartbeat from, say, leader.
-    hear_timer: Timer,
+    hear_timers: HashMap<ReplicaId, Timer>,
+
+    /// Receiver side of the heartbeat timeout channel.
+    rx_timeout: mpsc::UnboundedReceiver<ReplicaId>,
 
     /// Minimum hearing timeout interval.
     hear_timeout_min: Duration,
@@ -49,7 +53,8 @@ pub(crate) struct Heartbeater {
     /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
     reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
 
-    /// Approximate health status tracking of peer replicas.
+    /// Approximate health status tracking of peer replicas; this is a more
+    /// conservative backup mechanism than tighter timeouts.
     peer_alive: Bitmap,
 }
 
@@ -86,14 +91,38 @@ impl Heartbeater {
         let mut send_interval = time::interval(send_interval);
         send_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let (tx_timeout, rx_timeout) = mpsc::unbounded_channel();
+
+        let hear_timers = (0..population)
+            .filter_map(|p| {
+                if p == me {
+                    None
+                } else {
+                    let tx_timeout_ref = tx_timeout.clone();
+                    Some((
+                        p,
+                        Timer::new(
+                            false,
+                            Some(move || {
+                                tx_timeout_ref.send(p).expect(
+                                    "sending to tx_timeout_ref should succeed",
+                                )
+                            }),
+                            false,
+                        ),
+                    ))
+                }
+            })
+            .collect();
         let reply_cnts = (0..population)
             .filter_map(|p| if p == me { None } else { Some((p, (1, 0, 0))) })
             .collect();
 
         Ok(Heartbeater {
-            _me: me,
+            me,
             _population: population,
-            hear_timer: Timer::default(),
+            hear_timers,
+            rx_timeout,
             hear_timeout_min,
             hear_timeout_max,
             send_interval,
@@ -109,25 +138,78 @@ impl Heartbeater {
     }
 
     /// Waits for a heartbeat-related timeout event.
-    pub(crate) async fn get_event(&mut self) -> HeartbeatEvent {
-        tokio::select! {
-            _ = self.hear_timer.timeout() => { HeartbeatEvent::HearTimeout },
-            _ = self.send_interval.tick(), if self.is_sending => { HeartbeatEvent::SendTicked },
+    pub(crate) async fn get_event(
+        &mut self,
+    ) -> Result<HeartbeatEvent, SummersetError> {
+        loop {
+            tokio::select! {
+                // a hearing timeout
+                peer = self.rx_timeout.recv() => {
+                    if let Some(peer) = peer {
+                        if let Some(timer) = self.hear_timers.get(&peer) {
+                            if !timer.exploded() {
+                                continue; // explosion already cancelled, ignore
+                            }
+                            return Ok(HeartbeatEvent::HearTimeout {peer});
+                        } else {
+                            return logged_err!(
+                                "peer {} not found in hear_timers",
+                                peer
+                            );
+                        }
+                    } else {
+                        return logged_err!("all timeout channel senders closed");
+                    }
+                },
+
+                // a sending tick
+                _ = self.send_interval.tick(), if self.is_sending => {
+                    return Ok(HeartbeatEvent::SendTicked);
+                },
+            }
         }
     }
 
-    /// Chooses a random timeout from the min-max range and kicks off the
-    /// heartbeat hearing timer.
-    pub(crate) fn kickoff_hear_timer(&mut self) -> Result<(), SummersetError> {
-        self.hear_timer.cancel()?;
+    /// Kicks off specified timer.
+    fn kickoff_timer_inner(&self, timer: &Timer) -> Result<(), SummersetError> {
+        timer.cancel()?;
 
         let timeout_ms = thread_rng().gen_range(
             self.hear_timeout_min.as_millis()
                 ..=self.hear_timeout_max.as_millis(),
         );
         // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
-        self.hear_timer
-            .kickoff(Duration::from_millis(timeout_ms as u64))
+        timer.kickoff(Duration::from_millis(timeout_ms as u64))
+    }
+
+    /// Chooses a random timeout from the min-max range and kicks off the
+    /// heartbeat hearing timer. If `peer` is `None`, kicks off all timers.
+    pub(crate) fn kickoff_hear_timer(
+        &mut self,
+        peer: Option<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        if let Some(peer) = peer {
+            if peer != self.me {
+                let timer = self.hear_timers.get(&peer);
+                if let Some(timer) = timer {
+                    self.kickoff_timer_inner(timer)
+                } else {
+                    logged_err!("heartbeat timer for peer {} not found", peer)
+                }
+            } else {
+                Ok(())
+            }
+        } else {
+            for timer in self.hear_timers.values() {
+                self.kickoff_timer_inner(timer)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// Gets a reference to the hear_timers map.
+    pub(crate) fn hear_timers(&self) -> &HashMap<ReplicaId, Timer> {
+        &self.hear_timers
     }
 
     /// Gets the speculated liveness status of peers.
@@ -135,10 +217,24 @@ impl Heartbeater {
         &self.peer_alive
     }
 
-    /// Clears peers' heartbeat reply counters statistics.
-    pub(crate) fn clear_reply_cnts(&mut self) {
-        for cnts in self.reply_cnts.values_mut() {
-            *cnts = (1, 0, 0);
+    /// Clears peer's heartbeat reply counters statistics. If `peer` is `None`,
+    /// clears all counters.
+    pub(crate) fn clear_reply_cnts(
+        &mut self,
+        peer: Option<ReplicaId>,
+    ) -> Result<(), SummersetError> {
+        if let Some(peer) = peer {
+            if let Some(cnts) = self.reply_cnts.get_mut(&peer) {
+                *cnts = (1, 0, 0);
+                Ok(())
+            } else {
+                logged_err!("peer {} not found in reply_cnts", peer)
+            }
+        } else {
+            for cnts in self.reply_cnts.values_mut() {
+                *cnts = (1, 0, 0);
+            }
+            Ok(())
         }
     }
 

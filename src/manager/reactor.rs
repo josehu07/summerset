@@ -120,7 +120,7 @@ impl ClientReactor {
         let (client_responder_handles_write, client_responder_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
+        let client_listener = tcp_bind_with_retry(cli_addr, 15).await?;
         let mut acceptor = ClientReactorAcceptorTask::new(
             tx_req,
             tx_replies_write,
@@ -437,7 +437,7 @@ impl ClientReactorResponderTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -463,7 +463,7 @@ impl ClientReactorResponderTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
@@ -482,7 +482,7 @@ impl ClientReactorResponderTask {
                                 Some(&reply)
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("client {} has left", self.id);
@@ -499,7 +499,7 @@ impl ClientReactorResponderTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading req <- {}: {}", id, e);
                             break; // probably the client exited without `leave()`
                         }
@@ -553,6 +553,8 @@ mod tests {
                                 api_addr: "127.0.0.1:30000".parse()?,
                                 p2p_addr: "127.0.0.1:30010".parse()?,
                                 is_leader: true,
+                                is_grantor: false,
+                                is_grantee: false,
                                 is_paused: false,
                                 start_slot: 0,
                             },
@@ -563,6 +565,8 @@ mod tests {
                                 api_addr: "127.0.0.1:30001".parse()?,
                                 p2p_addr: "127.0.0.1:30011".parse()?,
                                 is_leader: false,
+                                is_grantor: false,
+                                is_grantee: false,
                                 is_paused: false,
                                 start_slot: 0,
                             },
@@ -591,6 +595,8 @@ mod tests {
                             api_addr: "127.0.0.1:30000".parse()?,
                             p2p_addr: "127.0.0.1:30010".parse()?,
                             is_leader: true,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         }
@@ -601,6 +607,8 @@ mod tests {
                             api_addr: "127.0.0.1:30001".parse()?,
                             p2p_addr: "127.0.0.1:30011".parse()?,
                             is_leader: false,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         }
@@ -636,6 +644,8 @@ mod tests {
                                     api_addr: "127.0.0.1:30100".parse()?,
                                     p2p_addr: "127.0.0.1:30110".parse()?,
                                     is_leader: true,
+                                    is_grantor: false,
+                                    is_grantee: false,
                                     is_paused: false,
                                     start_slot: 0,
                                 }
@@ -646,6 +656,8 @@ mod tests {
                                     api_addr: "127.0.0.1:30101".parse()?,
                                     p2p_addr: "127.0.0.1:30111".parse()?,
                                     is_leader: false,
+                                    is_grantor: false,
+                                    is_grantee: false,
                                     is_paused: false,
                                     start_slot: 0,
                                 }
@@ -677,6 +689,8 @@ mod tests {
                                     api_addr: "127.0.0.1:30100".parse()?,
                                     p2p_addr: "127.0.0.1:30110".parse()?,
                                     is_leader: true,
+                                    is_grantor: false,
+                                    is_grantee: false,
                                     is_paused: false,
                                     start_slot: 0,
                                 }
@@ -687,6 +701,8 @@ mod tests {
                                     api_addr: "127.0.0.1:30101".parse()?,
                                     p2p_addr: "127.0.0.1:30111".parse()?,
                                     is_leader: false,
+                                    is_grantor: false,
+                                    is_grantee: false,
                                     is_paused: false,
                                     start_slot: 0,
                                 }
@@ -716,6 +732,8 @@ mod tests {
                             api_addr: "127.0.0.1:30100".parse()?,
                             p2p_addr: "127.0.0.1:30110".parse()?,
                             is_leader: true,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         },
@@ -726,6 +744,8 @@ mod tests {
                             api_addr: "127.0.0.1:30101".parse()?,
                             p2p_addr: "127.0.0.1:30111".parse()?,
                             is_leader: false,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         },
@@ -750,6 +770,8 @@ mod tests {
                             api_addr: "127.0.0.1:30100".parse()?,
                             p2p_addr: "127.0.0.1:30110".parse()?,
                             is_leader: true,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         },
@@ -760,6 +782,8 @@ mod tests {
                             api_addr: "127.0.0.1:30101".parse()?,
                             p2p_addr: "127.0.0.1:30111".parse()?,
                             is_leader: false,
+                            is_grantor: false,
+                            is_grantee: false,
                             is_paused: false,
                             start_slot: 0,
                         },

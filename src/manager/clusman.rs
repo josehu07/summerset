@@ -28,6 +28,12 @@ pub struct ServerInfo {
     /// This server is a leader? (leader could be non-unique)
     pub is_leader: bool,
 
+    /// This server is a read lease grantor? (only for relevant protocols)
+    pub is_grantor: bool,
+
+    /// This server is a read lease grantee? (only for relevant protocols)
+    pub is_grantee: bool,
+
     /// This server is currently paused?
     pub is_paused: bool,
 
@@ -137,7 +143,7 @@ impl ClusterManager {
                 ctrl_msg = self.server_reigner.recv_ctrl() => {
                     if let Err(_e) = ctrl_msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving ctrl msg: {}", e);
                         continue;
                     }
@@ -152,7 +158,7 @@ impl ClusterManager {
                 ctrl_req = self.client_reactor.recv_req() => {
                     if let Err(_e) = ctrl_req {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving ctrl req: {}", e);
                         continue;
                     }
@@ -209,6 +215,8 @@ impl ClusterManager {
                 api_addr,
                 p2p_addr,
                 is_leader: false,
+                is_grantor: false,
+                is_grantee: false,
                 is_paused: false,
                 start_slot: 0,
             },
@@ -245,6 +253,24 @@ impl ClusterManager {
             info.is_leader = step_up;
             Ok(())
         }
+    }
+
+    /// Handler of LeaserStatus message.
+    fn handle_leaser_status(
+        &mut self,
+        server: ReplicaId,
+        is_grantor: bool,
+        is_grantee: bool,
+    ) -> Result<(), SummersetError> {
+        if !self.servers_info.contains_key(&server) {
+            return logged_err!("leader status got unknown ID: {}", server);
+        }
+
+        // update this server's info
+        let info = self.servers_info.get_mut(&server).unwrap();
+        info.is_grantor = is_grantor;
+        info.is_grantee = is_grantee;
+        Ok(())
     }
 
     /// Handler of autonomous SnapshotUpTo message.
@@ -299,6 +325,13 @@ impl ClusterManager {
 
             CtrlMsg::LeaderStatus { step_up } => {
                 self.handle_leader_status(server, step_up)?;
+            }
+
+            CtrlMsg::LeaserStatus {
+                is_grantor,
+                is_grantee,
+            } => {
+                self.handle_leaser_status(server, is_grantor, is_grantee)?;
             }
 
             CtrlMsg::SnapshotUpTo { new_start } => {

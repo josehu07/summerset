@@ -6,7 +6,8 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
-    Command, CommandResult, GenericEndpoint, RequestId, SummersetError, Timer,
+    ClientId, Command, CommandResult, GenericEndpoint, LeaserRoles, RequestId,
+    SummersetError, Timer,
 };
 
 /// Closed-loop driver struct.
@@ -51,7 +52,7 @@ impl DriverClosedLoop {
         self.endpoint.leave(permanent).await
     }
 
-    /// Attempt to send a request, retrying immediately if receiving
+    /// Attempts to send a request, retrying immediately if receiving
     /// `WouldBlock` failure. This shortcut is used here because TCP write
     /// blocking is not expected with a closed-loop client.
     fn send_req_insist(
@@ -66,7 +67,7 @@ impl DriverClosedLoop {
         Ok(())
     }
 
-    /// Wait on a reply from the service with timeout. Returns `Ok(None)` if
+    /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
     /// timed-out.
     async fn recv_reply_timed(
         &mut self,
@@ -86,7 +87,7 @@ impl DriverClosedLoop {
         }
     }
 
-    /// Send a Get request and wait for its reply.
+    /// Sends a Get request and waits for its reply.
     pub(crate) async fn get(
         &mut self,
         key: &str,
@@ -107,6 +108,7 @@ impl DriverClosedLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if reply_id != req_id {
                         // logged_err!(self.id;
@@ -155,7 +157,7 @@ impl DriverClosedLoop {
         }
     }
 
-    /// Send a Put request and wait for its reply.
+    /// Sends a Put request and waits for its reply.
     pub(crate) async fn put(
         &mut self,
         key: &str,
@@ -180,6 +182,7 @@ impl DriverClosedLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if reply_id != req_id {
                         // logged_err!(self.id;
@@ -228,6 +231,72 @@ impl DriverClosedLoop {
                 }
             }
         }
+    }
+
+    /// Sends a leaser roles config change request and waits for its reply.
+    pub(crate) async fn conf(
+        &mut self,
+        conf: LeaserRoles,
+    ) -> Result<DriverReply, SummersetError> {
+        let req_id = self.next_req;
+        self.next_req += 1;
+
+        self.send_req_insist(&ApiRequest::Conf { id: req_id, conf })?;
+
+        loop {
+            let reply = self.recv_reply_timed().await?;
+            match reply {
+                Some(ApiReply::Reply {
+                    id: reply_id,
+                    redirect,
+                    ..
+                }) => {
+                    if reply_id != req_id || redirect.is_none() {
+                        return logged_err!("unexpected reply type received");
+                    }
+                    return Ok(DriverReply::Redirect {
+                        server: redirect.unwrap(),
+                    });
+                }
+
+                Some(ApiReply::Conf {
+                    id: reply_id,
+                    success,
+                }) => {
+                    if reply_id != req_id {
+                        // logged_err!(self.id;
+                        //             "request ID mismatch: expected {}, replied {}",
+                        //             req_id, reply_id)
+                        continue;
+                    } else {
+                        return Ok(DriverReply::Leasers {
+                            req_id,
+                            changed: success,
+                        });
+                    }
+                }
+
+                None => {
+                    return Ok(DriverReply::Timeout);
+                }
+
+                _ => {
+                    return logged_err!("unexpected reply type received");
+                }
+            }
+        }
+    }
+
+    /// Gets my Client ID.
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> ClientId {
+        self.endpoint.id()
+    }
+
+    /// Gets current cluster size.
+    #[allow(dead_code)]
+    pub(crate) fn population(&self) -> u8 {
+        self.endpoint.population()
     }
 
     /// Gets a mutable reference to the endpoint's control stub.

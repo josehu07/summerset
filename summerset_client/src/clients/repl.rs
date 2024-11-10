@@ -11,7 +11,8 @@ use color_print::{cprint, cprintln};
 use tokio::time::Duration;
 
 use summerset::{
-    Command, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
+    logged_err, pf_error, Command, CtrlReply, CtrlRequest, GenericEndpoint,
+    LeaserRoles, ReplicaId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -22,14 +23,17 @@ enum ReplCommand {
     /// Normal state machine replication command.
     Normal(Command),
 
+    /// Leaser configuration change request. (only for relevant protocols)
+    Leasers(LeaserRoles),
+
+    /// Control request to the manager.
+    Control(CtrlRequest),
+
     /// Reconnect to the service.
     Reconnect,
 
     /// Print help message.
     PrintHelp,
-
-    /// Control request to the manager.
-    Control(CtrlRequest),
 
     /// Client exit.
     Exit,
@@ -75,11 +79,15 @@ impl ClientRepl {
         if let Some(e) = err {
             cprintln!("<bright-red>✗</> {}", e);
         }
-        println!("HELP: Supported normal commands are:");
+        println!("HELP: Commands for normal operations:");
         println!("          get <key>");
         println!("          put <key> <value>");
         println!("          help");
         println!("          exit");
+        println!("      Commands for leaser roles config:");
+        println!("          grantor [servers]");
+        println!("          grantee [servers]");
+        println!("          leader <server>");
         println!("      Commands for control/testing:");
         println!("          reconnect");
         println!("          reset [servers]");
@@ -120,7 +128,7 @@ impl ClientRepl {
     }
 
     /// Reads in user input and parses into a command.
-    fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
+    async fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
         self.input_buf.clear();
         let nread = io::stdin().read_line(&mut self.input_buf)?;
         if nread == 0 {
@@ -160,6 +168,42 @@ impl ClientRepl {
 
             "reconnect" => Ok(ReplCommand::Reconnect),
 
+            "grantor" => {
+                let servers = Self::drain_server_ids(&mut segs)?;
+                let mut leaser_roles = self.leaser_roles().await?;
+                leaser_roles.grantors.clear();
+                for server in servers {
+                    leaser_roles.grantors.set(server, true)?;
+                } // applies on top of current leaser roles config
+                Ok(ReplCommand::Leasers(leaser_roles))
+            }
+
+            "grantee" => {
+                let servers = Self::drain_server_ids(&mut segs)?;
+                let mut leaser_roles = self.leaser_roles().await?;
+                leaser_roles.grantees.clear();
+                for server in servers {
+                    leaser_roles.grantees.set(server, true)?;
+                } // applies on top of current leaser roles config
+                Ok(ReplCommand::Leasers(leaser_roles))
+            }
+
+            "leader" => {
+                let mut servers = Self::drain_server_ids(&mut segs)?;
+                let leader = if servers.is_empty() {
+                    None
+                } else if servers.len() > 1 {
+                    let err = SummersetError::msg("too many args");
+                    Self::print_help(Some(&err));
+                    return Err(err);
+                } else {
+                    Some(servers.drain().next().unwrap())
+                };
+                let mut leaser_roles = self.leaser_roles().await?;
+                leaser_roles.leader = leader; // applies on top of current
+                Ok(ReplCommand::Leasers(leaser_roles))
+            }
+
             "reset" => {
                 let servers = Self::drain_server_ids(&mut segs)?;
                 Ok(ReplCommand::Control(CtrlRequest::ResetServers {
@@ -196,6 +240,36 @@ impl ClientRepl {
         }
     }
 
+    /// Fetches current leaser roles configuration from manager oracle.
+    async fn leaser_roles(&mut self) -> Result<LeaserRoles, SummersetError> {
+        self.driver
+            .ctrl_stub()
+            .send_req_insist(&CtrlRequest::QueryInfo)?;
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
+
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            let mut leaser_roles = LeaserRoles::empty(population);
+            for (id, server) in servers_info {
+                if server.is_leader {
+                    leaser_roles.leader = Some(id);
+                }
+                if server.is_grantor {
+                    leaser_roles.grantors.set(id, true)?;
+                }
+                if server.is_grantee {
+                    leaser_roles.grantees.set(id, true)?;
+                }
+            }
+            Ok(leaser_roles)
+        } else {
+            logged_err!("ctrl reply type mismatch: expect QueryInfo")
+        }
+    }
+
     /// Issues the command to the service and wait for the reply.
     async fn eval_command(
         &mut self,
@@ -224,6 +298,20 @@ impl ClientRepl {
                     cmd_result,
                     lat_ms
                 );
+            }
+
+            DriverReply::Leasers { req_id, changed } => {
+                if changed {
+                    cprintln!(
+                        "<bright-cyan>✓</> ({}) leaser roles configuration changed",
+                        req_id
+                    );
+                } else {
+                    cprintln!(
+                        "<bright-red>✗</> ({}) leaser roles change unsuccessful",
+                        req_id
+                    );
+                }
             }
 
             DriverReply::Failure => {
@@ -285,11 +373,12 @@ impl ClientRepl {
         }
     }
 
-    /// One iteration of the REPL loop.
+    /// One iteration of the REPL loop. On success, returns a boolean that's
+    /// false only when exiting.
     async fn iter(&mut self) -> Result<bool, SummersetError> {
         Self::print_prompt();
 
-        let cmd = self.read_command()?;
+        let cmd = self.read_command().await?;
         match cmd {
             ReplCommand::Exit => {
                 println!("Exiting...");
@@ -316,6 +405,12 @@ impl ClientRepl {
                 Ok(true)
             }
 
+            ReplCommand::Leasers(conf) => {
+                let result = self.driver.conf(conf).await?;
+                self.print_result(result);
+                Ok(true)
+            }
+
             ReplCommand::Control(req) => {
                 let reply = self.make_ctrl_req(req).await?;
                 self.print_ctrl_reply(reply);
@@ -329,9 +424,17 @@ impl ClientRepl {
         self.driver.connect().await?;
 
         loop {
-            if let Ok(false) = self.iter().await {
-                self.driver.leave(true).await?;
-                break;
+            match self.iter().await {
+                Ok(true) => {}
+
+                Ok(false) => {
+                    self.driver.leave(true).await?;
+                    break;
+                }
+
+                Err(err) => {
+                    cprintln!("<bright-red>✗</> error: {}", err);
+                }
             }
         }
 

@@ -10,7 +10,7 @@ mod statemach;
 mod storage;
 mod transport;
 
-pub use external::{ApiReply, ApiRequest, RequestId};
+pub use external::{ApiReply, ApiRequest, LeaserRoles, RequestId};
 pub use replica::{GenericReplica, ReplicaId};
 pub use statemach::{Command, CommandId, CommandResult};
 
@@ -18,7 +18,7 @@ pub(crate) use control::ControlHub;
 pub(crate) use external::ExternalApi;
 pub(crate) use heartbeat::{HeartbeatEvent, Heartbeater};
 pub(crate) use leaseman::{
-    LeaseAction, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum,
+    LeaseAction, LeaseGid, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum,
 };
 pub(crate) use statemach::StateMachine;
 pub(crate) use storage::{LogAction, LogActionId, LogResult, StorageHub};

@@ -13,6 +13,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+/// Lease group ID that's unique per lease purpose.
+pub(crate) type LeaseGid = u16;
+
 /// Monotonically non-decreasing lease number type.
 pub(crate) type LeaseNum = u64;
 
@@ -59,6 +62,9 @@ pub(crate) enum LeaseAction {
     /// active RevokeReply (or any other reason).
     GrantRemoved { peer: ReplicaId, held: bool },
 
+    /// To indicate that promises_held has been cleared.
+    LeaseCleared,
+
     /// In case the protocol logic needs it:
     /// Timed-out as a grantor (either in guard phase or in repeated promise).
     GrantTimeout { peer: ReplicaId },
@@ -84,6 +90,9 @@ pub(crate) enum LeaseNotice {
     /// Want to actively revoke leases made to peers. If `peers` is `None`,
     /// then granting to all peers.
     DoRevoke { peers: Option<Bitmap> },
+
+    /// Force clear promises held from all peers.
+    ClearHeld,
 
     /// Received a lease-related message from a peer.
     RecvLeaseMsg { peer: ReplicaId, msg: LeaseMsg },
@@ -214,6 +223,16 @@ impl LeaseManager {
     pub(crate) fn grant_set(&self) -> Bitmap {
         let mut map = Bitmap::new(self.population, false);
         for &r in self.promises_sent.guard().keys() {
+            map.set(r, true).unwrap();
+        }
+        map
+    }
+
+    /// Gets the set of replicas I'm currently holding promises from.
+    #[allow(dead_code)]
+    pub(crate) fn lease_set(&self) -> Bitmap {
+        let mut map = Bitmap::new(self.population, false);
+        for &r in self.promises_held.guard().keys() {
             map.set(r, true).unwrap();
         }
         map
@@ -406,6 +425,7 @@ impl LeaseManagerLogicTask {
     ) -> Result<(), SummersetError> {
         let peers = peers.unwrap_or(Bitmap::new(self.population, true));
         let mut bcast_peers = peers.clone();
+        let promises_sent = self.promises_sent.guard();
 
         for (peer, flag) in peers.iter() {
             if peer == self.me || !flag {
@@ -415,17 +435,47 @@ impl LeaseManagerLogicTask {
 
             // remove existing guard about this peer if exists
             self.guards_sent.remove(&peer);
+
+            // also ignore if not currently in promises_sent
+            if !promises_sent.contains_key(&peer) {
+                bcast_peers.set(peer, false)?;
+                continue;
+            }
         }
 
         // broadcast Revoke messages to these peers
-        pf_debug!("leases bcast Revoke @ {} -> {:?}", lease_num, bcast_peers);
-        self.tx_action.send((
-            lease_num,
-            LeaseAction::BcastLeaseMsgs {
-                peers: bcast_peers,
-                msg: LeaseMsg::Revoke,
-            },
-        ))?;
+        if bcast_peers.count() > 0 {
+            pf_debug!(
+                "leases bcast Revoke @ {} -> {:?}",
+                lease_num,
+                bcast_peers
+            );
+            self.tx_action.send((
+                lease_num,
+                LeaseAction::BcastLeaseMsgs {
+                    peers: bcast_peers,
+                    msg: LeaseMsg::Revoke,
+                },
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Clears all promises held forcefully.
+    fn handle_clear_held(
+        &mut self,
+        lease_num: LeaseNum,
+    ) -> Result<(), SummersetError> {
+        self.guards_held.clear();
+
+        let mut promises_held = self.promises_held.guard();
+        for peer in (0..self.population).filter(|&p| p != self.me) {
+            promises_held.remove(peer);
+        }
+
+        pf_debug!("lease all held cleared @ {}", lease_num);
+        self.tx_action
+            .send((lease_num, LeaseAction::LeaseCleared))?;
         Ok(())
     }
 
@@ -520,7 +570,7 @@ impl LeaseManagerLogicTask {
             let timer = self.guards_held.remove(&peer).unwrap();
             timer.kickoff(self.lease_timeout)?;
             promises_held.insert(peer, timer);
-            pf_info!("lease promise held @ {} <- {}", lease_num, peer);
+            pf_debug!("lease promise held @ {} <- {}", lease_num, peer);
 
             // send PromiseReply back
             pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
@@ -602,7 +652,7 @@ impl LeaseManagerLogicTask {
             // refresh timer for T_lease
             timer.kickoff(self.lease_timeout)?;
 
-            // let protocol module mark next heartbeat as a promise refresh
+            // allow next heartbeat be marked as a promise refresh
             // pf_trace!("lease mark NextRefresh @ {} -> {}", lease_num, peer);
             self.tx_action
                 .send((lease_num, LeaseAction::NextRefresh { peer }))?
@@ -622,7 +672,7 @@ impl LeaseManagerLogicTask {
         self.guards_held.remove(&peer);
         let held = self.promises_held.guard().remove(peer).is_some();
         if held {
-            pf_info!("lease revoked drop @ {} <- {}", lease_num, peer);
+            pf_debug!("lease revoked drop @ {} <- {}", lease_num, peer);
         }
 
         // send RevokeReply back
@@ -696,7 +746,7 @@ impl LeaseManagerLogicTask {
         self.guards_held.remove(&peer);
         let held = self.promises_held.guard().remove(peer).is_some();
         if held {
-            pf_info!("lease expired drop @ {} <- {}", lease_num, peer);
+            pf_debug!("lease expired drop @ {} <- {}", lease_num, peer);
         }
 
         // tell the protocol module about this timeout
@@ -718,6 +768,7 @@ impl LeaseManagerLogicTask {
             LeaseNotice::DoRevoke { peers } => {
                 self.handle_do_revoke(lease_num, peers)
             }
+            LeaseNotice::ClearHeld => self.handle_clear_held(lease_num),
             LeaseNotice::RecvLeaseMsg { peer, msg } => {
                 debug_assert_ne!(peer, self.me);
                 match msg {
@@ -781,7 +832,7 @@ impl LeaseManagerLogicTask {
                     let mut promises_held_guard = self.promises_held.guard();
                     for peer in (0..self.population).filter(|&p| p != self.me) {
                         if promises_held_guard.remove(peer).is_some() {
-                            pf_info!(
+                            pf_debug!(
                                 "lease highnum drop @ {} <- {}",
                                 self.active_num,
                                 peer
@@ -2098,7 +2149,8 @@ mod tests {
                                         i
                                     )));
                                 },
-                                LeaseAction::NextRefresh { .. } => {},
+                                LeaseAction::NextRefresh { .. }
+                                | LeaseAction::LeaseCleared => {},
                             }
                         }
                         msg = n.transport.recv_msg() => {

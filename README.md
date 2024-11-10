@@ -6,7 +6,7 @@
 [![Proc tests status](https://github.com/josehu07/summerset/actions/workflows/tests_proc.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Atests_proc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Summerset is a distributed, replicated, protocol-generic key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes. More protocols are actively being added.
+Summerset is a distributed, replicated, protocol-generic key-value store supporting a wide range of state machine replication (SMR) protocols for research purposes.
 
 <p align="center">
   <img width="360" src="./README.png">
@@ -20,24 +20,30 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 | `RepNothing` | Simplest protocol w/o any replication |
 | `SimplePush` | Pushing to peers w/o consistency guarantees |
 | `ChainRep` | Bare implementation of Chain Replication ([paper](https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf)) |
-| `MultiPaxos` | Classic MultiPaxos protocol ([paper](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf)) |
-| `RSPaxos` | MultiPaxos w/ Reed-Solomon erasure code sharding ([paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf)) |
+| `MultiPaxos` | Classic MultiPaxos ([paper](https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf)) w/ modern features |
+| `EPaxos` | Leaderless-style Egalitarian Paxos ([paper](https://www.cs.cmu.edu/~dga/papers/epaxos-sosp2013.pdf)) |
 | `Raft` | Raft with explicit log and strong leadership ([paper](https://raft.github.io/raft.pdf)) |
-| `CRaft` | Raft w/ erasure code sharding and fallback support ([paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf)) |
+| `RSPaxos` | MultiPaxos w/ RS erasure code sharding ([paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf)) |
+| `CRaft` | Raft w/ erasure code sharding and fallback ([paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf)) |
+| `QuorumLeases` | Local reads at leaseholders when quiescent ([paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf)) |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
+
+More exciting protocols are actively being added!
 
 </details>
 
 <details>
 <summary>Why is Summerset different from other codebases...</summary>
 
-- **Async Rust**: Summerset is written in Rust and demonstrates canonical usage of async programming structures backed by the [`tokio`](https://tokio.rs/) framework;
-- **Event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop;
-- **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels.
-- **Protocol-generic**: With the above two points combined, Summerset is able to support a set of different replication protocols in one codebase, with common functionalities abstracted out.
+- **Async Rust**: Summerset is written in Rust and demonstrates canonical usage of async programming structures backed by the [`tokio`](https://tokio.rs/) framework.
+- **Channel/event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop. The entire codebase contains 0 explicit usage of `Mutex`.
+- **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, as well as protocol-specific parallelism tasks, are cleanly separated from each other and connected through channels. This extends Go's philosophy of doing "synchronization by (low-cost) communication (of ownership transfers)".
+- **Protocol-generic**: With the above points combined, Summerset is able (and strives) to support a set of different replication protocols in one codebase, with common functionalities abstracted out, leaving each protocol's implementation concise and to-the-point.
 
-These design choices make protocol implementation in Summerset straight-forward and understandable, without any sacrifice on performance. Comments / issues / PRs are always welcome!
+These design choices make protocol implementation in Summerset rather straight-forward and understandable, without making a sacrifice on performance.
+
+Comments / issues / PRs are always welcome!
 
 </details>
 

@@ -28,11 +28,7 @@ impl MultiPaxosReplica {
         if let ApiRequest::Req { id: req_id, .. } = req {
             if inst.external && self.external_api.has_client(client) {
                 self.external_api.send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
+                    ApiReply::normal(*req_id, Some(cmd_result)),
                     client,
                 )?;
                 pf_trace!(
@@ -52,7 +48,7 @@ impl MultiPaxosReplica {
             inst.status = Status::Executed;
             pf_debug!("executed all cmds in instance at slot {}", slot);
 
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if self.is_leader() {
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 4, None);

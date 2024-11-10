@@ -26,12 +26,24 @@ UTILITY_PARAM_NAMES = {
         "put_ratio",
         "ycsb_trace",
         "length_s",
+        "use_random_keys",
+        "skip_preloading",
         "norm_stdev_ratio",
         "unif_interval_ms",
         "unif_upper_bound",
     ],
-    "tester": ["test_name", "keep_going", "logger_on"],
-    "mess": ["pause", "resume"],
+    "tester": [
+        "test_name",
+        "keep_going",
+        "logger_on",
+    ],
+    "mess": [
+        "pause",
+        "resume",
+        "grantor",
+        "grantee",
+        "leader",
+    ],
 }
 
 
@@ -198,6 +210,12 @@ if __name__ == "__main__":
         help="if set, expect there'll be a service halt",
     )
     parser_bench.add_argument(
+        "--use_random_keys", action="store_true", help="if set, generate random keys"
+    )
+    parser_bench.add_argument(
+        "--skip_preloading", action="store_true", help="if set, skip preloading phase"
+    )
+    parser_bench.add_argument(
         "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
     )
     parser_bench.add_argument(
@@ -236,6 +254,21 @@ if __name__ == "__main__":
     )
     parser_mess.add_argument(
         "--resume", type=str, help="comma-separated list of servers to resume"
+    )
+    parser_mess.add_argument(
+        "--grantor",
+        type=str,
+        help="comma-separated list of servers as configured grantors",
+    )
+    parser_mess.add_argument(
+        "--grantee",
+        type=str,
+        help="comma-separated list of servers as configured grantees",
+    )
+    parser_mess.add_argument(
+        "--leader",
+        type=str,
+        help="string form of configured leader ID (or empty string)",
     )
 
     args = parser.parse_args()
