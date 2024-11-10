@@ -10,6 +10,11 @@ impl EPaxosReplica {
     /// Reacts to a heartbeat timeout with a peer, suspecting that the peer
     /// has failed. Triggers the explicit prepare phase for all in-progress
     /// instances in that peer's row of my instance space.
+    //
+    // NOTE: one possible optimization is to sleep for another random, long
+    //       enough duration so that healthy peers do not all attempt taking
+    //       ownership of the failed row at the same time. But hopefully, the
+    //       random heartbeat timeout range is enough to separate them apart
     pub(super) async fn heartbeat_timeout(
         &mut self,
         timeout_source: ReplicaId,
@@ -28,10 +33,40 @@ impl EPaxosReplica {
             );
         }
 
+        // re-evaluate fast quorum eligibility for all instances currently in
+        // PreAccept phase where I'm the command leader of. This prevents them
+        // from being stuck in the fast quorum eligibility check
+        let mut markees = vec![];
+        for row in 0..self.population as usize {
+            for (col, inst) in self.insts[row]
+                .iter_mut()
+                .enumerate()
+                .map(|(c, i)| (self.start_col + c, i))
+                .skip(self.commit_bars[row] - self.start_col)
+            {
+                if inst.status == Status::PreAccepting
+                    && inst.leader_bk.is_some()
+                {
+                    markees.push(SlotIdx(row as ReplicaId, col));
+                }
+            }
+        }
+        for slot in markees {
+            self.handle_msg_pre_accept_reply(
+                timeout_source,
+                slot,
+                0,
+                0,
+                DepSet::empty(self.population),
+            )?;
+        }
+
         // start the explicit ExpPrepare phase for all in-progress instances
         // on that peer's row
         let row = timeout_source as usize;
-        pf_info!("explicitly preparing row {}...", row);
+        let mut prepares = vec![];
+        pf_info!("try explicitly preparing row {}...", row);
+
         for (col, inst) in self.insts[row]
             .iter_mut()
             .enumerate()
@@ -51,23 +86,45 @@ impl EPaxosReplica {
                 continue;
             }
 
+            let slot = SlotIdx(timeout_source, col);
+            let new_ballot = Self::make_greater_ballot(self.id, inst.bal);
+            inst.leader_bk = Some(LeaderBookkeeping {
+                pre_accept_acks: Bitmap::new(self.population, false),
+                pre_accept_replies: HashMap::new(),
+                accept_acks: Bitmap::new(self.population, false),
+                exp_prepare_acks: Bitmap::new(self.population, false),
+                exp_prepare_max_bal: 0,
+                exp_prepare_voteds: HashMap::new(),
+            });
+
             // broadcast ExpPrepare messages to all peers. Note that the
             // instance state on my own replica is not updated; my reply to
             // myself will be part of the set of ExpPrepareReplies
-            let new_ballot =
-                Self::make_greater_ballot(timeout_source, inst.bal);
-            self.transport_hub.bcast_msg(
-                PeerMsg::ExpPrepare {
-                    slot: SlotIdx(timeout_source, col),
-                    ballot: new_ballot,
-                },
-                None,
-            )?;
+            self.transport_hub
+                .bcast_msg(PeerMsg::ExpPrepare { slot, new_ballot }, None)?;
             pf_trace!(
                 "broadcast ExpPrepare messages slot {} bal {}",
-                SlotIdx(timeout_source, col),
+                slot,
                 new_ballot
             );
+
+            prepares.push((slot, new_ballot));
+        }
+
+        // also "reply" to ExpPrepares to myself
+        for (slot, new_ballot) in prepares {
+            let (row, col) = slot.unpack();
+            let inst = &self.insts[row][col - self.start_col];
+            self.handle_msg_exp_prepare_reply(
+                self.id,
+                slot,
+                new_ballot,
+                inst.bal,
+                inst.status,
+                inst.seq,
+                inst.deps.clone(),
+                inst.reqs.clone(),
+            )?;
         }
 
         Ok(())

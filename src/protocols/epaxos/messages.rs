@@ -90,6 +90,9 @@ impl EPaxosReplica {
     }
 
     /// Handler of PreAccept reply from replica.
+    ///
+    /// If `ballot` == 0, this is a special call made when I suspect a peer
+    /// has failed; re-evaluate fast quorum eligibility for this slot
     pub(super) fn handle_msg_pre_accept_reply(
         &mut self,
         peer: ReplicaId,
@@ -102,14 +105,22 @@ impl EPaxosReplica {
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
-        pf_trace!(
-            "received PreAcceptReply <- {} for slot {} bal {} seq {} deps {}",
-            peer,
-            slot,
-            ballot,
-            seq,
-            deps
-        );
+        if ballot == 0 {
+            pf_trace!(
+                "received PreAcceptReply <- {} for slot {} failure suspected",
+                peer,
+                slot
+            );
+        } else {
+            pf_trace!(
+                "received PreAcceptReply <- {} for slot {} bal {} seq {} deps {}",
+                peer,
+                slot,
+                ballot,
+                seq,
+                deps
+            );
+        }
 
         // ignore spurious duplications and outdated replies
         if col >= self.start_col + self.insts[row].len() {
@@ -117,7 +128,7 @@ impl EPaxosReplica {
         }
         let inst = &mut self.insts[row][col - self.start_col];
         if inst.status != Status::PreAccepting
-            || inst.bal != ballot
+            || (ballot > 0 && inst.bal != ballot)
             || inst.leader_bk.is_none()
         {
             return Ok(());
@@ -128,16 +139,18 @@ impl EPaxosReplica {
         }
 
         // bookkeep this PreAccept reply
-        leader_bk
-            .pre_accept_replies
-            .insert(peer, (seq, deps.clone()));
-        leader_bk.pre_accept_acks.set(peer, true)?;
+        if ballot > 0 {
+            leader_bk.pre_accept_replies.insert(peer, (seq, deps));
+            leader_bk.pre_accept_acks.set(peer, true)?;
+        }
 
         // check the set of replies received so far:
         // NOTE: move the start-phase blocks into common helper functions
         match Self::fast_quorum_eligibility(
+            self.id,
             inst.avoid_fast_path,
             leader_bk,
+            self.heartbeater.hear_timers(),
             self.population,
             self.simple_quorum_cnt,
             self.super_quorum_cnt,
@@ -493,12 +506,12 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of ExpPrepare message from leader.
+    /// Handler of ExpPrepare message from new command leader.
     fn handle_msg_exp_prepare(
         &mut self,
         peer: ReplicaId,
         slot: SlotIdx,
-        ballot: Ballot,
+        new_ballot: Ballot,
     ) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
@@ -508,7 +521,7 @@ impl EPaxosReplica {
             "received Prepare <- {} for slot {} bal {}",
             peer,
             slot,
-            ballot,
+            new_ballot,
         );
 
         // locate instance in memory, filling in null instances if needed
@@ -516,15 +529,21 @@ impl EPaxosReplica {
             let inst = self.null_instance();
             self.insts[row].push(inst);
         }
-        let inst = &self.insts[row][col - self.start_col];
+        let inst = &mut self.insts[row][col - self.start_col];
 
         // if ballot is larger than what I've ever seen for this instance:
-        if ballot > inst.bal {
+        if new_ballot > inst.bal {
+            if let Some(replica_bk) = inst.replica_bk.as_mut() {
+                replica_bk.source = peer;
+            } else {
+                inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
+            }
+
             // send back ExpPrepare reply
             self.transport_hub.send_msg(
                 PeerMsg::ExpPrepareReply {
                     slot,
-                    ballot,
+                    new_ballot,
                     voted_bal: inst.bal,
                     voted_status: inst.status,
                     voted_seq: inst.seq,
@@ -541,6 +560,12 @@ impl EPaxosReplica {
                 inst.seq,
                 inst.deps,
             );
+
+            // refresh the corresponding row's peer's heartbeat timer to
+            // prevent myself from trying to prepare for it immediately soon,
+            // because that peer has likely failed
+            // self.heartbeater
+            //     .kickoff_hear_timer(Some(row as ReplicaId))?;
         }
 
         Ok(())
@@ -552,7 +577,7 @@ impl EPaxosReplica {
         &mut self,
         peer: ReplicaId,
         slot: SlotIdx,
-        ballot: Ballot,
+        new_ballot: Ballot,
         voted_bal: Ballot,
         voted_status: Status,
         voted_seq: SeqNum,
@@ -573,12 +598,12 @@ impl EPaxosReplica {
         );
 
         // ignore spurious duplications and outdated replies
-        debug_assert!(ballot > voted_bal);
+        debug_assert!(new_ballot > voted_bal);
         if col >= self.start_col + self.insts[row].len() {
             return Ok(());
         }
         let inst = &mut self.insts[row][col - self.start_col];
-        if ballot <= inst.bal || inst.leader_bk.is_none() {
+        if new_ballot <= inst.bal || inst.leader_bk.is_none() {
             return Ok(());
         }
         let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -609,7 +634,7 @@ impl EPaxosReplica {
         ) {
             Some((Status::Committed, seq, deps, reqs)) => {
                 // can commit this slot
-                inst.bal = ballot;
+                inst.bal = new_ballot;
                 inst.status = Status::Committed;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -670,7 +695,7 @@ impl EPaxosReplica {
 
             Some((Status::Accepting, seq, deps, reqs)) => {
                 // need to run Accept phase
-                inst.bal = ballot;
+                inst.bal = new_ballot;
                 inst.status = Status::Accepting;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -731,7 +756,7 @@ impl EPaxosReplica {
 
             Some((Status::PreAccepting, seq, deps, reqs)) => {
                 // need to start over from PreAccept
-                inst.bal = ballot;
+                inst.bal = new_ballot;
                 inst.status = Status::PreAccepting;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -836,12 +861,12 @@ impl EPaxosReplica {
                 reqs,
             } => self
                 .handle_msg_commit_notice(peer, slot, ballot, seq, deps, reqs),
-            PeerMsg::ExpPrepare { slot, ballot } => {
-                self.handle_msg_exp_prepare(peer, slot, ballot)
+            PeerMsg::ExpPrepare { slot, new_ballot } => {
+                self.handle_msg_exp_prepare(peer, slot, new_ballot)
             }
             PeerMsg::ExpPrepareReply {
                 slot,
-                ballot,
+                new_ballot,
                 voted_bal,
                 voted_status,
                 voted_seq,
@@ -850,7 +875,7 @@ impl EPaxosReplica {
             } => self.handle_msg_exp_prepare_reply(
                 peer,
                 slot,
-                ballot,
+                new_ballot,
                 voted_bal,
                 voted_status,
                 voted_seq,

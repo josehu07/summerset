@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::utils::Timer;
+
 impl fmt::Display for DepSet {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "[")?;
@@ -175,17 +177,19 @@ impl EPaxosReplica {
     ///   - `Status::Committed` if conflict-free fast quorum formed
     ///   - `Status::Accepting` if fast quorum already impossible
     pub(super) fn fast_quorum_eligibility(
+        me: ReplicaId,
         avoid_fast_path: bool,
         leader_bk: &LeaderBookkeeping,
+        hear_timers: &HashMap<ReplicaId, Timer>,
         population: u8,
         simple_quorum_cnt: u8,
         super_quorum_cnt: u8,
     ) -> Option<(Status, SeqNum, DepSet)> {
-        let all_cnt = leader_bk.pre_accept_acks.count();
         debug_assert_ne!(simple_quorum_cnt, 0);
         debug_assert!(simple_quorum_cnt <= super_quorum_cnt);
         debug_assert!(super_quorum_cnt <= population);
-        debug_assert!(all_cnt <= population);
+
+        let all_cnt = leader_bk.pre_accept_acks.count();
         if all_cnt < simple_quorum_cnt {
             // can't decide anything yet
             return None;
@@ -201,9 +205,18 @@ impl EPaxosReplica {
             }
             Some((Status::Accepting, seq, deps))
         } else {
+            let bad_cnt = (0..population)
+                .filter(|r| {
+                    !leader_bk.pre_accept_acks.get(*r).unwrap()
+                        && *r != me
+                        && hear_timers[r].exploded()
+                })
+                .count() as u8;
+            debug_assert!(all_cnt + bad_cnt <= population);
+
             // will consider fast path if eligible
             let (max_seq_deps, max_cnt) = Self::get_enough_identical(
-                leader_bk.pre_accept_replies.values().cloned().collect(),
+                leader_bk.pre_accept_replies.values().collect(),
                 super_quorum_cnt,
             );
 
@@ -211,8 +224,10 @@ impl EPaxosReplica {
                 // can commit on fast path, return the state corresponding to
                 // the max_cnt
                 debug_assert!(max_cnt >= super_quorum_cnt);
-                Some((Status::Committed, seq, deps))
-            } else if max_cnt + (population - all_cnt) < super_quorum_cnt {
+                Some((Status::Committed, *seq, deps.clone()))
+            } else if max_cnt + (population - bad_cnt - all_cnt)
+                < super_quorum_cnt
+            {
                 // need slow-path Accept, take union of deps and max of seqs
                 let (mut seq, mut deps) = (0, DepSet::empty(population));
                 for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
@@ -278,12 +293,11 @@ impl EPaxosReplica {
         {
             None
         } else {
-            let voteds: Vec<(SeqNum, DepSet, ReqBatch)> = leader_bk
+            let voteds: Vec<(&SeqNum, &DepSet, &ReqBatch)> = leader_bk
                 .exp_prepare_voteds
-                .clone()
-                .into_iter()
+                .iter()
                 .filter_map(|(r, (status, seq, deps, reqs))| {
-                    if r != slot_row && status == Status::PreAccepting {
+                    if *r != slot_row && *status == Status::PreAccepting {
                         Some((seq, deps, reqs))
                     } else {
                         None
@@ -299,7 +313,7 @@ impl EPaxosReplica {
 
         if let Some((seq, deps, reqs)) = has_enough_identical {
             // need a round of Accept
-            Some((Status::Accepting, seq, deps, reqs))
+            Some((Status::Accepting, *seq, deps.clone(), reqs.clone()))
         } else if let Some(r) = has_pre_accept {
             // need to start over from PreAccept
             let (_, seq, deps, reqs) = leader_bk.exp_prepare_voteds[r].clone();

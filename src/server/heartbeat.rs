@@ -207,6 +207,11 @@ impl Heartbeater {
         }
     }
 
+    /// Gets a reference to the hear_timers map.
+    pub(crate) fn hear_timers(&self) -> &HashMap<ReplicaId, Timer> {
+        &self.hear_timers
+    }
+
     /// Gets the speculated liveness status of peers.
     pub(crate) fn peer_alive(&self) -> &Bitmap {
         &self.peer_alive

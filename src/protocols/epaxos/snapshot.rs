@@ -118,7 +118,7 @@ impl EPaxosReplica {
     //       messages (which is needed when some lagging follower has some slot
     //       which all other peers have snapshotted); we assume here that failed
     //       Accept messages will be retried indefinitely until success before
-    //       its associated data gets discarded from leader's memory.
+    //       its associated data gets discarded from peer's memory.
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {

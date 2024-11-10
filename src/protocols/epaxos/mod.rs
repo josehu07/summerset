@@ -58,11 +58,13 @@ pub struct ReplicaConfigEPaxos {
     pub logger_sync: bool,
 
     /// Use optimized fast-path quorum size with modified recovery procedure?
+    // TODO: completely faithful implementation of the recovery procedure
+    //       when using the optimized fast quorum size
     pub optimized_quorum: bool,
 
-    /// Min timeout of not hearing any heartbeat from leader in millisecs.
+    /// Min timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_min: u64,
-    /// Max timeout of not hearing any heartbeat from leader in millisecs.
+    /// Max timeout of not hearing any heartbeat from peer in millisecs.
     pub hb_hear_timeout_max: u64,
 
     /// Interval of leader sending heartbeats to followers.
@@ -335,12 +337,12 @@ enum PeerMsg {
     },
 
     /// ExpPrepare message from replica that suspects a failure to others.
-    ExpPrepare { slot: SlotIdx, ballot: Ballot },
+    ExpPrepare { slot: SlotIdx, new_ballot: Ballot },
 
     /// ExpPrepare reply from replica to sender.
     ExpPrepareReply {
         slot: SlotIdx,
-        ballot: Ballot,
+        new_ballot: Ballot,
         /// Highest ballot *accepted* before the one in ExpPrepare.
         voted_bal: Ballot,
         /// Last accepted in which phase.
@@ -677,7 +679,11 @@ impl GenericReplica for EPaxosReplica {
             id,
             population,
             simple_quorum_cnt: (population / 2) + 1,
-            super_quorum_cnt: (population / 2) * 2, // FIXME: use optimized fast quorum
+            super_quorum_cnt: if config.optimized_quorum {
+                (population / 2) + (((population / 2) + 1) / 2)
+            } else {
+                (population / 2) * 2
+            },
             config,
             _api_addr: api_addr,
             _p2p_addr: p2p_addr,
