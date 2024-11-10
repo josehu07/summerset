@@ -78,10 +78,10 @@ Formal TLA+ specification of some protocols are provided in `tla+/`.
 
 - **Async Rust**: Summerset is written in Rust and demonstrates canonical usage of async programming structures backed by the [`tokio`](https://tokio.rs/) framework.
 - **Channel/Event-based**: Summerset adopts a channel-oriented, event-based system architecture; each replication protocol is basically just a set of event handlers plus a `tokio::select!` loop. The entire codebase contains 0 explicit usage of `Mutex`.
-- **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels. This expands Go's philosophy of doing "synchronization by (low-cost) communication (of ownership transfers)".
+- **Modularized**: Common components of a distributed KV store, e.g. network transport and durable logger, are cleanly separated from each other and connected through channels. This extends Go's philosophy of doing "synchronization by (low-cost) communication (of ownership transfers)".
 - **Protocol-generic**: With the above points combined, Summerset is able (and strives) to support a set of different replication protocols in one codebase, with common functionalities abstracted out, leaving each protocol's implementation concise and to-the-point.
 
-These design choices make protocol implementation in Summerset straight-forward and understandable, without any sacrifice on performance. Comments / issues / PRs are always welcome!
+These design choices make protocol implementation in Summerset rather straight-forward and understandable, without any sacrifice on performance. Comments / issues / PRs are always welcome!
 
 </details>
 
