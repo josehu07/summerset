@@ -1,3 +1,5 @@
+ADD NOTICE: This branch is at an older commit where the artifact was prepared. Please use this branch for artifact evaluation, but be aware that the main Summerset codebase could have seen toolchain overhauls. Check out the [main branch](https://github.com/josehu07/summerset) if interested!
+
 ## Node Setup Memos
 
 For a shell command, `$` indicates running it on the local development machine, while `%` indicates running it on a CloudLab remote host.
