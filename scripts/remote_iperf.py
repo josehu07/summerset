@@ -11,9 +11,30 @@ TOML_FILENAME = "scripts/remote_hosts.toml"
 
 
 IPERF_PORT = 37777
-IPERF_SECS = 6
+IPERF_SECS = 10
 
 PING_SECS = 5
+
+
+PAIRS_NETEM_RTT = utils.config.PairsMap(
+    # Ref: https://www.usenix.org/system/files/nsdi21-tollman.pdf#page=7
+    {
+        (0, 1): 77,
+        (0, 2): 129,
+        (0, 3): 137,
+        (0, 4): 221,
+        (1, 2): 59,
+        (1, 3): 64,
+        (1, 4): 146,
+        (2, 3): 26,
+        (2, 4): 91,
+        (3, 4): 98,
+    },
+    default=0,
+)
+PAIRS_NETEM_MEAN = PAIRS_NETEM_RTT.halved()
+PAIRS_NETEM_JITTER = utils.config.PairsMap({}, default=20)
+PAIRS_NETEM_RATE = utils.config.PairsMap({}, default=0)
 
 
 def iperf_test(remotes, domains, na, nb):
@@ -72,14 +93,33 @@ if __name__ == "__main__":
     parser.add_argument(
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
+    parser.add_argument(
+        "-m", "--netem_asym", action="store_true", help="demonstrate netem asym setting"
+    )
     args = parser.parse_args()
 
-    _, _, hosts, remotes, domains, _ = utils.config.parse_toml_file(
+    _, _, hosts, remotes, domains, ipaddrs = utils.config.parse_toml_file(
         TOML_FILENAME, args.group
     )
+
+    if args.netem_asym:
+        print("Setting tc netem qdiscs...")
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.set_tc_qdisc_netems_asym(
+            PAIRS_NETEM_MEAN,
+            PAIRS_NETEM_JITTER,
+            PAIRS_NETEM_RATE,
+            remotes=remotes,
+            ipaddrs=ipaddrs,
+        )
+        print()
 
     for ia in range(len(hosts)):
         for ib in range(ia + 1, len(hosts)):
             na, nb = hosts[ia], hosts[ib]
             iperf_test(remotes, domains, na, nb)
             ping_test(remotes, domains, na, nb)
+
+    if args.netem_asym:
+        print("Clearing tc netem qdiscs...")
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes)

@@ -41,14 +41,11 @@ impl SimplePushReplica {
         // if pushed peers have all replied, submit execution commands
         if inst.pending_peers.count() == 0 {
             for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                match req {
-                    ApiRequest::Req { cmd, .. } => {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(inst_idx, cmd_idx),
-                            cmd.clone(),
-                        )?
-                    }
-                    _ => continue, // ignore other types of requests
+                if let ApiRequest::Req { cmd, .. } = req {
+                    self.state_machine.submit_cmd(
+                        Self::make_command_id(inst_idx, cmd_idx),
+                        cmd.clone(),
+                    )?
                 }
             }
         }

@@ -1,4 +1,7 @@
 #!/usr/bin/perl -w
+
+# Crawled from the HotCRP site for easier offline formatting debugging.
+
 #
 # Copyright (C) 2007 Geoffrey M. Voelker
 # Copyright (c) 2016-2023 Eddie Kohler; see LICENSE.

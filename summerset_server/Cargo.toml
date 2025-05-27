@@ -3,6 +3,7 @@ name = "summerset_server"
 description = "Summerset server node executable"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.85"
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]

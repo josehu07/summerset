@@ -3,15 +3,39 @@ import random
 
 
 def gather_outputs(
-    protocol_with_midfix, num_clients, path_prefix, tb, te, tgap, partition=None
+    protocol_with_midfix,
+    num_clients,
+    path_prefix,
+    tb,
+    te,
+    tgap,
+    partition=None,
+    agg_partitions=None,
+    client_start=0,
+    client_step=1,
+    client_skips=None,
 ):
+    """
+    NOTE: latency value of 0.0 means no data!
+    """
+    assert not (agg_partitions is not None and partition is not None)
     if partition is not None:
         protocol_with_midfix += f".{partition}"
 
-    outputs = dict()
-    for c in range(num_clients):
-        outputs[c] = {"time": [], "tput": [], "lat": []}
-        with open(f"{path_prefix}/{protocol_with_midfix}.{c}.out", "r") as fout:
+    clients, outputs = [], dict()
+    for c in range(client_start, num_clients, client_step):
+        if client_skips is not None:
+            skip_idxs, skip_every = client_skips
+            if c % skip_every in skip_idxs:
+                continue
+        clients.append(c)
+
+        outputs[c] = {"time": [], "tput": [], "lat": [], "wlat": [], "rlat": []}
+        output_path = f"{path_prefix}/{protocol_with_midfix}.{c}.out"
+        if agg_partitions is not None:
+            p, local_c = c % agg_partitions, c // agg_partitions
+            output_path = f"{path_prefix}/{protocol_with_midfix}.{p}.{local_c}.out"
+        with open(output_path, "r") as fout:
             started = False
             for line in fout:
                 line = line.strip()
@@ -22,6 +46,8 @@ def gather_outputs(
                     outputs[c]["time"].append(float(segs[0]))
                     outputs[c]["tput"].append(float(segs[2]))
                     outputs[c]["lat"].append(float(segs[4]))
+                    outputs[c]["wlat"].append(float(segs[6]))
+                    outputs[c]["rlat"].append(float(segs[8]))
 
     result = {
         "time": [],
@@ -34,33 +60,56 @@ def gather_outputs(
         "lat_max": [],
         "lat_avg": [],
         "lat_stdev": [],
+        "wlat_min": [],
+        "wlat_max": [],
+        "wlat_avg": [],
+        "wlat_stdev": [],
+        "rlat_min": [],
+        "rlat_max": [],
+        "rlat_avg": [],
+        "rlat_stdev": [],
     }
     t = 0
-    cidxs = [0 for _ in range(num_clients)]
+    cidxs = {c: 0 for c in clients}
     while t + tb < te:
-        tputs, lats = [], []
-        for c in range(num_clients):
+        tputs, lats, wlats, rlats = [], [], [], []
+        for c in clients:
             while (
                 cidxs[c] < len(outputs[c]["time"]) - 1
                 and t + tb > outputs[c]["time"][cidxs[c]]
             ):
                 cidxs[c] += 1
-            if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:
+            if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:  # conservative
                 tputs.append(0.0)
                 lats.append(0.0)
+                wlats.append(0.0)
+                rlats.append(0.0)
             else:
                 tputs.append(outputs[c]["tput"][cidxs[c]])
                 lats.append(outputs[c]["lat"][cidxs[c]])
+                wlats.append(outputs[c]["wlat"][cidxs[c]])
+                rlats.append(outputs[c]["rlat"][cidxs[c]])
+        lats = [l for l in lats if l != 0.0]  # lat 0.0 means no data
+        wlats = [l for l in wlats if l != 0.0]
+        rlats = [l for l in rlats if l != 0.0]
         result["time"].append(t)
         result["tput_sum"].append(sum(tputs))
         result["tput_min"].append(min(tputs))
         result["tput_max"].append(max(tputs))
         result["tput_avg"].append(sum(tputs) / len(tputs))
-        result["tput_stdev"].append(statistics.stdev(tputs) if num_clients > 1 else 0.0)
-        result["lat_min"].append(min(lats))
-        result["lat_max"].append(max(lats))
-        result["lat_avg"].append(sum(lats) / len(lats))
-        result["lat_stdev"].append(statistics.stdev(lats) if num_clients > 1 else 0.0)
+        result["tput_stdev"].append(statistics.stdev(tputs) if len(tputs) > 1 else 0.0)
+        result["lat_min"].append(min(lats) if len(lats) > 0 else 0.0)
+        result["lat_max"].append(max(lats) if len(lats) > 0 else 0.0)
+        result["lat_avg"].append(sum(lats) / len(lats) if len(lats) > 0 else 0.0)
+        result["lat_stdev"].append(statistics.stdev(lats) if len(lats) > 1 else 0.0)
+        result["wlat_min"].append(min(wlats) if len(wlats) > 0 else 0.0)
+        result["wlat_max"].append(max(wlats) if len(wlats) > 0 else 0.0)
+        result["wlat_avg"].append(sum(wlats) / len(wlats) if len(wlats) > 0 else 0.0)
+        result["wlat_stdev"].append(statistics.stdev(wlats) if len(wlats) > 1 else 0.0)
+        result["rlat_min"].append(min(rlats) if len(rlats) > 0 else 0.0)
+        result["rlat_max"].append(max(rlats) if len(rlats) > 0 else 0.0)
+        result["rlat_avg"].append(sum(rlats) / len(rlats) if len(rlats) > 0 else 0.0)
+        result["rlat_stdev"].append(statistics.stdev(rlats) if len(rlats) > 1 else 0.0)
         t += tgap
 
     return result

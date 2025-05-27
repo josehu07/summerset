@@ -27,9 +27,9 @@ PROTOCOL_SNAPSHOT_PATH = (
 
 
 class ProtoFeats:
-    def __init__(self, may_snapshot, has_heartbeats, extra_defaults):
-        self.may_snapshot = may_snapshot
-        self.has_heartbeats = has_heartbeats
+    def __init__(self, could_snapshot, has_leadership, extra_defaults):
+        self.could_snapshot = could_snapshot
+        self.has_leadership = has_leadership
         self.extra_defaults = extra_defaults
 
 
@@ -38,9 +38,13 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "Raft": ProtoFeats(True, True, None),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
     "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Raft": ProtoFeats(True, True, None),
     "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n//2}"),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
+    "Bodega": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
 }
 
 
@@ -64,9 +68,9 @@ def config_with_defaults(
     config,
     num_replicas,
     replica_id,
-    hb_timer_off,
-    file_prefix,
-    file_midfix,
+    no_step_up,
+    states_prefix,
+    states_midfix,
     fresh_files,
 ):
     def config_str_to_dict(s):
@@ -80,15 +84,17 @@ def config_with_defaults(
         l = ["=".join([k, v]) for k, v in d.items()]
         return "+".join(l)
 
-    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
+    backer_path = PROTOCOL_BACKER_PATH(
+        protocol, states_prefix, states_midfix, replica_id
+    )
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files and os.path.isfile(backer_path):
         print(f"Delete: {backer_path}")
         os.remove(backer_path)
 
-    if PROTOCOL_FEATURES[protocol].may_snapshot:
+    if PROTOCOL_FEATURES[protocol].could_snapshot:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(
-            protocol, file_prefix, file_midfix, replica_id
+            protocol, states_prefix, states_midfix, replica_id
         )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files and os.path.isfile(snapshot_path):
@@ -105,8 +111,8 @@ def config_with_defaults(
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
 
-    if PROTOCOL_FEATURES[protocol].has_heartbeats and hb_timer_off:
-        config_dict["disable_hb_timer"] = "true"
+    if PROTOCOL_FEATURES[protocol].has_leadership and no_step_up:
+        config_dict["disallow_step_up"] = "true"
 
     return config_dict_to_str(config_dict)
 
@@ -187,8 +193,8 @@ def launch_servers(
     release,
     config,
     force_leader,
-    file_prefix,
-    file_midfix,
+    states_prefix,
+    states_midfix,
     fresh_files,
     pin_cores,
     use_veth,
@@ -215,8 +221,8 @@ def launch_servers(
                 num_replicas,
                 replica,
                 force_leader >= 0 and force_leader != replica,
-                file_prefix,
-                file_midfix,
+                states_prefix,
+                states_midfix,
                 fresh_files,
             ),
             release,
@@ -254,13 +260,13 @@ if __name__ == "__main__":
         "--force_leader", type=int, default=-1, help="force this server to be leader"
     )
     parser.add_argument(
-        "--file_prefix",
+        "--states_prefix",
         type=str,
         default="/tmp/summerset",
         help="states file prefix folder path",
     )
     parser.add_argument(
-        "--file_midfix",
+        "--states_midfix",
         type=str,
         default="",
         help="states file extra identifier after protocol name",
@@ -293,8 +299,8 @@ if __name__ == "__main__":
         print(f"ERROR: unrecognized protocol name '{args.protocol}'")
 
     # check that the prefix folder path exists, or create it if not
-    if not os.path.isdir(args.file_prefix):
-        os.system(f"mkdir -p {args.file_prefix}")
+    if not os.path.isdir(args.states_prefix):
+        os.system(f"mkdir -p {args.states_prefix}")
 
     # build everything
     if not args.skip_build:
@@ -307,7 +313,7 @@ if __name__ == "__main__":
     )
     wait_manager_setup(manager_proc)
 
-    # create a thread that prints out captured manager outputs
+    # create a thread that prints out captured manager stderrs
     # def print_manager_stderr():
     #     for line in iter(manager_proc.stderr.readline, b""):
     #         l = line.decode()
@@ -323,8 +329,8 @@ if __name__ == "__main__":
         args.release,
         args.config,
         args.force_leader,
-        args.file_prefix,
-        args.file_midfix,
+        args.states_prefix,
+        args.states_midfix,
         not args.keep_files,
         args.pin_cores,
         args.use_veth,

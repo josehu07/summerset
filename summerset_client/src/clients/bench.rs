@@ -1,8 +1,9 @@
 //! Benchmarking client using open-loop driver.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
 
 use crate::drivers::{DriverOpenLoop, DriverReply};
 
@@ -21,8 +22,8 @@ use serde::Deserialize;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use summerset::{
-    logged_err, parsed_config, pf_debug, pf_error, GenericEndpoint, RequestId,
-    SummersetError,
+    logged_err, parsed_config, pf_debug, pf_error, pf_info, pf_warn,
+    CommandResult, GenericEndpoint, RequestId, SummersetError,
 };
 
 /// Fixed length in bytes of key.
@@ -33,6 +34,9 @@ const MAX_VAL_LEN: usize = 16 * 1024 * 1024; // 16 MB
 
 /// Statistics printing interval.
 const PRINT_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Finer-grained statistics printing interval.
+const FINE_PRINT_INTERVAL: Duration = Duration::from_millis(5);
 
 lazy_static! {
     /// A very long pre-generated value string to get values from.
@@ -46,11 +50,21 @@ lazy_static! {
 /// Mode parameters struct.
 #[derive(Debug, Deserialize)]
 pub struct ModeParamsBench {
+    /// If non empty, path to write outputs to.
+    pub output_path: String,
+
+    /// If non empty, use finer-grained printing time intervals. If so, then
+    /// `output_path` Should be a memory-backed path (e.g. tmpfs) to avoid
+    /// disturbing exper accuracy.
+    pub fine_output: bool,
+
     /// Target frequency of issuing requests per second. Zero means closed-loop
     /// style client.
     pub freq_target: u64,
 
-    /// Time length to benchmark in seconds.
+    /// Time length to benchmark in seconds. If zero and `ycsb_trace` is valid,
+    /// will run the trace exactly once (else if trace is given, will repeat it
+    /// indefinitely).
     pub length_s: u64,
 
     /// Percentage of put requests.
@@ -69,6 +83,12 @@ pub struct ModeParamsBench {
     /// Number of keys to choose from.
     pub num_keys: usize,
 
+    /// Whether to generate keys randomly or use predetermined sequence from 0.
+    pub use_random_keys: bool,
+
+    /// Whether to skip the preloading phase that loads values for all keys.
+    pub skip_preloading: bool,
+
     /// If non-zero, use a normal distribution of this standard deviation
     /// ratio for every write command.
     pub norm_stdev_ratio: f32,
@@ -86,12 +106,16 @@ pub struct ModeParamsBench {
 impl Default for ModeParamsBench {
     fn default() -> Self {
         ModeParamsBench {
+            output_path: "".into(),
+            fine_output: false,
             freq_target: 0,
             length_s: 30,
             put_ratio: 50,
             ycsb_trace: "".into(),
             value_size: "1024".into(),
             num_keys: 5,
+            use_random_keys: false,
+            skip_preloading: false,
             norm_stdev_ratio: 0.0,
             unif_interval_ms: 0,
             unif_upper_bound: 128 * 1024,
@@ -109,6 +133,9 @@ pub(crate) struct ClientBench {
 
     /// Random number generator.
     rng: ThreadRng,
+
+    /// Output file.
+    output_file: Option<File>,
 
     /// List of randomly generated keys if in synthetic mode.
     keys_pool: Option<Vec<String>>,
@@ -137,8 +164,11 @@ pub(crate) struct ClientBench {
     /// Total number of replies received in last print interval.
     chunk_cnt: u64,
 
-    /// Latencies of requests in last print interval.
-    chunk_lats: Vec<f64>,
+    /// Latencies of Put requests in last print interval.
+    chunk_wlats: Vec<f64>,
+
+    /// Latencies of Get requests in last print interval.
+    chunk_rlats: Vec<f64>,
 
     /// True if the next issue should be a retry.
     retrying: bool,
@@ -170,18 +200,20 @@ impl ClientBench {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
+                                    output_path, fine_output,
                                     freq_target, length_s,
                                     put_ratio, ycsb_trace,
                                     value_size, num_keys,
-                                    norm_stdev_ratio,
-                                    unif_interval_ms, unif_upper_bound)?;
-        if params.freq_target > 1000000 {
+                                    use_random_keys, skip_preloading,
+                                    norm_stdev_ratio, unif_interval_ms,
+                                    unif_upper_bound)?;
+        if params.freq_target > 1_000_000 {
             return logged_err!(
                 "invalid params.freq_target '{}'",
                 params.freq_target
             );
         }
-        if params.length_s == 0 {
+        if params.length_s == 0 && params.ycsb_trace.is_empty() {
             return logged_err!(
                 "invalid params.length_s '{}'",
                 params.length_s
@@ -220,16 +252,35 @@ impl ClientBench {
             );
         }
 
+        let output_file = if params.output_path.is_empty() {
+            None
+        } else {
+            let output_path = Path::new(&params.output_path);
+            if fs::exists(output_path)? {
+                pf_warn!(
+                    "overwriting existing output file '{}'",
+                    params.output_path
+                );
+            } else {
+                fs::create_dir_all(
+                    output_path
+                        .parent()
+                        .expect("output_path should have parent dir"),
+                )?;
+            }
+            Some(
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(output_path)?,
+            )
+        };
+
         let keys_pool = if params.ycsb_trace.is_empty() {
             let mut pool = Vec::with_capacity(params.num_keys);
-            for _ in 0..params.num_keys {
-                pool.push(
-                    rand::thread_rng()
-                        .sample_iter(&Alphanumeric)
-                        .take(KEY_LEN)
-                        .map(char::from)
-                        .collect(),
-                );
+            for i in 0..params.num_keys {
+                pool.push(Self::compose_ith_key(i, params.use_random_keys));
             }
             Some(pool)
         } else {
@@ -273,6 +324,7 @@ impl ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
             rng: rand::thread_rng(),
+            output_file,
             keys_pool,
             trace_vec,
             trace_idx: 0,
@@ -282,7 +334,8 @@ impl ClientBench {
             total_cnt: 0,
             reply_cnt: 0,
             chunk_cnt: 0,
-            chunk_lats: vec![],
+            chunk_wlats: vec![],
+            chunk_rlats: vec![],
             retrying: false,
             slowdown: 0,
             start: Instant::now(),
@@ -337,6 +390,20 @@ impl ClientBench {
             }
         }
         Ok(trace_vec)
+    }
+
+    /// Returns the key of index `i`.
+    pub(crate) fn compose_ith_key(i: usize, random_keys: bool) -> String {
+        if random_keys {
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(KEY_LEN)
+                .map(char::from)
+                .collect()
+        } else {
+            // the format recognizable by key-range-based utilities
+            format!("k{:0w$}", i, w = KEY_LEN - 1)
+        }
     }
 
     /// Parses values sizes over time parameter into a rangemap of
@@ -447,7 +514,7 @@ impl ClientBench {
             .get(self.rng.gen_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..=100) <= self.params.put_ratio {
+        if self.rng.gen_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
             self.driver.issue_put(&key, val)
@@ -512,14 +579,26 @@ impl ClientBench {
         if self.total_cnt > self.reply_cnt {
             let result = self.driver.wait_reply().await?;
             match result {
-                DriverReply::Success { latency, .. } => {
+                DriverReply::Success {
+                    latency,
+                    cmd_result,
+                    ..
+                } => {
                     self.reply_cnt += 1;
                     self.chunk_cnt += 1;
-                    let lat_us = latency.as_secs_f64() * 1000000.0;
-                    self.chunk_lats.push(lat_us);
+
+                    let lat_us = latency.as_secs_f64() * 1_000_000.0;
+                    match cmd_result {
+                        CommandResult::Put { .. } => {
+                            self.chunk_wlats.push(lat_us);
+                        }
+                        CommandResult::Get { .. } => {
+                            self.chunk_rlats.push(lat_us);
+                        }
+                    }
                 }
 
-                DriverReply::Timeout => {
+                DriverReply::Timeout | DriverReply::Failure => {
                     self.leave_reconnect().await?;
                 }
 
@@ -539,18 +618,26 @@ impl ClientBench {
             // receive next reply
             result = self.driver.wait_reply() => {
                 match result? {
-                    DriverReply::Success { latency, .. } => {
+                    DriverReply::Success { latency, cmd_result, .. } => {
                         self.reply_cnt += 1;
                         self.chunk_cnt += 1;
-                        let lat_us = latency.as_secs_f64() * 1000000.0;
-                        self.chunk_lats.push(lat_us);
+
+                        let lat_us = latency.as_secs_f64() * 1_000_000.0;
+                        match cmd_result {
+                            CommandResult::Put { .. } => {
+                                self.chunk_wlats.push(lat_us);
+                            }
+                            CommandResult::Get { .. } => {
+                                self.chunk_rlats.push(lat_us);
+                            }
+                        }
 
                         if self.slowdown > 0 {
                             self.slowdown -= 1;
                         }
                     }
 
-                    DriverReply::Timeout => {
+                    DriverReply::Timeout | DriverReply::Failure => {
                         self.leave_reconnect().await?;
                     }
 
@@ -582,6 +669,51 @@ impl ClientBench {
         Ok(())
     }
 
+    /// Runs through the loaded trace exactly once.
+    async fn trace_once(&mut self) -> Result<(), SummersetError> {
+        debug_assert!(self.trace_vec.is_some());
+        loop {
+            self.closed_loop_iter().await?;
+            if self.trace_idx == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// If not using trace, preload values for all keys. Allowing a few retries
+    /// in cases of redirections and if servers weren't fully launched up.
+    async fn do_preload(&mut self) -> Result<(), SummersetError> {
+        let val = self.gen_value_at_now()?;
+
+        if let Some(keys_pool) = &self.keys_pool {
+            pf_info!("preloading all keys...");
+
+            let mut retries = 10; // hardcoded
+            for key in keys_pool {
+                loop {
+                    while self.driver.issue_put(key, val)?.is_none() {}
+
+                    match self.driver.wait_reply().await? {
+                        DriverReply::Success { .. } => {
+                            break;
+                        }
+                        _ => {
+                            retries -= 1;
+                            if retries == 0 {
+                                return logged_err!(
+                                    "unsuccessful preload reply, no retries left"
+                                );
+                            }
+                            time::sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Drops the current interval ticker and create a new one using the
     /// current frequency.
     fn reset_ticker(&mut self) {
@@ -589,7 +721,7 @@ impl ClientBench {
             self.curr_freq = 1; // avoid division-by-zero
         }
 
-        let period = Duration::from_nanos(1000000000 / self.curr_freq);
+        let period = Duration::from_nanos(1_000_000_000 / self.curr_freq);
         self.ticker = time::interval(period);
         self.ticker
             .set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -598,17 +730,23 @@ impl ClientBench {
     /// Runs the adaptive benchmark for given time length.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.driver.connect().await?;
-        println!(
-            "{:^11} | {:^12} | {:^12} | {:^8} : {:>8} / {:<8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Freq", "Reply", "Total"
-        );
 
         self.start = Instant::now();
         self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
 
-        let mut last_print = self.start;
-        let (mut printed_1_100, mut printed_1_10) = (false, false);
+        // if length is 0, do the special action of running the trace exactly
+        // once; this is useful for e.g. loading YCSB
+        if self.params.length_s == 0 && self.trace_vec.is_some() {
+            pf_info!("feeding trace once...");
+            self.trace_once().await?;
+            return Ok(());
+        }
+
+        // if not using trace, preload values for all keys
+        if self.trace_vec.is_none() && !self.params.skip_preloading {
+            self.do_preload().await?;
+        }
 
         if self.params.freq_target > 0 {
             // is open-loop, set up interval ticker
@@ -616,12 +754,33 @@ impl ClientBench {
             self.reset_ticker();
         }
 
+        let mut last_print = self.start;
+        // let (mut printed_1_100, mut printed_1_10) = (false, false);
         self.total_cnt = 0;
         self.reply_cnt = 0;
         self.chunk_cnt = 0;
-        self.chunk_lats.clear();
+        self.chunk_wlats.clear();
+        self.chunk_rlats.clear();
         self.retrying = false;
         self.slowdown = 0;
+
+        let header = format!(
+            "{:^11} | {:^12} | {:^12} : {:^12} ~ {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)",
+            "Tput (ops/s)",
+            "Lat (us)",
+            "WLat (us)",
+            "RLat (us)",
+            "Freq",
+            "Reply",
+            "Total"
+        );
+        if let Some(output_file) = self.output_file.as_mut() {
+            writeln!(output_file, "{}", header)?;
+        } else {
+            println!("{}", header);
+        }
+        pf_info!("starting benchmark...");
 
         // run for specified length
         let mut elapsed = self.now.duration_since(self.start);
@@ -637,83 +796,114 @@ impl ClientBench {
 
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
-            if print_elapsed >= PRINT_INTERVAL
-                || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
-                || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
+            let print_interval = if self.params.fine_output {
+                &FINE_PRINT_INTERVAL
+            } else {
+                &PRINT_INTERVAL
+            };
+            if &print_elapsed >= print_interval
+            // || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
+            // || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
             {
-                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if self.chunk_lats.is_empty() {
+                let tput =
+                    (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_lats.iter().sum::<f64>()
-                        / (self.chunk_lats.len() as f64)
+                    self.chunk_wlats.iter().sum::<f64>()
+                        / self.chunk_wlats.len() as f64
                 };
-                println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8} : {:>8} / {:<8}",
+                let rlat = if self.chunk_rlats.is_empty() {
+                    0.0
+                } else {
+                    self.chunk_rlats.iter().sum::<f64>()
+                        / self.chunk_rlats.len() as f64
+                };
+                let lat =
+                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                        0.0
+                    } else {
+                        (wlat * self.chunk_wlats.len() as f64
+                            + rlat * self.chunk_rlats.len() as f64)
+                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
+                                as f64
+                    };
+
+                let line = format!(
+                    "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
                     elapsed.as_secs_f64(),
-                    tpt,
+                    tput,
                     lat,
+                    wlat,
+                    rlat,
                     self.curr_freq,
                     self.reply_cnt,
                     self.total_cnt
                 );
+                if let Some(output_file) = self.output_file.as_mut() {
+                    writeln!(output_file, "{}", line)?;
+                } else {
+                    println!("{}", line);
+                }
+
                 last_print = self.now;
                 self.chunk_cnt = 0;
-                self.chunk_lats.clear();
+                self.chunk_wlats.clear();
+                self.chunk_rlats.clear();
 
                 // THE FOLLOWING IS EXPERIMENTAL:
                 // adaptively adjust issuing frequency according to number of
                 // pending requests; we try to maintain two ranges:
-                //   - curr_freq in (1 ~ 1.25) * tpt
-                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tpt
-                if self.params.freq_target > 0 {
-                    let freq_changed = if self.slowdown > 0
-                        || self.curr_freq as f64 > 1.25 * tpt
-                        || self.reply_cnt as f64 + 0.1 * tpt
-                            < self.total_cnt as f64
-                    {
-                        // frequency too high, ramp down
-                        self.curr_freq -= (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 > 2.0 * tpt {
-                            self.curr_freq /= 2;
-                        } else if self.curr_freq as f64 > 1.5 * tpt {
-                            self.curr_freq =
-                                (0.67 * self.curr_freq as f64) as u64;
-                        } else if self.curr_freq as f64 > 1.25 * tpt {
-                            self.curr_freq =
-                                (0.8 * self.curr_freq as f64) as u64;
-                        }
-                        true
-                    } else if self.curr_freq as f64 <= tpt
-                        || self.reply_cnt as f64 + 0.001 * tpt
-                            >= self.total_cnt as f64
-                    {
-                        // frequency too conservative, ramp up a bit
-                        self.curr_freq += (0.01 * tpt) as u64;
-                        if self.curr_freq as f64 <= tpt {
-                            self.curr_freq = tpt as u64;
-                        }
-                        if self.curr_freq > self.params.freq_target {
-                            self.curr_freq = self.params.freq_target;
-                        }
-                        true
-                    } else {
-                        // roughly appropriate
-                        false
-                    };
-                    if freq_changed {
-                        self.reset_ticker();
-                    }
-                }
+                //   - curr_freq in (1 ~ 1.25) * tput
+                //   - total_cnt in reply_cnt + (0.001 ~ 0.1) * tput
+                // if self.params.freq_target > 0 {
+                //     let freq_changed = if self.slowdown > 0
+                //         || self.curr_freq as f64 > 1.25 * tput
+                //         || self.reply_cnt as f64 + 0.1 * tput
+                //             < self.total_cnt as f64
+                //     {
+                //         // frequency too high, ramp down
+                //         self.curr_freq -= (0.01 * tput) as u64;
+                //         if self.curr_freq as f64 > 2.0 * tput {
+                //             self.curr_freq /= 2;
+                //         } else if self.curr_freq as f64 > 1.5 * tput {
+                //             self.curr_freq =
+                //                 (0.67 * self.curr_freq as f64) as u64;
+                //         } else if self.curr_freq as f64 > 1.25 * tput {
+                //             self.curr_freq =
+                //                 (0.8 * self.curr_freq as f64) as u64;
+                //         }
+                //         true
+                //     } else if self.curr_freq as f64 <= tput
+                //         || self.reply_cnt as f64 + 0.001 * tput
+                //             >= self.total_cnt as f64
+                //     {
+                //         // frequency too conservative, ramp up a bit
+                //         self.curr_freq += (0.01 * tput) as u64;
+                //         if self.curr_freq as f64 <= tput {
+                //             self.curr_freq = tput as u64;
+                //         }
+                //         if self.curr_freq > self.params.freq_target {
+                //             self.curr_freq = self.params.freq_target;
+                //         }
+                //         true
+                //     } else {
+                //         // roughly appropriate
+                //         false
+                //     };
+                //     if freq_changed {
+                //         self.reset_ticker();
+                //     }
+                // }
 
                 // these two print triggers are for more effecitve adaptive
                 // adjustment of frequency
-                if !printed_1_100 && elapsed >= PRINT_INTERVAL / 100 {
-                    printed_1_100 = true;
-                }
-                if !printed_1_10 && elapsed >= PRINT_INTERVAL / 10 {
-                    printed_1_10 = true;
-                }
+                // if !printed_1_100 && elapsed >= PRINT_INTERVAL / 100 {
+                //     printed_1_100 = true;
+                // }
+                // if !printed_1_10 && elapsed >= PRINT_INTERVAL / 10 {
+                //     printed_1_10 = true;
+                // }
             }
         }
 

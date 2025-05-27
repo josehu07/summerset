@@ -6,7 +6,8 @@ use std::net::SocketAddr;
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, ConfNum,
+    RespondersConf, SummersetError,
 };
 
 use bytes::BytesMut;
@@ -41,6 +42,13 @@ pub(crate) enum CtrlMsg {
 
     /// Server -> Manager: tell the manager that I steped-up/down as leader.
     LeaderStatus { step_up: bool },
+
+    /// Server -> Manager: tell the manager that my current responders config
+    /// has changed.
+    RespondersConf {
+        conf_num: ConfNum,
+        new_conf: RespondersConf,
+    },
 
     /// Manager -> Server: reset to initial state. If durable is false, cleans
     /// durable storage state as well.
@@ -106,7 +114,7 @@ impl ServerReigner {
         let (server_controller_handles_write, server_controller_handles_read) =
             flashmap::new::<ReplicaId, JoinHandle<()>>();
 
-        let server_listener = tcp_bind_with_retry(srv_addr, 10).await?;
+        let server_listener = tcp_bind_with_retry(srv_addr, 15).await?;
         let mut acceptor = ServerReignerAcceptorTask::new(
             tx_id_assign,
             rx_id_result,
@@ -431,7 +439,7 @@ impl ServerReignerControllerTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -457,7 +465,7 @@ impl ServerReignerControllerTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last ctrl send -> {}: {}", id, e);
                         }
                     }
@@ -476,7 +484,7 @@ impl ServerReignerControllerTask {
                                 Some(&msg)
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("server {} has left", self.id);
@@ -523,7 +531,7 @@ impl ServerReignerControllerTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading ctrl <- {}: {}", id, e);
                             break; // probably the server exited ungracefully
                         }

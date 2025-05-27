@@ -198,8 +198,6 @@ impl RaftReplica {
                             Self::make_command_id(slot, cmd_idx),
                             cmd.clone(),
                         )?;
-                    } else {
-                        continue; // ignore other types of requests
                     }
                 }
                 pf_trace!(
@@ -244,7 +242,9 @@ impl RaftReplica {
 
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
-            debug_assert!(self.next_slot[&peer] <= end_slot + 1);
+            if self.next_slot[&peer] > end_slot + 1 {
+                return Ok(());
+            }
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
             if self.try_next_slot[&peer] < end_slot + 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;
@@ -282,8 +282,6 @@ impl RaftReplica {
                             Self::make_command_id(slot, cmd_idx),
                             cmd.clone(),
                         )?;
-                    } else {
-                        continue; // ignore other types of requests
                     }
                 }
                 pf_trace!(
@@ -350,7 +348,7 @@ impl RaftReplica {
                 .collect();
 
             // NOTE: here breaking long AppendEntries into chunks to keep
-            // peers heartbeated
+            //       peers heartbeated
             let mut now_prev_slot = prev_slot;
             while !entries.is_empty() {
                 let end = cmp::min(entries.len(), self.config.msg_chunk_size);

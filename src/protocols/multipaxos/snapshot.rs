@@ -109,16 +109,16 @@ impl MultiPaxosReplica {
 
     /// Take a snapshot up to current exec_bar, then discard the in-mem log up
     /// to that index as well as outdate entries in the durable WAL log file.
-    ///
-    /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot. Production quality implementations should
-    /// make the snapshotting action "atomic".
-    ///
-    /// NOTE: the current implementation does not take care of InstallSnapshot
-    /// messages (which is needed when some lagging follower has some slot
-    /// which all other peers have snapshotted); we assume here that failed
-    /// Accept messages will be retried indefinitely until success before its
-    /// associated data gets discarded from leader's memory.
+    //
+    // NOTE: the current implementation does not guard against crashes in the
+    //       middle of taking a snapshot. Production quality implementations
+    //       should make the snapshotting action "atomic".
+    //
+    // NOTE: the current implementation does not take care of InstallSnapshot
+    //       messages (which is needed when some lagging follower has some slot
+    //       which all other peers have snapshotted); we assume here that failed
+    //       Accept messages will be retried indefinitely until success before
+    //       its associated data gets discarded from leader's memory.
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
@@ -135,11 +135,10 @@ impl MultiPaxosReplica {
             return Ok(());
         }
 
+        // NOTE: broadcast heartbeats here to appease peers
+        self.bcast_heartbeats().await?;
+
         // collect and dump all Puts in executed instances
-        if self.is_leader() {
-            // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats().await?;
-        }
         self.snapshot_dump_kv_pairs(new_start_slot).await?;
 
         // write new slot info entry to the head of snapshot
@@ -172,16 +171,15 @@ impl MultiPaxosReplica {
         self.insts.drain(0..(new_start_slot - self.start_slot));
         self.start_slot = new_start_slot;
 
+        // NOTE: broadcast heartbeats here to appease peers
+        self.bcast_heartbeats().await?;
+
         // discarding everything older than start_slot in WAL log
-        if self.is_leader() {
-            // NOTE: broadcast heartbeats here to appease followers
-            self.bcast_heartbeats().await?;
-        }
         self.snapshot_discard_log().await?;
 
-        // reset the leader heartbeat hear timer
+        // reset the heartbeat hearing timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         pf_info!("took snapshot up to: start {}", self.start_slot);
@@ -213,6 +211,7 @@ impl MultiPaxosReplica {
 
                 // recover necessary slot indices info
                 self.start_slot = start_slot;
+                self.accept_bar = start_slot;
                 self.commit_bar = start_slot;
                 self.exec_bar = start_slot;
                 self.snap_bar = start_slot;

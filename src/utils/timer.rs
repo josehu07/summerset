@@ -163,6 +163,8 @@ struct TimerSleeperTask<F> {
     /// Indicates whether the timer has exploded since last kickoff.
     exploded: Arc<AtomicBool>,
 
+    /// If true, allow setting an earlier deadline before the current deadline
+    /// is reached.
     allow_backwards: bool,
 }
 

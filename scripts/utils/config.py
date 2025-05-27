@@ -64,3 +64,34 @@ def check_remote_is_me(remote):
 
     if hostname_l != hostname_r:
         raise RuntimeError(f"remote {remote} is not me")
+
+
+class PairsMap:
+    def __init__(self, pairs, default=None):
+        self.pairs = dict()
+        self.default = default
+
+        for (na, nb), val in pairs.items():
+            assert isinstance(na, int) and isinstance(nb, int)
+            assert isinstance(val, int) and val >= 2
+
+            pair = frozenset({f"host{na}", f"host{nb}"})
+            if pair in self.pairs:
+                raise ValueError(f"duplicate unordered key pair found: {(na, nb)}")
+
+            self.pairs[pair] = val
+
+    def halved(self):
+        res = self
+        for pair in res.pairs:
+            res.pairs[pair] //= 2
+        if res.default is not None:
+            res.default //= 2
+        return res
+
+    def get(self, ha, hb):
+        pair = frozenset({ha, hb})
+        if pair in self.pairs:
+            return self.pairs[pair]
+        else:
+            return self.default

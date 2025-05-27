@@ -39,7 +39,7 @@ impl ClientCtrlStub {
     pub(crate) async fn new_by_connect(
         manager: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        let mut stream = tcp_connect_with_retry(manager, 10).await?;
+        let mut stream = tcp_connect_with_retry(manager, 15).await?;
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
 

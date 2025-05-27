@@ -63,8 +63,6 @@ impl ChainRepReplica {
                                     ),
                                     cmd.clone(),
                                 )?;
-                            } else {
-                                continue; // ignore other types of requests
                             }
                         }
                         pf_trace!(

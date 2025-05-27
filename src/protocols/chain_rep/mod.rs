@@ -66,7 +66,7 @@ impl Default for ReplicaConfigChainRep {
 #[derive(
     Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
 )]
-pub(crate) enum Status {
+enum Status {
     Null = 0,
     Streaming = 1,
     Propagated = 2,
@@ -74,10 +74,10 @@ pub(crate) enum Status {
 }
 
 /// Request batch type.
-pub(crate) type ReqBatch = Vec<(ClientId, ApiRequest)>;
+type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-memory log entry containing a commands batch.
-pub(crate) struct LogEntry {
+struct LogEntry {
     /// Log entry status.
     status: Status,
 
@@ -90,14 +90,14 @@ pub(crate) struct LogEntry {
 
 /// Stable storage WAL log entry type.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) struct WalEntry {
+struct WalEntry {
     slot: usize,
     reqs: ReqBatch,
 }
 
 /// Peer-peer message type.
 #[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
-pub(crate) enum PeerMsg {
+enum PeerMsg {
     /// Propagate message from predecessor to successor.
     Propagate { slot: usize, reqs: ReqBatch },
 
@@ -271,8 +271,13 @@ impl GenericReplica for ChainRepReplica {
                 .await?;
 
         // setup transport hub module
-        let mut transport_hub =
-            TransportHub::new_and_setup(id, population, p2p_addr, None).await?;
+        let mut transport_hub = TransportHub::new_and_setup(
+            id,
+            population,
+            p2p_addr,
+            HashMap::new(),
+        )
+        .await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -365,7 +370,7 @@ impl GenericReplica for ChainRepReplica {
                 msg = self.transport_hub.recv_msg(), if !paused => {
                     if let Err(_e) = msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving peer msg: {}", e);
                         continue;
                     }
@@ -418,6 +423,10 @@ impl GenericReplica for ChainRepReplica {
     fn id(&self) -> ReplicaId {
         self.id
     }
+
+    fn population(&self) -> u8 {
+        self.population
+    }
 }
 
 /// Configuration parameters struct.
@@ -444,6 +453,9 @@ impl Default for ClientConfigChainRep {
 pub(crate) struct ChainRepClient {
     /// Client ID.
     id: ClientId,
+
+    /// Number of servers in the cluster.
+    population: u8,
 
     /// Configuration parameters struct.
     _config: ClientConfigChainRep,
@@ -494,6 +506,7 @@ impl GenericEndpoint for ChainRepClient {
 
         Ok(ChainRepClient {
             id,
+            population: 0,
             _config: config,
             servers: HashMap::new(),
             head_id: init_head_id,
@@ -525,6 +538,8 @@ impl GenericEndpoint for ChainRepClient {
                 population,
                 servers_info,
             } => {
+                self.population = population;
+
                 // shift to a new head_id/tail_id if current one not active
                 debug_assert!(!servers_info.is_empty());
                 while !servers_info.contains_key(&self.head_id)
@@ -590,7 +605,7 @@ impl GenericEndpoint for ChainRepClient {
             }
 
             // NOTE: commented out the following wait to avoid accidental
-            // hanging upon leaving
+            //       hanging upon leaving
             // while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left server connection {}", id);
         }
@@ -615,7 +630,7 @@ impl GenericEndpoint for ChainRepClient {
         req: Option<&ApiRequest>,
     ) -> Result<bool, SummersetError> {
         let read_only = match req {
-            Some(req) if req.read_only() => true,
+            Some(req) if req.read_only().is_some() => true,
             None if self.last_read_only => true,
             _ => false,
         };
@@ -646,6 +661,10 @@ impl GenericEndpoint for ChainRepClient {
 
     fn id(&self) -> ClientId {
         self.id
+    }
+
+    fn population(&self) -> u8 {
+        self.population
     }
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {

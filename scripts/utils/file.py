@@ -107,12 +107,14 @@ def copy_file_to_remote(remote, src_path, dst_path):
         raise RuntimeError(f"failed to copy {src_path} to {remote}:{dst_path}")
 
 
-def fetch_files_of_dir(remote, src_path, dst_path):
+def fetch_files_of_dir(remote, src_path, dst_path, file_prefix=""):
     if not os.path.isdir(dst_path):
         raise RuntimeError(f"{dst_path} is not a directory")
-    cmd = ["scp", f"{remote}:{src_path}/*", f"{dst_path}/"]
+    cmd = ["scp", f"{remote}:{src_path}/{file_prefix}*", f"{dst_path}/"]
     rc = run_process(
         cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
     ).wait()
     if rc != 0:
-        raise RuntimeError(f"failed to fetch {remote}:{src_path}/* into {dst_path}/")
+        raise RuntimeError(
+            f"failed to fetch {remote}:{src_path}/{file_prefix}* into {dst_path}/"
+        )

@@ -9,7 +9,7 @@ use crate::manager::{
 };
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
-use crate::utils::{SummersetError, ME};
+use crate::utils::{ConfNum, RespondersConf, SummersetError, ME};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +61,12 @@ pub struct ClusterManager {
     /// Currently assigned server IDs.
     assigned_ids: HashSet<ReplicaId>,
 
+    /// Approximate current responders configuration.
+    responders_conf: RespondersConf,
+
+    /// Latest known responders config number.
+    latest_conf_num: ConfNum,
+
     /// ServerReigner module.
     server_reigner: ServerReigner,
 
@@ -100,6 +106,8 @@ impl ClusterManager {
             tx_id_result,
             servers_info: HashMap::new(),
             assigned_ids: HashSet::new(),
+            responders_conf: RespondersConf::empty(population),
+            latest_conf_num: 0,
             server_reigner,
             client_reactor,
         })
@@ -137,7 +145,7 @@ impl ClusterManager {
                 ctrl_msg = self.server_reigner.recv_ctrl() => {
                     if let Err(_e) = ctrl_msg {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving ctrl msg: {}", e);
                         continue;
                     }
@@ -152,7 +160,7 @@ impl ClusterManager {
                 ctrl_req = self.client_reactor.recv_req() => {
                     if let Err(_e) = ctrl_req {
                         // NOTE: commented out to prevent console lags
-                        // during benchmarking
+                        //       during benchmarking
                         // pf_error!("error receiving ctrl req: {}", e);
                         continue;
                     }
@@ -186,11 +194,11 @@ impl ClusterManager {
         p2p_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         if self.servers_info.contains_key(&server) {
-            return logged_err!("server join got duplicate ID: {}", server);
+            return logged_err!("NewServerJoin got duplicate ID: {}", server);
         }
         if protocol != self.protocol {
             return logged_err!(
-                "server join with mismatch protocol: {}",
+                "NewServerJoin with mismatch protocol: {}",
                 protocol
             );
         }
@@ -232,7 +240,7 @@ impl ClusterManager {
         step_up: bool,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("leader status got unknown ID: {}", server);
+            return logged_err!("manager got unknown server ID: {}", server);
         }
 
         // update this server's info
@@ -247,6 +255,27 @@ impl ClusterManager {
         }
     }
 
+    /// Handler of RespondersConf message.
+    fn handle_responders_conf(
+        &mut self,
+        server: ReplicaId,
+        conf_num: ConfNum,
+        new_conf: RespondersConf,
+    ) -> Result<(), SummersetError> {
+        if !self.servers_info.contains_key(&server) {
+            return logged_err!("manager got unknown server ID: {}", server);
+        }
+
+        // update current responders config if number up-to-date
+        if conf_num >= self.latest_conf_num {
+            self.responders_conf = new_conf;
+            self.latest_conf_num = conf_num;
+        } else {
+            pf_warn!("outdated responders config number {} ignored", conf_num);
+        }
+        Ok(())
+    }
+
     /// Handler of autonomous SnapshotUpTo message.
     fn handle_snapshot_up_to(
         &mut self,
@@ -254,7 +283,7 @@ impl ClusterManager {
         new_start: usize,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("snapshot up to got unknown ID: {}", server);
+            return logged_err!("manager got unknown server ID: {}", server);
         }
 
         // update this server's info
@@ -287,7 +316,7 @@ impl ClusterManager {
             } => {
                 if id != server {
                     return logged_err!(
-                        "server join with mismatch ID: {} != {}",
+                        "NewServerJoin with mismatch ID: {} != {}",
                         id,
                         server
                     );
@@ -299,6 +328,10 @@ impl ClusterManager {
 
             CtrlMsg::LeaderStatus { step_up } => {
                 self.handle_leader_status(server, step_up)?;
+            }
+
+            CtrlMsg::RespondersConf { conf_num, new_conf } => {
+                self.handle_responders_conf(server, conf_num, new_conf)?;
             }
 
             CtrlMsg::SnapshotUpTo { new_start } => {
@@ -323,6 +356,20 @@ impl ClusterManager {
             CtrlReply::QueryInfo {
                 population: self.population,
                 servers_info: self.servers_info.clone(),
+            },
+            client,
+        )
+    }
+
+    /// Handler of client QueryConf request.
+    fn handle_client_query_conf(
+        &mut self,
+        client: ClientId,
+    ) -> Result<(), SummersetError> {
+        self.client_reactor.send_reply(
+            CtrlReply::QueryConf {
+                conf_num: self.latest_conf_num,
+                now_conf: self.responders_conf.clone(),
             },
             client,
         )
@@ -533,6 +580,10 @@ impl ClusterManager {
         match req {
             CtrlRequest::QueryInfo => {
                 self.handle_client_query_info(client)?;
+            }
+
+            CtrlRequest::QueryConf => {
+                self.handle_client_query_conf(client)?;
             }
 
             CtrlRequest::ResetServers { servers, durable } => {

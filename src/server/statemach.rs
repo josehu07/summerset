@@ -26,10 +26,24 @@ pub enum Command {
 }
 
 impl Command {
-    /// Is the command type read-only?
+    /// Is the command type read-only? If so, returns the key queried.
     #[inline]
-    pub fn read_only(&self) -> bool {
-        matches!(self, Command::Get { .. })
+    pub fn read_only(&self) -> Option<&String> {
+        if let Command::Get { key } = self {
+            Some(key)
+        } else {
+            None
+        }
+    }
+
+    /// Is the command non-read-only? If so, returns the key updated.
+    #[inline]
+    pub fn write_key(&self) -> Option<&String> {
+        if let Command::Put { key, .. } = self {
+            Some(key)
+        } else {
+            None
+        }
     }
 }
 
@@ -41,6 +55,14 @@ pub enum CommandResult {
 
     /// `Some(old_value)` if key was in state machine, else `None`.
     Put { old_value: Option<String> },
+}
+
+impl CommandResult {
+    /// Is the command type read-only?
+    #[inline]
+    pub fn read_only(&self) -> bool {
+        matches!(self, CommandResult::Get { .. })
+    }
 }
 
 /// State is simply a `HashMap` from `String` key -> `String` value.

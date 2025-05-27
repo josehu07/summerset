@@ -40,12 +40,11 @@ impl RepNothingReplica {
 
         // submit execution commands in order
         for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-            match req {
-                ApiRequest::Req { cmd, .. } => self.state_machine.submit_cmd(
+            if let ApiRequest::Req { cmd, .. } = req {
+                self.state_machine.submit_cmd(
                     Self::make_command_id(inst_idx, cmd_idx),
                     cmd.clone(),
-                )?,
-                _ => continue, // ignore other types of requests
+                )?;
             }
         }
 

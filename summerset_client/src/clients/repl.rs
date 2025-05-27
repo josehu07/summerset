@@ -11,7 +11,8 @@ use color_print::{cprint, cprintln};
 use tokio::time::Duration;
 
 use summerset::{
-    Command, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
+    logged_err, pf_error, Bitmap, Command, ConfChange, CtrlReply, CtrlRequest,
+    GenericEndpoint, ReplicaId, SummersetError,
 };
 
 /// Prompt string at the start of line.
@@ -22,14 +23,17 @@ enum ReplCommand {
     /// Normal state machine replication command.
     Normal(Command),
 
+    /// Responders configuration change request. (only for relevant protocols)
+    Conf(ConfChange),
+
+    /// Control request to the manager.
+    Control(CtrlRequest),
+
     /// Reconnect to the service.
     Reconnect,
 
     /// Print help message.
     PrintHelp,
-
-    /// Control request to the manager.
-    Control(CtrlRequest),
 
     /// Client exit.
     Exit,
@@ -75,11 +79,14 @@ impl ClientRepl {
         if let Some(e) = err {
             cprintln!("<bright-red>✗</> {}", e);
         }
-        println!("HELP: Supported normal commands are:");
+        println!("HELP: Commands for normal operations:");
         println!("          get <key>");
         println!("          put <key> <value>");
         println!("          help");
         println!("          exit");
+        println!("      Commands for responders conf change:");
+        println!("          leader <server>");
+        println!("          responder <range> [servers]");
         println!("      Commands for control/testing:");
         println!("          reconnect");
         println!("          reset [servers]");
@@ -106,6 +113,21 @@ impl ClientRepl {
         }
     }
 
+    /// Expect the next segment to be the only one left.
+    #[inline]
+    fn expect_only_seg<'s>(
+        segs: &mut SplitWhitespace<'s>,
+    ) -> Result<&'s str, SummersetError> {
+        let seg = Self::expect_next_seg(segs)?;
+        if segs.next().is_some() {
+            let err = SummersetError::msg("too many args");
+            Self::print_help(Some(&err));
+            Err(err)
+        } else {
+            Ok(seg)
+        }
+    }
+
     /// Drain all of the remaining segments into a hash set and interpret as
     /// replica IDs.
     #[inline]
@@ -119,8 +141,36 @@ impl ClientRepl {
         Ok(servers)
     }
 
+    /// Parse the `key_range` field for conf changes. Returns:
+    ///   - `Some(Some((ka, kb)))` if a specified range
+    ///   - `Some(None)` if a full range
+    ///   - `None` if a conf reset indicated
+    fn parse_conf_key_range(
+        range_str: &str,
+    ) -> Result<Option<Option<(String, String)>>, SummersetError> {
+        match range_str {
+            "full" => Ok(Some(None)),
+            "reset" => Ok(None),
+            _ => {
+                let mut range = vec![];
+                for s in range_str.trim().split('-') {
+                    range.push(s.to_string());
+                }
+                if range.len() != 2 {
+                    logged_err!("invalid key_range: {}", range_str)
+                } else {
+                    let mut range_drain = range.into_iter();
+                    Ok(Some(Some((
+                        range_drain.next().unwrap(),
+                        range_drain.next().unwrap(),
+                    ))))
+                }
+            }
+        }
+    }
+
     /// Reads in user input and parses into a command.
-    fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
+    async fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
         self.input_buf.clear();
         let nread = io::stdin().read_line(&mut self.input_buf)?;
         if nread == 0 {
@@ -159,6 +209,42 @@ impl ClientRepl {
             "help" => Ok(ReplCommand::PrintHelp),
 
             "reconnect" => Ok(ReplCommand::Reconnect),
+
+            "leader" => {
+                let leader_str = Self::expect_only_seg(&mut segs)?;
+                let leader = leader_str.parse::<ReplicaId>()?;
+                Ok(ReplCommand::Conf(ConfChange {
+                    reset: false,
+                    leader: Some(leader),
+                    range: None,
+                    responders: None,
+                }))
+            }
+
+            "responder" => {
+                let range_str = Self::expect_next_seg(&mut segs)?;
+                let range = Self::parse_conf_key_range(range_str)?;
+                let servers = Self::drain_server_ids(&mut segs)?;
+                let delta = if let Some(range) = range {
+                    ConfChange {
+                        reset: false,
+                        leader: None,
+                        range,
+                        responders: Some(Bitmap::from((
+                            self.driver.population(),
+                            servers,
+                        ))),
+                    }
+                } else {
+                    ConfChange {
+                        reset: true,
+                        leader: None,
+                        range: None,
+                        responders: None,
+                    }
+                };
+                Ok(ReplCommand::Conf(delta))
+            }
 
             "reset" => {
                 let servers = Self::drain_server_ids(&mut segs)?;
@@ -226,6 +312,20 @@ impl ClientRepl {
                 );
             }
 
+            DriverReply::Conf { req_id, changed } => {
+                if changed {
+                    cprintln!(
+                        "<bright-cyan>✓</> ({}) responders conf change successful",
+                        req_id
+                    );
+                } else {
+                    cprintln!(
+                        "<bright-red>✗</> ({}) responders conf change ignored (invalid?)",
+                        req_id
+                    );
+                }
+            }
+
             DriverReply::Failure => {
                 cprintln!("<bright-red>✗</> service replied unknown error");
             }
@@ -285,11 +385,12 @@ impl ClientRepl {
         }
     }
 
-    /// One iteration of the REPL loop.
+    /// One iteration of the REPL loop. On success, returns a boolean that's
+    /// false only when exiting.
     async fn iter(&mut self) -> Result<bool, SummersetError> {
         Self::print_prompt();
 
-        let cmd = self.read_command()?;
+        let cmd = self.read_command().await?;
         match cmd {
             ReplCommand::Exit => {
                 println!("Exiting...");
@@ -316,6 +417,12 @@ impl ClientRepl {
                 Ok(true)
             }
 
+            ReplCommand::Conf(delta) => {
+                let result = self.driver.conf(delta).await?;
+                self.print_result(result);
+                Ok(true)
+            }
+
             ReplCommand::Control(req) => {
                 let reply = self.make_ctrl_req(req).await?;
                 self.print_ctrl_reply(reply);
@@ -329,9 +436,17 @@ impl ClientRepl {
         self.driver.connect().await?;
 
         loop {
-            if let Ok(false) = self.iter().await {
-                self.driver.leave(true).await?;
-                break;
+            match self.iter().await {
+                Ok(true) => {}
+
+                Ok(false) => {
+                    self.driver.leave(true).await?;
+                    break;
+                }
+
+                Err(err) => {
+                    cprintln!("<bright-red>✗</> error: {}", err);
+                }
             }
         }
 

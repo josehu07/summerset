@@ -1,12 +1,13 @@
 //! Summerset server external API module implementation.
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::client::ClientId;
 use crate::server::{Command, CommandResult, ReplicaId};
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, Bitmap, SummersetError,
 };
 
 use get_size::GetSize;
@@ -38,18 +39,90 @@ pub enum ApiRequest {
         cmd: Command,
     },
 
+    /// Responders configuration change. (only used by relevant protocols)
+    Conf {
+        /// Client request ID.
+        id: RequestId,
+
+        /// Configuration change delta to be applied.
+        delta: ConfChange,
+    },
+
     /// Client leave notification.
     Leave,
 }
 
 impl ApiRequest {
-    /// Is the command contained in the request read-only?
+    /// Is the command contained read-only? If so, returns the key queried.
     #[inline]
-    pub fn read_only(&self) -> bool {
+    pub fn read_only(&self) -> Option<&String> {
         if let ApiRequest::Req { cmd, .. } = self {
             cmd.read_only()
         } else {
-            false
+            None
+        }
+    }
+
+    /// Is the command contained non-read-only? If so, returns the key updated.
+    #[inline]
+    pub fn write_key(&self) -> Option<&String> {
+        if let ApiRequest::Req { cmd, .. } = self {
+            cmd.write_key()
+        } else {
+            None
+        }
+    }
+
+    /// Is the request a configuration change request?
+    #[inline]
+    pub fn conf_change(&self) -> bool {
+        matches!(self, ApiRequest::Conf { .. })
+    }
+}
+
+/// Configuration change delta used in request API.
+#[derive(PartialEq, Eq, Default, Clone, Serialize, Deserialize, GetSize)]
+pub struct ConfChange {
+    /// If true, indicates a conf reset to default; all the following fields
+    /// will be ignored.
+    pub reset: bool,
+
+    /// If not `None`, the new supposed leader; otherwise not updated.
+    pub leader: Option<ReplicaId>,
+
+    /// Keys range to apply the responders bitmap. If `None`, means the full
+    /// range of all keys.
+    pub range: Option<(String, String)>,
+
+    /// If not `None`, a new responders bitmap for some range; otherwise not
+    /// updated
+    pub responders: Option<Bitmap>,
+}
+
+impl fmt::Debug for ConfChange {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.reset {
+            write!(f, "Δ reset")
+        } else {
+            write!(
+                f,
+                "Δ <{}> {}=>{}",
+                if let Some(leader) = &self.leader {
+                    leader.to_string()
+                } else {
+                    "_".into()
+                },
+                if let Some((start, end)) = &self.range {
+                    format!("{}-{}", start, end)
+                } else {
+                    "full".into()
+                },
+                if let Some(responders) = &self.responders {
+                    format!("{:?}", responders)
+                } else {
+                    "_".into()
+                }
+            )
         }
     }
 }
@@ -67,10 +140,62 @@ pub enum ApiReply {
 
         /// Set if the service wants me to talk to a specific server.
         redirect: Option<ReplicaId>,
+
+        /// Set if failed read-only attempt when near quorum read (or
+        /// some other read-only optimization) enabled and retry indicated.
+        rq_retry: Option<Command>,
+    },
+
+    /// Reply to responders configuration change. (only for relevant protocols)
+    Conf {
+        /// ID of the corresponding client request.
+        id: RequestId,
+
+        /// True if successful; false otherwise (e.g., if config not valid).
+        success: bool,
     },
 
     /// Reply to client leave notification.
     Leave,
+}
+
+impl ApiReply {
+    /// Creates a normal reply with given result.
+    #[inline]
+    pub fn normal(id: RequestId, result: Option<CommandResult>) -> Self {
+        ApiReply::Reply {
+            id,
+            result,
+            redirect: None,
+            rq_retry: None,
+        }
+    }
+
+    /// Creates a reply with redirect hint.
+    #[inline]
+    pub fn redirect(id: RequestId, redirect: Option<ReplicaId>) -> Self {
+        ApiReply::Reply {
+            id,
+            result: None,
+            redirect,
+            rq_retry: None,
+        }
+    }
+
+    /// Creates a reply with rq_retry flag.
+    #[inline]
+    pub fn rq_retry(
+        id: RequestId,
+        read_cmd: Command,
+        redirect: Option<ReplicaId>,
+    ) -> Self {
+        ApiReply::Reply {
+            id,
+            result: None,
+            redirect,
+            rq_retry: Some(read_cmd),
+        }
+    }
 }
 
 /// The external client-facing API module.
@@ -129,7 +254,7 @@ impl ExternalApi {
         let (client_servant_handles_write, client_servant_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = tcp_bind_with_retry(api_addr, 10).await?;
+        let client_listener = tcp_bind_with_retry(api_addr, 15).await?;
         let mut acceptor = ExternalApiAcceptorTask::new(
             tx_req,
             client_listener,
@@ -478,7 +603,7 @@ impl ExternalApiServantTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error replying -> {}: {}", id, e);
                                 }
                             }
@@ -504,7 +629,7 @@ impl ExternalApiServantTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
@@ -538,7 +663,7 @@ impl ExternalApiServantTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading request <- {}: {}", id, e);
                             break; // probably the client exited without `leave()`
                         }
@@ -646,29 +771,20 @@ mod tests {
             );
             // send replies to client
             api.send_reply(
-                ApiReply::Reply {
-                    id: 0,
-                    result: Some(CommandResult::Put { old_value: None }),
-                    redirect: None,
-                },
+                ApiReply::normal(
+                    0,
+                    Some(CommandResult::Put { old_value: None }),
+                ),
                 client,
             )?;
+            api.send_reply(ApiReply::redirect(0, Some(1)), client)?;
             api.send_reply(
-                ApiReply::Reply {
-                    id: 0,
-                    result: None,
-                    redirect: Some(1),
-                },
-                client,
-            )?;
-            api.send_reply(
-                ApiReply::Reply {
-                    id: 1,
-                    result: Some(CommandResult::Get {
+                ApiReply::normal(
+                    1,
+                    Some(CommandResult::Get {
                         value: Some("123".into()),
                     }),
-                    redirect: None,
-                },
+                ),
                 client,
             )?;
             Ok::<(), SummersetError>(())
@@ -697,29 +813,20 @@ mod tests {
         // recv replies from server
         assert_eq!(
             api_stub.recv_reply().await?,
-            ApiReply::Reply {
-                id: 0,
-                result: Some(CommandResult::Put { old_value: None }),
-                redirect: None,
-            }
+            ApiReply::normal(0, Some(CommandResult::Put { old_value: None }))
         );
         assert_eq!(
             api_stub.recv_reply().await?,
-            ApiReply::Reply {
-                id: 0,
-                result: None,
-                redirect: Some(1),
-            }
+            ApiReply::redirect(0, Some(1))
         );
         assert_eq!(
             api_stub.recv_reply().await?,
-            ApiReply::Reply {
-                id: 1,
-                result: Some(CommandResult::Get {
-                    value: Some("123".into())
+            ApiReply::normal(
+                1,
+                Some(CommandResult::Get {
+                    value: Some("123".into()),
                 }),
-                redirect: None,
-            }
+            )
         );
         Ok(())
     }
@@ -759,11 +866,10 @@ mod tests {
             );
             // send reply to client
             api.send_reply(
-                ApiReply::Reply {
-                    id: 0,
-                    result: Some(CommandResult::Put { old_value: None }),
-                    redirect: None,
-                },
+                ApiReply::normal(
+                    0,
+                    Some(CommandResult::Put { old_value: None }),
+                ),
                 client,
             )?;
             // recv request from new client
@@ -788,13 +894,12 @@ mod tests {
             );
             // send reply to new client
             api.send_reply(
-                ApiReply::Reply {
-                    id: 0,
-                    result: Some(CommandResult::Put {
+                ApiReply::normal(
+                    0,
+                    Some(CommandResult::Put {
                         old_value: Some("123".into()),
                     }),
-                    redirect: None,
-                },
+                ),
                 client,
             )?;
             Ok::<(), SummersetError>(())
@@ -816,11 +921,10 @@ mod tests {
             // recv reply from server
             assert_eq!(
                 api_stub.recv_reply().await?,
-                ApiReply::Reply {
-                    id: 0,
-                    result: Some(CommandResult::Put { old_value: None }),
-                    redirect: None,
-                }
+                ApiReply::normal(
+                    0,
+                    Some(CommandResult::Put { old_value: None })
+                )
             );
             // leave
             api_stub.send_req(Some(&ApiRequest::Leave))?;
@@ -843,13 +947,12 @@ mod tests {
             // recv reply from server
             assert_eq!(
                 api_stub.recv_reply().await?,
-                ApiReply::Reply {
-                    id: 0,
-                    result: Some(CommandResult::Put {
+                ApiReply::normal(
+                    0,
+                    Some(CommandResult::Put {
                         old_value: Some("123".into())
-                    }),
-                    redirect: None,
-                }
+                    })
+                )
             );
         }
         Ok(())

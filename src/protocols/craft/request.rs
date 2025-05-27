@@ -28,11 +28,7 @@ impl CRaftReplica {
                         (self.id + 1) % self.population
                     };
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: req_id,
-                            result: None,
-                            redirect: Some(target),
-                        },
+                        ApiReply::redirect(req_id, Some(target)),
                         client,
                     )?;
                     pf_trace!(
@@ -45,9 +41,9 @@ impl CRaftReplica {
             return Ok(());
         }
 
+        // [for benchmarking purposes only]
         // if simulating read leases, extract all the reads and immediately
         // reply to them with a dummy value
-        // NOTE: this is only for benchmarking purposes
         if self.config.sim_read_lease {
             for (client, req) in &req_batch {
                 if let ApiRequest::Req {
@@ -56,26 +52,17 @@ impl CRaftReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::Reply {
-                            id: *req_id,
-                            result: Some(CommandResult::Get { value: None }),
-                            redirect: None,
-                        },
+                        ApiReply::normal(
+                            *req_id,
+                            Some(CommandResult::Get { value: None }),
+                        ),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
                 }
             }
 
-            req_batch.retain(|(_, req)| {
-                !matches!(
-                    req,
-                    ApiRequest::Req {
-                        cmd: Command::Get { .. },
-                        ..
-                    }
-                )
-            });
+            req_batch.retain(|(_, req)| req.read_only().is_none());
             if req_batch.is_empty() {
                 return Ok(());
             }

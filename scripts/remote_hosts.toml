@@ -4,15 +4,21 @@ repo_name = "summerset"
 
 # (SET PROPERLY) for each group, its DNS domain names
 [reg]
-host0 = "domain.cloudlab.us"
-host1 = "domain.cloudlab.us"
-host2 = "domain.cloudlab.us"
-host3 = "domain.cloudlab.us"
-host4 = "domain.cloudlab.us"
+host0 = "c220g2-011026.wisc.cloudlab.us"
+# host1 = "c220g5-110430.wisc.cloudlab.us"
+# host2 = "c220g5-110418.wisc.cloudlab.us"
+# host3 = "c220g5-110408.wisc.cloudlab.us"
+# host4 = "c220g5-111032.wisc.cloudlab.us"
+# host5 = "c220g5-110428.wisc.cloudlab.us"
 
-[wan]
-host0 = "domain.cloudlab.us"
-host1 = "domain.cloudlab.us"
-host2 = "domain.cloudlab.us"
-host3 = "domain.cloudlab.us"
-host4 = "domain.cloudlab.us"
+# [wan]
+# host0 = "c220g5-111221.wisc.cloudlab.us"
+# host1 = "hp117.utah.cloudlab.us"
+# host2 = "clnode164.clemson.cloudlab.us"
+# host3 = "pc71.cloudlab.umass.edu"
+# host4 = "apt103.apt.emulab.net"
+# host5 = "c220g5-111204.wisc.cloudlab.us"
+# host6 = "hp103.utah.cloudlab.us"
+# host7 = "clnode173.clemson.cloudlab.us"
+# host8 = "pc63.cloudlab.umass.edu"
+# host9 = "apt115.apt.emulab.net"

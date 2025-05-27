@@ -37,4 +37,7 @@ pub trait GenericReplica {
 
     /// Gets my replica ID.
     fn id(&self) -> ReplicaId;
+
+    /// Gets current cluster size. 0 means population unknown.
+    fn population(&self) -> u8;
 }

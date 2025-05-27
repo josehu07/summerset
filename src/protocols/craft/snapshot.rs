@@ -118,16 +118,16 @@ impl CRaftReplica {
 
     /// Take a snapshot up to current last_exec, then discard the in-mem log up
     /// to that index as well as their data in the durable log file.
-    ///
-    /// NOTE: the current implementation does not guard against crashes in the
-    /// middle of taking a snapshot. Production quality implementations should
-    /// make the snapshotting action "atomic".
-    ///
-    /// NOTE: the current implementation does not take care of InstallSnapshot
-    /// messages (which is needed when some lagging follower has some slot
-    /// which all other peers have snapshotted); we take the conservative
-    /// approach that a snapshot is only taken when data has been durably
-    /// committed on all servers.
+    //
+    // NOTE: the current implementation does not guard against crashes in the
+    //       middle of taking a snapshot. Production quality implementations
+    //       should make the snapshotting action "atomic".
+    //
+    // NOTE: the current implementation does not take care of InstallSnapshot
+    //       messages (which is needed when some lagging follower has some slot
+    //       which all other peers have snapshotted); we take the conservative
+    //       approach that a snapshot is only taken when data has been durably
+    //       committed on all servers.
     pub(super) async fn take_new_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {
@@ -193,7 +193,7 @@ impl CRaftReplica {
 
         // reset the leader heartbeat hear timer
         if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer()?;
+            self.heartbeater.kickoff_hear_timer(None)?;
         }
 
         pf_info!("took snapshot up to: start {}", self.start_slot);

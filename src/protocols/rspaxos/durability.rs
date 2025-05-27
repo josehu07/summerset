@@ -171,8 +171,6 @@ impl RSPaxosReplica {
                                 Self::make_command_id(self.commit_bar, cmd_idx),
                                 cmd.clone(),
                             )?;
-                        } else {
-                            continue; // ignore other types of requests
                         }
                     }
                     pf_trace!(

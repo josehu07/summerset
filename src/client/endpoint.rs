@@ -45,6 +45,9 @@ pub trait GenericEndpoint {
     /// Gets my client ID.
     fn id(&self) -> ClientId;
 
+    /// Gets current cluster size. 0 means population unknown.
+    fn population(&self) -> u8;
+
     /// Gets a mutable reference to the control stub for sending control
     /// requests and receiving control replies for testing purposes.
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub;

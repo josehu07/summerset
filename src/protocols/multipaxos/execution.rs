@@ -26,13 +26,10 @@ impl MultiPaxosReplica {
 
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
+            let read_only = cmd_result.read_only();
             if inst.external && self.external_api.has_client(client) {
                 self.external_api.send_reply(
-                    ApiReply::Reply {
-                        id: *req_id,
-                        result: Some(cmd_result),
-                        redirect: None,
-                    },
+                    ApiReply::normal(*req_id, Some(cmd_result)),
                     client,
                 )?;
                 pf_trace!(
@@ -41,6 +38,19 @@ impl MultiPaxosReplica {
                     slot,
                     cmd_idx
                 );
+                // [for access cnt stats only]
+                if self.config.record_node_cnts && read_only {
+                    if let Some(leader_bk) = inst.leader_bk.as_ref() {
+                        for (peer, flag) in leader_bk.accept_acks.iter() {
+                            if peer == self.id || flag {
+                                *self
+                                    .node_cnts_stats
+                                    .get_mut(&peer)
+                                    .unwrap() += 1;
+                            }
+                        }
+                    }
+                }
             }
         } else {
             return logged_err!("unexpected API request type");
@@ -52,7 +62,7 @@ impl MultiPaxosReplica {
             inst.status = Status::Executed;
             pf_debug!("executed all cmds in instance at slot {}", slot);
 
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if self.is_leader() {
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 4, None);

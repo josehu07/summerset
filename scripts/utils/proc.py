@@ -16,7 +16,9 @@ def kill_all_local_procs():
     os.system(cmd)
 
 
-def kill_all_distr_procs(group, targets="all", chain=False, cockroach=False):
+def kill_all_distr_procs(
+    group, targets="all", chain=False, cockroach=False, etcd=False, zookeeper=False
+):
     # print(f"Killing all procs on {group} {targets}...")
     cmd = [
         "python3",
@@ -30,6 +32,10 @@ def kill_all_distr_procs(group, targets="all", chain=False, cockroach=False):
         cmd.append("--chain")
     if cockroach:
         cmd.append("--cockroach")
+    if etcd:
+        cmd.append("--etcd")
+    if zookeeper:
+        cmd.append("--zookeeper")
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
 
 

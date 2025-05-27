@@ -542,7 +542,7 @@ impl<'a> ShardsReader<'a> {
     }
 }
 
-impl<'a> io::Read for ShardsReader<'a> {
+impl io::Read for ShardsReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut total_nread = 0;
 

@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import signal
 import argparse
 
@@ -28,9 +29,9 @@ PROTOCOL_SNAPSHOT_PATH = (
 
 
 class ProtoFeats:
-    def __init__(self, may_snapshot, has_heartbeats, extra_defaults):
-        self.may_snapshot = may_snapshot
-        self.has_heartbeats = has_heartbeats
+    def __init__(self, could_snapshot, has_leadership, extra_defaults):
+        self.could_snapshot = could_snapshot
+        self.has_leadership = has_leadership
         self.extra_defaults = extra_defaults
 
 
@@ -39,9 +40,13 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "Raft": ProtoFeats(True, True, None),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
     "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Raft": ProtoFeats(True, True, None),
     "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n//2}"),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
+    "Bodega": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
 }
 
 
@@ -73,9 +78,9 @@ def config_with_defaults(
     num_replicas,
     replica_id,
     remote,
-    hb_timer_off,
-    file_prefix,
-    file_midfix,
+    no_step_up,
+    states_prefix,
+    states_midfix,
     fresh_files,
 ):
     def config_str_to_dict(s):
@@ -89,7 +94,9 @@ def config_with_defaults(
         l = ["=".join([k, v]) for k, v in d.items()]
         return "+".join(l)
 
-    backer_path = PROTOCOL_BACKER_PATH(protocol, file_prefix, file_midfix, replica_id)
+    backer_path = PROTOCOL_BACKER_PATH(
+        protocol, states_prefix, states_midfix, replica_id
+    )
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files:
         utils.proc.run_process_over_ssh(
@@ -98,9 +105,9 @@ def config_with_defaults(
             print_cmd=False,
         ).wait()
 
-    if PROTOCOL_FEATURES[protocol].may_snapshot:
+    if PROTOCOL_FEATURES[protocol].could_snapshot:
         snapshot_path = PROTOCOL_SNAPSHOT_PATH(
-            protocol, file_prefix, file_midfix, replica_id
+            protocol, states_prefix, states_midfix, replica_id
         )
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files:
@@ -120,8 +127,8 @@ def config_with_defaults(
     if config is not None and len(config) > 0:
         config_dict.update(config_str_to_dict(config))
 
-    if PROTOCOL_FEATURES[protocol].has_heartbeats and hb_timer_off:
-        config_dict["disable_hb_timer"] = "true"
+    if PROTOCOL_FEATURES[protocol].has_leadership and no_step_up:
+        config_dict["disallow_step_up"] = "true"
 
     return config_dict_to_str(config_dict)
 
@@ -204,10 +211,11 @@ def launch_servers(
     release,
     config,
     force_leader,
-    file_prefix,
-    file_midfix,
+    states_prefix,
+    states_midfix,
     fresh_files,
     pin_cores,
+    launch_wait,
 ):
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
@@ -232,8 +240,8 @@ def launch_servers(
                 replica,
                 remotes[host],
                 force_leader >= 0 and force_leader != replica,
-                file_prefix,
-                file_midfix,
+                states_prefix,
+                states_midfix,
                 fresh_files,
             ),
             release,
@@ -257,6 +265,9 @@ def launch_servers(
                 cd_dir=cd_dir,
             )
         server_procs.append(proc)
+
+        if launch_wait:
+            time.sleep(3)  # NOTE: helps enforce server ID assignment
 
     return server_procs
 
@@ -294,13 +305,13 @@ if __name__ == "__main__":
         "--force_leader", type=int, default=-1, help="force this server to be leader"
     )
     parser.add_argument(
-        "--file_prefix",
+        "--states_prefix",
         type=str,
         default="/tmp/summerset",
         help="states file prefix folder path",
     )
     parser.add_argument(
-        "--file_midfix",
+        "--states_midfix",
         type=str,
         default="",
         help="states file extra identifier after protocol name",
@@ -310,6 +321,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+    )
+    parser.add_argument(
+        "--launch_wait", action="store_true", help="if set, wait 3s between launches"
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -327,8 +341,10 @@ if __name__ == "__main__":
     if partition_in_args and (args.partition < 0 or args.partition >= 5):
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
-    file_midfix = (
-        args.file_midfix if not partition_in_args else f"{args.file_midfix}.{partition}"
+    states_midfix = (
+        args.states_midfix
+        if not partition_in_args
+        else f"{args.states_midfix}.{partition}"
     )
 
     # check that number of replicas is valid
@@ -369,7 +385,7 @@ if __name__ == "__main__":
         prepare_procs.append(
             utils.proc.run_process_over_ssh(
                 remotes[host],
-                ["mkdir", "-p", args.file_prefix],
+                ["mkdir", "-p", args.states_prefix],
                 cd_dir=cd_dir,
                 print_cmd=False,
             )
@@ -387,7 +403,7 @@ if __name__ == "__main__":
     )
     wait_manager_setup(manager_proc)
 
-    # create a thread that prints out captured manager outputs
+    # create a thread that prints out captured manager stderrs
     # def print_manager_stderr():
     #     for line in iter(manager_proc.stderr.readline, b""):
     #         l = line.decode()
@@ -410,10 +426,11 @@ if __name__ == "__main__":
         args.release,
         args.config,
         args.force_leader,
-        args.file_prefix,
-        file_midfix,
+        args.states_prefix,
+        states_midfix,
         not args.keep_files,
         args.pin_cores,
+        args.launch_wait,
     )
 
     # register termination signals handler

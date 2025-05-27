@@ -31,7 +31,7 @@ impl MultiPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -84,6 +84,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -92,16 +93,18 @@ impl MultiPaxosReplica {
         endprep_slot: usize,
         ballot: Ballot,
         voted: Option<(Ballot, ReqBatch)>,
+        accept_bar: usize,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
-            "received PrepareReply <- {} for slot {} / {} bal {}",
+            "received PrepareReply <- {} for slot {} / {} bal {} accept_bar {}",
             peer,
             slot,
             endprep_slot,
-            ballot
+            ballot,
+            accept_bar,
         );
 
         // if ballot is what I'm currently waiting on for Prepare replies:
@@ -120,6 +123,26 @@ impl MultiPaxosReplica {
                 .is_none()
             {
                 return Ok(());
+            }
+
+            // update this peer's accept_bar information, and then update
+            // peer_accept_max as the minimum of the maximums of majority sets
+            if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
+            {
+                if accept_bar < old_bar {
+                    let mut peer_accept_bars: Vec<usize> =
+                        self.peer_accept_bar.values().copied().collect();
+                    peer_accept_bars.sort_unstable();
+                    let peer_accept_max =
+                        peer_accept_bars[self.quorum_cnt as usize - 1];
+                    if peer_accept_max < self.peer_accept_max {
+                        self.peer_accept_max = peer_accept_max;
+                        pf_debug!(
+                            "peer_accept_max updated: {}",
+                            self.peer_accept_max
+                        );
+                    }
+                }
             }
 
             // locate instance in memory, filling in null instance if needed
@@ -183,6 +206,11 @@ impl MultiPaxosReplica {
                     if bal > leader_bk.prepare_max_bal {
                         leader_bk.prepare_max_bal = bal;
                         inst.reqs = val;
+                        Self::refresh_highest_slot(
+                            slot,
+                            &inst.reqs,
+                            &mut self.highest_slot,
+                        );
                     }
                 }
             }
@@ -287,7 +315,7 @@ impl MultiPaxosReplica {
             // update largest ballot seen and assumed leader
             self.check_leader(peer, ballot).await?;
             if !self.config.disable_hb_timer {
-                self.heartbeater.kickoff_hear_timer()?;
+                self.heartbeater.kickoff_hear_timer(Some(peer))?;
             }
 
             // locate instance in memory, filling in null instances if needed
@@ -300,6 +328,7 @@ impl MultiPaxosReplica {
             inst.bal = ballot;
             inst.status = Status::Accepting;
             inst.reqs.clone_from(&reqs);
+            Self::refresh_highest_slot(slot, &reqs, &mut self.highest_slot);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
@@ -310,6 +339,7 @@ impl MultiPaxosReplica {
                 });
             }
 
+            // [for perf breakdown only]
             if self.config.record_breakdown && self.config.record_size_recv {
                 (*self
                     .bw_accumulators
@@ -388,7 +418,7 @@ impl MultiPaxosReplica {
                     inst.bal
                 );
 
-                // [for perf breakdown]
+                // [for perf breakdown only]
                 if let Some(sw) = self.bd_stopwatch.as_mut() {
                     let _ = sw.record_now(slot, 2, reply_ts);
                     let _ = sw.record_now(slot, 3, None);
@@ -430,6 +460,7 @@ impl MultiPaxosReplica {
                 endprep_slot,
                 ballot,
                 voted,
+                accept_bar,
             } => self.handle_msg_prepare_reply(
                 peer,
                 slot,
@@ -437,6 +468,7 @@ impl MultiPaxosReplica {
                 endprep_slot,
                 ballot,
                 voted,
+                accept_bar,
             ),
             PeerMsg::Accept { slot, ballot, reqs } => {
                 self.handle_msg_accept(peer, slot, ballot, reqs).await
@@ -446,6 +478,19 @@ impl MultiPaxosReplica {
                 ballot,
                 reply_ts,
             } => self.handle_msg_accept_reply(peer, slot, ballot, reply_ts),
+            PeerMsg::ReadQuery { reads } => {
+                self.handle_msg_read_query(peer, reads).await
+            }
+            PeerMsg::ReadQueryReply {
+                rq_id,
+                replies,
+                from_leader,
+            } => self.handle_msg_read_query_reply(
+                peer,
+                rq_id,
+                replies,
+                from_leader,
+            ),
             PeerMsg::Heartbeat {
                 ballot,
                 commit_bar,
@@ -456,6 +501,9 @@ impl MultiPaxosReplica {
                     peer, ballot, commit_bar, exec_bar, snap_bar,
                 )
                 .await
+            }
+            PeerMsg::CommitNotice { ballot, commit_bar } => {
+                self.heard_commit_notice(peer, ballot, commit_bar)
             }
         }
     }

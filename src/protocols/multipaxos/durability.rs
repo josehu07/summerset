@@ -45,6 +45,7 @@ impl MultiPaxosReplica {
                         endprep_slot,
                         inst.bal,
                         voted,
+                        self.accept_bar,
                     )?;
                 }
             }
@@ -64,15 +65,17 @@ impl MultiPaxosReplica {
                         endprep_slot,
                         ballot: inst.bal,
                         voted,
+                        accept_bar: self.accept_bar,
                     },
                     source,
                 )?;
                 pf_trace!(
-                    "sent PrepareReply -> {} for slot {} / {} bal {}",
+                    "sent PrepareReply -> {} for slot {} / {} bal {} accept_bar {}",
                     source,
                     slot,
                     endprep_slot,
-                    inst.bal
+                    inst.bal,
+                    self.accept_bar,
                 );
             }
         }
@@ -100,7 +103,7 @@ impl MultiPaxosReplica {
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
             self.handle_msg_accept_reply(self.id, slot, inst.bal, None)?;
-            // [for perf breakdown]
+            // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
                 let _ = sw.record_now(slot, 1, None);
             }
@@ -129,6 +132,17 @@ impl MultiPaxosReplica {
             }
         }
 
+        // update index of the first non-accepting instance
+        if slot == self.accept_bar {
+            while self.accept_bar < self.start_slot + self.insts.len() {
+                let inst = &mut self.insts[self.accept_bar - self.start_slot];
+                if inst.status < Status::Accepting {
+                    break;
+                }
+                self.accept_bar += 1;
+            }
+        }
+
         Ok(())
     }
 
@@ -148,7 +162,7 @@ impl MultiPaxosReplica {
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
-            while self.commit_bar < self.start_slot + self.insts.len() {
+            while self.commit_bar < self.accept_bar {
                 let inst = &mut self.insts[self.commit_bar - self.start_slot];
                 if inst.status < Status::Committed {
                     break;
@@ -165,8 +179,6 @@ impl MultiPaxosReplica {
                                 Self::make_command_id(self.commit_bar, cmd_idx),
                                 cmd.clone(),
                             )?;
-                        } else {
-                            continue; // ignore other types of requests
                         }
                     }
                     pf_trace!(
@@ -177,6 +189,30 @@ impl MultiPaxosReplica {
                 }
 
                 self.commit_bar += 1;
+
+                // if the end of my log has been committed
+                if self.commit_bar == self.start_slot + self.insts.len() {
+                    // if I'm the leader and urgent CommitNotice is on,
+                    // broadcast CommitNotice messages
+                    if self.is_leader()
+                        && self.bal_prepared > 0
+                        && self.bal_prepared == self.bal_max_seen
+                        && self.config.urgent_commit_notice
+                    {
+                        self.transport_hub.bcast_msg(
+                            PeerMsg::CommitNotice {
+                                ballot: self.bal_max_seen,
+                                commit_bar: self.commit_bar,
+                            },
+                            None,
+                        )?;
+                        pf_trace!(
+                            "broadcast CommitNotice messages at bal {} commit_bar {}",
+                            self.bal_max_seen,
+                            self.commit_bar
+                        );
+                    }
+                }
             }
         }
 

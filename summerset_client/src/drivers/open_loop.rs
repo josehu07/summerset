@@ -13,7 +13,7 @@ use tokio::time::{Duration, Instant};
 
 use summerset::{
     logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
-    Command, GenericEndpoint, RequestId, SummersetError, Timer,
+    ClientId, Command, GenericEndpoint, RequestId, SummersetError, Timer,
 };
 
 /// Open-loop driver struct.
@@ -178,6 +178,7 @@ impl DriverOpenLoop {
                     id: reply_id,
                     result: cmd_result,
                     redirect,
+                    ..
                 }) => {
                     if !self.pending_reqs.contains_key(&reply_id) {
                         // logged_err!("request ID {} not in pending set",
@@ -211,6 +212,20 @@ impl DriverOpenLoop {
                 }
             }
         }
+    }
+
+    // Note: not supporting responders config change for open-loop yet...
+
+    /// Gets my Client ID.
+    #[allow(dead_code)]
+    pub(crate) fn id(&self) -> ClientId {
+        self.endpoint.id()
+    }
+
+    /// Gets current cluster size.
+    #[allow(dead_code)]
+    pub(crate) fn population(&self) -> u8 {
+        self.endpoint.population()
     }
 
     /// Gets a mutable reference to the endpoint's control stub.

@@ -1,12 +1,11 @@
-"""Running Summerset on a variable number of nodes in a single site.
-"""
+"""Running Summerset on a variable number of nodes in a single site."""
 
 # Import the Portal object and ProtoGENI lib.
 import geni.portal as portal  # type: ignore
 import geni.rspec.pg as rspec  # type: ignore
 
 # Primary partition's disk image.
-DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:summerset.dev"
+DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.reg"
 
 # Create a portal context, needed to defined parameters.
 pc = portal.Context()

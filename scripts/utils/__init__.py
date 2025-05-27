@@ -7,3 +7,9 @@ import file
 import net
 import output
 import proc
+
+
+class BreakingLoops(Exception):
+    """Helper exception for breaking out of nested loops."""
+
+    pass

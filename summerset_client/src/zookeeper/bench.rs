@@ -1,5 +1,9 @@
 //! Benchmarking client for ZooKeeper.
 
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::Path;
+
 use crate::{ClientBench, ModeParamsBench, ZooKeeperSession};
 
 use lazy_static::lazy_static;
@@ -12,10 +16,9 @@ use rangemap::RangeMap;
 
 use tokio::time::{Duration, Instant};
 
-use summerset::{logged_err, parsed_config, pf_error, SummersetError};
-
-/// Fixed length in bytes of key.
-const KEY_LEN: usize = 8;
+use summerset::{
+    logged_err, parsed_config, pf_error, pf_info, pf_warn, SummersetError,
+};
 
 /// Max length in bytes of value.
 const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MB as of ZooKeeper limit
@@ -43,10 +46,13 @@ pub(crate) struct ZooKeeperBench {
     /// Random number generator.
     rng: ThreadRng,
 
+    /// Output file.
+    output_file: Option<File>,
+
     /// List of randomly generated keys if in synthetic mode.
     keys_pool: Option<Vec<String>>,
 
-    /// Trace of (op, key) pairs to (repeatedly) replay.
+    /// Trace of (op, key, vlen) pairs to (repeatedly) replay.
     trace_vec: Option<Vec<(bool, String, usize)>>,
 
     /// Trace operation index to play next.
@@ -64,8 +70,11 @@ pub(crate) struct ZooKeeperBench {
     /// Total number of replies received in last print interval.
     chunk_cnt: u64,
 
-    /// Latencies of requests in last print interval.
-    chunk_lats: Vec<f64>,
+    /// Latencies of Put requests in last print interval.
+    chunk_wlats: Vec<f64>,
+
+    /// Latencies of Get requests in last print interval.
+    chunk_rlats: Vec<f64>,
 
     /// Start timestamp.
     start: Instant,
@@ -81,18 +90,18 @@ impl ZooKeeperBench {
         params_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
-                                    freq_target, length_s,
-                                    put_ratio, ycsb_trace,
-                                    value_size, num_keys,
-                                    norm_stdev_ratio,
-                                    unif_interval_ms, unif_upper_bound)?;
+                                    output_path, freq_target, length_s,
+                                    put_ratio, ycsb_trace, value_size,
+                                    num_keys, use_random_keys,
+                                    norm_stdev_ratio, unif_interval_ms,
+                                    unif_upper_bound)?;
         if params.freq_target > 0 {
             return logged_err!(
                 "params.freq_target '{}' > 0; ZooKeeperBench only supports closed-loop",
                 params.freq_target
             );
         }
-        if params.length_s == 0 {
+        if params.length_s == 0 && params.ycsb_trace.is_empty() {
             return logged_err!(
                 "invalid params.length_s '{}'",
                 params.length_s
@@ -111,16 +120,38 @@ impl ZooKeeperBench {
             );
         }
 
+        let output_file = if params.output_path.is_empty() {
+            None
+        } else {
+            let output_path = Path::new(&params.output_path);
+            if fs::exists(output_path)? {
+                pf_warn!(
+                    "overwriting existing output file '{}'",
+                    params.output_path
+                );
+            } else {
+                fs::create_dir_all(
+                    output_path
+                        .parent()
+                        .expect("output_path should have parent dir"),
+                )?;
+            }
+            Some(
+                OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(output_path)?,
+            )
+        };
+
         let keys_pool = if params.ycsb_trace.is_empty() {
             let mut pool = Vec::with_capacity(params.num_keys);
-            for _ in 0..params.num_keys {
-                pool.push(
-                    rand::thread_rng()
-                        .sample_iter(&Alphanumeric)
-                        .take(KEY_LEN)
-                        .map(char::from)
-                        .collect(),
-                );
+            for i in 0..params.num_keys {
+                pool.push(ClientBench::compose_ith_key(
+                    i,
+                    params.use_random_keys,
+                ));
             }
             Some(pool)
         } else {
@@ -142,6 +173,7 @@ impl ZooKeeperBench {
             session,
             params,
             rng: rand::thread_rng(),
+            output_file,
             keys_pool,
             trace_vec,
             trace_idx: 0,
@@ -149,7 +181,8 @@ impl ZooKeeperBench {
             total_cnt: 0,
             valid_cnt: 0,
             chunk_cnt: 0,
-            chunk_lats: vec![],
+            chunk_wlats: vec![],
+            chunk_rlats: vec![],
             start: Instant::now(),
             now: Instant::now(),
         })
@@ -164,8 +197,9 @@ impl ZooKeeperBench {
         Ok(&MOM_VALUE[..size])
     }
 
-    /// Make a random request.
-    async fn do_rand_cmd(&mut self) -> Result<(), SummersetError> {
+    /// Make a random request. Returns `true` if a read command was done or
+    /// `false` if a write.
+    async fn do_rand_cmd(&mut self) -> Result<bool, SummersetError> {
         debug_assert!(self.keys_pool.is_some());
         let key = self
             .keys_pool
@@ -174,17 +208,20 @@ impl ZooKeeperBench {
             .get(self.rng.gen_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..=100) <= self.params.put_ratio {
+        if self.rng.gen_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
-            self.session.set(&key, val).await
+            self.session.set(&key, val).await?;
+            Ok(false)
         } else {
-            self.session.get(&key).await.map(|_| ())
+            self.session.get(&key).await?;
+            Ok(true)
         }
     }
 
-    /// Make a request following the trace vec.
-    async fn do_trace_cmd(&mut self) -> Result<(), SummersetError> {
+    /// Make a request following the trace vec. Returns `true` if a read
+    /// command was done or `false` if a write.
+    async fn do_trace_cmd(&mut self) -> Result<bool, SummersetError> {
         debug_assert!(self.trace_vec.is_some());
         let (read, key, vlen) = self
             .trace_vec
@@ -199,15 +236,18 @@ impl ZooKeeperBench {
             self.trace_idx = 0;
         }
         if read {
-            self.session.get(&key).await.map(|_| ())
+            self.session.get(&key).await?;
+            Ok(true)
         } else if vlen == 0 {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
-            self.session.set(&key, val).await
+            self.session.set(&key, val).await?;
+            Ok(false)
         } else {
             // use vlen in trace
             let val = &MOM_VALUE[..vlen];
-            self.session.set(&key, val).await
+            self.session.set(&key, val).await?;
+            Ok(false)
         }
     }
 
@@ -217,38 +257,78 @@ impl ZooKeeperBench {
 
         // do the next request
         self.total_cnt += 1;
-        if self.trace_vec.is_some() {
-            self.do_trace_cmd().await?;
+        let is_read = if self.trace_vec.is_some() {
+            self.do_trace_cmd().await?
         } else {
-            self.do_rand_cmd().await?;
+            self.do_rand_cmd().await?
         };
 
         self.valid_cnt += 1;
         self.chunk_cnt += 1;
 
         let lat_us =
-            Instant::now().duration_since(ts).as_secs_f64() * 1000000.0;
-        self.chunk_lats.push(lat_us);
+            Instant::now().duration_since(ts).as_secs_f64() * 1_000_000.0;
+        if is_read {
+            self.chunk_rlats.push(lat_us);
+        } else {
+            self.chunk_wlats.push(lat_us);
+        }
 
         Ok(())
+    }
+
+    /// Runs through the loaded trace exactly once.
+    async fn trace_once(&mut self) -> Result<(), SummersetError> {
+        debug_assert!(self.trace_vec.is_some());
+        loop {
+            self.closed_loop_iter().await?;
+            if self.trace_idx == 0 {
+                return Ok(());
+            }
+        }
     }
 
     /// Run the benchmark for given time length.
     pub(crate) async fn run(&mut self) -> Result<(), SummersetError> {
         self.session.connect().await?;
-        println!(
-            "{:^11} | {:^12} | {:^12} | {:>8}",
-            "Elapsed (s)", "Tpt (reqs/s)", "Lat (us)", "Total"
-        );
 
         self.start = Instant::now();
         self.now = self.start;
         let length = Duration::from_secs(self.params.length_s);
+
+        // if length is 0, do the special action of running the trace exactly
+        // once; this is useful for e.g. loading YCSB
+        if self.params.length_s == 0 && self.trace_vec.is_some() {
+            pf_info!("feeding trace once...");
+            self.trace_once().await?;
+            return Ok(());
+        }
+
         let mut last_print = self.start;
 
         self.total_cnt = 0;
+        self.valid_cnt = 0;
         self.chunk_cnt = 0;
-        self.chunk_lats.clear();
+        self.chunk_wlats.clear();
+        self.chunk_rlats.clear();
+
+        let header = format!(
+            "{:^11} | {:^12} | {:^12} : {:^12} ~ {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)",
+            "Tput (ops/s)",
+            "Lat (us)",
+            "WLat (us)",
+            "RLat (us)",
+            "Freq",
+            "Reply",
+            "Total"
+        );
+        if let Some(output_file) = self.output_file.as_mut() {
+            writeln!(output_file, "{}", header)?;
+        } else {
+            println!("{}", header);
+        }
+        pf_info!("starting benchmark...");
 
         // run for specified length
         let mut elapsed = self.now.duration_since(self.start);
@@ -262,23 +342,51 @@ impl ZooKeeperBench {
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
             if print_elapsed >= PRINT_INTERVAL {
-                let tpt = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
-                let lat = if self.chunk_lats.is_empty() {
+                let tput =
+                    (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_lats.iter().sum::<f64>()
-                        / (self.chunk_lats.len() as f64)
+                    self.chunk_wlats.iter().sum::<f64>()
+                        / self.chunk_wlats.len() as f64
                 };
-                println!(
-                    "{:>11.2} | {:>12.2} | {:>12.2} | {:>8}",
-                    elapsed.as_secs_f64(),
-                    tpt,
-                    lat,
-                    self.total_cnt,
-                );
+                let rlat = if self.chunk_rlats.is_empty() {
+                    0.0
+                } else {
+                    self.chunk_rlats.iter().sum::<f64>()
+                        / self.chunk_rlats.len() as f64
+                };
+                let lat =
+                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                        0.0
+                    } else {
+                        (wlat * self.chunk_wlats.len() as f64
+                            + rlat * self.chunk_rlats.len() as f64)
+                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
+                                as f64
+                    };
+
+                let line = format!(
+                        "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
+                        elapsed.as_secs_f64(),
+                        tput,
+                        lat,
+                        wlat,
+                        rlat,
+                        0,
+                        self.valid_cnt,
+                        self.total_cnt
+                    );
+                if let Some(output_file) = self.output_file.as_mut() {
+                    writeln!(output_file, "{}", line)?;
+                } else {
+                    println!("{}", line);
+                }
+
                 last_print = self.now;
                 self.chunk_cnt = 0;
-                self.chunk_lats.clear();
+                self.chunk_wlats.clear();
+                self.chunk_rlats.clear();
             }
         }
 

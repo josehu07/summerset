@@ -7,7 +7,8 @@ use crate::client::ClientId;
 use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, SummersetError,
+    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, ConfNum,
+    RespondersConf, SummersetError,
 };
 
 use bytes::BytesMut;
@@ -25,6 +26,9 @@ use tokio::task::JoinHandle;
 pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
+
+    /// Query the approximate current responders configuration.
+    QueryConf,
 
     /// Reset the specified server(s) to initial state.
     ResetServers {
@@ -65,6 +69,15 @@ pub enum CtrlReply {
         population: u8,
         /// Map from replica ID -> (addr, is_leader).
         servers_info: HashMap<ReplicaId, ServerInfo>,
+    },
+
+    /// Reply to responders configuration query.
+    QueryConf {
+        /// Latest known responders config number.
+        conf_num: ConfNum,
+
+        /// Responders configuration known to the manager.
+        now_conf: RespondersConf,
     },
 
     /// Reply to server reset request.
@@ -120,7 +133,7 @@ impl ClientReactor {
         let (client_responder_handles_write, client_responder_handles_read) =
             flashmap::new::<ClientId, JoinHandle<()>>();
 
-        let client_listener = tcp_bind_with_retry(cli_addr, 10).await?;
+        let client_listener = tcp_bind_with_retry(cli_addr, 15).await?;
         let mut acceptor = ClientReactorAcceptorTask::new(
             tx_req,
             tx_replies_write,
@@ -437,7 +450,7 @@ impl ClientReactorResponderTask {
                                 }
                                 Err(_e) => {
                                     // NOTE: commented out to prevent console lags
-                                    // during benchmarking
+                                    //       during benchmarking
                                     // pf_error!("error sending -> {}: {}", id, e);
                                 }
                             }
@@ -463,7 +476,7 @@ impl ClientReactorResponderTask {
                         }
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error retrying last reply send -> {}: {}", id, e);
                         }
                     }
@@ -482,7 +495,7 @@ impl ClientReactorResponderTask {
                                 Some(&reply)
                             ) {
                                 // NOTE: commented out to prevent console lags
-                                // during benchmarking
+                                //       during benchmarking
                                 // pf_error!("error replying -> {}: {}", id, e);
                             } else { // NOTE: skips `WouldBlock` error check here
                                 pf_debug!("client {} has left", self.id);
@@ -499,7 +512,7 @@ impl ClientReactorResponderTask {
 
                         Err(_e) => {
                             // NOTE: commented out to prevent console lags
-                            // during benchmarking
+                            //       during benchmarking
                             // pf_error!("error reading req <- {}: {}", id, e);
                             break; // probably the client exited without `leave()`
                         }

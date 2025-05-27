@@ -17,8 +17,8 @@ impl ChainRepReplica {
         pf_debug!("got request batch of size {}", batch_size);
 
         // if I'm not the head for Put requests or not the tail for Get
-        // requests, ignore the request batch
-        let read_only = req_batch[0].1.read_only(); // NOTE: only checking req 0
+        // requests, ignore the request batch; NOTE: only checking req 0
+        let read_only = req_batch[0].1.read_only().is_some();
         if !((self.is_head() && !read_only) || (self.is_tail() && read_only)) {
             pf_warn!(
                 "ignoring request batch: head? {} tail? {} read-only? {}",
@@ -34,7 +34,7 @@ impl ChainRepReplica {
             // tail receives Get requests; submit to state machine right away
             let num_reqs = req_batch.len();
             for (client, req) in req_batch {
-                if !req.read_only() {
+                if req.read_only().is_none() {
                     return logged_err!("non read-only command seen at tail");
                 }
 
@@ -47,15 +47,13 @@ impl ChainRepReplica {
                         ),
                         cmd,
                     )?;
-                } else {
-                    continue; // ignore other types of requests
                 }
             }
             pf_trace!("submitted {} read-only commands to exec", num_reqs);
         } else {
             // head receives Put requests; record a new log entry durably
             for (_, req) in &req_batch {
-                if req.read_only() {
+                if req.read_only().is_some() {
                     return logged_err!("read-only command seen at head");
                 }
             }

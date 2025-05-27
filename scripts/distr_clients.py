@@ -21,24 +21,36 @@ CLIENT_OUTPUT_PATH = (
 UTILITY_PARAM_NAMES = {
     "repl": [],
     "bench": [
+        "fine_output",
         "freq_target",
         "value_size",
         "num_keys",
         "put_ratio",
         "ycsb_trace",
         "length_s",
+        "use_random_keys",
+        "skip_preloading",
         "norm_stdev_ratio",
         "unif_interval_ms",
         "unif_upper_bound",
     ],
-    "tester": ["test_name", "keep_going", "logger_on"],
-    "mess": ["pause", "resume"],
+    "tester": [
+        "test_name",
+        "keep_going",
+        "logger_on",
+    ],
+    "mess": [
+        "pause",
+        "resume",
+        "leader",
+        "key_range",
+        "responder",
+        "write",
+    ],
 }
 
 
-def run_process_pinned(
-    i, cmd, capture_stdout=False, cores_per_proc=0, remote=None, cd_dir=None
-):
+def run_process_pinned(i, cmd, cores_per_proc=0, remote=None, cd_dir=None):
     cpu_list = None
     if cores_per_proc != 0:
         # get number of processors
@@ -61,12 +73,10 @@ def run_process_pinned(
             assert core_start >= 0
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
-        return utils.proc.run_process(
-            cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
-        )
+        return utils.proc.run_process(cmd, cd_dir=cd_dir, cpu_list=cpu_list)
     else:
         return utils.proc.run_process_over_ssh(
-            remote, cmd, capture_stdout=capture_stdout, cd_dir=cd_dir, cpu_list=cpu_list
+            remote, cmd, cd_dir=cd_dir, cpu_list=cpu_list
         )
 
 
@@ -88,7 +98,17 @@ def glue_params_str(cli_args, params_list):
     return "+".join(params_strs)
 
 
-def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, release):
+def compose_client_cmd(
+    protocol,
+    manager,
+    config,
+    utility,
+    timeout_ms,
+    params,
+    release,
+    output_path=None,
+    near_id=None,
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_client"]
     cmd += [
         "-p",
@@ -98,10 +118,24 @@ def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, r
         "--timeout-ms",
         str(timeout_ms),
     ]
+
     if config is not None and len(config) > 0:
+        # if dist_machs is set, near_id will be the node ID that's considered
+        # the closest to this client
+        # NOTE: dumb overwriting near_server_id field here for simplicity
+        if near_id is not None and "near_server_id" in config:
+            bi = config.index("near_server_id=") + 15
+            epi = config[bi:].find("+")
+            esi = config[bi:].find(" ")
+            ei = epi if esi == -1 else esi if epi == -1 else min(epi, esi)
+            ei = len(config) if ei == -1 else ei
+            if config[bi:ei] == "x":
+                config = config[:bi] + str(near_id) + config[ei:]
         cmd += ["--config", config]
 
     cmd += ["-u", utility]
+    if output_path is not None:
+        params = "+".join([f"output_path='{output_path}'", params])
     if len(params) > 0:
         cmd += ["--params", params]
 
@@ -115,6 +149,7 @@ def compose_client_cmd(protocol, manager, config, utility, timeout_ms, params, r
 def run_clients(
     remotes,
     ipaddrs,
+    hosts,
     me,
     man,
     cd_dir,
@@ -122,11 +157,13 @@ def run_clients(
     utility,
     partition,
     num_clients,
+    num_replicas_for_near,
     dist_machs,
     params,
     release,
     config,
-    capture_stdout,
+    output_prefix,
+    output_midfix,
     pin_cores,
     timeout_ms,
 ):
@@ -137,14 +174,14 @@ def run_clients(
 
     # if dist_machs set, put clients round-robinly across this many machines
     # starting from me
-    hosts = list(remotes.keys())
-    hosts = hosts[hosts.index(me) :] + hosts[: hosts.index(me)]
+    td_hosts = hosts[hosts.index(me) :] + hosts[: hosts.index(me)]
     if dist_machs > 0:
-        hosts = hosts[:dist_machs]
+        td_hosts = td_hosts[:dist_machs]
 
     client_procs = []
     for i in range(num_clients):
         manager_addr = f"{manager_pub_ip}:{MANAGER_CLI_PORT(partition)}"
+
         cmd = compose_client_cmd(
             protocol,
             manager_addr,
@@ -153,22 +190,28 @@ def run_clients(
             timeout_ms,
             params,
             release,
+            output_path=(
+                CLIENT_OUTPUT_PATH(protocol, output_prefix, output_midfix, i)
+                if len(output_prefix) > 0
+                else None
+            ),
+            near_id=(
+                hosts.index(me if dist_machs <= 1 else td_hosts[i % len(td_hosts)])
+                % num_replicas_for_near
+            ),
         )
 
         proc = None
         if dist_machs <= 1:
-            proc = run_process_pinned(
-                i, cmd, capture_stdout=capture_stdout, cores_per_proc=pin_cores
-            )
+            proc = run_process_pinned(i, cmd, cores_per_proc=pin_cores)
         else:
-            host = hosts[i % len(hosts)]
-            local_i = i // len(hosts)
+            host = td_hosts[i % len(td_hosts)]
+            local_i = i // len(td_hosts)
             if host == me:
                 # run my responsible clients locally
                 proc = run_process_pinned(
                     local_i,
                     cmd,
-                    capture_stdout=capture_stdout,
                     cores_per_proc=pin_cores,
                 )
             else:
@@ -176,7 +219,6 @@ def run_clients(
                 proc = run_process_pinned(
                     local_i,
                     cmd,
-                    capture_stdout=capture_stdout,
                     cores_per_proc=pin_cores,
                     remote=remotes[host],
                     cd_dir=cd_dir,
@@ -192,6 +234,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
+    )
+    parser.add_argument(
+        "-a",
+        "--partition",
+        type=int,
+        default=argparse.SUPPRESS,
+        help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument("-r", "--release", action="store_true", help="run release mode")
     parser.add_argument(
@@ -226,18 +275,18 @@ if __name__ == "__main__":
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
     parser_bench.add_argument(
-        "-a",
-        "--partition",
-        type=int,
-        default=argparse.SUPPRESS,
-        help="if doing keyspace partitioning, the partition idx",
-    )
-    parser_bench.add_argument(
         "-n",
         "--num_clients",
         type=int,
         required=True,
         help="number of client processes",
+    )
+    parser_bench.add_argument(
+        "-m",
+        "--num_replicas_for_near",
+        type=int,
+        default=5,
+        help="number of replicas for correct near server setting",
     )
     parser_bench.add_argument(
         "-d",
@@ -264,6 +313,12 @@ if __name__ == "__main__":
         help="if set, expect there'll be a service halt",
     )
     parser_bench.add_argument(
+        "--use_random_keys", action="store_true", help="if set, generate random keys"
+    )
+    parser_bench.add_argument(
+        "--skip_preloading", action="store_true", help="if set, skip preloading phase"
+    )
+    parser_bench.add_argument(
         "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
     )
     parser_bench.add_argument(
@@ -273,16 +328,21 @@ if __name__ == "__main__":
         "--unif_upper_bound", type=int, help="uniform dist upper bound"
     )
     parser_bench.add_argument(
-        "--file_prefix",
+        "--output_prefix",
         type=str,
         default="",
         help="output file prefix folder path",
     )
     parser_bench.add_argument(
-        "--file_midfix",
+        "--output_midfix",
         type=str,
         default="",
         help="output file extra identifier after protocol name",
+    )
+    parser_bench.add_argument(
+        "--fine_output",
+        action="store_true",
+        help="if set, produce output at finer-grained time intervals",
     )
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
@@ -303,11 +363,31 @@ if __name__ == "__main__":
     parser_mess.add_argument(
         "--resume", type=str, help="comma-separated list of servers to resume"
     )
+    parser_mess.add_argument(
+        "--leader",
+        type=str,
+        help="string form of configured leader ID (or empty string)",
+    )
+    parser_mess.add_argument(
+        "--key_range",
+        type=str,
+        help="range of keys to apply responder set (or 'full' or 'reset')",
+    )
+    parser_mess.add_argument(
+        "--responder",
+        type=str,
+        help="comma-separated list of servers as configured responders",
+    )
+    parser_mess.add_argument(
+        "--write",
+        type=str,
+        help="colon-separated pair of key & value as a single-shot write",
+    )
 
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
         TOML_FILENAME, args.group
     )
     cd_dir = f"{base}/{repo}"
@@ -320,17 +400,13 @@ if __name__ == "__main__":
         raise ValueError(f"invalid manager oracle's host {args.man}")
 
     # check that the partition index is valid
-    partition_in_args, partition, file_midfix = False, 0, ""
-    if args.utility == "bench":
-        partition_in_args = "partition" in args
-        if partition_in_args and (args.partition < 0 or args.partition >= 5):
-            raise ValueError("currently only supports <= 5 partitions")
-        partition = 0 if not partition_in_args else args.partition
-        file_midfix = (
-            args.file_midfix
-            if not partition_in_args
-            else f"{args.file_midfix}.{partition}"
-        )
+    partition_in_args = "partition" in args
+    if partition_in_args and (args.partition < 0 or args.partition >= 5):
+        raise ValueError("currently only supports <= 5 partitions")
+    partition = 0 if not partition_in_args else args.partition
+    output_midfix = args.output_midfix if args.utility == "bench" else ""
+    if partition_in_args:
+        output_midfix += f".{partition}"
 
     # check that number of clients does not exceed 99
     if args.utility == "bench":
@@ -340,37 +416,44 @@ if __name__ == "__main__":
             raise ValueError(f"#clients {args.num_clients} > 99 not supported")
 
     # check that the prefix folder path exists, or create it if not
-    if (
-        args.utility == "bench"
-        and len(args.file_prefix) > 0
-        and not os.path.isdir(args.file_prefix)
-    ):
-        os.system(f"mkdir -p {args.file_prefix}")
+    if args.utility == "bench" and len(args.output_prefix) > 0:
+        print("Preparing output folder...")
+        prepare_procs = []
+        for host in hosts:
+            prepare_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["mkdir", "-p", args.output_prefix],
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(prepare_procs, names=hosts)
 
     # build everything
     if not partition_in_args and not args.skip_build:
         print("Building everything...")
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
-    capture_stdout = args.utility == "bench" and len(args.file_prefix) > 0
-    num_clients = args.num_clients if args.utility == "bench" else 1
-
     # run client executable(s)
     client_procs = run_clients(
         remotes,
         ipaddrs,
+        hosts,
         args.me,
         args.man,
         cd_dir,
         args.protocol,
         args.utility,
         partition,
-        num_clients,
+        args.num_clients if args.utility == "bench" else 1,
+        3 if args.utility != "bench" else args.num_replicas_for_near,
         0 if args.utility != "bench" else args.dist_machs,
         glue_params_str(args, UTILITY_PARAM_NAMES[args.utility]),
         args.release,
         args.config,
-        capture_stdout,
+        "" if args.utility != "bench" else args.output_prefix,
+        "" if args.utility != "bench" else output_midfix,
         args.pin_cores,
         args.timeout_ms,
     )
@@ -378,24 +461,14 @@ if __name__ == "__main__":
     # if running bench client, add proper timeout on wait
     timeout = None
     if args.utility == "bench":
-        if args.length_s is None:
-            timeout = 75
+        if args.length_s is None or args.length_s == 0:
+            timeout = 600
         else:
-            timeout = args.length_s + 15
+            timeout = args.length_s + 30
     try:
         rcs = []
         for i, client_proc in enumerate(client_procs):
-            if not capture_stdout:
-                rcs.append(client_proc.wait(timeout=timeout))
-            else:
-                # doing automated experiments, so capture output
-                out, _ = client_proc.communicate(timeout=timeout)
-                with open(
-                    CLIENT_OUTPUT_PATH(args.protocol, args.file_prefix, file_midfix, i),
-                    "w+",
-                ) as fout:
-                    fout.write(out.decode())
-                rcs.append(client_proc.returncode)
+            rcs.append(client_proc.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
         if args.expect_halt:  # mainly for failover experiments
             print("WARN: getting expected halt, exiting...")

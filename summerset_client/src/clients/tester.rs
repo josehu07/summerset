@@ -35,7 +35,7 @@ lazy_static! {
         ("leader_node_pause", false),
         ("node_pause_resume", false),
         // NOTE: our current snapshotting implementation does not
-        // guarantee to pass this
+        //       guarantee to pass this
         // ("snapshot_reset", false),
     ];
 }
@@ -144,6 +144,12 @@ impl ClientTester {
                     );
                 }
 
+                DriverReply::Conf { .. } => {
+                    return logged_err!(
+                        "DriverReply type mismatch: expect normal command"
+                    );
+                }
+
                 DriverReply::Failure => {
                     return logged_err!("service replied unknown error");
                 }
@@ -199,6 +205,12 @@ impl ClientTester {
                     }
                     return logged_err!(
                         "CommandResult type mismatch: expect Put"
+                    );
+                }
+
+                DriverReply::Conf { .. } => {
+                    return logged_err!(
+                        "DriverReply type mismatch: expect normal command"
                     );
                 }
 
