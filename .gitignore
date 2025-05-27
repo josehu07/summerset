@@ -15,3 +15,5 @@ Cargo.lock
 
 /results/
 /backups/
+
+/scripts/setup/sshkey_id_rsa*

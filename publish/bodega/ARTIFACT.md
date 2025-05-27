@@ -5,8 +5,10 @@ For a shell command, `$` indicates running it on the local development machine, 
 1. On you local dev machine, change into the repo's path
     1. `$ python3 -m pip install toml`
     2. `$ cd path/to/summerset`
-2. Create CloudLab machines and fill in `scripts/remote_hosts.toml` properly
-3. For each of the hosts (examples below are for group `reg` host `host0`), do the following setup work
+2. Generate a new internal SSH key pair for experiments
+    1. `$ ./scripts/setup/sshkey_create.sh`
+3. Create CloudLab machines and fill in `scripts/remote_hosts.toml` properly
+4. For each of the hosts (examples below are for group `reg` host `host0`), do the following setup work
     1. SSH to it by
         1. `$ python3 scripts/remote_ssh_to.py -g reg -t host0`
     2. Add new user named `smr`
