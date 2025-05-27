@@ -282,6 +282,36 @@ impl ClientRepl {
         }
     }
 
+    /// Fetches current leaser roles configuration from manager oracle.
+    async fn leaser_roles(&mut self) -> Result<LeaserRoles, SummersetError> {
+        self.driver
+            .ctrl_stub()
+            .send_req_insist(&CtrlRequest::QueryInfo)?;
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
+
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            let mut leaser_roles = LeaserRoles::empty(population);
+            for (id, server) in servers_info {
+                if server.is_leader {
+                    leaser_roles.leader = Some(id);
+                }
+                if server.is_grantor {
+                    leaser_roles.grantors.set(id, true)?;
+                }
+                if server.is_grantee {
+                    leaser_roles.grantees.set(id, true)?;
+                }
+            }
+            Ok(leaser_roles)
+        } else {
+            logged_err!("ctrl reply type mismatch: expect QueryInfo")
+        }
+    }
+
     /// Issues the command to the service and wait for the reply.
     async fn eval_command(
         &mut self,

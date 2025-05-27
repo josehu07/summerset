@@ -28,6 +28,7 @@ impl MultiPaxosReplica {
             loop {
                 let (lease_num, lease_action) =
                     self.lease_manager.get_action().await?;
+
                 if self.handle_lease_action(lease_num, lease_action).await? {
                     break;
                 }

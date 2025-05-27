@@ -783,6 +783,17 @@ impl ClientBench {
         pf_info!("starting benchmark...");
 
         // run for specified length
+        println!(
+            "{:^11} | {:^12} | {:^12} : {:^12} ~ {:^12} | {:^8} : {:>8} / {:<8}",
+            "Elapsed (s)",
+            "Tput (ops/s)",
+            "Lat (us)",
+            "WLat (us)",
+            "RLat (us)",
+            "Freq",
+            "Reply",
+            "Total"
+        );
         let mut elapsed = self.now.duration_since(self.start);
         while elapsed < length {
             if self.params.freq_target == 0 {
