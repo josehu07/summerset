@@ -125,12 +125,6 @@ impl fmt::Debug for ConfChange {
             )
         }
     }
-
-    /// Is the request a configuration change request?
-    #[inline]
-    pub fn conf_change(&self) -> bool {
-        matches!(self, ApiRequest::Conf { .. })
-    }
 }
 
 /// Reply back to client.

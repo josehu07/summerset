@@ -28,12 +28,6 @@ pub struct ServerInfo {
     /// This server is a leader? (leader could be non-unique)
     pub is_leader: bool,
 
-    /// This server is a read lease grantor? (only for relevant protocols)
-    pub is_grantor: bool,
-
-    /// This server is a read lease grantee? (only for relevant protocols)
-    pub is_grantee: bool,
-
     /// This server is currently paused?
     pub is_paused: bool,
 
@@ -223,8 +217,6 @@ impl ClusterManager {
                 api_addr,
                 p2p_addr,
                 is_leader: false,
-                is_grantor: false,
-                is_grantee: false,
                 is_paused: false,
                 start_slot: 0,
             },
