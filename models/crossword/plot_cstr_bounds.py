@@ -78,7 +78,7 @@ def plot_cstr_bound(idx, cluster_size):
     # correct region
     xs = [m, m, n, n]
     ys = [m, n, n, 1] if n <= 5 else [m, m + 1.4, m + 1.4, 1]
-    plt.fill(xs, ys, color=fill_color, label="Region of fault-tolerance=f", zorder=0)
+    plt.fill(xs, ys, color=fill_color, label="Region of tolerance=f", zorder=0)
 
     # unused x-axis ranges
     xs = [0.4, m - 0.55, m - 0.85, 0.1]
@@ -96,8 +96,8 @@ def plot_cstr_bound(idx, cluster_size):
 
     # environment tradeoff arrows
     plt.arrow(
-        m + 0.1 if n <= 3 else m + 0.6,
-        n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
+        m + 0.1 if n <= 3 else m + 0.1 if n <= 5 else m - 0.8 if n <= 7 else m - 0.4,
+        n + 1.1 if n <= 3 else m + 2.5 if n <= 5 else m + 1.6 if n <= 7 else m + 2.0,
         -1.3,
         0,
         linewidth=1,
@@ -108,14 +108,16 @@ def plot_cstr_bound(idx, cluster_size):
         overhang=0.5,
         clip_on=False,
         label="Tradeoff decisions",
+        zorder=50,
     )
     plt.text(
-        m + 0.3 if n <= 3 else m + 0.8 if n <= 5 else m + 0.8,
+        m + 0.3 if n <= 3 else m + 0.3 if n <= 5 else m - 0.9 if n <= 7 else m - 0.2,
         n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
         "if high RTT var.",
         horizontalalignment="left",
         verticalalignment="center",
         color="dimgray",
+        zorder=50,
     )
     plt.arrow(
         n + 1,
@@ -131,8 +133,8 @@ def plot_cstr_bound(idx, cluster_size):
         clip_on=False,
     )
     plt.text(
-        n + 1.3 if n < 7 else n + 0.4,
-        1 + 1.1 if n < 7 else 1 + 2.1,
+        n + 1.4 if n < 7 else n + 0.4,
+        1 + 0.8 if n < 7 else 1 + 2.1,
         "if bw\nlimited",
         horizontalalignment="left",
         verticalalignment="center",
@@ -150,7 +152,7 @@ def plot_cstr_bound(idx, cluster_size):
     )
     plt.yticks(Y_TICKS[:cluster_size], list(map(str, Y_TICKS))[:cluster_size])
 
-    if idx < 2:
+    if idx < 1:
         plt.xlabel("|Quorum| (q)", loc="right")
         ax.xaxis.set_label_coords(1.15, -0.06)
     else:
@@ -161,6 +163,7 @@ def plot_cstr_bound(idx, cluster_size):
         loc="top",
         rotation=0,
         backgroundcolor="white",
+        zorder=10,
     )
     ax.yaxis.set_label_coords(0.19, 0.76)
 
@@ -172,8 +175,8 @@ def plot_cstr_bound(idx, cluster_size):
     #     # fontweight="bold",
     #     # backgroundcolor=fill_color,
     # )
-    plt.text(5.4, -2.4, f"n={n}, f={f}", fontsize=11, ha="center", va="center")
-    plt.text(2.8, -2.4, "▬", fontsize=11, color=line_color, ha="center", va="center")
+    plt.text(5.6, -2.7, f"n={n}, f={f}", fontsize=13, ha="center", va="center")
+    plt.text(2.2, -2.7, "▬", fontsize=13, color=line_color, ha="center", va="center")
 
     return ax
 
@@ -223,10 +226,11 @@ def make_legend(fig, handles, labels):
         sorted_handles,
         sorted_labels,
         loc="lower center",
-        bbox_to_anchor=(0.5, 0.72),
+        bbox_to_anchor=(0.5, 0.78),
         ncol=len(handles),
-        handlelength=1.5,
-        handletextpad=0.5,
+        handlelength=1.2,
+        columnspacing=1.2,
+        handletextpad=0.4,
         handler_map={
             mpatches.FancyArrow: HandlerPatch(patch_func=make_legend_arrow),
             mpatches.Polygon: HandlerPatch(patch_func=make_legend_polygon),
@@ -240,7 +244,7 @@ def plot_all_cstr_bounds(output_dir):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (10, 3),
-            "font.size": 10,
+            "font.size": 12,
             "axes.axisbelow": False,
             "pdf.fonttype": 42,
         }
@@ -256,7 +260,7 @@ def plot_all_cstr_bounds(output_dir):
     # single legend group on top
     make_legend(fig, handles, labels)
 
-    plt.tight_layout(pad=1.0)
+    plt.tight_layout(pad=0.3)
     plt.savefig(f"{output_dir}/cstr_bounds.pdf", bbox_inches=0)
 
 
