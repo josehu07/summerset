@@ -314,8 +314,8 @@ def plot_staleness(diff_stats, plots_dir):
     ]
     PROTOCOLS_LABEL_COLOR_MARKER_ZORDER = {
         "MultiPaxos.None": ("MultiPaxos", "dimgray", "v", 0),
-        "Crossword.200": ("Cw (200)", "royalblue", "p", 5),
-        "Crossword.100": ("Cw (100)", "steelblue", "o", 10),
+        "Crossword.200": ("Cw (800KB)", "royalblue", "p", 5),
+        "Crossword.100": ("Cw (400KB)", "steelblue", "o", 10),
         "Crossword.0": ("Cw (0)", "lightsteelblue", "2", 5),
         "RSPaxos.None": ("RSPaxos", "red", "x", 0),
     }
