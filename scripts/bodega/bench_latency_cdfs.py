@@ -240,7 +240,7 @@ def plot_ylabel(plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (12.0, 1.0),
+            "figure.figsize": (3.0, 4.0),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -261,11 +261,12 @@ def plot_legend(handles, labels, plots_dir):
         markerscale=1.6,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
-        ncol=len(labels),
+        ncol=1,
         borderpad=0.3,
         handletextpad=0.5,
         columnspacing=2.0,
         frameon=False,
+        labelspacing=0.9,
     )
 
     pdf_name = f"{plots_dir}/legend-{EXPER_NAME_PLOT}.pdf"

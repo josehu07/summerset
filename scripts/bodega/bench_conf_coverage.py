@@ -474,7 +474,7 @@ def plot_responders_results(results, plots_dir):
 def plot_key_ranges_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.6, 1.6),
+            "figure.figsize": (3.2, 1.6),
             "font.size": 9,
             "pdf.fonttype": 42,
         }

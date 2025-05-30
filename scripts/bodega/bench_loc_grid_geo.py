@@ -858,7 +858,7 @@ def plot_ylabels(plots_dir):
     ylabels = [
         "Norm Tput\n(to Ldr Ls)",
         "Read Lat\n(ms)",
-        "Write Lat\n(ms)",
+        "",
     ]
 
     ax1 = plt.subplot(311)
@@ -898,7 +898,7 @@ def plot_ylabels(plots_dir):
 def plot_legend(handles, labels, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (3.6, 2.0),
+            "figure.figsize": (2.5, 4.0),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -920,11 +920,12 @@ def plot_legend(handles, labels, plots_dir):
         handlelength=1.0,
         loc="center",
         bbox_to_anchor=(0.5, 0.5),
-        ncol=2,
+        ncol=1,
         borderpad=0.3,
         handletextpad=0.3,
         columnspacing=0.9,
         frameon=False,
+        labelspacing=0.5,
     )
 
     pdf_name = f"{plots_dir}/legend-{EXPER_NAME}.pdf"
