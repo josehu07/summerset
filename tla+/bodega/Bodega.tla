@@ -554,7 +554,7 @@ macro TakeNewReadRequest(r) begin
         \* otherwise, should hold until I've received enough broadcasted
         \* AcceptReplies indicating that the write is surely to be committed
         await \/ s = 0
-              \/ node[r].insts[s].status = "Committed"
+              \/ s > 0 /\ node[r].insts[s].status = "Committed"
               \/ LET ars == {m \in msgs: /\ m.type = "AcceptReply"
                                          /\ m.slot = s
                                          /\ m.bal = node[r].balMaxKnown}
@@ -613,8 +613,8 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "ed44672" /\ chksum(tla) = "387844b7")
-VARIABLES msgs, grants, node, pending, observed, crashed, pc
+\* BEGIN TRANSLATION (chksum(pcal) = "a012b034" /\ chksum(tla) = "f9b3b520")
+VARIABLES pc, msgs, grants, node, pending, observed, crashed
 
 (* define statement *)
 CurrentConfig ==
@@ -670,7 +670,7 @@ terminated == /\ Len(pending) = 0
 numCrashed == Cardinality({r \in Replicas: crashed[r]})
 
 
-vars == << msgs, grants, node, pending, observed, crashed, pc >>
+vars == << pc, msgs, grants, node, pending, observed, crashed >>
 
 ProcSet == (Replicas)
 
@@ -809,7 +809,7 @@ rloop(self) == /\ pc[self] = "rloop"
                                      LET v == IF s = 0 THEN "nil" ELSE node[self].insts[s].write IN
                                        LET c == Head(UnseenPending(self)) IN
                                          /\ \/ s = 0
-                                            \/ node[self].insts[s].status = "Committed"
+                                            \/ s > 0 /\ node[self].insts[s].status = "Committed"
                                             \/ LET ars == {m \in msgs: /\ m.type = "AcceptReply"
                                                                        /\ m.slot = s
                                                                        /\ m.bal = node[self].balMaxKnown}
