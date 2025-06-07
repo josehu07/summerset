@@ -1,0 +1,35 @@
+TLC2 Version 2.20 of Day Month 20?? (rev: 96056d9)
+Running breadth-first search Model-Checking with fp 76 and seed -4642556916794004552 with 128 workers on 128 cores with 27305MB heap and 64MB offheap memory [pid: 62256] (Linux 6.8.0-59-generic amd64, Ubuntu 21.0.7 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /users/josehu/summerset/tla+/multipaxos_smr_addon/MultiPaxos_MC.tla
+Parsing file /users/josehu/summerset/tla+/multipaxos_smr_addon/MultiPaxos.tla
+!! WARNING: The PlusCal algorithm in module MultiPaxos has changed since its last translation.
+Parsing file /tmp/tlc-6270014073580150147/FiniteSets.tla (jar:file:/users/josehu/tla2tools.jar!/tla2sany/StandardModules/FiniteSets.tla)
+Parsing file /tmp/tlc-6270014073580150147/Sequences.tla (jar:file:/users/josehu/tla2tools.jar!/tla2sany/StandardModules/Sequences.tla)
+Parsing file /tmp/tlc-6270014073580150147/Integers.tla (jar:file:/users/josehu/tla2tools.jar!/tla2sany/StandardModules/Integers.tla)
+Parsing file /tmp/tlc-6270014073580150147/TLC.tla (jar:file:/users/josehu/tla2tools.jar!/tla2sany/StandardModules/TLC.tla)
+Parsing file /tmp/tlc-6270014073580150147/Naturals.tla (jar:file:/users/josehu/tla2tools.jar!/tla2sany/StandardModules/Naturals.tla)
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module Integers
+Semantic processing of module TLC
+Semantic processing of module MultiPaxos
+Semantic processing of module MultiPaxos_MC
+Starting... (2025-06-06 23:01:10)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2025-06-06 23:01:11.
+Progress(14) at 2025-06-06 23:01:14: 17,137 states generated (17,137 s/min), 6,123 distinct states found (6,123 ds/min), 3,403 states left on queue.
+Progress(24) at 2025-06-06 23:02:14: 13,495,648 states generated (13,478,511 s/min), 3,678,465 distinct states found (3,672,342 ds/min), 1,317,941 states left on queue.
+Progress(26) at 2025-06-06 23:03:14: 27,067,458 states generated (13,571,810 s/min), 7,652,094 distinct states found (3,973,629 ds/min), 2,370,848 states left on queue.
+Progress(27) at 2025-06-06 23:04:14: 40,620,247 states generated (13,552,789 s/min), 12,069,110 distinct states found (4,417,016 ds/min), 3,111,808 states left on queue.
+Progress(28) at 2025-06-06 23:05:14: 54,009,336 states generated (13,389,089 s/min), 16,952,575 distinct states found (4,883,465 ds/min), 3,338,333 states left on queue.
+Progress(30) at 2025-06-06 23:06:14: 67,465,466 states generated (13,456,130 s/min), 22,323,284 distinct states found (5,370,709 ds/min), 2,398,649 states left on queue.
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 6.8E-5
+  based on the actual fingerprints:  val = 1.6E-5
+75266967 states generated, 25266000 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 34.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 11 and the 95th percentile is 3).
+Finished in 05min 41s at (2025-06-06 23:06:52)
