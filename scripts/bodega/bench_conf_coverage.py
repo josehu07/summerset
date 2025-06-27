@@ -446,7 +446,7 @@ def plot_responders_results(results, plots_dir):
 
     plt.ylim((0.0, 82.0))
     plt.yticks([0, 20, 40, 60, 80], list(map(str, [0, 20, 40, 60, 80])))
-    plt.ylabel("Write Lat (ms)")
+    plt.ylabel("Latency (ms)")
 
     plt.legend(
         handleheight=0.8,
