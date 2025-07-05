@@ -242,6 +242,71 @@ def plot_results(odir: str):
             print(f"{tput:.3f}  ", end="")
         print()
 
+    matplotlib.rcParams.update(
+        {
+            "figure.figsize": (6.8, 2.3),
+            "font.size": 10,
+            "pdf.fonttype": 42,
+        }
+    )
+    fig = plt.figure(f"Model-ftsim")
+
+    CASES_ORDER = [
+        "LeaderLeases-no-failure",
+        "LeaderLeases-with-failure",
+        "Bodega-no-failure",
+        "Bodega-with-failure",
+    ]
+    CASES_LABEL_COLOR = {
+        "LeaderLeases-no-failure": ("Leader Leases (no failures)", "pink"),
+        "LeaderLeases-with-failure": ("Leader Leases (with failures)", "lightcoral"),
+        "Bodega-no-failure": ("Bodega (no failures)", "lightsteelblue"),
+        "Bodega-with-failure": ("Bodega (with failures)", "cornflowerblue"),
+    }
+
+    x = np.arange(1, num_servers + 1)  # X positions for groups
+    width = 0.2  # Width of each bar
+    multiplier = 0
+
+    for case in CASES_ORDER:
+        label, color = CASES_LABEL_COLOR[case]
+        offset = width * multiplier
+        hatch = "xx" if "with-failure" in case else None
+        bars = plt.bar(
+            x + offset,
+            results[case],
+            width,
+            label=label,
+            color=color,
+            hatch=hatch,
+            edgecolor="gray",
+            linewidth=0,
+        )
+        multiplier += 1
+
+    plt.xlabel("Number of Roster-Covered Replicas")
+    plt.ylabel("Throughput (k reqs/s)")
+    plt.xticks(
+        x + width * 1.5, [str(i) for i in range(1, num_servers + 1)]
+    )  # Center the x-tick labels
+    plt.legend(bbox_to_anchor=(1.04, 0.5), loc="center left", handlelength=1.0)
+
+    # Add vertical separation lines between groups
+    for i in range(2, num_servers + 1):
+        plt.axvline(x=i - 0.2, color="gray", linestyle="--", linewidth=0.5)
+
+    # Remove top and right spines
+    ax = plt.gca()
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+
+    pdf_name = f"{odir}/ftsim/result.pdf"
+    plt.savefig(pdf_name, bbox_inches="tight")
+    plt.close()
+    print(f"Plotted: {pdf_name}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
