@@ -12,6 +12,23 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
   <img width="400" src="publish/README-arch.png" style="margin: 5px;">
 </p>
 
+Reference:
+
+```txt
+@phdthesis{
+  author    = {Hu, Guanzhou},
+  year      = {2025},
+  title     = {Cloud Consensus Protocols With Optimistic Connectivity},
+  journal   = {ProQuest Dissertations and Theses},
+  pages     = {275},
+  keywords  = {Cloud storage; Consensus protocols; Distributed systems; Formal methods; Optimistic connectivity; Computer science; Computer engineering; Information technology; 0489:Information Technology; 0984:Computer science; 0464:Computer Engineering},
+  isbn      = {9798286499199},
+  language  = {English},
+  url       = {https://www.proquest.com/dissertations-theses/cloud-consensus-protocols-with-optimistic/docview/3228170052/se-2},
+  note      = {Copyright - Database copyright ProQuest LLC; ProQuest does not claim copyright in the individual underlying works; Last updated - 2025-08-01},
+}
+```
+
 <details>
 <summary>List of currently implemented protocols...</summary>
 
