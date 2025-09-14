@@ -46,7 +46,7 @@ Reference:
 | `QuorumLeases` | Local reads at leaseholders when quiescent | [paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf) |
 | `Bodega` | Always-local linearizable reads via roster leases | tba |
 
-Formal TLA+ specification of some protocols are provided in `tla+/`.
+Formal TLA+ specification of some protocols are provided in `tla+/`. An attempt of modeling consistency levels can be found [here](https://github.com/josehu07/madkv/tree/main/pmodel) using these [definitions](https://arxiv.org/abs/2409.01576).
 
 More exciting protocols, old and new, are actively being added!
 
