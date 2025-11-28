@@ -1,4 +1,4 @@
-//! Bodega -- local read optimization related actions.
+//! `Bodega` -- local read optimization related actions.
 
 use super::*;
 
@@ -16,7 +16,7 @@ impl BodegaReplica {
     }
 
     /// Checks if I'm a responder for a key as in a majority-leased config.
-    /// Assumes the lease_cnt + 1 >= majority check has been done already.
+    /// Assumes the `lease_cnt` + 1 >= majority check has been done already.
     #[inline]
     pub(super) fn is_responder_for(&self, key: &String) -> bool {
         (self.bodega_conf.is_responder_by_key(key, self.id)
@@ -26,28 +26,27 @@ impl BodegaReplica {
     }
 
     /// The commit condition check for normal consensus instances. Besides
-    /// requiring an AcceptReply quorum size of at least majority, it also
+    /// requiring an `AcceptReply` quorum size of at least majority, it also
     /// requires that replies from all responders for updated keys have been
     /// received.
     pub(super) fn commit_condition(
         leader_bk: &LeaderBookkeeping,
         req_batch: &ReqBatch,
         quorum_cnt: u8,
-        bodega_conf: &RespondersConf,
+        bodega_conf: &RespondersConf<()>,
     ) -> Result<bool, SummersetError> {
         if leader_bk.accept_acks.count() < quorum_cnt {
             return Ok(false);
         }
 
         for (_, req) in req_batch {
-            if let Some(key) = req.write_key() {
-                if let Some((responders, _)) =
+            if let Some(key) = req.write_key()
+                && let Some((responders, _)) =
                     bodega_conf.get_responders_by_key(key)
-                {
-                    for (responder, flag) in responders.iter() {
-                        if flag && !leader_bk.accept_acks.get(responder)? {
-                            return Ok(false);
-                        }
+            {
+                for (responder, flag) in responders.iter() {
+                    if flag && !leader_bk.accept_acks.get(responder)? {
+                        return Ok(false);
                     }
                 }
             }
@@ -56,7 +55,7 @@ impl BodegaReplica {
         Ok(true)
     }
 
-    /// Update the highest_slot tracking info given a new request batch about
+    /// Update the `highest_slot` tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_slot(
         slot: usize,
@@ -79,7 +78,7 @@ impl BodegaReplica {
     }
 
     /// Get the value at the highest slot index ever seen for a key and whether
-    /// it has been committed (or has seen >= majority AcceptNotices).
+    /// it has been committed (or has seen >= majority `AcceptNotice`s).
     // NOTE: current implementation might loop through requests in the batch of
     //       that slot at each inspect call; good enough but can be improved
     pub(super) fn inspect_highest_slot(
@@ -116,10 +115,9 @@ impl BodegaReplica {
                             cmd: Command::Put { key: k, value },
                             ..
                         } = req
+                            && k == key
                         {
-                            if k == key {
-                                return Ok(Some((slot, Some(value.clone()))));
-                            }
+                            return Ok(Some((slot, Some(value.clone()))));
                         }
                     }
                     logged_err!(
@@ -263,7 +261,7 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// If in Accepting status and >= majority AcceptNotices received (or even
+    /// If in Accepting status and >= majority `AcceptNotice`s received (or even
     /// in Committed status), commit is bound to happen (or has already happened)
     /// for an instance, so we can now reply to all holding reads. Otherwise,
     /// this function is called to trigger prompt rejections of held read reqs.
@@ -317,30 +315,27 @@ impl BodegaReplica {
                         cmd: Command::Put { key: k, value },
                         ..
                     } = req
+                        && k == &key
                     {
-                        if k == &key {
-                            self.external_api.send_reply(
-                                ApiReply::normal(
-                                    req_id,
-                                    Some(CommandResult::Get {
-                                        value: Some(value.clone()),
-                                    }),
-                                ),
-                                client,
-                            )?;
-                            pf_trace!(
-                                "replied -> client {} read-only hgood",
-                                client
-                            );
-                            // [for access cnt stats only]
-                            if self.config.record_node_cnts {
-                                *self
-                                    .node_cnts_stats
-                                    .get_mut(&self.id)
-                                    .unwrap() += 1;
-                            }
-                            continue 'reqs_loop;
+                        self.external_api.send_reply(
+                            ApiReply::normal(
+                                req_id,
+                                Some(CommandResult::Get {
+                                    value: Some(value.clone()),
+                                }),
+                            ),
+                            client,
+                        )?;
+                        pf_trace!(
+                            "replied -> client {} read-only hgood",
+                            client
+                        );
+                        // [for access cnt stats only]
+                        if self.config.record_node_cnts {
+                            *self.node_cnts_stats.get_mut(&self.id).unwrap() +=
+                                1;
                         }
+                        continue 'reqs_loop;
                     }
                 }
                 // although should not reach here, playing safe...

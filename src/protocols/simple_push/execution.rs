@@ -1,7 +1,6 @@
-//! SimplePush -- command execution.
+//! `SimplePush` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
 
@@ -65,7 +64,7 @@ impl SimplePushReplica {
                         "unknown request type at {}|{}",
                         inst_idx,
                         cmd_idx
-                    )
+                    );
                 }
             }
         }

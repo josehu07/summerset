@@ -1,13 +1,13 @@
-//! RS-Paxos -- client request entrance.
+//! `RS-Paxos` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // RSPaxosReplica client requests entrance
 impl RSPaxosReplica {
     /// Handler of client request batch chan recv.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,

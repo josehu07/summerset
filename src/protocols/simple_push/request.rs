@@ -1,7 +1,6 @@
-//! SimplePush -- client request entrance.
+//! `SimplePush` -- client request entrance.
 
 use super::*;
-
 use crate::client::ClientId;
 use crate::server::{ApiRequest, LogAction, LogActionId};
 use crate::utils::{Bitmap, SummersetError};

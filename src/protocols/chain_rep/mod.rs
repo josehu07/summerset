@@ -4,6 +4,7 @@
 //!   - <https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf>
 //!   - <https://www.usenix.org/conference/atc22/presentation/fouto>
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -15,6 +16,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
+use async_trait::async_trait;
+use get_size::GetSize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::Duration;
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -24,15 +31,6 @@ use crate::server::{
     TransportHub,
 };
 use crate::utils::SummersetError;
-
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::Duration;
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -64,7 +62,16 @@ impl Default for ReplicaConfigChainRep {
 
 /// Log entry status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Status {
     Null = 0,
@@ -89,14 +96,16 @@ struct LogEntry {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 struct WalEntry {
     slot: usize,
     reqs: ReqBatch,
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
     /// Propagate message from predecessor to successor.
     Propagate { slot: usize, reqs: ReqBatch },
@@ -106,7 +115,7 @@ enum PeerMsg {
     PropagateReply { slot: usize },
 }
 
-/// ChainRep server replica module.
+/// `ChainRep` server replica module.
 pub(crate) struct ChainRepReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -123,19 +132,19 @@ pub(crate) struct ChainRepReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// In-memory log of entries.
@@ -145,7 +154,7 @@ pub(crate) struct ChainRepReplica {
     prop_bar: usize,
 
     /// Index of the first non-executed log entry.
-    /// It is always true that exec_bar <= prop_bar <= log.len()
+    /// It is always true that `exec_bar` <= `prop_bar` <= `log.len()`
     exec_bar: usize,
 
     /// Current durable WAL log file offset.
@@ -207,7 +216,7 @@ impl ChainRepReplica {
         self.log.len() - 1
     }
 
-    /// Compose CommandId from:
+    /// Compose `CommandId` from:
     ///   - slot index & command index within if non read-only
     ///   - request ID & client ID if read-only
     #[inline]
@@ -216,7 +225,7 @@ impl ChainRepReplica {
         cmd_idx_or_client: usize,
         read_only: bool,
     ) -> CommandId {
-        debug_assert!(slot_or_req_id <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot_or_req_id).is_ok());
         debug_assert!(cmd_idx_or_client <= ((u32::MAX >> 1) as usize));
         let mut cmd_id =
             ((slot_or_req_id << 32) | (cmd_idx_or_client << 1)) as CommandId;
@@ -226,7 +235,7 @@ impl ChainRepReplica {
         cmd_id
     }
 
-    /// Decompose CommandId into:
+    /// Decompose `CommandId` into:
     ///   - slot index & command index within if non read-only
     ///   - request ID & client ID if read-only
     #[inline]
@@ -288,11 +297,9 @@ impl GenericReplica for ChainRepReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -449,7 +456,7 @@ impl Default for ClientConfigChainRep {
     }
 }
 
-/// ChainRep client-side module.
+/// `ChainRep` client-side module.
 pub(crate) struct ChainRepClient {
     /// Client ID.
     id: ClientId,
@@ -469,7 +476,7 @@ pub(crate) struct ChainRepClient {
     /// Current tail server ID.
     tail_id: ReplicaId,
 
-    /// Was the last request sent read_only?
+    /// Was the last request sent `read_only`?
     last_read_only: bool,
 
     /// Control API stub to the cluster manager.
@@ -533,62 +540,61 @@ impl GenericEndpoint for ChainRepClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new head_id/tail_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.head_id)
-                    || servers_info[&self.head_id].is_paused
-                {
-                    self.head_id = (self.head_id + 1) % population;
-                }
-                while !servers_info.contains_key(&self.tail_id)
-                    || servers_info[&self.tail_id].is_paused
-                {
-                    self.tail_id =
-                        if self.tail_id == 0 || self.tail_id >= population {
-                            population - 1
-                        } else {
-                            self.tail_id - 1
-                        };
-                }
-                if self.head_id == self.tail_id {
-                    return logged_err!(
-                        "head & tail resolve to the same server {}",
-                        self.head_id
-                    );
-                }
-
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-
-                    if id == self.head_id {
-                        self.head_api_stub = Some(api_stub);
-                    } else if id == self.tail_id {
-                        self.tail_api_stub = Some(api_stub);
+            // shift to a new head_id/tail_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.head_id)
+                || servers_info[&self.head_id].is_paused
+            {
+                self.head_id = (self.head_id + 1) % population;
+            }
+            while !servers_info.contains_key(&self.tail_id)
+                || servers_info[&self.tail_id].is_paused
+            {
+                self.tail_id =
+                    if self.tail_id == 0 || self.tail_id >= population {
+                        population - 1
                     } else {
-                        self.mid_api_stubs.insert(id, api_stub);
-                    }
-                }
-
-                debug_assert!(self.head_api_stub.is_some());
-                debug_assert!(self.tail_api_stub.is_some());
-                Ok(())
+                        self.tail_id - 1
+                    };
+            }
+            if self.head_id == self.tail_id {
+                return logged_err!(
+                    "head & tail resolve to the same server {}",
+                    self.head_id
+                );
             }
 
-            _ => logged_err!("unexpected reply type received"),
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+
+                if id == self.head_id {
+                    self.head_api_stub = Some(api_stub);
+                } else if id == self.tail_id {
+                    self.tail_api_stub = Some(api_stub);
+                } else {
+                    self.mid_api_stubs.insert(id, api_stub);
+                }
+            }
+
+            debug_assert!(self.head_api_stub.is_some());
+            debug_assert!(self.tail_api_stub.is_some());
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

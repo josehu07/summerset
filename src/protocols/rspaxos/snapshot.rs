@@ -1,10 +1,9 @@
-//! RS-Paxos -- snapshotting & GC.
+//! `RS-Paxos` -- snapshotting & GC.
 
 use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{ApiRequest, Command, LogAction, LogResult};
 use crate::utils::SummersetError;
@@ -52,7 +51,7 @@ impl RSPaxosReplica {
         }
     }
 
-    /// Discard everything older than start_slot in durable WAL log.
+    /// Discard everything older than `start_slot` in durable WAL log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         // do a dummy sync read to force all previously submitted log actions
         // to be processed
@@ -65,10 +64,10 @@ impl RSPaxosReplica {
         }
 
         // get offset to cut the WAL at
-        let cut_offset = if !self.insts.is_empty() {
-            self.insts[0].wal_offset
-        } else {
+        let cut_offset = if self.insts.is_empty() {
             self.wal_offset
+        } else {
+            self.insts[0].wal_offset
         };
 
         // discard the log before cut_offset
@@ -108,7 +107,7 @@ impl RSPaxosReplica {
         Ok(())
     }
 
-    /// Take a snapshot up to current exec_bar, then discard the in-mem log up
+    /// Take a snapshot up to current `exec_bar`, then discard the in-mem log up
     /// to that index as well as outdate entries in the durable WAL log file.
     //
     // NOTE: the current implementation does not guard against crashes in the

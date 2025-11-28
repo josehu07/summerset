@@ -1,26 +1,18 @@
 //! Reed-Solomon erasure coding computation overhead benchmarking.
+#![allow(clippy::uninlined_format_args)]
 
 use std::collections::HashMap;
-use std::fmt;
+use std::sync::LazyLock;
 use std::time::Duration;
-
-use summerset::{RSCodeword, SummersetError};
-
-use rand::distributions::Alphanumeric;
-use rand::Rng;
-
-use reed_solomon_erasure::galois_8::ReedSolomon;
+use std::{fmt, hint};
 
 use criterion::measurement::{Measurement, ValueFormatter, WallTime};
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion,
-};
-
-use cpu_monitor::CpuInstant;
-
-use memory_stats::{memory_stats, MemoryStats};
-
-use lazy_static::lazy_static;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use rand::Rng;
+use rand::distr::Alphanumeric;
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use summerset::{RSCodeword, SummersetError};
+use sysinfo::System;
 
 // static SCHEMES: [(u8, u8); 4] = [(3, 2), (6, 4), (9, 6), (12, 8)];
 static SCHEMES: [(u8, u8); 1] = [(3, 2)];
@@ -37,24 +29,29 @@ struct BenchId(usize, (u8, u8));
 
 impl fmt::Display for BenchId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}@({},{})", self.0, self.1 .0, self.1 .1)
+        write!(f, "{}@({},{})", self.0, self.1.0, self.1.1)
     }
 }
 
-lazy_static!(
-    /// A very long pre-generated value string to get values from.
-    static ref MOM_VALUE: String = rand::thread_rng()
+/// A very long pre-generated value string to get values from.
+static MOM_VALUE: LazyLock<String> = LazyLock::new(|| {
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(4096 * 1024)
         .map(char::from)
-        .collect();
+        .collect()
+});
 
-    /// Reed-Solomon coder.
-    static ref RS_CODER: HashMap<(u8, u8), ReedSolomon> = SCHEMES
-        .iter()
-        .map(|&s| (s, ReedSolomon::new(s.0 as usize, s.1 as usize).unwrap()))
-        .collect();
-);
+/// Reed-Solomon coder.
+static RS_CODER: LazyLock<HashMap<(u8, u8), ReedSolomon>> =
+    LazyLock::new(|| {
+        SCHEMES
+            .iter()
+            .map(|&s| {
+                (s, ReedSolomon::new(s.0 as usize, s.1 as usize).unwrap())
+            })
+            .collect()
+    });
 
 /// Placeholder formatter for criterion measurement.
 struct GarbageFormatter;
@@ -82,43 +79,37 @@ impl ValueFormatter for GarbageFormatter {
     }
 }
 
-/// Custom measurement for CPU time overhead.
+/// Custom measurement for CPU usage (percentage of total).
 #[derive(Clone, Debug)]
 struct CpuUsage;
 
 impl Measurement for CpuUsage {
-    type Intermediate = CpuInstant;
-    type Value = (f64, f64); // (idle, non_idle) time length ns
+    type Intermediate = System; // refreshed once at start
+    type Value = f64; // usage percent
 
     fn start(&self) -> Self::Intermediate {
-        CpuInstant::now().unwrap()
+        let mut sys = System::new_all();
+        sys.refresh_cpu_all();
+        sys
     }
 
-    fn end(&self, i: Self::Intermediate) -> Self::Value {
-        let dur = CpuInstant::now().unwrap() - i;
-        (
-            (dur.duration().as_nanos() as f64) * dur.idle(),
-            (dur.duration().as_nanos() as f64) * dur.non_idle(),
-        )
+    fn end(&self, mut sys: Self::Intermediate) -> Self::Value {
+        sys.refresh_cpu_all();
+        f64::from(sys.global_cpu_usage())
     }
 
     fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value {
-        (v1.0 + v2.0, v1.1 + v2.1)
+        v1 + v2
     }
 
     fn zero(&self) -> Self::Value {
-        (0.0, 0.0)
+        0.0
     }
 
     fn to_f64(&self, value: &Self::Value) -> f64 {
-        let res = (value.1 / (value.0 + value.1)) * 100.0 / 2.0;
+        let res = *value / 2.0; // average across start/end refresh window
         println!("  cpu: {:.3} %", res);
-        if res > 0.0 {
-            res
-        } else {
-            // criterion not happy with zero "time" measured
-            0.001
-        }
+        if res > 0.0 { res } else { 0.001 }
     }
 
     fn formatter(&self) -> &dyn ValueFormatter {
@@ -126,29 +117,29 @@ impl Measurement for CpuUsage {
     }
 }
 
-/// Custom measurement for memory usage overhead.
+/// Custom measurement for memory usage overhead (physical memory delta, bytes).
 #[derive(Clone, Debug)]
 struct MemUsage;
 
 impl Measurement for MemUsage {
-    type Intermediate = MemoryStats;
-    type Value = usize;
+    type Intermediate = (System, u64); // system snapshot + used memory (bytes)
+    type Value = u64;
 
     fn start(&self) -> Self::Intermediate {
-        memory_stats().unwrap_or(MemoryStats {
-            physical_mem: 0,
-            virtual_mem: 0,
-        })
+        let mut sys = System::new_all();
+        sys.refresh_memory();
+        let used_bytes = sys.used_memory() * 1024; // sysinfo reports KiB
+        (sys, used_bytes)
     }
 
-    fn end(&self, i: Self::Intermediate) -> Self::Value {
-        let mem = memory_stats().unwrap_or(i);
-
-        mem.physical_mem - i.physical_mem
+    fn end(&self, (mut sys, used_start): Self::Intermediate) -> Self::Value {
+        sys.refresh_memory();
+        let used_end = sys.used_memory() * 1024;
+        used_end.saturating_sub(used_start)
     }
 
     fn add(&self, v1: &Self::Value, v2: &Self::Value) -> Self::Value {
-        *v1 + *v2
+        v1 + v2
     }
 
     fn zero(&self) -> Self::Value {
@@ -156,14 +147,10 @@ impl Measurement for MemUsage {
     }
 
     fn to_f64(&self, value: &Self::Value) -> f64 {
+        #[allow(clippy::cast_precision_loss)]
         let res = *value as f64;
         println!("  mem: {:.0} B", res);
-        if res > 0.0 {
-            res
-        } else {
-            // criterion not happy with zero "time" measured
-            1.0
-        }
+        if res > 0.0 { res } else { 1.0 }
     }
 
     fn formatter(&self) -> &dyn ValueFormatter {
@@ -178,7 +165,7 @@ fn compute_codeword(
     let value = MOM_VALUE[..size].to_string();
     let mut cw = RSCodeword::<String>::from_data(value, scheme.0, scheme.1)?;
     cw.compute_parity(Some(RS_CODER.get(&scheme).unwrap()))?;
-    black_box(Ok(()))
+    hint::black_box(Ok(()))
 }
 
 fn rse_bench_group<M: Measurement, const N: char>(c: &mut Criterion<M>) {

@@ -1,7 +1,6 @@
-//! RepNothing -- durable logging.
+//! `RepNothing` -- durable logging.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
@@ -13,7 +12,7 @@ impl RepNothingReplica {
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let inst_idx = action_id as usize;
+        let inst_idx = usize::try_from(action_id)?;
         if inst_idx >= self.insts.len() {
             return logged_err!("invalid log action ID {} seen", inst_idx);
         }

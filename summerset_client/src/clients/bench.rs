@@ -4,27 +4,20 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
+use std::sync::LazyLock;
 
-use crate::drivers::{DriverOpenLoop, DriverReply};
-
-use lazy_static::lazy_static;
-
-use rand::distributions::Alphanumeric;
-use rand::rngs::ThreadRng;
+use rand::distr::Alphanumeric;
 use rand::Rng;
-
 use rand_distr::{Distribution, Normal, Uniform};
-
 use rangemap::RangeMap;
-
 use serde::Deserialize;
-
-use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
-
 use summerset::{
     logged_err, parsed_config, pf_debug, pf_error, pf_info, pf_warn,
     CommandResult, GenericEndpoint, RequestId, SummersetError,
 };
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+
+use crate::drivers::{DriverOpenLoop, DriverReply};
 
 /// Fixed length in bytes of key.
 const KEY_LEN: usize = 8;
@@ -38,14 +31,14 @@ const PRINT_INTERVAL: Duration = Duration::from_millis(100);
 /// Finer-grained statistics printing interval.
 const FINE_PRINT_INTERVAL: Duration = Duration::from_millis(5);
 
-lazy_static! {
-    /// A very long pre-generated value string to get values from.
-    static ref MOM_VALUE: String = rand::thread_rng()
+/// A very long pre-generated value string to get values from.
+static MOM_VALUE: LazyLock<String> = LazyLock::new(|| {
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(MAX_VAL_LEN)
         .map(char::from)
-        .collect();
-}
+        .collect()
+});
 
 /// Mode parameters struct.
 #[derive(Debug, Deserialize)]
@@ -77,7 +70,7 @@ pub struct ModeParamsBench {
     /// String in one of the following formats:
     ///   - a single number: fixed value size in bytes
     ///   - "0:v0/t1:v1/t2:v2 ...": use value size v0 in timespan 0~t1, change
-    ///                             to v1 at t1, then change to v2 at t2, etc.
+    ///     to v1 at t1, then change to v2 at t2, etc.
     pub value_size: String,
 
     /// Number of keys to choose from.
@@ -130,9 +123,6 @@ pub(crate) struct ClientBench {
 
     /// Mode parameters struct.
     params: ModeParamsBench,
-
-    /// Random number generator.
-    rng: ThreadRng,
 
     /// Output file.
     output_file: Option<File>,
@@ -315,7 +305,7 @@ impl ClientBench {
             None
         };
         let unif_dist = if params.unif_interval_ms > 0 {
-            Some(Uniform::from(8..=params.unif_upper_bound))
+            Some(Uniform::new_inclusive(8, params.unif_upper_bound)?)
         } else {
             None
         };
@@ -323,7 +313,6 @@ impl ClientBench {
         Ok(ClientBench {
             driver: DriverOpenLoop::new(endpoint, timeout),
             params,
-            rng: rand::thread_rng(),
             output_file,
             keys_pool,
             trace_vec,
@@ -395,7 +384,7 @@ impl ClientBench {
     /// Returns the key of index `i`.
     pub(crate) fn compose_ith_key(i: usize, random_keys: bool) -> String {
         if random_keys {
-            rand::thread_rng()
+            rand::rng()
                 .sample_iter(&Alphanumeric)
                 .take(KEY_LEN)
                 .map(char::from)
@@ -475,24 +464,16 @@ impl ClientBench {
                 >= self.params.unif_interval_ms as u128
         {
             // an injected uniform distribution sample
-            size = self
-                .unif_dist
-                .as_ref()
-                .unwrap()
-                .sample(&mut rand::thread_rng());
+            size = self.unif_dist.as_ref().unwrap().sample(&mut rand::rng());
             self.last_unif = self.now;
         } else if self.unif_dist.is_some() && self.params.unif_interval_ms == 1
         {
             // forcing a uniform distribution, ignoring all other settings
-            size = self
-                .unif_dist
-                .as_ref()
-                .unwrap()
-                .sample(&mut rand::thread_rng());
+            size = self.unif_dist.as_ref().unwrap().sample(&mut rand::rng());
         } else if let Some(norm_dist) = self.norm_dist.as_ref() {
             // a normal distribution with current size as mean
             loop {
-                let f32_size = norm_dist[&size].sample(&mut rand::thread_rng());
+                let f32_size = norm_dist[&size].sample(&mut rand::rng());
                 size = f32_size.round() as usize;
                 if size > 0 && size <= MAX_VAL_LEN {
                     break;
@@ -511,10 +492,10 @@ impl ClientBench {
             .keys_pool
             .as_ref()
             .unwrap()
-            .get(self.rng.gen_range(0..self.params.num_keys))
+            .get(rand::rng().random_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..100) < self.params.put_ratio {
+        if rand::rng().random_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
             self.driver.issue_put(&key, val)

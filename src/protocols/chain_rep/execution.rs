@@ -1,7 +1,6 @@
-//! ChainRep -- command execution.
+//! `ChainRep` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, RequestId};
 use crate::utils::SummersetError;
 

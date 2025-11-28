@@ -1,13 +1,13 @@
-//! Raft -- recovery from WAL.
+//! `Raft` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // RaftReplica recovery from WAL log
 impl RaftReplica {
     /// Recover state from durable storage WAL log.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn recover_from_wal(
         &mut self,
     ) -> Result<(), SummersetError> {

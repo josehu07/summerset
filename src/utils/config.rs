@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn parse_from_none() -> Result<(), SummersetError> {
         let config = parsed_config!(None => TestConfig; abc, hij, lmn)?;
-        let ref_config: TestConfig = Default::default();
+        let ref_config: TestConfig = TestConfig::default();
         assert_eq!(config, ref_config);
         Ok(())
     }

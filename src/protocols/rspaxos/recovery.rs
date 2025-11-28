@@ -1,7 +1,6 @@
-//! RS-Paxos -- recovery from WAL.
+//! `RS-Paxos` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::SummersetError;
 

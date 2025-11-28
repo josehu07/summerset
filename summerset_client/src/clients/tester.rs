@@ -1,30 +1,24 @@
 //! Correctness testing client using closed-loop driver.
 
 use std::collections::{HashMap, HashSet};
-
-use crate::drivers::{DriverClosedLoop, DriverReply};
+use std::sync::LazyLock;
 
 use color_print::cprintln;
-
 use log::{self, LevelFilter};
-
-use lazy_static::lazy_static;
-
-use rand::distributions::Alphanumeric;
+use rand::distr::Alphanumeric;
 use rand::Rng;
-
 use serde::Deserialize;
-
-use tokio::time::{self, Duration};
-
 use summerset::{
     logged_err, parsed_config, pf_debug, pf_error, CommandResult, CtrlReply,
     CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
 };
+use tokio::time::{self, Duration};
 
-lazy_static! {
-    /// List of all tests. If the flag is true, the test is marked as basic.
-    static ref ALL_TESTS: Vec<(&'static str, bool)> = vec![
+use crate::drivers::{DriverClosedLoop, DriverReply};
+
+/// List of all tests. If the flag is true, the test is marked as basic.
+static ALL_TESTS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|| {
+    vec![
         ("primitive_ops", true),
         ("client_reconnect", true),
         ("non_leader_reset", true),
@@ -37,8 +31,8 @@ lazy_static! {
         // NOTE: our current snapshotting implementation does not
         //       guarantee to pass this
         // ("snapshot_reset", false),
-    ];
-}
+    ]
+});
 
 /// Mod parameters struct.
 #[derive(Debug, Deserialize)]
@@ -101,7 +95,7 @@ impl ClientTester {
 
     /// Generates a random string.
     fn gen_rand_string(length: usize) -> String {
-        rand::thread_rng()
+        rand::rng()
             .sample_iter(&Alphanumeric)
             .take(length)
             .map(char::from)

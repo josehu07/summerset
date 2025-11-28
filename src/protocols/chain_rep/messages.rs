@@ -1,7 +1,6 @@
-//! ChainRep -- peer-peer messaging.
+//! `ChainRep` -- peer-peer messaging.
 
 use super::*;
-
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
 

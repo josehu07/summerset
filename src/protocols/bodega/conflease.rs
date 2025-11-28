@@ -1,7 +1,6 @@
-//! Bodega -- config lease-related operations.
+//! `Bodega` -- config lease-related operations.
 
 use super::*;
-
 use crate::server::{LeaseAction, LeaseNotice, LeaseNum, LogAction};
 
 // BodegaReplica config lease-related actions logic
@@ -11,7 +10,7 @@ impl BodegaReplica {
     pub(super) async fn heard_new_conf(
         &mut self,
         new_bal: Ballot,
-        new_conf: RespondersConf,
+        new_conf: RespondersConf<()>,
     ) -> Result<(), SummersetError> {
         debug_assert!(new_bal > self.bal_max_seen);
         pf_debug!(
@@ -28,7 +27,7 @@ impl BodegaReplica {
         self.bodega_conf = new_conf;
 
         // clear peers' accept_bar information
-        for (&peer, bar) in self.peer_accept_bar.iter_mut() {
+        for (&peer, bar) in &mut self.peer_accept_bar {
             if peer == self.id {
                 *bar = self.accept_bar;
             } else {
@@ -232,8 +231,8 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// Synthesized handler of leader leasing actions from its LeaseManager.
-    /// Returns true if this action is a possible indicator that the grant_set
+    /// Synthesized handler of leader leasing actions from its `LeaseManager`.
+    /// Returns true if this action is a possible indicator that the `grant_set`
     /// shrunk; otherwise returns false.
     pub(super) async fn handle_lease_action(
         &mut self,
@@ -268,20 +267,19 @@ impl BodegaReplica {
                 // peer_accept_max as the minimum of the maximums of majority sets
                 if let Some(old_bar) =
                     self.peer_accept_bar.insert(peer, accept_bar)
+                    && accept_bar < old_bar
                 {
-                    if accept_bar < old_bar {
-                        let mut peer_accept_bars: Vec<usize> =
-                            self.peer_accept_bar.values().copied().collect();
-                        peer_accept_bars.sort_unstable();
-                        let peer_accept_max =
-                            peer_accept_bars[self.quorum_cnt as usize - 1];
-                        if peer_accept_max < self.peer_accept_max {
-                            self.peer_accept_max = peer_accept_max;
-                            pf_debug!(
-                                "peer_accept_max updated: {}",
-                                self.peer_accept_max
-                            );
-                        }
+                    let mut peer_accept_bars: Vec<usize> =
+                        self.peer_accept_bar.values().copied().collect();
+                    peer_accept_bars.sort_unstable();
+                    let peer_accept_max =
+                        peer_accept_bars[self.quorum_cnt as usize - 1];
+                    if peer_accept_max < self.peer_accept_max {
+                        self.peer_accept_max = peer_accept_max;
+                        pf_debug!(
+                            "peer_accept_max updated: {}",
+                            self.peer_accept_max
+                        );
                     }
                 }
             }

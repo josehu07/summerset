@@ -1,7 +1,6 @@
-//! QuorumLeases -- leader lease-related operations.
+//! `QuorumLeases` -- leader lease-related operations.
 
 use super::*;
-
 use crate::server::{LeaseAction, LeaseNum};
 
 // QuorumLeasesReplica leader lease-related actions logic
@@ -54,8 +53,8 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Synthesized handler of leader leasing actions from its LeaseManager.
-    /// Returns true if this action is a possible indicator that the grant_set
+    /// Synthesized handler of leader leasing actions from its `LeaseManager`.
+    /// Returns true if this action is a possible indicator that the `grant_set`
     /// shrunk; otherwise returns false.
     pub(super) async fn handle_llease_action(
         &mut self,

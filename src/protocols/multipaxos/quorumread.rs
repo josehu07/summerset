@@ -1,9 +1,9 @@
-//! MultiPaxos -- near quorum read optimization.
+//! `MultiPaxos` -- near quorum read optimization.
 
 use super::*;
 
 impl MultiPaxosReplica {
-    /// Update the highest_slot tracking info given a new request batch about
+    /// Update the `highest_slot` tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_slot(
         slot: usize,
@@ -53,10 +53,9 @@ impl MultiPaxosReplica {
                             cmd: Command::Put { key: k, value },
                             ..
                         } = req
+                            && k == key
                         {
-                            if k == key {
-                                return Ok(Some((slot, Some(value.clone()))));
-                            }
+                            return Ok(Some((slot, Some(value.clone()))));
                         }
                     }
                     logged_err!(
@@ -72,7 +71,7 @@ impl MultiPaxosReplica {
         }
     }
 
-    /// Handler of ReadQuery message from a peer issuer.
+    /// Handler of `ReadQuery` message from a peer issuer.
     pub(super) async fn handle_msg_read_query(
         &mut self,
         peer: ReplicaId,
@@ -185,7 +184,8 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Handler of ReadQuery reply from a peer.
+    /// Handler of `ReadQuery` reply from a peer.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_msg_read_query_reply(
         &mut self,
         peer: ReplicaId,

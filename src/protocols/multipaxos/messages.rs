@@ -1,9 +1,8 @@
-//! MultiPaxos -- peer-peer messaging.
+//! `MultiPaxos` -- peer-peer messaging.
 
 use std::cmp;
 
 use super::*;
-
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
 
@@ -84,7 +83,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -128,20 +127,19 @@ impl MultiPaxosReplica {
             // update this peer's accept_bar information, and then update
             // peer_accept_max as the minimum of the maximums of majority sets
             if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
+                && accept_bar < old_bar
             {
-                if accept_bar < old_bar {
-                    let mut peer_accept_bars: Vec<usize> =
-                        self.peer_accept_bar.values().copied().collect();
-                    peer_accept_bars.sort_unstable();
-                    let peer_accept_max =
-                        peer_accept_bars[self.quorum_cnt as usize - 1];
-                    if peer_accept_max < self.peer_accept_max {
-                        self.peer_accept_max = peer_accept_max;
-                        pf_debug!(
-                            "peer_accept_max updated: {}",
-                            self.peer_accept_max
-                        );
-                    }
+                let mut peer_accept_bars: Vec<usize> =
+                    self.peer_accept_bar.values().copied().collect();
+                peer_accept_bars.sort_unstable();
+                let peer_accept_max =
+                    peer_accept_bars[self.quorum_cnt as usize - 1];
+                if peer_accept_max < self.peer_accept_max {
+                    self.peer_accept_max = peer_accept_max;
+                    pf_debug!(
+                        "peer_accept_max updated: {}",
+                        self.peer_accept_max
+                    );
                 }
             }
 
@@ -267,7 +265,8 @@ impl MultiPaxosReplica {
                         )?;
                         pf_trace!(
                             "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
+                            this_slot,
+                            ballot
                         );
 
                         // send Accept messages to all peers

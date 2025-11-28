@@ -1,17 +1,16 @@
-//! CRaft -- peer-peer messaging.
+//! `CRaft` -- peer-peer messaging.
 
 use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CRaftReplica peer-peer messages handling
 impl CRaftReplica {
-    /// Handler of AppendEntries message from leader.
-    #[allow(clippy::too_many_arguments)]
+    /// Handler of `AppendEntries` message from leader.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn handle_msg_append_entries(
         &mut self,
         leader: ReplicaId,
@@ -139,21 +138,19 @@ impl CRaftReplica {
                 self.log.truncate(slot - self.start_slot);
                 first_new = slot;
                 break;
-            } else {
-                // no conflict, then absorb this sent entry's shards
-                if self.log[slot - self.start_slot].reqs_cw.avail_data_shards()
-                    < self.majority
-                    && self.log[slot - self.start_slot].reqs_cw.data_len()
-                        == new_entry.reqs_cw.data_len()
-                    && self.log[slot - self.start_slot]
-                        .reqs_cw
-                        .avail_shards_map()
-                        != new_entry.reqs_cw.avail_shards_map()
-                {
-                    self.log[slot - self.start_slot]
-                        .reqs_cw
-                        .absorb_other(new_entry.reqs_cw.clone())?;
-                }
+            }
+
+            // no conflict, then absorb this sent entry's shards
+            if self.log[slot - self.start_slot].reqs_cw.avail_data_shards()
+                < self.majority
+                && self.log[slot - self.start_slot].reqs_cw.data_len()
+                    == new_entry.reqs_cw.data_len()
+                && self.log[slot - self.start_slot].reqs_cw.avail_shards_map()
+                    != new_entry.reqs_cw.avail_shards_map()
+            {
+                self.log[slot - self.start_slot]
+                    .reqs_cw
+                    .absorb_other(new_entry.reqs_cw.clone())?;
             }
         }
 
@@ -254,7 +251,8 @@ impl CRaftReplica {
         Ok(())
     }
 
-    /// Handler of AppendEntries reply from follower.
+    /// Handler of `AppendEntries` reply from follower.
+    #[allow(clippy::too_many_lines)]
     async fn handle_msg_append_entries_reply(
         &mut self,
         peer: ReplicaId,
@@ -300,6 +298,7 @@ impl CRaftReplica {
                 // remembered, mark this instance as committed; in CRaft, this
                 // means match_cnt >= self.majority + fault_tolerance when not
                 // in full-copy mode
+                #[allow(clippy::cast_possible_truncation)]
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
@@ -373,6 +372,7 @@ impl CRaftReplica {
 
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
+                #[allow(clippy::cast_possible_truncation)]
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
@@ -496,7 +496,7 @@ impl CRaftReplica {
         Ok(())
     }
 
-    /// Handler of RequestVote message from candidate.
+    /// Handler of `RequestVote` message from candidate.
     async fn handle_msg_request_vote(
         &mut self,
         candidate: ReplicaId,
@@ -590,7 +590,7 @@ impl CRaftReplica {
         Ok(())
     }
 
-    /// Handler of RequestVote reply from peer.
+    /// Handler of `RequestVote` reply from peer.
     async fn handle_msg_request_vote_reply(
         &mut self,
         peer: ReplicaId,
@@ -611,7 +611,7 @@ impl CRaftReplica {
         self.votes_granted.insert(peer);
 
         // if a majority of servers have voted for me, become the leader
-        if self.votes_granted.len() as u8 >= self.majority {
+        if u8::try_from(self.votes_granted.len())? >= self.majority {
             self.become_the_leader().await?;
         }
 

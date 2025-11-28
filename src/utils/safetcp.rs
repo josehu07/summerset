@@ -5,15 +5,15 @@ use std::marker::Unpin;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 
-use crate::utils::SummersetError;
-
+use bincode::{Decode, Encode};
 use bytes::{Bytes, BytesMut};
-
-use serde::{de::DeserializeOwned, Serialize};
-
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
+
+use crate::utils::SummersetError;
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
 /// using `read_buf` as buffer storage for partial reads. Returns:
@@ -32,7 +32,7 @@ pub(crate) async fn safe_tcp_read<T, Conn>(
     conn_read: &mut Conn,
 ) -> Result<T, SummersetError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Decode<()>,
     Conn: AsyncReadExt + Unpin,
 {
     // read length of obj first
@@ -46,6 +46,7 @@ where
     let obj_len = u64::from_be_bytes(read_buf[..8].try_into().unwrap());
 
     // then read the obj itself
+    #[allow(clippy::cast_possible_truncation)]
     let obj_end = 8 + obj_len as usize;
     if read_buf.capacity() < obj_end {
         // capacity not big enough, reserve more space
@@ -54,7 +55,11 @@ where
     while read_buf.len() < obj_end {
         conn_read.read_buf(read_buf).await?;
     }
-    let obj = bincode::deserialize(&read_buf[8..obj_end])?;
+    let (obj, obj_len_read) = bincode::decode_from_slice(
+        &read_buf[8..obj_end],
+        bincode::config::standard(),
+    )?;
+    debug_assert_eq!(usize::try_from(obj_len).unwrap(), obj_len_read);
 
     // if reached this point, no further cancellation to this call is
     // possible (because there are no more awaits ahead); discard bytes
@@ -75,11 +80,11 @@ where
 /// `write_buf` as buffer storage for partial writes. Returns:
 ///   - `Ok(true)` if successful
 ///   - `Ok(false)` if socket full and may block; in this case, bytes of the
-///                 input object is saved in the write buffer, and the next
-///                 calls to `send_req()` must give arg `obj == None` to
-///                 indicate retrying (typically after doing a few reads on the
-///                 same socket to free up some buffer space), until the
-///                 function returns success
+///     input object is saved in the write buffer, and the next
+///     calls to `send_req()` must give arg `obj == None` to
+///     indicate retrying (typically after doing a few reads on the
+///     same socket to free up some buffer space), until the
+///     function returns success
 ///   - `Err(err)` if any unexpected error occurs
 ///
 /// DEADLOCK AVOIDANCE: we avoid using `write_u64()` and `write_all()` here
@@ -93,7 +98,7 @@ pub(crate) fn safe_tcp_write<T, Conn>(
     obj: Option<&T>,
 ) -> Result<bool, SummersetError>
 where
-    T: Serialize,
+    T: Serialize + Encode,
     Conn: AsRef<TcpStream>,
 {
     // if last write was not successful, cannot send a new object
@@ -108,7 +113,8 @@ where
     } else if obj.is_some() {
         // sending a new object, fill write_buf
         debug_assert_eq!(*write_buf_cursor, 0);
-        let write_bytes = bincode::serialize(obj.unwrap())?;
+        let write_bytes =
+            bincode::encode_to_vec(obj.unwrap(), bincode::config::standard())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
         debug_assert_eq!(write_buf.len(), 8);
@@ -210,7 +216,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore]
+    #[ignore = "ad-hoc test for special experiments only"]
     fn safetcp_try_ss() -> Result<(), SummersetError> {
         println!("Output of `ss` command:");
         println!("{}", get_ss_cmd_output()?);

@@ -3,21 +3,23 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, watch};
+use tokio::time::{self, Duration};
+
 use crate::client::ClientId;
 use crate::manager::{
     ClientReactor, CtrlMsg, CtrlReply, CtrlRequest, ServerReigner,
 };
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
-use crate::utils::{ConfNum, RespondersConf, SummersetError, ME};
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::{mpsc, watch};
-use tokio::time::{self, Duration};
+use crate::utils::{ConfNum, ME, RespondersConf, SummersetError};
 
 /// Information about an active server.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
+)]
 pub struct ServerInfo {
     /// The server's client-facing API address.
     pub api_addr: SocketAddr,
@@ -62,15 +64,15 @@ pub struct ClusterManager {
     assigned_ids: HashSet<ReplicaId>,
 
     /// Approximate current responders configuration.
-    responders_conf: RespondersConf,
+    responders_conf: RespondersConf<()>,
 
     /// Latest known responders config number.
     latest_conf_num: ConfNum,
 
-    /// ServerReigner module.
+    /// `ServerReigner` module.
     server_reigner: ServerReigner,
 
-    /// ClientReactor module.
+    /// `ClientReactor` module.
     client_reactor: ClientReactor,
 }
 
@@ -185,7 +187,7 @@ impl ClusterManager {
 
 // ClusterManager server-initiated control message handlers
 impl ClusterManager {
-    /// Handler of NewServerJoin message.
+    /// Handler of `NewServerJoin` message.
     fn handle_new_server_join(
         &mut self,
         server: ReplicaId,
@@ -233,7 +235,7 @@ impl ClusterManager {
         Ok(())
     }
 
-    /// Handler of LeaderStatus message.
+    /// Handler of `LeaderStatus` message.
     fn handle_leader_status(
         &mut self,
         server: ReplicaId,
@@ -255,12 +257,12 @@ impl ClusterManager {
         }
     }
 
-    /// Handler of RespondersConf message.
+    /// Handler of `RespondersConf` message.
     fn handle_responders_conf(
         &mut self,
         server: ReplicaId,
         conf_num: ConfNum,
-        new_conf: RespondersConf,
+        new_conf: RespondersConf<()>,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
             return logged_err!("manager got unknown server ID: {}", server);
@@ -276,7 +278,7 @@ impl ClusterManager {
         Ok(())
     }
 
-    /// Handler of autonomous SnapshotUpTo message.
+    /// Handler of autonomous `SnapshotUpTo` message.
     fn handle_snapshot_up_to(
         &mut self,
         server: ReplicaId,
@@ -302,6 +304,7 @@ impl ClusterManager {
     }
 
     /// Synthesized handler of server-initiated control messages.
+    #[allow(clippy::unused_async)]
     async fn handle_ctrl_msg(
         &mut self,
         server: ReplicaId,
@@ -347,7 +350,7 @@ impl ClusterManager {
 
 // ClusterManager client-initiated control request handlers
 impl ClusterManager {
-    /// Handler of client QueryInfo request.
+    /// Handler of client `QueryInfo` request.
     fn handle_client_query_info(
         &mut self,
         client: ClientId,
@@ -361,7 +364,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client QueryConf request.
+    /// Handler of client `QueryConf` request.
     fn handle_client_query_conf(
         &mut self,
         client: ClientId,
@@ -375,7 +378,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client ResetServers request.
+    /// Handler of client `ResetServers` request.
     async fn handle_client_reset_servers(
         &mut self,
         client: ClientId,
@@ -432,7 +435,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client PauseServers request.
+    /// Handler of client `PauseServers` request.
     async fn handle_client_pause_servers(
         &mut self,
         client: ClientId,
@@ -476,7 +479,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client ResumeServers request.
+    /// Handler of client `ResumeServers` request.
     async fn handle_client_resume_servers(
         &mut self,
         client: ClientId,
@@ -520,7 +523,7 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client TakeSnapshot request.
+    /// Handler of client `TakeSnapshot` request.
     async fn handle_client_take_snapshot(
         &mut self,
         client: ClientId,
@@ -553,10 +556,9 @@ impl ClusterManager {
                                 new_start,
                                 self.servers_info[&s].start_slot
                             );
-                        } else {
-                            self.servers_info.get_mut(&s).unwrap().start_slot =
-                                new_start;
                         }
+                        self.servers_info.get_mut(&s).unwrap().start_slot =
+                            new_start;
 
                         snapshot_up_to.insert(s, new_start);
                         break;
@@ -577,6 +579,7 @@ impl ClusterManager {
         client: ClientId,
         req: CtrlRequest,
     ) -> Result<(), SummersetError> {
+        #[allow(clippy::match_wildcard_for_single_variants)]
         match req {
             CtrlRequest::QueryInfo => {
                 self.handle_client_query_info(client)?;

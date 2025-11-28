@@ -1,8 +1,7 @@
 //! Closed-loop & Open-loop client-side driver implementations.
 
-use tokio::time::Duration;
-
 use summerset::{CommandResult, ReplicaId, RequestId};
+use tokio::time::Duration;
 
 mod closed_loop;
 mod open_loop;

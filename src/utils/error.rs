@@ -1,17 +1,13 @@
 //! Customized unified error type.
 
-use std::error;
-use std::fmt;
-use std::io;
-use std::net;
-use std::num;
-use std::string;
+use std::{error, fmt, io, net, num, string};
 
 /// Customized error type for Summerset.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SummersetError(String);
 
 impl SummersetError {
+    #[allow(clippy::needless_pass_by_value)]
     pub fn msg(msg: impl ToString) -> Self {
         SummersetError(msg.to_string())
     }
@@ -54,8 +50,10 @@ impl_from_error!(io::Error);
 impl_from_error!(string::FromUtf8Error);
 impl_from_error!(num::ParseIntError);
 impl_from_error!(num::ParseFloatError);
+impl_from_error!(num::TryFromIntError);
 impl_from_error!(net::AddrParseError);
-impl_from_error!(bincode::Error);
+impl_from_error!(bincode::error::DecodeError);
+impl_from_error!(bincode::error::EncodeError);
 impl_from_error!(toml::ser::Error);
 impl_from_error!(toml::de::Error);
 impl_from_error!(reed_solomon_erasure::Error);
@@ -65,6 +63,7 @@ impl_from_error!(tokio::task::JoinError);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
 impl_from_error!(zookeeper_client::Error);
 impl_from_error!(etcd_client::Error);
+impl_from_error!(rand::distr::uniform::Error);
 
 impl_from_error_generic!(tokio::sync::SetError<T>);
 impl_from_error_generic!(tokio::sync::watch::error::SendError<T>);

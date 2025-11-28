@@ -1,7 +1,6 @@
-//! ChainRep -- recovery from WAL.
+//! `ChainRep` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::SummersetError;
 

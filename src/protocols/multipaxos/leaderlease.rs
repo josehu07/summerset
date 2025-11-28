@@ -1,7 +1,6 @@
-//! MultiPaxos -- lease-related operations.
+//! `MultiPaxos` -- lease-related operations.
 
 use super::*;
-
 use crate::server::LeaseAction;
 
 // MultiPaxosReplica lease-related actions logic
@@ -54,8 +53,8 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Synthesized handler of lease-related actions from LeaseManager.
-    /// Returns true if this action is a possible indicator that the grant_set
+    /// Synthesized handler of lease-related actions from `LeaseManager`.
+    /// Returns true if this action is a possible indicator that the `grant_set`
     /// shrunk; otherwise returns false.
     pub(super) async fn handle_lease_action(
         &mut self,

@@ -1,7 +1,6 @@
-//! ChainRep -- client request entrance.
+//! `ChainRep` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction};
 use crate::utils::SummersetError;
 
@@ -41,8 +40,8 @@ impl ChainRepReplica {
                 if let ApiRequest::Req { id: req_id, cmd } = req {
                     self.state_machine.submit_cmd(
                         Self::make_command_id(
-                            req_id as usize,
-                            client as usize,
+                            usize::try_from(req_id)?,
+                            usize::try_from(client)?,
                             true,
                         ),
                         cmd,

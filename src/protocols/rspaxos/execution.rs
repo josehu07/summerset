@@ -1,7 +1,6 @@
-//! RS-Paxos -- command execution.
+//! `RS-Paxos` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
 

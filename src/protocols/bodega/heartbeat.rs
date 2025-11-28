@@ -1,11 +1,10 @@
-//! Bodega -- leader election & heartbeats.
+//! `Bodega` -- leader election & heartbeats.
 
 use std::mem;
 
-use super::*;
-
 use rand::prelude::*;
 
+use super::*;
 use crate::manager::CtrlMsg;
 use crate::server::{LeaseMsg, LogAction, ReplicaId};
 use crate::utils::SummersetError;
@@ -43,7 +42,7 @@ impl BodegaReplica {
     ) -> Result<(), SummersetError> {
         self.volunteer_timer.cancel()?;
 
-        let timeout_ms = thread_rng().gen_range(
+        let timeout_ms = rand::rng().random_range(
             self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
         );
         // pf_trace!("kickoff volunteer_timer @ {} ms", timeout_ms);
@@ -111,7 +110,7 @@ impl BodegaReplica {
     /// peers by broadcasting a round of heartbeats carrying the new config.
     pub(super) async fn announce_new_conf(
         &mut self,
-        new_conf: RespondersConf,
+        new_conf: RespondersConf<()>,
     ) -> Result<(), SummersetError> {
         let new_bal = self.make_greater_ballot(self.bal_max_seen);
         pf_debug!(
@@ -203,7 +202,7 @@ impl BodegaReplica {
         &mut self,
         peer: ReplicaId,
         ballot: Ballot,
-        conf: Option<RespondersConf>,
+        conf: Option<RespondersConf<()>>,
         commit_bar: usize,
         exec_bar: usize,
         snap_bar: usize,
@@ -262,6 +261,7 @@ impl BodegaReplica {
             // is definitely safe to be snapshotted
             if exec_bar > self.peer_exec_bar[&peer] {
                 *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                #[allow(clippy::cast_possible_truncation)]
                 let passed_cnt = 1 + self
                     .peer_exec_bar
                     .values()
@@ -283,7 +283,7 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// React to a CommitNotice message from leader.
+    /// React to a `CommitNotice` message from leader.
     pub(super) fn heard_commit_notice(
         &mut self,
         peer: ReplicaId,
@@ -304,8 +304,8 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// React to an updated commit_bar received from (probably) leader. Slots
-    /// up to received commit_bar are safe to commit; submit their commands
+    /// React to an updated `commit_bar` received from (probably) leader. Slots
+    /// up to received `commit_bar` are safe to commit; submit their commands
     /// for execution.
     fn advance_commit_bar(
         &mut self,

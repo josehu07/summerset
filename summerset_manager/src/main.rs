@@ -4,13 +4,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
 
 use clap::Parser;
-
 use log::{self, LevelFilter};
-
+use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 use tokio::runtime::Builder;
 use tokio::sync::watch;
-
-use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]

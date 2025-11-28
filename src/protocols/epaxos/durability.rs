@@ -1,13 +1,12 @@
-//! EPaxos -- durable logging.
+//! `EPaxos` -- durable logging.
 
 use super::*;
-
 use crate::server::{LogActionId, LogResult};
 use crate::utils::SummersetError;
 
 // EPaxosReplica durable WAL logging
 impl EPaxosReplica {
-    /// Handler of PreAcceptSlot logging result chan recv.
+    /// Handler of `PreAcceptSlot` logging result chan recv.
     fn handle_logged_pre_accept_slot(
         &mut self,
         slot: SlotIdx,
@@ -59,7 +58,7 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of AcceptSlot logging result chan recv.
+    /// Handler of `AcceptSlot` logging result chan recv.
     fn handle_logged_accept_slot(
         &mut self,
         slot: SlotIdx,
@@ -101,7 +100,7 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of CommitSlot logging result chan recv.
+    /// Handler of `CommitSlot` logging result chan recv.
     async fn handle_logged_commit_slot(
         &mut self,
         slot: SlotIdx,
@@ -134,8 +133,10 @@ impl EPaxosReplica {
 
             // attempt the execution algorithm on the new tail at commit_bar
             if advanced {
-                let tail_slot =
-                    SlotIdx(row as ReplicaId, self.commit_bars[row] - 1);
+                let tail_slot = SlotIdx(
+                    ReplicaId::try_from(row)?,
+                    self.commit_bars[row] - 1,
+                );
                 if self.attempt_execution(tail_slot, false).await? {
                     // re-check each row and attempt execution of committed
                     // instances in case they were previously blocked by me
@@ -145,7 +146,10 @@ impl EPaxosReplica {
                             && self.insts[row][col - 1 - self.start_col].status
                                 == Status::Committed
                         {
-                            reattempts.push(SlotIdx(row as ReplicaId, col - 1));
+                            reattempts.push(SlotIdx(
+                                ReplicaId::try_from(row)?,
+                                col - 1,
+                            ));
                         }
                     }
                     for slot in reattempts {

@@ -2,13 +2,11 @@
 
 use std::net::SocketAddr;
 
-use crate::zookeeper::ClientConfigZooKeeper;
-
+use summerset::{parsed_config, SummersetError};
 use tokio::time::Duration;
-
 use zookeeper_client as zkcli;
 
-use summerset::{parsed_config, SummersetError};
+use crate::zookeeper::ClientConfigZooKeeper;
 
 /// Path of parent Znode, under which all "keys" will be created as its
 /// children Znodes.
@@ -42,7 +40,8 @@ impl ZooKeeperSession {
 
         let mut builder = zkcli::Client::connector();
         if config.expiry_ms > 0 {
-            builder.session_timeout(Duration::from_millis(config.expiry_ms));
+            builder = builder
+                .with_session_timeout(Duration::from_millis(config.expiry_ms));
         }
 
         Ok(ZooKeeperSession {
@@ -57,6 +56,7 @@ impl ZooKeeperSession {
     pub(crate) async fn connect(&mut self) -> Result<(), SummersetError> {
         let zk = self
             .builder
+            .clone()
             .connect(&self.server_addr.to_string()[..])
             .await?;
 

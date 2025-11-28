@@ -2,28 +2,31 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use crate::protocols::SmrProtocol;
-use crate::server::ReplicaId;
-use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, ConfNum,
-    RespondersConf, SummersetError,
-};
-
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
-
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::protocols::SmrProtocol;
+use crate::server::ReplicaId;
+use crate::utils::{
+    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
+    tcp_bind_with_retry,
+};
+
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
 // TODO: later add basic lease, membership/view change, link drop, etc.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
+)]
 pub(crate) enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
     /// to connect to.
@@ -47,7 +50,7 @@ pub(crate) enum CtrlMsg {
     /// has changed.
     RespondersConf {
         conf_num: ConfNum,
-        new_conf: RespondersConf,
+        new_conf: RespondersConf<()>,
     },
 
     /// Manager -> Server: reset to initial state. If durable is false, cleans
@@ -86,14 +89,14 @@ pub(crate) struct ServerReigner {
 
     /// Map from replica ID -> sender side of the send channel, shared with
     /// the server acceptor task.
-    tx_sends: flashmap::ReadHandle<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>,
+    tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>>,
 
     /// Join handle of the server acceptor task.
     _server_acceptor_handle: JoinHandle<()>,
 
     /// Map from replica ID -> replica controller task join handles, shared
     /// with the server acceptor task.
-    _server_controller_handles: flashmap::ReadHandle<ReplicaId, JoinHandle<()>>,
+    _server_controller_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
 }
 
 // ServerReigner public API implementation
@@ -108,46 +111,46 @@ impl ServerReigner {
     ) -> Result<Self, SummersetError> {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
 
-        let (tx_sends_write, tx_sends_read) =
-            flashmap::new::<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>();
+        let tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>> =
+            Arc::new(DashMap::new());
 
-        let (server_controller_handles_write, server_controller_handles_read) =
-            flashmap::new::<ReplicaId, JoinHandle<()>>();
+        let server_controller_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>> =
+            Arc::new(DashMap::new());
 
         let server_listener = tcp_bind_with_retry(srv_addr, 15).await?;
         let mut acceptor = ServerReignerAcceptorTask::new(
             tx_id_assign,
             rx_id_result,
             tx_recv,
-            tx_sends_write,
+            tx_sends.clone(),
             server_listener,
-            server_controller_handles_write,
+            server_controller_handles.clone(),
         );
         let server_acceptor_handle =
             tokio::spawn(async move { acceptor.run().await });
 
         Ok(ServerReigner {
             rx_recv,
-            tx_sends: tx_sends_read,
+            tx_sends,
             _server_acceptor_handle: server_acceptor_handle,
-            _server_controller_handles: server_controller_handles_read,
+            _server_controller_handles: server_controller_handles,
         })
     }
 
     /// Returns whether a server ID is connected to me.
     #[allow(dead_code)]
     pub(crate) fn has_server(&self, server: ReplicaId) -> bool {
-        let tx_sends_guard = self.tx_sends.guard();
-        tx_sends_guard.contains_key(&server)
+        self.tx_sends.contains_key(&server)
     }
 
     /// Waits for the next control event message from some server.
     pub(crate) async fn recv_ctrl(
         &mut self,
     ) -> Result<(ReplicaId, CtrlMsg), SummersetError> {
-        match self.rx_recv.recv().await {
-            Some((id, msg)) => Ok((id, msg)),
-            None => logged_err!("recv channel has been closed"),
+        if let Some((id, msg)) = self.rx_recv.recv().await {
+            Ok((id, msg))
+        } else {
+            logged_err!("recv channel has been closed")
         }
     }
 
@@ -157,10 +160,9 @@ impl ServerReigner {
         msg: CtrlMsg,
         server: ReplicaId,
     ) -> Result<(), SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
-        match tx_sends_guard.get(&server) {
+        match self.tx_sends.get(&server) {
             Some(tx_send) => {
-                tx_send.send(msg).map_err(SummersetError::msg)?;
+                tx_send.value().send(msg).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {
@@ -173,16 +175,16 @@ impl ServerReigner {
     }
 }
 
-/// ServerReigner server acceptor task.
+/// `ServerReigner` server acceptor task.
 struct ServerReignerAcceptorTask {
     tx_id_assign: mpsc::UnboundedSender<()>,
     rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
 
     tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
-    tx_sends: flashmap::WriteHandle<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>,
+    tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>>,
 
     server_listener: TcpListener,
-    server_controller_handles: flashmap::WriteHandle<ReplicaId, JoinHandle<()>>,
+    server_controller_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
 
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
     rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
@@ -195,16 +197,10 @@ impl ServerReignerAcceptorTask {
         rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
 
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
-        tx_sends: flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<CtrlMsg>,
-        >,
+        tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>>,
 
         server_listener: TcpListener,
-        server_controller_handles: flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
+        server_controller_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
         // of server controller tasks
@@ -245,14 +241,11 @@ impl ServerReignerAcceptorTask {
             return logged_err!("error sending population: {}", e);
         }
 
-        let mut tx_sends_guard = self.tx_sends.guard();
-        if let Some(sender) = tx_sends_guard.get(&id) {
+        if let Some(sender) = self.tx_sends.get(&id) {
             if sender.is_closed() {
                 // if this server ID has left before, garbage collect it now
-                let mut server_controller_handles_guard =
-                    self.server_controller_handles.guard();
-                server_controller_handles_guard.remove(id);
-                tx_sends_guard.remove(id);
+                self.server_controller_handles.remove(&id);
+                self.tx_sends.remove(&id);
             } else {
                 return logged_err!("duplicate server ID listened: {}", id);
             }
@@ -260,7 +253,7 @@ impl ServerReignerAcceptorTask {
         pf_debug!("accepted new server {}", id);
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
-        tx_sends_guard.insert(id, tx_send);
+        self.tx_sends.insert(id, tx_send);
 
         let mut controller = ServerReignerControllerTask::new(
             id,
@@ -272,12 +265,8 @@ impl ServerReignerAcceptorTask {
         );
         let server_controller_handle =
             tokio::spawn(async move { controller.run().await });
-        let mut server_controller_handles_guard =
-            self.server_controller_handles.guard();
-        server_controller_handles_guard.insert(id, server_controller_handle);
-
-        server_controller_handles_guard.publish();
-        tx_sends_guard.publish();
+        self.server_controller_handles
+            .insert(id, server_controller_handle);
         Ok(())
     }
 
@@ -286,15 +275,12 @@ impl ServerReignerAcceptorTask {
         &mut self,
         id: ReplicaId,
     ) -> Result<(), SummersetError> {
-        let mut tx_sends_guard = self.tx_sends.guard();
-        if !tx_sends_guard.contains_key(&id) {
+        if !self.tx_sends.contains_key(&id) {
             return logged_err!("server {} not found among active ones", id);
         }
-        tx_sends_guard.remove(id);
+        self.tx_sends.remove(&id);
 
-        let mut server_controller_handles_guard =
-            self.server_controller_handles.guard();
-        server_controller_handles_guard.remove(id);
+        self.server_controller_handles.remove(&id);
 
         Ok(())
     }
@@ -337,7 +323,7 @@ impl ServerReignerAcceptorTask {
     }
 }
 
-/// ServerReigner per-server controller task.
+/// `ServerReigner` per-server controller task.
 struct ServerReignerControllerTask {
     id: ReplicaId,
     addr: SocketAddr,
@@ -388,7 +374,7 @@ impl ServerReignerControllerTask {
         }
     }
 
-    /// Reads a server control message from given TcpStream.
+    /// Reads a server control message from given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
         // first 8 bytes being the message length, and the rest bytes being the
@@ -399,7 +385,7 @@ impl ServerReignerControllerTask {
         safe_tcp_read(read_buf, conn_read).await
     }
 
-    /// Writes a control message through given TcpStream.
+    /// Writes a control message through given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_ctrl(
         write_buf: &mut BytesMut,
@@ -411,6 +397,7 @@ impl ServerReignerControllerTask {
     }
 
     /// Starts a per-server controller task.
+    #[allow(clippy::too_many_lines)]
     async fn run(&mut self) {
         pf_debug!(
             "server_controller task for {} '{}' spawned",
@@ -553,11 +540,13 @@ impl ServerReignerControllerTask {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::server::ControlHub;
     use std::sync::Arc;
+
     use tokio::sync::Barrier;
     use tokio::time::{self, Duration};
+
+    use super::*;
+    use crate::server::ControlHub;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
     async fn api_send_recv() -> Result<(), SummersetError> {

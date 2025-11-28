@@ -6,13 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::Parser;
-
 use log::{self, LevelFilter};
-
+use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 use tokio::runtime::Builder;
 use tokio::sync::watch;
-
-use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
 
 /// Command line arguments definition.
 #[derive(Parser, Debug)]

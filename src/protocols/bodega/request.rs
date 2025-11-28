@@ -1,7 +1,6 @@
-//! Bodega -- client request entrance.
+//! `Bodega` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, LogAction};
 use crate::utils::{Bitmap, SummersetError};
 
@@ -15,7 +14,7 @@ impl BodegaReplica {
         mut req_batch: ReqBatch,
     ) -> Result<ReqBatch, SummersetError> {
         let mut changes = vec![];
-        for (client, req) in req_batch.iter() {
+        for (client, req) in &req_batch {
             if let ApiRequest::Conf { id: req_id, delta } = req {
                 changes.push((*client, *req_id, delta.clone()));
             }

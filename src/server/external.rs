@@ -4,31 +4,32 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::client::ClientId;
-use crate::server::{Command, CommandResult, ReplicaId};
-use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, Bitmap, SummersetError,
-};
-
-use get_size::GetSize;
-
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
-
+use dashmap::DashMap;
+use get_size::GetSize;
 use serde::{Deserialize, Serialize};
-
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
+
+use crate::client::ClientId;
+use crate::server::{Command, CommandResult, ReplicaId};
+use crate::utils::{
+    Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 
 /// External API request ID type.
 pub type RequestId = u64;
 
 /// Request received from client.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 pub enum ApiRequest {
     /// Regular request.
     Req {
@@ -55,6 +56,7 @@ pub enum ApiRequest {
 impl ApiRequest {
     /// Is the command contained read-only? If so, returns the key queried.
     #[inline]
+    #[must_use]
     pub fn read_only(&self) -> Option<&String> {
         if let ApiRequest::Req { cmd, .. } = self {
             cmd.read_only()
@@ -65,9 +67,17 @@ impl ApiRequest {
 
     /// Is the command contained non-read-only? If so, returns the key updated.
     #[inline]
+    #[must_use]
     pub fn write_key(&self) -> Option<&String> {
         if let ApiRequest::Req { cmd, .. } = self {
-            cmd.write_key()
+            {
+                let this = &cmd;
+                if let Command::Put { key, .. } = this {
+                    Some(key)
+                } else {
+                    None
+                }
+            }
         } else {
             None
         }
@@ -75,13 +85,24 @@ impl ApiRequest {
 
     /// Is the request a configuration change request?
     #[inline]
+    #[must_use]
     pub fn conf_change(&self) -> bool {
         matches!(self, ApiRequest::Conf { .. })
     }
 }
 
 /// Configuration change delta used in request API.
-#[derive(PartialEq, Eq, Default, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    PartialEq,
+    Eq,
+    Default,
+    Clone,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
+    GetSize,
+)]
 pub struct ConfChange {
     /// If true, indicates a conf reset to default; all the following fields
     /// will be ignored.
@@ -128,7 +149,9 @@ impl fmt::Debug for ConfChange {
 }
 
 /// Reply back to client.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 pub enum ApiReply {
     /// Reply to regular request.
     Reply {
@@ -162,6 +185,7 @@ pub enum ApiReply {
 impl ApiReply {
     /// Creates a normal reply with given result.
     #[inline]
+    #[must_use]
     pub fn normal(id: RequestId, result: Option<CommandResult>) -> Self {
         ApiReply::Reply {
             id,
@@ -173,6 +197,7 @@ impl ApiReply {
 
     /// Creates a reply with redirect hint.
     #[inline]
+    #[must_use]
     pub fn redirect(id: RequestId, redirect: Option<ReplicaId>) -> Self {
         ApiReply::Reply {
             id,
@@ -182,8 +207,9 @@ impl ApiReply {
         }
     }
 
-    /// Creates a reply with rq_retry flag.
+    /// Creates a reply with `rq_retry` flag.
     #[inline]
+    #[must_use]
     pub fn rq_retry(
         id: RequestId,
         read_cmd: Command,
@@ -208,7 +234,7 @@ pub(crate) struct ExternalApi {
 
     /// Map from client ID -> sender side of its reply channel, shared with
     /// the client acceptor task.
-    tx_replies: flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<ApiReply>>,
+    tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>>,
 
     /// Notify used as batch dumping signal, shared with the batch ticker
     /// task.
@@ -222,7 +248,7 @@ pub(crate) struct ExternalApi {
 
     /// Map from client ID -> client servant task join handles, shared with
     /// the client acceptor task.
-    _client_servant_handles: flashmap::ReadHandle<ClientId, JoinHandle<()>>,
+    _client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
 
     /// Join handle of the batch ticker task.
     _batch_ticker_handle: JoinHandle<()>,
@@ -248,18 +274,19 @@ impl ExternalApi {
 
         let (tx_req, rx_req) = mpsc::unbounded_channel();
 
-        let (tx_replies_write, tx_replies_read) =
-            flashmap::new::<ClientId, mpsc::UnboundedSender<ApiReply>>();
+        let tx_replies: Arc<
+            DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>,
+        > = Arc::new(DashMap::new());
 
-        let (client_servant_handles_write, client_servant_handles_read) =
-            flashmap::new::<ClientId, JoinHandle<()>>();
+        let client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>> =
+            Arc::new(DashMap::new());
 
         let client_listener = tcp_bind_with_retry(api_addr, 15).await?;
         let mut acceptor = ExternalApiAcceptorTask::new(
             tx_req,
             client_listener,
-            tx_replies_write,
-            client_servant_handles_write,
+            tx_replies.clone(),
+            client_servant_handles.clone(),
         );
         let client_acceptor_handle =
             tokio::spawn(async move { acceptor.run().await });
@@ -276,19 +303,18 @@ impl ExternalApi {
         Ok(ExternalApi {
             _me: me,
             rx_req,
-            tx_replies: tx_replies_read,
+            tx_replies,
             batch_notify,
             max_batch_size,
             _client_acceptor_handle: client_acceptor_handle,
-            _client_servant_handles: client_servant_handles_read,
+            _client_servant_handles: client_servant_handles,
             _batch_ticker_handle: batch_ticker_handle,
         })
     }
 
     /// Returns whether a client ID is connected to me.
     pub(crate) fn has_client(&self, client: ClientId) -> bool {
-        let tx_replies_guard = self.tx_replies.guard();
-        tx_replies_guard.contains_key(&client)
+        self.tx_replies.contains_key(&client)
     }
 
     /// Waits for the next batch dumping signal and collects all requests
@@ -323,10 +349,9 @@ impl ExternalApi {
         reply: ApiReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        let tx_replies_guard = self.tx_replies.guard();
-        match tx_replies_guard.get(&client) {
+        match self.tx_replies.get(&client) {
             Some(tx_reply) => {
-                tx_reply.send(reply).map_err(SummersetError::msg)?;
+                tx_reply.value().send(reply).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {
@@ -340,26 +365,28 @@ impl ExternalApi {
 
     /// Broadcasts a reply to all connected clients (mostly used for testing).
     #[allow(dead_code)]
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn bcast_reply(
         &mut self,
         reply: ApiReply,
     ) -> Result<(), SummersetError> {
-        let tx_replies_guard = self.tx_replies.guard();
-        for tx_reply in tx_replies_guard.values() {
-            tx_reply.send(reply.clone()).map_err(SummersetError::msg)?;
+        for tx_reply in self.tx_replies.iter() {
+            tx_reply
+                .value()
+                .send(reply.clone())
+                .map_err(SummersetError::msg)?;
         }
         Ok(())
     }
 }
 
-/// ExternalApi client acceptor task.
+/// `ExternalApi` client acceptor task.
 struct ExternalApiAcceptorTask {
     tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
-    tx_replies:
-        flashmap::WriteHandle<ClientId, mpsc::UnboundedSender<ApiReply>>,
+    tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>>,
 
     client_listener: TcpListener,
-    client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+    client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
 
     tx_exit: mpsc::UnboundedSender<ClientId>,
     rx_exit: mpsc::UnboundedReceiver<ClientId>,
@@ -370,11 +397,8 @@ impl ExternalApiAcceptorTask {
     fn new(
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         client_listener: TcpListener,
-        tx_replies: flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<ApiReply>,
-        >,
-        client_servant_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+        tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>>,
+        client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
         // of client servant tasks
@@ -403,14 +427,11 @@ impl ExternalApiAcceptorTask {
             }
         };
 
-        let mut tx_replies_guard = self.tx_replies.guard();
-        if let Some(sender) = tx_replies_guard.get(&id) {
+        if let Some(sender) = self.tx_replies.get(&id) {
             if sender.is_closed() {
                 // if this client ID has left before, garbage collect it now
-                let mut client_servant_handles_guard =
-                    self.client_servant_handles.guard();
-                client_servant_handles_guard.remove(id);
-                tx_replies_guard.remove(id);
+                self.client_servant_handles.remove(&id);
+                self.tx_replies.remove(&id);
             } else {
                 return logged_err!("duplicate client ID listened: {}", id);
             }
@@ -418,7 +439,7 @@ impl ExternalApiAcceptorTask {
         pf_debug!("accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
-        tx_replies_guard.insert(id, tx_reply);
+        self.tx_replies.insert(id, tx_reply);
 
         let mut servant = ExternalApiServantTask::new(
             id,
@@ -430,12 +451,8 @@ impl ExternalApiAcceptorTask {
         );
         let client_servant_handle =
             tokio::spawn(async move { servant.run().await });
-        let mut client_servant_handles_guard =
-            self.client_servant_handles.guard();
-        client_servant_handles_guard.insert(id, client_servant_handle);
-
-        client_servant_handles_guard.publish();
-        tx_replies_guard.publish();
+        self.client_servant_handles
+            .insert(id, client_servant_handle);
         Ok(())
     }
 
@@ -444,15 +461,12 @@ impl ExternalApiAcceptorTask {
         &mut self,
         id: ClientId,
     ) -> Result<(), SummersetError> {
-        let mut tx_replies_guard = self.tx_replies.guard();
-        if !tx_replies_guard.contains_key(&id) {
+        if !self.tx_replies.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
-        tx_replies_guard.remove(id);
+        self.tx_replies.remove(&id);
 
-        let mut client_servant_handles_guard =
-            self.client_servant_handles.guard();
-        client_servant_handles_guard.remove(id);
+        self.client_servant_handles.remove(&id);
 
         Ok(())
     }
@@ -497,7 +511,7 @@ impl ExternalApiAcceptorTask {
     }
 }
 
-/// ExternalApi per-client servant task.
+/// `ExternalApi` per-client servant task.
 struct ExternalApiServantTask {
     id: ClientId,
     addr: SocketAddr,
@@ -548,7 +562,7 @@ impl ExternalApiServantTask {
         }
     }
 
-    /// Reads a client request from given TcpStream.
+    /// Reads a client request from given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_req(
         // first 8 bytes being the request length, and the rest bytes being the
@@ -559,7 +573,7 @@ impl ExternalApiServantTask {
         safe_tcp_read(req_buf, conn_read).await
     }
 
-    /// Writes a reply through given TcpStream.
+    /// Writes a reply through given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_reply(
         reply_buf: &mut BytesMut,
@@ -679,7 +693,7 @@ impl ExternalApiServantTask {
     }
 }
 
-/// ExternalApi batch ticker task.
+/// `ExternalApi` batch ticker task.
 struct ExternalApiBatchTickerTask {
     _me: ReplicaId,
 
@@ -716,11 +730,12 @@ impl ExternalApiBatchTickerTask {
 
 #[cfg(test)]
 mod tests {
+    use tokio::sync::Barrier;
+    use tokio::time::{self, Duration};
+
     use super::*;
     use crate::client::{ClientApiStub, ClientId};
     use crate::server::{Command, CommandResult};
-    use tokio::sync::Barrier;
-    use tokio::time::{self, Duration};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
@@ -832,6 +847,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn api_client_leave() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();

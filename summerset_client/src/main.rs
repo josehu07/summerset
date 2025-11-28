@@ -4,11 +4,9 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 
 use clap::Parser;
-
+use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
 use tokio::runtime::Builder;
 use tokio::time::Duration;
-
-use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
 
 mod clients;
 mod drivers;

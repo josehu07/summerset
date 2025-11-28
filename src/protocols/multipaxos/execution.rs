@@ -1,7 +1,6 @@
-//! MultiPaxos -- command execution.
+//! `MultiPaxos` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest};
 use crate::utils::SummersetError;
 
@@ -39,15 +38,13 @@ impl MultiPaxosReplica {
                     cmd_idx
                 );
                 // [for access cnt stats only]
-                if self.config.record_node_cnts && read_only {
-                    if let Some(leader_bk) = inst.leader_bk.as_ref() {
-                        for (peer, flag) in leader_bk.accept_acks.iter() {
-                            if peer == self.id || flag {
-                                *self
-                                    .node_cnts_stats
-                                    .get_mut(&peer)
-                                    .unwrap() += 1;
-                            }
+                if self.config.record_node_cnts
+                    && read_only
+                    && let Some(leader_bk) = inst.leader_bk.as_ref()
+                {
+                    for (peer, flag) in leader_bk.accept_acks.iter() {
+                        if peer == self.id || flag {
+                            *self.node_cnts_stats.get_mut(&peer).unwrap() += 1;
                         }
                     }
                 }
@@ -63,10 +60,10 @@ impl MultiPaxosReplica {
             pf_debug!("executed all cmds in instance at slot {}", slot);
 
             // [for perf breakdown only]
-            if self.is_leader() {
-                if let Some(sw) = self.bd_stopwatch.as_mut() {
-                    let _ = sw.record_now(slot, 4, None);
-                }
+            if self.is_leader()
+                && let Some(sw) = self.bd_stopwatch.as_mut()
+            {
+                let _ = sw.record_now(slot, 4, None);
             }
 
             // update index of the first non-executed instance

@@ -1,7 +1,6 @@
-//! RepNothing -- command execution.
+//! `RepNothing` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
 
@@ -60,7 +59,7 @@ impl RepNothingReplica {
                     "unknown request type at {}|{}",
                     inst_idx,
                     cmd_idx
-                )
+                );
             }
         }
 

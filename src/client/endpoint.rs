@@ -3,11 +3,11 @@
 
 use std::net::SocketAddr;
 
+use async_trait::async_trait;
+
 use crate::client::ClientCtrlStub;
 use crate::server::{ApiReply, ApiRequest};
 use crate::utils::SummersetError;
-
-use async_trait::async_trait;
 
 /// Client stub ID type.
 pub type ClientId = u64;

@@ -3,11 +3,10 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use crate::utils::SummersetError;
-
+use linreg::linear_regression_of;
 use rangemap::RangeMap;
 
-use linreg::linear_regression_of;
+use crate::utils::SummersetError;
 
 /// Performance model of a peer target.
 #[derive(Debug, PartialEq, Clone)]
@@ -37,9 +36,9 @@ impl PerfModel {
     #[inline]
     pub(crate) fn new(slope: f64, delay: f64, jitter: f64) -> Self {
         PerfModel {
+            slope,
             delay,
             jitter,
-            slope,
         }
     }
 
@@ -53,8 +52,9 @@ impl PerfModel {
 
     /// Calculate estimated response time given a data size.
     #[inline]
+    #[allow(clippy::cast_precision_loss)]
     pub(crate) fn predict(&self, x: usize) -> f64 {
-        let size_mb = x as f64 / (1024 * 1024) as f64;
+        let size_mb = x as f64 / f64::from(1024 * 1024);
         self.slope * size_mb + self.delay + self.jitter
     }
 }
@@ -109,7 +109,7 @@ impl LinearRegressor {
 
     /// Discards everything with timestamp tag before given time.
     pub(crate) fn discard_before(&mut self, t: u128) {
-        for bucket in self.buckets.iter_mut() {
+        for bucket in &mut self.buckets {
             let mut keep = bucket.len();
             for (i, dp) in bucket.iter().enumerate() {
                 if dp.0 >= t {
@@ -129,6 +129,11 @@ impl LinearRegressor {
     /// Returns the result of linear regression model calculated on the
     /// current window of datapoints. If the model is not valid right now,
     /// compute it.
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation
+    )]
     pub(crate) fn calc_model(
         &mut self,
         outliers_ratio: f32,
@@ -146,8 +151,7 @@ impl LinearRegressor {
             let mut delay = bucket0
                 .iter()
                 .min_by(|dpa, dpb| dpa.2.partial_cmp(&dpb.2).unwrap())
-                .map(|dp| dp.2)
-                .unwrap_or(0.0);
+                .map_or(0.0, |dp| dp.2);
             let mut jitter = (bucket0.iter().map(|dp| dp.2).sum::<f64>()
                 / bucket0.len() as f64)
                 - delay;
@@ -229,7 +233,7 @@ impl LinearRegressor {
             // }
             // let (mut slope, mut delay) = linear_regression_of(&xys)?;
 
-            slope *= (1024 * 1024) as f64;
+            slope *= f64::from(1024 * 1024);
             let model = PerfModel::new(slope, delay, jitter);
             // pf_warn!("calc ts {:?} dps {:?} {}",
             //          self.timestamps, self.datapoints, model);
@@ -275,6 +279,6 @@ mod tests {
         let p0 = model.predict(0);
         assert!(p0 > 1.75 && p0 < 1.85);
         let p1 = model.predict(1024 * 1024);
-        assert!(p1 > 2.75 && p1 < 2.85)
+        assert!(p1 > 2.75 && p1 < 2.85);
     }
 }

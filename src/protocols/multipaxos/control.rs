@@ -1,14 +1,13 @@
-//! MultiPaxos -- manager control actions.
+//! `MultiPaxos` -- manager control actions.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // MultiPaxosReplica control messages handling
 impl MultiPaxosReplica {
-    /// Handler of ResetState control message.
+    /// Handler of `ResetState` control message.
     async fn handle_ctrl_reset_state(
         &mut self,
         durable: bool,
@@ -72,7 +71,7 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Handler of TakeSnapshot control message.
+    /// Handler of `TakeSnapshot` control message.
     async fn handle_ctrl_take_snapshot(
         &mut self,
     ) -> Result<(), SummersetError> {

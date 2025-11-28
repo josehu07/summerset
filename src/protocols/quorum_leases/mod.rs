@@ -1,6 +1,6 @@
 //! Replication protocol: Quorum Leases.
 //!
-//! Built on top of MultiPaxos, allows marking an arbitrary subset of nodes as
+//! Built on top of `MultiPaxos`, allows marking an arbitrary subset of nodes as
 //! read lease holders and letting them serve reads locally during quiescent
 //! periods when no concurrent writes are happending. References:
 //!   - <https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf>
@@ -8,6 +8,7 @@
 //!
 //! TODO: fully support internal key-range partitioned quorum leases
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -24,6 +25,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
+use async_trait::async_trait;
+use atomic_refcell::AtomicRefCell;
+use get_size::GetSize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -35,19 +43,9 @@ use crate::server::{
 };
 use crate::utils::{Bitmap, ConfNum, RespondersConf, SummersetError};
 
-use atomic_refcell::AtomicRefCell;
-
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
-
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ReplicaConfigQuorumLeases {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -81,7 +79,7 @@ pub struct ReplicaConfigQuorumLeases {
     /// Enable stable leader leases for leader local reads?
     pub enable_leader_leases: bool,
 
-    /// Enable promptive CommitNotice sending for committed instances?
+    /// Enable promptive `CommitNotice` sending for committed instances?
     pub urgent_commit_notice: bool,
 
     /// Path to snapshot file.
@@ -100,7 +98,7 @@ pub struct ReplicaConfigQuorumLeases {
 
     // [for access cnt stats only]
     /// Recording critical-path server access statistics?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_node_cnts: bool,
 
     // [for benchmarking purposes only]
@@ -142,9 +140,19 @@ impl Default for ReplicaConfigQuorumLeases {
 /// Ballot number type. Use 0 as a null ballot number.
 type Ballot = u64;
 
-/// Instance status enum.
+/// `Instance` status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Status {
     Null = 0,
@@ -160,14 +168,14 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
     /// Replicas from which I have received Prepare confirmations.
-    /// This field is only tracked on the trigger_slot entry of the log.
+    /// This field is only tracked on the `trigger_slot` entry of the log.
     prepare_acks: Bitmap,
 
     /// Max ballot among received Prepare replies.
@@ -176,9 +184,9 @@ struct LeaderBookkeeping {
     /// Replicas from which I have received Accept confirmations.
     accept_acks: Bitmap,
 
-    /// The grant_sets replied from grantors through their AcceptReplies (or
-    /// updated through NoGrants message in cases of grantee unresponsiveness).
-    /// Commit status cannot be reached until AcceptReplies from everyone in
+    /// The `grant_sets` replied from grantors through their `AcceptReplies` (or
+    /// updated through `NoGrants` message in cases of grantee unresponsiveness).
+    /// Commit status cannot be reached until `AcceptReplies` from everyone in
     /// these sets have been received.
     accept_grant_sets: HashMap<ReplicaId, Bitmap>,
 }
@@ -189,10 +197,10 @@ struct ReplicaBookkeeping {
     /// Source leader replica ID for replying to Prepares and Accepts.
     source: ReplicaId,
 
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 }
 
@@ -202,11 +210,11 @@ struct Instance {
     /// Ballot number.
     bal: Ballot,
 
-    /// Instance status.
+    /// `Instance` status.
     status: Status,
 
     /// Batch of client requests. This field is overwritten directly when
-    /// receiving PrepareReplies; this is just a small engineering choice
+    /// receiving `PrepareReplies`; this is just a small engineering choice
     /// to avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs: ReqBatch,
 
@@ -228,7 +236,9 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -249,7 +259,9 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -263,7 +275,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -276,16 +288,16 @@ enum PeerMsg {
 
     /// Prepare reply from replica to leader.
     PrepareReply {
-        /// In our implementation, we choose to break the PrepareReply into
+        /// In our implementation, we choose to break the `PrepareReply` into
         /// slot-wise messages for simplicity.
         slot: usize,
-        /// Also carry the trigger_slot information to make it easier for the
+        /// Also carry the `trigger_slot` information to make it easier for the
         /// leader to track reply progress.
         trigger_slot: usize,
         /// Due to the slot-wise design choice, we need a way to let leader
-        /// know when have all PrepareReplies been received. We use the
-        /// endprep_slot field to convey this: when all slots' PrepareReplies
-        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// know when have all `PrepareReplies` been received. We use the
+        /// `endprep_slot` field to convey this: when all slots' `PrepareReplies`
+        /// up to `endprep_slot` are received, the "wholesome" `PrepareReply`
         /// can be considered received.
         // NOTE: this currently assumes the "ordering" property of TCP.
         endprep_slot: usize,
@@ -337,7 +349,7 @@ enum PeerMsg {
     CommitNotice { ballot: Ballot, commit_bar: usize },
 }
 
-/// QuorumLeases server replica module.
+/// `QuorumLeases` server replica module.
 pub(crate) struct QuorumLeasesReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -357,31 +369,31 @@ pub(crate) struct QuorumLeasesReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
     heartbeater: Heartbeater,
 
-    /// LeaseManager module for leader leases (i.e., the "default lease").
+    /// `LeaseManager` module for leader leases (i.e., the "default lease").
     llease_manager: LeaseManager,
 
-    /// LeaseManager module for quorum leases.
+    /// `LeaseManager` module for quorum leases.
     // NOTE: Technically, there should be multiple LeaseManager modules, each
     //       for a keyspace partition with different leaseholder roles config.
     //       But this is non-essential for our evaluations for now and will be
@@ -392,15 +404,15 @@ pub(crate) struct QuorumLeasesReplica {
     leader: Option<ReplicaId>,
 
     /// The latest quorum lease number used in granting. It is always true that
-    ///   commit_bar > qlease_num >= qlease_ver
+    ///   `commit_bar` > `qlease_num` >= `qlease_ver`
     qlease_num: LeaseNum,
 
     /// Using committed instance slot number in which the current config's
-    /// committed in as the conf_num "version".
+    /// committed in as the `conf_num` "version".
     qlease_ver: ConfNum,
 
     /// The current role assignment for quorum leases.
-    qlease_conf: RespondersConf,
+    qlease_conf: RespondersConf<()>,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,
@@ -424,10 +436,10 @@ pub(crate) struct QuorumLeasesReplica {
     accept_bar: usize,
 
     /// Map from peer ID (including my self) who replied to my Prepare -> its
-    /// accept_bar then; this is for safe stable leader leases purpose.
+    /// `accept_bar` then; this is for safe stable leader leases purpose.
     peer_accept_bar: HashMap<ReplicaId, usize>,
 
-    /// Minimum of the max accept_bar among any majority set of peer_accept_bar;
+    /// Minimum of the max `accept_bar` among any majority set of `peer_accept_bar`;
     /// this is for safe stable leader leases purpose.
     peer_accept_max: usize,
 
@@ -436,10 +448,10 @@ pub(crate) struct QuorumLeasesReplica {
 
     /// Index of the first non-executed instance.
     /// It is always true that
-    ///   exec_bar <= commit_bar <= accept_bar <= start_slot + insts.len()
+    ///   `exec_bar` <= `commit_bar` <= `accept_bar` <= `start_slot` + `insts.len()`
     exec_bar: usize,
 
-    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// Map from peer ID -> its latest `exec_bar` I know; this is for conservative
     /// snapshotting purpose.
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
@@ -480,6 +492,7 @@ impl QuorumLeasesReplica {
 
     /// Create an empty null instance.
     #[inline]
+    #[allow(clippy::unused_self)]
     fn null_instance(&self) -> Instance {
         Instance {
             bal: 0,
@@ -507,7 +520,7 @@ impl QuorumLeasesReplica {
     /// Compose a unique ballot number from base.
     #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
-        ((base << 8) | ((self.id + 1) as u64)) as Ballot
+        ((base << 8) | u64::from(self.id + 1)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
@@ -516,7 +529,7 @@ impl QuorumLeasesReplica {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
-    /// Compose LogActionId from slot index & entry type.
+    /// Compose `LogActionId` from slot index & entry type.
     /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
@@ -529,7 +542,7 @@ impl QuorumLeasesReplica {
         ((slot << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into slot index & entry type.
+    /// Decompose `LogActionId` into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
@@ -543,15 +556,15 @@ impl QuorumLeasesReplica {
         (slot, entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot).is_ok());
         debug_assert!(cmd_idx <= (u32::MAX as usize) / 2);
         ((slot << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
@@ -562,14 +575,15 @@ impl QuorumLeasesReplica {
     /// Special composition of a command ID used at read-only shortcuts.
     #[inline]
     fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
-        debug_assert!(client <= (u32::MAX as ClientId));
-        debug_assert!(req_id <= (u32::MAX as RequestId) / 2);
+        debug_assert!(client <= ClientId::from(u32::MAX));
+        debug_assert!(req_id <= RequestId::from(u32::MAX) / 2);
         ((client << 32) | (1 << 31) | req_id) as CommandId
     }
 }
 
 #[async_trait]
 impl GenericReplica for QuorumLeasesReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -697,11 +711,9 @@ impl GenericReplica for QuorumLeasesReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -782,6 +794,7 @@ impl GenericReplica for QuorumLeasesReplica {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &mut self,
         mut rx_term: watch::Receiver<bool>,
@@ -985,7 +998,7 @@ impl Default for ClientConfigQuorumLeases {
     }
 }
 
-/// QuorumLeases client-side module.
+/// `QuorumLeases` client-side module.
 pub(crate) struct QuorumLeasesClient {
     /// Client ID.
     id: ClientId,
@@ -1062,49 +1075,48 @@ impl GenericEndpoint for QuorumLeasesClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.curr_server_id)
-                    || servers_info[&self.curr_server_id].is_paused
-                {
-                    self.curr_server_id =
-                        (self.curr_server_id + 1) % population;
-                }
-                if self.config.near_server_id < population {
-                    let mut near_server_id = self.config.near_server_id;
-                    if !servers_info.contains_key(&near_server_id)
-                        || servers_info[&near_server_id].is_paused
-                    {
-                        pf_warn!(
-                            "near server {} inactive, using {} instead...",
-                            near_server_id,
-                            self.curr_server_id
-                        );
-                        near_server_id = self.curr_server_id;
-                    }
-                    self.near_server_id = Some(near_server_id);
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
-                }
-                Ok(())
+            // shift to a new server_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.curr_server_id)
+                || servers_info[&self.curr_server_id].is_paused
+            {
+                self.curr_server_id = (self.curr_server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            if self.config.near_server_id < population {
+                let mut near_server_id = self.config.near_server_id;
+                if !servers_info.contains_key(&near_server_id)
+                    || servers_info[&near_server_id].is_paused
+                {
+                    pf_warn!(
+                        "near server {} inactive, using {} instead...",
+                        near_server_id,
+                        self.curr_server_id
+                    );
+                    near_server_id = self.curr_server_id;
+                }
+                self.near_server_id = Some(near_server_id);
+            }
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 
@@ -1188,15 +1200,14 @@ impl GenericEndpoint for QuorumLeasesClient {
                 self.curr_server_id
             )));
         }
-        if let Some(near_server_id) = self.near_server_id {
-            if near_server_id != self.curr_server_id
-                && !self.api_stubs.contains_key(&near_server_id)
-            {
-                return Err(SummersetError::msg(format!(
-                    "server_id {} not in api_stubs",
-                    near_server_id
-                )));
-            }
+        if let Some(near_server_id) = self.near_server_id
+            && near_server_id != self.curr_server_id
+            && !self.api_stubs.contains_key(&near_server_id)
+        {
+            return Err(SummersetError::msg(format!(
+                "server_id {} not in api_stubs",
+                near_server_id
+            )));
         }
 
         let mut reply = if self

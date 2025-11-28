@@ -3,22 +3,17 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+use std::sync::LazyLock;
 
-use crate::{ClientBench, ModeParamsBench, ZooKeeperSession};
-
-use lazy_static::lazy_static;
-
-use rand::distributions::Alphanumeric;
-use rand::rngs::ThreadRng;
+use rand::distr::Alphanumeric;
 use rand::Rng;
-
 use rangemap::RangeMap;
-
-use tokio::time::{Duration, Instant};
-
 use summerset::{
     logged_err, parsed_config, pf_error, pf_info, pf_warn, SummersetError,
 };
+use tokio::time::{Duration, Instant};
+
+use crate::{ClientBench, ModeParamsBench, ZooKeeperSession};
 
 /// Max length in bytes of value.
 const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MB as of ZooKeeper limit
@@ -26,14 +21,14 @@ const MAX_VAL_LEN: usize = 1024 * 1024; // 1 MB as of ZooKeeper limit
 /// Statistics printing interval.
 const PRINT_INTERVAL: Duration = Duration::from_millis(100);
 
-lazy_static! {
-    /// A very long pre-generated value string to get values from.
-    static ref MOM_VALUE: String = rand::thread_rng()
+/// A very long pre-generated value string to get values from.
+static MOM_VALUE: LazyLock<String> = LazyLock::new(|| {
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(MAX_VAL_LEN)
         .map(char::from)
-        .collect();
-}
+        .collect()
+});
 
 /// Benchmarking client struct (only supports closed-loop).
 pub(crate) struct ZooKeeperBench {
@@ -42,9 +37,6 @@ pub(crate) struct ZooKeeperBench {
 
     /// Mode parameters struct.
     params: ModeParamsBench,
-
-    /// Random number generator.
-    rng: ThreadRng,
 
     /// Output file.
     output_file: Option<File>,
@@ -172,7 +164,6 @@ impl ZooKeeperBench {
         Ok(ZooKeeperBench {
             session,
             params,
-            rng: rand::thread_rng(),
             output_file,
             keys_pool,
             trace_vec,
@@ -205,10 +196,10 @@ impl ZooKeeperBench {
             .keys_pool
             .as_ref()
             .unwrap()
-            .get(self.rng.gen_range(0..self.params.num_keys))
+            .get(rand::rng().random_range(0..self.params.num_keys))
             .unwrap()
             .clone();
-        if self.rng.gen_range(0..100) < self.params.put_ratio {
+        if rand::rng().random_range(0..100) < self.params.put_ratio {
             // query the value to use for current timestamp
             let val = self.gen_value_at_now()?;
             self.session.set(&key, val).await?;

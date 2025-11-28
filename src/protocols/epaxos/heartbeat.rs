@@ -1,7 +1,6 @@
-//! EPaxos -- leader election.
+//! `EPaxos` -- leader election.
 
 use super::*;
-
 use crate::server::ReplicaId;
 use crate::utils::SummersetError;
 
@@ -47,7 +46,7 @@ impl EPaxosReplica {
                 if inst.status == Status::PreAccepting
                     && inst.leader_bk.is_some()
                 {
-                    markees.push(SlotIdx(row as ReplicaId, col));
+                    markees.push(SlotIdx(ReplicaId::try_from(row)?, col));
                 }
             }
         }
@@ -157,6 +156,7 @@ impl EPaxosReplica {
     /// Heard a heartbeat from some other replica. If the heartbeat carries a
     /// high enough ballot number, refreshes my hearing timer and clears my
     /// leader status if I currently think I'm a leader.
+    #[allow(clippy::needless_pass_by_value)]
     pub(super) fn heard_heartbeat(
         &mut self,
         peer: ReplicaId,
@@ -197,6 +197,7 @@ impl EPaxosReplica {
             let exec_min = *exec_bars.iter().min().unwrap_or(&0);
             if exec_min > self.peer_exec_min[&peer] {
                 *self.peer_exec_min.get_mut(&peer).unwrap() = exec_min;
+                #[allow(clippy::cast_possible_truncation)]
                 let passed_cnt = 1 + self
                     .peer_exec_min
                     .values()

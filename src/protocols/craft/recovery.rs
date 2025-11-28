@@ -1,13 +1,13 @@
-//! CRaft -- recovery from WAL.
+//! `CRaft` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{LogAction, LogResult};
 use crate::utils::{RSCodeword, SummersetError};
 
 // CRaftReplica recovery from WAL log
 impl CRaftReplica {
     /// Recover state from durable storage WAL log.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn recover_from_wal(
         &mut self,
     ) -> Result<(), SummersetError> {

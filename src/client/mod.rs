@@ -5,7 +5,6 @@ mod endpoint;
 mod apistub;
 mod ctrlstub;
 
+pub(crate) use apistub::ClientApiStub;
 pub use ctrlstub::ClientCtrlStub;
 pub use endpoint::{ClientId, GenericEndpoint};
-
-pub(crate) use apistub::ClientApiStub;

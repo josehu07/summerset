@@ -7,14 +7,13 @@
 
 use std::collections::HashMap;
 
-use crate::drivers::DriverReply;
-
-use tokio::time::{Duration, Instant};
-
 use summerset::{
     logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
     ClientId, Command, GenericEndpoint, RequestId, SummersetError, Timer,
 };
+use tokio::time::{Duration, Instant};
+
+use crate::drivers::DriverReply;
 
 /// Open-loop driver struct.
 pub(crate) struct DriverOpenLoop {

@@ -1,7 +1,6 @@
-//! EPaxos -- dependencies set helpers.
+//! `EPaxos` -- dependencies set helpers.
 
 use super::*;
-
 use crate::utils::Timer;
 
 impl fmt::Display for DepSet {
@@ -9,10 +8,10 @@ impl fmt::Display for DepSet {
         write!(f, "[")?;
         let mut first_idx = true;
         for c in &self.0 {
-            if !first_idx {
-                write!(f, ",")?;
-            } else {
+            if first_idx {
                 first_idx = false;
+            } else {
+                write!(f, ",")?;
             }
             if let Some(c) = c {
                 write!(f, "{}", c)?;
@@ -69,13 +68,14 @@ impl DepSet {
 
     /// Dummy wrapper of the `.len()` method of inner `Vec`.
     #[inline]
+    #[allow(clippy::cast_possible_truncation)]
     pub(super) fn len(&self) -> u8 {
         self.0.len() as u8
     }
 
     /// Dummy wrapper of the `.iter()` method of inner `Vec`.
     #[inline]
-    pub(super) fn iter(&self) -> slice::Iter<Option<usize>> {
+    pub(super) fn iter(&'_ self) -> slice::Iter<'_, Option<usize>> {
         self.0.iter()
     }
 
@@ -120,12 +120,8 @@ impl EPaxosReplica {
                 ApiRequest::Req {
                     cmd: Command::Put { key, .. },
                     ..
-                } => {
-                    if let Some(cols) = highest_cols.get(key) {
-                        deps.union(cols);
-                    }
                 }
-                ApiRequest::Req {
+                | ApiRequest::Req {
                     cmd: Command::Get { key },
                     ..
                 } => {
@@ -139,7 +135,7 @@ impl EPaxosReplica {
         deps
     }
 
-    /// Updates the highest_cols tracking info given a new request batch about
+    /// Updates the `highest_cols` tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_cols(
         slot: SlotIdx,
@@ -171,7 +167,7 @@ impl EPaxosReplica {
     }
 
     /// Checks the fast-path quorum eligibility for a set of received
-    /// PreAccept replies. Returns `None` if can't decide yet, otherwise
+    /// `PreAccept` replies. Returns `None` if can't decide yet, otherwise
     /// returns the following status enum to indicate which next phase should
     /// we enter as well as the instance state to feed into the next phase:
     ///   - `Status::Committed` if conflict-free fast quorum formed
@@ -205,6 +201,7 @@ impl EPaxosReplica {
             }
             Some((Status::Accepting, seq, deps))
         } else {
+            #[allow(clippy::cast_possible_truncation)]
             let bad_cnt = (0..population)
                 .filter(|r| {
                     !leader_bk.pre_accept_acks.get(*r).unwrap()
@@ -242,13 +239,13 @@ impl EPaxosReplica {
         }
     }
 
-    /// Checks the set of highest-ballot ExpPrepare replies and returns the
+    /// Checks the set of highest-ballot `ExpPrepare` replies and returns the
     /// proper next phase to run. Returns `None` if can't decide yet, otherwise
     /// returns the following status enum to indicate which next phase should
     /// we enter as well as the instance state to feed into the next phase:
     ///   - `Status::Committed` if can commit
     ///   - `Status::Accepting` if need a round of Accept
-    ///   - `Status::PreAccepting` if need to start over from PreAccept
+    ///   - `Status::PreAccepting` if need to start over from `PreAccept`
     pub(super) fn exp_prepare_next_step(
         slot_row: ReplicaId,
         leader_bk: &LeaderBookkeeping,
@@ -266,7 +263,7 @@ impl EPaxosReplica {
         // an index into replies vec that meets each
         let (mut has_commit, mut has_accept, mut has_pre_accept) =
             (None, None, None);
-        for (r, (status, _, _, _)) in leader_bk.exp_prepare_voteds.iter() {
+        for (r, (status, _, _, _)) in &leader_bk.exp_prepare_voteds {
             match status {
                 Status::Committed => has_commit = Some(r),
                 Status::Accepting => has_accept = Some(r),
@@ -289,10 +286,8 @@ impl EPaxosReplica {
         // has at lease N/2 identical replies for row's default ballot and
         // none of those are from row peer itself
         let has_enough_identical = if leader_bk.exp_prepare_max_bal
-            != Self::make_default_ballot(slot_row)
+            == Self::make_default_ballot(slot_row)
         {
-            None
-        } else {
             let voteds: Vec<(&SeqNum, &DepSet, &ReqBatch)> = leader_bk
                 .exp_prepare_voteds
                 .iter()
@@ -309,6 +304,8 @@ impl EPaxosReplica {
             } else {
                 Self::get_enough_identical(voteds, simple_quorum_cnt).0
             }
+        } else {
+            None
         };
 
         if let Some((seq, deps, reqs)) = has_enough_identical {

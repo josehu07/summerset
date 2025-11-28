@@ -92,7 +92,7 @@ macro_rules! pf_error {
     };
 }
 
-/// Initialize env_logger to desired configuration if haven't.
+/// Initialize `env_logger` to desired configuration if haven't.
 pub fn logger_init() {
     let _ =
         env_logger::Builder::from_env(Env::default().default_filter_or("info"))

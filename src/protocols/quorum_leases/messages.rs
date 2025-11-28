@@ -1,9 +1,8 @@
-//! QuorumLeases -- peer-peer messaging.
+//! `QuorumLeases` -- peer-peer messaging.
 
 use std::cmp;
 
 use super::*;
-
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
 
@@ -84,7 +83,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Handler of Prepare reply from replica.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -128,20 +127,19 @@ impl QuorumLeasesReplica {
             // update this peer's accept_bar information, and then update
             // peer_accept_max as the minimum of the maximums of majority sets
             if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
+                && accept_bar < old_bar
             {
-                if accept_bar < old_bar {
-                    let mut peer_accept_bars: Vec<usize> =
-                        self.peer_accept_bar.values().copied().collect();
-                    peer_accept_bars.sort_unstable();
-                    let peer_accept_max =
-                        peer_accept_bars[self.quorum_cnt as usize - 1];
-                    if peer_accept_max < self.peer_accept_max {
-                        self.peer_accept_max = peer_accept_max;
-                        pf_debug!(
-                            "peer_accept_max updated: {}",
-                            self.peer_accept_max
-                        );
-                    }
+                let mut peer_accept_bars: Vec<usize> =
+                    self.peer_accept_bar.values().copied().collect();
+                peer_accept_bars.sort_unstable();
+                let peer_accept_max =
+                    peer_accept_bars[self.quorum_cnt as usize - 1];
+                if peer_accept_max < self.peer_accept_max {
+                    self.peer_accept_max = peer_accept_max;
+                    pf_debug!(
+                        "peer_accept_max updated: {}",
+                        self.peer_accept_max
+                    );
                 }
             }
 
@@ -268,7 +266,8 @@ impl QuorumLeasesReplica {
                         )?;
                         pf_trace!(
                             "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
+                            this_slot,
+                            ballot
                         );
 
                         // send Accept messages to all peers
@@ -431,7 +430,7 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Handler of NoGrants message from grantor replica.
+    /// Handler of `NoGrants` message from grantor replica.
     pub(super) fn handle_msg_no_grants(
         &mut self,
         peer: ReplicaId,
@@ -455,40 +454,38 @@ impl QuorumLeasesReplica {
             // AcceptReplies, and update their accept_grant_sets
             for slot in self.commit_bar..(self.start_slot + self.insts.len()) {
                 let inst = &mut self.insts[slot - self.start_slot];
-                if inst.status == Status::Accepting && ballot == inst.bal {
-                    if let Some(leader_bk) = inst.leader_bk.as_mut() {
-                        leader_bk
-                            .accept_grant_sets
-                            .entry(peer)
-                            .and_modify(|grant_set| grant_set.clear())
-                            .or_insert(Bitmap::new(self.population, false));
+                if inst.status == Status::Accepting
+                    && ballot == inst.bal
+                    && let Some(leader_bk) = inst.leader_bk.as_mut()
+                {
+                    leader_bk
+                        .accept_grant_sets
+                        .entry(peer)
+                        .and_modify(Bitmap::clear)
+                        .or_insert(Bitmap::new(self.population, false));
 
-                        // if commit condition is now reached, proceed to commit
-                        if Self::commit_condition(leader_bk, self.quorum_cnt)? {
-                            inst.status = Status::Committed;
-                            pf_debug!(
-                                "committed instance at slot {} bal {}",
-                                slot,
-                                inst.bal
-                            );
+                    // if commit condition is now reached, proceed to commit
+                    if Self::commit_condition(leader_bk, self.quorum_cnt)? {
+                        inst.status = Status::Committed;
+                        pf_debug!(
+                            "committed instance at slot {} bal {}",
+                            slot,
+                            inst.bal
+                        );
 
-                            // record commit event
-                            self.storage_hub.submit_action(
-                                Self::make_log_action_id(
-                                    slot,
-                                    Status::Committed,
-                                ),
-                                LogAction::Append {
-                                    entry: WalEntry::CommitSlot { slot },
-                                    sync: self.config.logger_sync,
-                                },
-                            )?;
-                            pf_trace!(
-                                "submitted CommitSlot log action for slot {} bal {}",
-                                slot,
-                                inst.bal
-                            );
-                        }
+                        // record commit event
+                        self.storage_hub.submit_action(
+                            Self::make_log_action_id(slot, Status::Committed),
+                            LogAction::Append {
+                                entry: WalEntry::CommitSlot { slot },
+                                sync: self.config.logger_sync,
+                            },
+                        )?;
+                        pf_trace!(
+                            "submitted CommitSlot log action for slot {} bal {}",
+                            slot,
+                            inst.bal
+                        );
                     }
                 }
             }

@@ -1,9 +1,8 @@
-//! Bodega -- peer-peer messaging.
+//! `Bodega` -- peer-peer messaging.
 
 use std::cmp;
 
 use super::*;
-
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
 
@@ -85,6 +84,7 @@ impl BodegaReplica {
     }
 
     /// Handler of Prepare reply from replica.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -247,7 +247,8 @@ impl BodegaReplica {
                         )?;
                         pf_trace!(
                             "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
+                            this_slot,
+                            ballot
                         );
 
                         // send Accept messages to all peers
@@ -415,7 +416,7 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// Handler of AcceptNotice message from peer follower.
+    /// Handler of `AcceptNotice` message from peer follower.
     pub(super) fn handle_msg_accept_notice(
         &mut self,
         peer: ReplicaId,

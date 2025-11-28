@@ -8,14 +8,14 @@ use std::fmt;
 use std::hash::Hash;
 use std::mem::size_of;
 
+use bincode::{Decode, Encode};
+use get_size::GetSize;
+use rangemap::RangeInclusiveMap;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
 use crate::server::ReplicaId;
 use crate::utils::{Bitmap, SummersetError};
-
-use get_size::GetSize;
-
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-
-use rangemap::RangeInclusiveMap;
 
 /// Responders configuration identifier number type.
 pub type ConfNum = u64;
@@ -23,8 +23,10 @@ pub type ConfNum = u64;
 /// Responders configuration struct. (for relevant protocols only)
 /// The associated index type is optional and, if used, could for example be
 /// lease group ID.
-#[derive(PartialEq, Eq, Default, Clone, Serialize, Deserialize)]
-pub struct RespondersConf<Idx: Copy + Eq + Hash = ()> {
+#[derive(
+    PartialEq, Eq, Default, Clone, Serialize, Deserialize, Encode, Decode,
+)]
+pub struct RespondersConf<Idx: Clone + Eq + Hash> {
     /// If not `None`, supposed leader.
     pub leader: Option<ReplicaId>,
 
@@ -46,7 +48,9 @@ where
         + Default
         + Copy
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + 'static,
 {
@@ -66,7 +70,7 @@ where
     /// Returns if a server is the supposed leader.
     #[inline]
     pub fn is_leader(&self, id: ReplicaId) -> bool {
-        self.leader.map(|leader| leader == id).unwrap_or(false)
+        self.leader.is_some_and(|leader| leader == id)
     }
 
     /// Returns if a server is a supposed responder for a key. Always returns
@@ -208,9 +212,7 @@ where
             custom_map: self.custom_map,
         };
 
-        for (range, (mut responders, custom_idx)) in
-            self.responders.map.into_iter()
-        {
+        for (range, (mut responders, custom_idx)) in self.responders.map {
             responders.set(id, false)?;
             new_conf
                 .responders
@@ -235,7 +237,9 @@ where
         + Default
         + Copy
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + 'static,
 {
@@ -274,7 +278,9 @@ where
         + Default
         + Copy
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + 'static,
 {
@@ -315,6 +321,62 @@ pub struct KeyRangeMap<T: Clone + Eq> {
     default: T,
 }
 
+impl<T> Encode for KeyRangeMap<T>
+where
+    T: Encode + Clone + Eq,
+{
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        // encode default value
+        self.default.encode(encoder)?;
+        // encode entries as Vec<(start, end, value)>
+        let entries: Vec<(IntyKey, IntyKey, &T)> = self
+            .map
+            .iter()
+            .map(|(range, value)| (*range.start(), *range.end(), value))
+            .collect();
+        entries.encode(encoder)
+    }
+}
+
+impl<T, Ctx> Decode<Ctx> for KeyRangeMap<T>
+where
+    T: Decode<Ctx> + Clone + Eq,
+{
+    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let default = T::decode(decoder)?;
+        let entries: Vec<(IntyKey, IntyKey, T)> =
+            Vec::<(IntyKey, IntyKey, T)>::decode(decoder)?;
+        let mut map = RangeInclusiveMap::new();
+        for (start, end, value) in entries {
+            map.insert(start..=end, value);
+        }
+        Ok(KeyRangeMap { map, default })
+    }
+}
+
+impl<'de, T, Ctx> bincode::BorrowDecode<'de, Ctx> for KeyRangeMap<T>
+where
+    T: bincode::BorrowDecode<'de, Ctx> + Clone + Eq,
+{
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Ctx>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let default = T::borrow_decode(decoder)?;
+        let entries: Vec<(IntyKey, IntyKey, T)> =
+            Vec::<(IntyKey, IntyKey, T)>::borrow_decode(decoder)?;
+        let mut map = RangeInclusiveMap::new();
+        for (start, end, value) in entries {
+            map.insert(start..=end, value);
+        }
+        Ok(KeyRangeMap { map, default })
+    }
+}
+
 impl<T> KeyRangeMap<T>
 where
     T: fmt::Debug
@@ -322,11 +384,13 @@ where
         + Default
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + 'static,
 {
-    /// Creates a new KeyRangeMap with all keys mapped to a default value.
+    /// Creates a new `KeyRangeMap` with all keys mapped to a default value.
     fn new(default: T) -> Self {
         KeyRangeMap {
             map: RangeInclusiveMap::new(),
@@ -417,7 +481,9 @@ where
         + Default
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + 'static,
 {
@@ -482,14 +548,13 @@ mod tests {
     }
 
     #[test]
-    fn krmap_invalid() -> Result<(), SummersetError> {
+    fn krmap_invalid() {
         let mut map = KeyRangeMap::<String>::new("default".to_string());
         assert!(map.get("somerandkey").is_err());
         assert!(map.set("k123", "k0", "low_val".to_string()).is_err());
         assert!(map.set("k0", "somerandkey", "low_val".to_string()).is_err());
         assert!(map.get_overlaps("k123", "k0").is_err());
         assert!(map.get_overlaps("k0", "somerandkey").is_err());
-        Ok(())
     }
 
     #[test]

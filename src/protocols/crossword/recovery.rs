@@ -1,7 +1,6 @@
-//! Crossword -- recovery from WAL.
+//! `Crossword` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::SummersetError;
 

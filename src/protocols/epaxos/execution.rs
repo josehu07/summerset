@@ -1,20 +1,19 @@
-//! EPaxos -- command execution.
+//! `EPaxos` -- command execution.
 //!
 //! NOTE: since Summerset Put commands always return the old value, they are
 //!       effectively RMW commands; thus the commit vs. execute distinction in
-//!       original EPaxos paper does not make a difference here. Put commands
+//!       original `EPaxos` paper does not make a difference here. Put commands
 //!       get replied to client only after execution. This does not make any
 //!       difference to the performance metrics that we are interested in.
 
-use super::*;
-
 use std::collections::VecDeque;
-
-use crate::server::{ApiReply, ApiRequest};
-use crate::utils::SummersetError;
 
 use petgraph::algo::tarjan_scc;
 use petgraph::graphmap::DiGraphMap;
+
+use super::*;
+use crate::server::{ApiReply, ApiRequest};
+use crate::utils::SummersetError;
 
 // EPaxosReplica state machine execution
 impl EPaxosReplica {
@@ -66,11 +65,15 @@ impl EPaxosReplica {
                     .enumerate()
                     .filter(|(_, c)| c.is_some())
                 {
-                    dep_queue.push_back(SlotIdx(r as ReplicaId, c.unwrap()));
+                    dep_queue.push_back(SlotIdx(
+                        ReplicaId::try_from(r)?,
+                        c.unwrap(),
+                    ));
                 }
                 if col > self.start_col {
                     // don't forget that R.c implicitly depends on R.(c-1)
-                    dep_queue.push_back(SlotIdx(row as ReplicaId, col - 1));
+                    dep_queue
+                        .push_back(SlotIdx(ReplicaId::try_from(row)?, col - 1));
                 }
             }
             last_slot = Some(slot);
@@ -105,21 +108,18 @@ impl EPaxosReplica {
                     if let ApiRequest::Req { cmd, .. } = req {
                         let cmd_id =
                             Self::make_command_id(dep_graph[n], cmd_idx);
-                        if !sync_exec {
-                            self.state_machine
-                                .submit_cmd(cmd_id, cmd.clone())?;
-                        } else {
+                        if sync_exec {
                             self.state_machine
                                 .do_sync_cmd(cmd_id, cmd.clone())
                                 .await?;
+                        } else {
+                            self.state_machine
+                                .submit_cmd(cmd_id, cmd.clone())?;
                         }
                     }
                 }
 
-                if !sync_exec {
-                    self.insts[row][col - self.start_col].status =
-                        Status::Executing;
-                } else {
+                if sync_exec {
                     self.insts[row][col - self.start_col].status =
                         Status::Executed;
 
@@ -138,6 +138,9 @@ impl EPaxosReplica {
                             self.exec_bars[row] += 1;
                         }
                     }
+                } else {
+                    self.insts[row][col - self.start_col].status =
+                        Status::Executing;
                 }
             }
         }

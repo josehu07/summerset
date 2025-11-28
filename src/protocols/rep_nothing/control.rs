@@ -1,14 +1,13 @@
-//! RepNothing -- manager control actions.
+//! `RepNothing` -- manager control actions.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // RepNothingReplica control messages handling
 impl RepNothingReplica {
-    /// Handler of ResetState control message.
+    /// Handler of `ResetState` control message.
     async fn handle_ctrl_reset_state(
         &mut self,
         durable: bool,

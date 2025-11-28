@@ -1,7 +1,6 @@
-//! RepNothing -- recovery from WAL.
+//! `RepNothing` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::SummersetError;
 

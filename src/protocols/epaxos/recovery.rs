@@ -1,13 +1,13 @@
-//! EPaxos -- recovery from WAL.
+//! `EPaxos` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // EPaxosReplica recovery from WAL log
 impl EPaxosReplica {
     /// Apply a durable storage log entry for recovery.
+    #[allow(clippy::too_many_lines)]
     async fn recover_apply_entry(
         &mut self,
         entry: WalEntry,
@@ -123,7 +123,7 @@ impl EPaxosReplica {
                     }
                     if advanced {
                         let tail_slot = SlotIdx(
-                            row as ReplicaId,
+                            ReplicaId::try_from(row)?,
                             self.commit_bars[row] - 1,
                         );
                         if self.attempt_execution(tail_slot, true).await? {
@@ -139,7 +139,7 @@ impl EPaxosReplica {
                                         == Status::Committed
                                 {
                                     reattempts.push(SlotIdx(
-                                        row as ReplicaId,
+                                        ReplicaId::try_from(row)?,
                                         col - 1,
                                     ));
                                 }

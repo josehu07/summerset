@@ -1,7 +1,6 @@
-//! ChainRep -- durable logging.
+//! `ChainRep` -- durable logging.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
@@ -13,7 +12,7 @@ impl ChainRepReplica {
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let slot = action_id as usize;
+        let slot = usize::try_from(action_id)?;
         debug_assert!(slot < self.log.len());
         if self.log[slot].status != Status::Streaming {
             return Ok(());
