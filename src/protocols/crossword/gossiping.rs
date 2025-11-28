@@ -1,27 +1,25 @@
-//! Crossword -- follower gossiping.
+//! `Crossword` -- follower gossiping.
 
 use std::collections::HashMap;
 use std::mem;
 
-use super::*;
+use rand::prelude::*;
+use tokio::time::Duration;
 
+use super::*;
 use crate::server::ReplicaId;
 use crate::utils::{Bitmap, SummersetError};
 
-use rand::prelude::*;
-
-use tokio::time::Duration;
-
 // CrosswordReplica follower gossiping
 impl CrosswordReplica {
-    /// Chooses a random gossip_timeout from the min-max range and kicks off
-    /// the gossip_timer.
+    /// Chooses a random `gossip_timeout` from the min-max range and kicks off
+    /// the `gossip_timer`.
     pub(super) fn kickoff_gossip_timer(
         &mut self,
     ) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
-        let timeout_ms = thread_rng().gen_range(
+        let timeout_ms = rand::rng().random_range(
             self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
         );
         // pf_trace!("kickoff gossip_timer @ {} ms", timeout_ms);
@@ -33,7 +31,7 @@ impl CrosswordReplica {
 
     /// Decide to which peers should I request gossiping and what shards
     /// should I exclude.
-    #[allow(clippy::too_many_arguments, clippy::ptr_arg)]
+    #[allow(clippy::too_many_arguments, clippy::ptr_arg, clippy::ref_option)]
     fn gossip_targets_excl(
         me: ReplicaId,
         population: u8,

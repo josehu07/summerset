@@ -2,16 +2,15 @@
 
 use std::net::SocketAddr;
 
+use bytes::BytesMut;
+use tokio::io::AsyncReadExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
 use crate::client::ClientId;
 use crate::manager::{CtrlReply, CtrlRequest};
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError, ME,
+    ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
 };
-
-use bytes::BytesMut;
-
-use tokio::io::AsyncReadExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Client -> manager oracle control API stub.
 pub struct ClientCtrlStub {
@@ -58,10 +57,10 @@ impl ClientCtrlStub {
     /// Sends a request to established manager connection. Returns:
     ///   - `Ok(true)` if successful
     ///   - `Ok(false)` if socket full and may block; in this case, the input
-    ///                 request is saved and the next calls to `send_req()`
-    ///                 must give arg `req == None` to retry until successful
-    ///                 (typically after doing a few `recv_reply()`s to free
-    ///                 up some buffer space)
+    ///     request is saved and the next calls to `send_req()`
+    ///     must give arg `req == None` to retry until successful
+    ///     (typically after doing a few `recv_reply()`s to free
+    ///     up some buffer space)
     ///   - `Err(err)` if any unexpected error occurs
     pub fn send_req(
         &mut self,

@@ -1,7 +1,6 @@
-//! QuorumLeases -- quorum lease-related operations.
+//! `QuorumLeases` -- quorum lease-related operations.
 
 use super::*;
-
 use crate::server::{LeaseAction, LeaseNum};
 
 // QuorumLeasesReplica quorum lease-related actions logic
@@ -12,12 +11,12 @@ impl QuorumLeasesReplica {
         Ok((self.qlease_grantees().get(self.id)?
                 && self.qlease_manager.lease_cnt() >= self.quorum_cnt
                 && (self.config.no_lease_retraction
-                    || self.qlease_num as usize + 1 == self.commit_bar))
+                    || usize::try_from(self.qlease_num)? + 1 == self.commit_bar))
            // [for benchmarking purposes only]
            || self.config.sim_read_lease)
     }
 
-    /// The commit condition check. Besides requiring an AcceptReply quorum
+    /// The commit condition check. Besides requiring an `AcceptReply` quorum
     /// size of at least majority, it also requires that replies from all
     /// possible grantees have been received.
     pub(super) fn commit_condition(
@@ -29,16 +28,9 @@ impl QuorumLeasesReplica {
         }
 
         for grant_set in leader_bk.accept_grant_sets.values() {
-            for grantee in
-                grant_set.iter().filter_map(
-                    |(p, flag)| {
-                        if flag {
-                            Some(p)
-                        } else {
-                            None
-                        }
-                    },
-                )
+            for grantee in grant_set
+                .iter()
+                .filter_map(|(p, flag)| if flag { Some(p) } else { None })
             {
                 if !leader_bk.accept_acks.get(grantee)? {
                     return Ok(false);
@@ -105,8 +97,8 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Synthesized handler of quorum leasing actions from its LeaseManager.
-    /// Returns true if this action is a possible indicator that the grant_set
+    /// Synthesized handler of quorum leasing actions from its `LeaseManager`.
+    /// Returns true if this action is a possible indicator that the `grant_set`
     /// shrunk; otherwise returns false.
     pub(super) async fn handle_qlease_action(
         &mut self,
@@ -139,29 +131,28 @@ impl QuorumLeasesReplica {
                 //       we just let client do configuration changes explicitly
                 if self.qlease_num == lease_num
                     && self.qlease_manager.grant_set().count() == 0
+                    && let Some(leader) = self.leader
                 {
-                    if let Some(leader) = self.leader {
-                        if leader != self.id {
-                            self.transport_hub.send_msg(
-                                PeerMsg::NoGrants {
-                                    ballot: self.bal_max_seen,
-                                    qlease_num: lease_num,
-                                },
-                                leader,
-                            )?;
-                            pf_trace!(
-                                "sent NoGrants -> {} for bal {} qlease_num {}",
-                                leader,
-                                self.bal_max_seen,
-                                lease_num
-                            );
-                        } else {
-                            self.handle_msg_no_grants(
-                                self.id,
-                                self.bal_max_seen,
-                                lease_num,
-                            )?;
-                        }
+                    if leader == self.id {
+                        self.handle_msg_no_grants(
+                            self.id,
+                            self.bal_max_seen,
+                            lease_num,
+                        )?;
+                    } else {
+                        self.transport_hub.send_msg(
+                            PeerMsg::NoGrants {
+                                ballot: self.bal_max_seen,
+                                qlease_num: lease_num,
+                            },
+                            leader,
+                        )?;
+                        pf_trace!(
+                            "sent NoGrants -> {} for bal {} qlease_num {}",
+                            leader,
+                            self.bal_max_seen,
+                            lease_num
+                        );
                     }
                 }
 

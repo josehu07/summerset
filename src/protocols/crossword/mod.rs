@@ -1,9 +1,10 @@
-//! Replication protocol: Crossword.
+//! Replication protocol: `Crossword`.
 //!
-//! MultiPaxos with flexible Reed-Solomon erasure code sharding that supports
+//! `MultiPaxos` with flexible Reed-Solomon erasure code sharding that supports
 //! dynamically tunable shard assignment with the correct liveness constraints,
 //! plus follower gossiping for actual usability.
 
+use bincode::{Decode, Encode};
 mod adaptive;
 mod control;
 mod durability;
@@ -21,6 +22,13 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
+use get_size::GetSize;
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -34,19 +42,9 @@ use crate::utils::{
     SummersetError, Timer,
 };
 
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
-
-use reed_solomon_erasure::galois_8::ReedSolomon;
-
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ReplicaConfigCrossword {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -131,12 +129,12 @@ pub struct ReplicaConfigCrossword {
 
     // [for perf breakdown only]
     /// Recording the latest committed value version of a key?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_value_ver: bool,
 
     // [for perf breakdown only]
     /// Recording total payload size received from per peer?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_size_recv: bool,
 
     // [for benchmarking purposes only]
@@ -168,7 +166,7 @@ impl Default for ReplicaConfigCrossword {
             msg_chunk_size: 10,
             rs_total_shards: 0,
             rs_data_shards: 0,
-            init_assignment: "".into(),
+            init_assignment: String::new(),
             linreg_interval_ms: 200,
             linreg_keep_ms: 2000,
             linreg_init_a: 10.0,
@@ -186,9 +184,19 @@ impl Default for ReplicaConfigCrossword {
 /// Ballot number type. Use 0 as a null ballot number.
 type Ballot = u64;
 
-/// Instance status enum.
+/// `Instance` status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Status {
     Null = 0,
@@ -204,10 +212,10 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
     /// Replicas from which I have received Prepare confirmations.
@@ -227,10 +235,10 @@ struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 }
 
@@ -240,11 +248,11 @@ struct Instance {
     /// Ballot number.
     bal: Ballot,
 
-    /// Instance status.
+    /// `Instance` status.
     status: Status,
 
     /// Shards of a batch of commands. This field is overwritten directly when
-    /// receiving PrepareReplies; this is just a small engineering choice to
+    /// receiving `PrepareReplies`; this is just a small engineering choice to
     /// avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs_cw: RSCodeword<ReqBatch>,
 
@@ -269,7 +277,9 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -291,7 +301,9 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -308,7 +320,7 @@ enum SnapEntry {
 type HeartbeatId = u64;
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -321,16 +333,16 @@ enum PeerMsg {
 
     /// Prepare reply from replica to leader.
     PrepareReply {
-        /// In our implementation, we choose to break the PrepareReply into
+        /// In our implementation, we choose to break the `PrepareReply` into
         /// slot-wise messages for simplicity.
         slot: usize,
-        /// Also carry the trigger_slot information to make it easier for the
+        /// Also carry the `trigger_slot` information to make it easier for the
         /// leader to track reply progress.
         trigger_slot: usize,
         /// Due to the slot-wise design choice, we need a way to let leader
-        /// know when have all PrepareReplies been received. We use the
-        /// endprep_slot field to convey this: when all slots' PrepareReplies
-        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// know when have all `PrepareReplies` been received. We use the
+        /// `endprep_slot` field to convey this: when all slots' `PrepareReplies`
+        /// up to `endprep_slot` are received, the "wholesome" `PrepareReply`
         /// can be considered received.
         // NOTE: this currently assumes the "ordering" property of TCP.
         endprep_slot: usize,
@@ -385,7 +397,7 @@ enum PeerMsg {
     },
 }
 
-/// Crossword server replica module.
+/// `Crossword` server replica module.
 pub(crate) struct CrosswordReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -416,7 +428,7 @@ pub(crate) struct CrosswordReplica {
     init_assignment: Vec<Bitmap>,
 
     /// Pre-filled good balanced round-robin assignment policies for quicker
-    /// access when peer_alive count is low.
+    /// access when `peer_alive` count is low.
     brr_assignments: HashMap<u8, Vec<Bitmap>>,
 
     /// Configuration parameters struct.
@@ -428,22 +440,22 @@ pub(crate) struct CrosswordReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
@@ -485,10 +497,10 @@ pub(crate) struct CrosswordReplica {
 
     /// Index of the first non-executed instance.
     /// The following is always true:
-    ///   exec_bar <= gossip_bar <= commit_bar <= start_slot + insts.len()
+    ///   `exec_bar` <= `gossip_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
     exec_bar: usize,
 
-    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// Map from peer ID -> its latest `exec_bar` I know; this is for conservative
     /// snapshotting purpose.
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
@@ -593,7 +605,7 @@ impl CrosswordReplica {
     /// Compose a unique ballot number from base.
     #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
-        ((base << 8) | ((self.id + 1) as u64)) as Ballot
+        ((base << 8) | u64::from(self.id + 1)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
@@ -602,7 +614,7 @@ impl CrosswordReplica {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
-    /// Compose LogActionId from slot index & entry type.
+    /// Compose `LogActionId` from slot index & entry type.
     /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
@@ -615,7 +627,7 @@ impl CrosswordReplica {
         ((slot << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into slot index & entry type.
+    /// Decompose `LogActionId` into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
@@ -629,15 +641,15 @@ impl CrosswordReplica {
         (slot, entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot).is_ok());
+        debug_assert!(u32::try_from(cmd_idx).is_ok());
         ((slot << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
@@ -648,6 +660,7 @@ impl CrosswordReplica {
 
 #[async_trait]
 impl GenericReplica for CrosswordReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -773,11 +786,9 @@ impl GenericReplica for CrosswordReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -1017,6 +1028,7 @@ impl GenericReplica for CrosswordReplica {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &mut self,
         mut rx_term: watch::Receiver<bool>,
@@ -1135,7 +1147,7 @@ impl GenericReplica for CrosswordReplica {
                 },
 
                 // follower gossiping trigger
-                _ = self.gossip_timer.timeout(), if !paused && !self.is_leader() => {
+                () = self.gossip_timer.timeout(), if !paused && !self.is_leader() => {
                     if let Err(e) = self.trigger_gossiping() {
                         pf_error!("error triggering gossiping: {}", e);
                     }
@@ -1144,8 +1156,8 @@ impl GenericReplica for CrosswordReplica {
                 // [for perf breakdown only]
                 // performance breakdown stats printing
                 _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
-                    if self.is_leader() {
-                        if let Some(sw) = self.bd_stopwatch.as_mut() {
+                    if self.is_leader()
+                        && let Some(sw) = self.bd_stopwatch.as_mut() {
                             let (cnt, stats) = sw.summarize(5);
                             pf_info!("bd cnt {} comp {:.2} {:.2} ldur {:.2} {:.2} \
                                                          arep {:.2} {:.2} qrum {:.2} {:.2} \
@@ -1155,9 +1167,8 @@ impl GenericReplica for CrosswordReplica {
                                           stats[4].0, stats[4].1);
                             sw.remove_all();
                         }
-                    }
-                    if self.config.record_value_ver {
-                        if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
+                    if self.config.record_value_ver
+                        && let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
                             pf_info!("ver of {} @ {} ms is {}",
                                      key,
                                      Instant::now()
@@ -1165,7 +1176,6 @@ impl GenericReplica for CrosswordReplica {
                                        .as_millis(),
                                      ver);
                         }
-                    }
                     if self.config.record_size_recv {
                         for (peer, recv) in &mut self.bw_accumulators {
                             pf_info!("bw period bytes recv <- {} : {}", peer, recv);
@@ -1225,7 +1235,7 @@ impl Default for ClientConfigCrossword {
     }
 }
 
-/// Crossword client-side module.
+/// `Crossword` client-side module.
 pub(crate) struct CrosswordClient {
     /// Client ID.
     id: ClientId,
@@ -1290,34 +1300,34 @@ impl GenericEndpoint for CrosswordClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id)
-                    || servers_info[&self.server_id].is_paused
-                {
-                    self.server_id = (self.server_id + 1) % population;
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, api_stub);
-                }
-                Ok(())
+            // shift to a new server_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.server_id)
+                || servers_info[&self.server_id].is_paused
+            {
+                self.server_id = (self.server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, api_stub);
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

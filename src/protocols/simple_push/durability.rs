@@ -1,7 +1,6 @@
-//! SimplePush -- durable logging.
+//! `SimplePush` -- durable logging.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
@@ -13,7 +12,7 @@ impl SimplePushReplica {
         action_id: LogActionId,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let inst_idx = action_id as usize;
+        let inst_idx = usize::try_from(action_id)?;
         if inst_idx >= self.insts.len() {
             return logged_err!("invalid log action ID {} seen", inst_idx);
         }
@@ -45,7 +44,7 @@ impl SimplePushReplica {
                     self.state_machine.submit_cmd(
                         Self::make_command_id(inst_idx, cmd_idx),
                         cmd.clone(),
-                    )?
+                    )?;
                 }
             }
         }

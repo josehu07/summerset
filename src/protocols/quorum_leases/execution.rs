@@ -1,7 +1,6 @@
-//! QuorumLeases -- command execution.
+//! `QuorumLeases` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest};
 use crate::utils::SummersetError;
 
@@ -39,15 +38,13 @@ impl QuorumLeasesReplica {
                     cmd_idx
                 );
                 // [for access cnt stats only]
-                if self.config.record_node_cnts && read_only {
-                    if let Some(leader_bk) = inst.leader_bk.as_ref() {
-                        for (peer, flag) in leader_bk.accept_acks.iter() {
-                            if peer == self.id || flag {
-                                *self
-                                    .node_cnts_stats
-                                    .get_mut(&peer)
-                                    .unwrap() += 1;
-                            }
+                if self.config.record_node_cnts
+                    && read_only
+                    && let Some(leader_bk) = inst.leader_bk.as_ref()
+                {
+                    for (peer, flag) in leader_bk.accept_acks.iter() {
+                        if peer == self.id || flag {
+                            *self.node_cnts_stats.get_mut(&peer).unwrap() += 1;
                         }
                     }
                 }

@@ -1,8 +1,9 @@
-//! Replication protocol: RS-Paxos.
+//! Replication protocol: `RS-Paxos`.
 //!
-//! MultiPaxos with Reed-Solomon erasure coding. References:
+//! `MultiPaxos` with Reed-Solomon erasure coding. References:
 //!   - <https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf>
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -16,6 +17,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 
+use async_trait::async_trait;
+use get_size::GetSize;
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -26,19 +34,9 @@ use crate::server::{
 };
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
-
-use reed_solomon_erasure::galois_8::ReedSolomon;
-
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ReplicaConfigRSPaxos {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -119,9 +117,19 @@ impl Default for ReplicaConfigRSPaxos {
 /// Ballot number type. Use 0 as a null ballot number.
 type Ballot = u64;
 
-/// Instance status enum.
+/// `Instance` status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Status {
     Null = 0,
@@ -137,10 +145,10 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
     /// Replicas from which I have received Prepare confirmations.
@@ -159,10 +167,10 @@ struct ReplicaBookkeeping {
     /// Source leader replica ID for replyiing to Prepares and Accepts.
     source: ReplicaId,
 
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 }
 
@@ -172,11 +180,11 @@ struct Instance {
     /// Ballot number.
     bal: Ballot,
 
-    /// Instance status.
+    /// `Instance` status.
     status: Status,
 
     /// Shards of a batch of commands. This field is overwritten directly when
-    /// receiving PrepareReplies; this is just a small engineering choice to
+    /// receiving `PrepareReplies`; this is just a small engineering choice to
     /// avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs_cw: RSCodeword<ReqBatch>,
 
@@ -198,7 +206,9 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -219,7 +229,9 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -233,7 +245,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -246,16 +258,16 @@ enum PeerMsg {
 
     /// Prepare reply from replica to leader.
     PrepareReply {
-        /// In our implementation, we choose to break the PrepareReply into
+        /// In our implementation, we choose to break the `PrepareReply` into
         /// slot-wise messages for simplicity.
         slot: usize,
-        /// Also carry the trigger_slot information to make it easier for the
+        /// Also carry the `trigger_slot` information to make it easier for the
         /// leader to track reply progress.
         trigger_slot: usize,
         /// Due to the slot-wise design choice, we need a way to let leader
-        /// know when have all PrepareReplies been received. We use the
-        /// endprep_slot field to convey this: when all slots' PrepareReplies
-        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// know when have all `PrepareReplies` been received. We use the
+        /// `endprep_slot` field to convey this: when all slots' `PrepareReplies`
+        /// up to `endprep_slot` are received, the "wholesome" `PrepareReply`
         /// can be considered received.
         // NOTE: this currently assumes the "ordering" property of TCP.
         endprep_slot: usize,
@@ -297,7 +309,7 @@ enum PeerMsg {
     },
 }
 
-/// RSPaxos server replica module.
+/// `RSPaxos` server replica module.
 pub(crate) struct RSPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -317,22 +329,22 @@ pub(crate) struct RSPaxosReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
@@ -363,10 +375,10 @@ pub(crate) struct RSPaxosReplica {
     commit_bar: usize,
 
     /// Index of the first non-executed instance.
-    /// It is always true that exec_bar <= commit_bar <= start_slot + insts.len()
+    /// It is always true that `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
     exec_bar: usize,
 
-    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// Map from peer ID -> its latest `exec_bar` I know; this is for conservative
     /// snapshotting purpose.
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
@@ -432,7 +444,7 @@ impl RSPaxosReplica {
     /// Compose a unique ballot number from base.
     #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
-        ((base << 8) | ((self.id + 1) as u64)) as Ballot
+        ((base << 8) | u64::from(self.id + 1)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
@@ -441,7 +453,7 @@ impl RSPaxosReplica {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
-    /// Compose LogActionId from slot index & entry type.
+    /// Compose `LogActionId` from slot index & entry type.
     /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
@@ -454,7 +466,7 @@ impl RSPaxosReplica {
         ((slot << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into slot index & entry type.
+    /// Decompose `LogActionId` into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
@@ -468,15 +480,15 @@ impl RSPaxosReplica {
         (slot, entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot).is_ok());
+        debug_assert!(u32::try_from(cmd_idx).is_ok());
         ((slot << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
@@ -487,6 +499,7 @@ impl RSPaxosReplica {
 
 #[async_trait]
 impl GenericReplica for RSPaxosReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -575,11 +588,9 @@ impl GenericReplica for RSPaxosReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -813,7 +824,7 @@ impl Default for ClientConfigRSPaxos {
     }
 }
 
-/// RSPaxos client-side module.
+/// `RSPaxos` client-side module.
 pub(crate) struct RSPaxosClient {
     /// Client ID.
     id: ClientId,
@@ -878,34 +889,34 @@ impl GenericEndpoint for RSPaxosClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id)
-                    || servers_info[&self.server_id].is_paused
-                {
-                    self.server_id = (self.server_id + 1) % population;
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, api_stub);
-                }
-                Ok(())
+            // shift to a new server_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.server_id)
+                || servers_info[&self.server_id].is_paused
+            {
+                self.server_id = (self.server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, api_stub);
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

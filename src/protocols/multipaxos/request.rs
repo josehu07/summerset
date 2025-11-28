@@ -1,7 +1,6 @@
-//! MultiPaxos -- client request entrance.
+//! `MultiPaxos` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, LogAction};
 use crate::utils::{Bitmap, SummersetError};
 
@@ -225,11 +224,9 @@ impl MultiPaxosReplica {
     }
 
     /// [for stale read profiling]
-    pub(super) fn val_ver_of_first_key(
-        &mut self,
-    ) -> Result<Option<(String, usize)>, SummersetError> {
+    pub(super) fn val_ver_of_first_key(&mut self) -> Option<(String, usize)> {
         let (mut key, mut ver) = (None, 0);
-        for inst in self.insts.iter_mut() {
+        for inst in &mut self.insts {
             if inst.status >= Status::Committed {
                 for (_, req) in &inst.reqs {
                     if let ApiRequest::Req {
@@ -237,16 +234,18 @@ impl MultiPaxosReplica {
                         ..
                     } = req
                     {
-                        if key.is_none() {
-                            key = Some(k.into());
-                        } else if key.as_ref().unwrap() == k {
+                        if let Some(kk) = &key
+                            && kk == k
+                        {
                             ver += 1;
+                        } else {
+                            key = Some(k.into());
                         }
                     }
                 }
             }
         }
 
-        Ok(key.map(|k| (k, ver)))
+        key.map(|k| (k, ver))
     }
 }

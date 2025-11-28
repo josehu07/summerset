@@ -1,13 +1,12 @@
-//! QuorumLeases -- durable logging.
+//! `QuorumLeases` -- durable logging.
 
 use super::*;
-
 use crate::server::{ApiRequest, LeaseNotice, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
 // QuorumLeasesReplica durable WAL logging
 impl QuorumLeasesReplica {
-    /// Handler of PrepareBal logging result chan recv.
+    /// Handler of `PrepareBal` logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
         slot: usize,
@@ -36,18 +35,17 @@ impl QuorumLeasesReplica {
                 endprep_slot,
                 ..
             }) = inst.leader_bk
+                && slot <= endprep_slot
             {
-                if slot <= endprep_slot {
-                    self.handle_msg_prepare_reply(
-                        self.id,
-                        slot,
-                        trigger_slot,
-                        endprep_slot,
-                        inst.bal,
-                        voted,
-                        self.accept_bar,
-                    )?;
-                }
+                self.handle_msg_prepare_reply(
+                    self.id,
+                    slot,
+                    trigger_slot,
+                    endprep_slot,
+                    inst.bal,
+                    voted,
+                    self.accept_bar,
+                )?;
             }
         } else {
             // on follower replica, finishing the logging of a
@@ -83,7 +81,7 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Handler of AcceptData logging result chan recv.
+    /// Handler of `AcceptData` logging result chan recv.
     async fn handle_logged_accept_data(
         &mut self,
         slot: usize,
@@ -98,17 +96,17 @@ impl QuorumLeasesReplica {
         );
 
         // revoke read leases I've been granted and am granting to
-        debug_assert!(slot > self.qlease_ver as usize);
+        debug_assert!(slot > usize::try_from(self.qlease_ver)?);
         let grant_set = self.qlease_manager.grant_set();
         if !self.config.no_lease_retraction {
-            if slot == self.qlease_num as usize + 1 // first Accept after qleased
+            if slot == usize::try_from(self.qlease_num)? + 1 // first Accept after qleased
                 && self.qlease_grantees().get(self.id)?
             {
                 self.qlease_manager
                     .add_notice(self.qlease_num, LeaseNotice::ClearHeld)?;
                 self.ensure_qlease_cleared().await?;
             }
-            if slot == self.qlease_num as usize + 1
+            if slot == usize::try_from(self.qlease_num)? + 1
             // first Accept after qleased
             {
                 self.qlease_manager.add_notice(
@@ -168,7 +166,7 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
-    /// Handler of CommitSlot logging result chan recv.
+    /// Handler of `CommitSlot` logging result chan recv.
     async fn handle_logged_commit_slot(
         &mut self,
         slot: usize,
@@ -200,6 +198,7 @@ impl QuorumLeasesReplica {
                     let mut conf_changes = vec![];
                     for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate()
                     {
+                        #[allow(clippy::match_wildcard_for_single_variants)]
                         match req {
                             ApiRequest::Req { cmd, .. } => {
                                 self.state_machine.submit_cmd(

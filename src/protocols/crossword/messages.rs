@@ -1,10 +1,9 @@
-//! Crossword -- peer-peer messaging.
+//! `Crossword` -- peer-peer messaging.
 
 use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
@@ -29,13 +28,16 @@ impl CrosswordReplica {
         if assignment_balanced {
             let spr = acks.values().next().unwrap().count();
             let dj_spr = rs_total_shards / population;
+            #[allow(clippy::cast_possible_truncation)]
             return (acks.len() as u8 - fault_tolerance - 1) * dj_spr + spr;
         }
 
         // enumerate all subsets of acks excluding fault number of replicas
+        #[allow(clippy::cast_possible_truncation)]
         let cnt = (acks.len() - fault_tolerance as usize) as u32;
-        let servers: Vec<ReplicaId> = acks.keys().cloned().collect();
+        let servers: Vec<ReplicaId> = acks.keys().copied().collect();
         let mut min_coverage = rs_total_shards;
+        #[allow(clippy::cast_possible_truncation)]
         for n in (0..2usize.pow(servers.len() as u32))
             .filter(|n| n.count_ones() == cnt)
         {
@@ -45,13 +47,10 @@ impl CrosswordReplica {
                 .enumerate()
                 .filter(|&(i, _)| (n >> i) % 2 == 1)
             {
-                for shard in acks[server].iter().filter_map(|(s, flag)| {
-                    if flag {
-                        Some(s)
-                    } else {
-                        None
-                    }
-                }) {
+                for shard in acks[server]
+                    .iter()
+                    .filter_map(|(s, flag)| if flag { Some(s) } else { None })
+                {
                     coverage.set(shard, true).expect("impossible shard index");
                 }
             }
@@ -137,6 +136,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of Prepare reply from replica.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -357,7 +357,8 @@ impl CrosswordReplica {
                         )?;
                         pf_trace!(
                             "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
+                            this_slot,
+                            ballot
                         );
 
                         // send Accept messages to all peers
@@ -531,7 +532,7 @@ impl CrosswordReplica {
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed
-            if leader_bk.accept_acks.len() as u8 >= self.majority
+            if u8::try_from(leader_bk.accept_acks.len())? >= self.majority
                 && Self::coverage_under_faults(
                     self.rs_total_shards,
                     self.population,

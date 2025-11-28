@@ -2,16 +2,15 @@
 
 use std::net::SocketAddr;
 
+use bytes::BytesMut;
+use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
 use crate::client::ClientId;
 use crate::server::{ApiReply, ApiRequest};
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError,
+    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
 };
-
-use bytes::BytesMut;
-
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Client API connection stub.
 pub(crate) struct ClientApiStub {
@@ -57,10 +56,10 @@ impl ClientApiStub {
     /// Sends a request to established server connection. Returns:
     ///   - `Ok(true)` if successful
     ///   - `Ok(false)` if socket full and may block; in this case, the input
-    ///                 request is saved and the next calls to `send_req()`
-    ///                 must give arg `req == None` to retry until successful
-    ///                 (typically after doing a few `recv_reply()`s to free
-    ///                 up some buffer space)
+    ///     request is saved and the next calls to `send_req()`
+    ///     must give arg `req == None` to retry until successful
+    ///     (typically after doing a few `recv_reply()`s to free
+    ///     up some buffer space)
     ///   - `Err(err)` if any unexpected error occurs
     pub(crate) fn send_req(
         &mut self,

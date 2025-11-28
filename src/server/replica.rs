@@ -3,11 +3,10 @@
 
 use std::net::SocketAddr;
 
-use crate::utils::SummersetError;
-
 use async_trait::async_trait;
-
 use tokio::sync::watch;
+
+use crate::utils::SummersetError;
 
 /// Server replica ID type.
 pub type ReplicaId = u8;

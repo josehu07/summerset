@@ -2,27 +2,30 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use crate::client::ClientId;
-use crate::manager::ServerInfo;
-use crate::server::ReplicaId;
-use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, ConfNum,
-    RespondersConf, SummersetError,
-};
-
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
-
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::client::ClientId;
+use crate::manager::ServerInfo;
+use crate::server::ReplicaId;
+use crate::utils::{
+    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
+    tcp_bind_with_retry,
+};
+
 /// Control event request from client.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
+)]
 pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
@@ -61,13 +64,15 @@ pub enum CtrlRequest {
 }
 
 /// Control event reply to client.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
+)]
 pub enum CtrlReply {
     /// Reply to server info query.
     QueryInfo {
         /// Number of replicas in cluster.
         population: u8,
-        /// Map from replica ID -> (addr, is_leader).
+        /// Map from replica ID -> (addr, `is_leader`).
         servers_info: HashMap<ReplicaId, ServerInfo>,
     },
 
@@ -77,7 +82,7 @@ pub enum CtrlReply {
         conf_num: ConfNum,
 
         /// Responders configuration known to the manager.
-        now_conf: RespondersConf,
+        now_conf: RespondersConf<()>,
     },
 
     /// Reply to server reset request.
@@ -106,15 +111,14 @@ pub(crate) struct ClientReactor {
 
     /// Map from client ID -> sender side of the reply channel, shared with
     /// the client acceptor task.
-    tx_replies:
-        flashmap::ReadHandle<ClientId, mpsc::UnboundedSender<CtrlReply>>,
+    tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>>,
 
     /// Join handle of the client acceptor task.
     _client_acceptor_handle: JoinHandle<()>,
 
     /// Map from client ID -> client responder task join handles, shared
     /// with the client acceptor task.
-    _client_responder_handles: flashmap::ReadHandle<ClientId, JoinHandle<()>>,
+    _client_responder_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
 }
 
 // ClientReactor public API implementation
@@ -127,44 +131,45 @@ impl ClientReactor {
     ) -> Result<Self, SummersetError> {
         let (tx_req, rx_req) = mpsc::unbounded_channel();
 
-        let (tx_replies_write, tx_replies_read) =
-            flashmap::new::<ClientId, mpsc::UnboundedSender<CtrlReply>>();
+        let tx_replies: Arc<
+            DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>,
+        > = Arc::new(DashMap::new());
 
-        let (client_responder_handles_write, client_responder_handles_read) =
-            flashmap::new::<ClientId, JoinHandle<()>>();
+        let client_responder_handles: Arc<DashMap<ClientId, JoinHandle<()>>> =
+            Arc::new(DashMap::new());
 
         let client_listener = tcp_bind_with_retry(cli_addr, 15).await?;
         let mut acceptor = ClientReactorAcceptorTask::new(
             tx_req,
-            tx_replies_write,
+            tx_replies.clone(),
             client_listener,
-            client_responder_handles_write,
+            client_responder_handles.clone(),
         );
         let client_acceptor_handle =
             tokio::spawn(async move { acceptor.run().await });
 
         Ok(ClientReactor {
             rx_req,
-            tx_replies: tx_replies_read,
+            tx_replies,
             _client_acceptor_handle: client_acceptor_handle,
-            _client_responder_handles: client_responder_handles_read,
+            _client_responder_handles: client_responder_handles,
         })
     }
 
     /// Returns whether a client ID is connected to me.
     #[allow(dead_code)]
     pub(crate) fn has_client(&self, client: ClientId) -> bool {
-        let tx_replies_guard = self.tx_replies.guard();
-        tx_replies_guard.contains_key(&client)
+        self.tx_replies.contains_key(&client)
     }
 
     /// Waits for the next control event request from some client.
     pub(crate) async fn recv_req(
         &mut self,
     ) -> Result<(ClientId, CtrlRequest), SummersetError> {
-        match self.rx_req.recv().await {
-            Some((id, req)) => Ok((id, req)),
-            None => logged_err!("req channel has been closed"),
+        if let Some((id, req)) = self.rx_req.recv().await {
+            Ok((id, req))
+        } else {
+            logged_err!("req channel has been closed")
         }
     }
 
@@ -174,10 +179,9 @@ impl ClientReactor {
         reply: CtrlReply,
         client: ClientId,
     ) -> Result<(), SummersetError> {
-        let tx_replies_guard = self.tx_replies.guard();
-        match tx_replies_guard.get(&client) {
+        match self.tx_replies.get(&client) {
             Some(tx_reply) => {
-                tx_reply.send(reply).map_err(SummersetError::msg)?;
+                tx_reply.value().send(reply).map_err(SummersetError::msg)?;
                 Ok(())
             }
             None => {
@@ -190,14 +194,13 @@ impl ClientReactor {
     }
 }
 
-/// ClientReactor client acceptor task.
+/// `ClientReactor` client acceptor task.
 struct ClientReactorAcceptorTask {
     tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
-    tx_replies:
-        flashmap::WriteHandle<ClientId, mpsc::UnboundedSender<CtrlReply>>,
+    tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>>,
 
     client_listener: TcpListener,
-    client_responder_handles: flashmap::WriteHandle<ClientId, JoinHandle<()>>,
+    client_responder_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
 
     next_client_id: ClientId,
 
@@ -209,15 +212,9 @@ impl ClientReactorAcceptorTask {
     /// Creates the client acceptor task.
     fn new(
         tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
-        tx_replies: flashmap::WriteHandle<
-            ClientId,
-            mpsc::UnboundedSender<CtrlReply>,
-        >,
+        tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>>,
         client_listener: TcpListener,
-        client_responder_handles: flashmap::WriteHandle<
-            ClientId,
-            JoinHandle<()>,
-        >,
+        client_responder_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
     ) -> Self {
         // maintain a monotonically increasing client ID for new clients
         // start with a relatively high value to avoid confusion with
@@ -251,14 +248,11 @@ impl ClientReactorAcceptorTask {
             return logged_err!("error assigning new client ID: {}", e);
         }
 
-        let mut tx_replies_guard = self.tx_replies.guard();
-        if let Some(sender) = tx_replies_guard.get(&id) {
+        if let Some(sender) = self.tx_replies.get(&id) {
             if sender.is_closed() {
                 // if this client ID has left before, garbage collect it now
-                let mut client_responder_handles_guard =
-                    self.client_responder_handles.guard();
-                client_responder_handles_guard.remove(id);
-                tx_replies_guard.remove(id);
+                self.client_responder_handles.remove(&id);
+                self.tx_replies.remove(&id);
             } else {
                 return logged_err!("duplicate client ID listened: {}", id);
             }
@@ -266,7 +260,7 @@ impl ClientReactorAcceptorTask {
         pf_debug!("accepted new client {}", id);
 
         let (tx_reply, rx_reply) = mpsc::unbounded_channel();
-        tx_replies_guard.insert(id, tx_reply);
+        self.tx_replies.insert(id, tx_reply);
 
         let mut responder = ClientReactorResponderTask::new(
             id,
@@ -278,12 +272,8 @@ impl ClientReactorAcceptorTask {
         );
         let client_responder_handle =
             tokio::spawn(async move { responder.run().await });
-        let mut client_responder_handles_guard =
-            self.client_responder_handles.guard();
-        client_responder_handles_guard.insert(id, client_responder_handle);
-
-        client_responder_handles_guard.publish();
-        tx_replies_guard.publish();
+        self.client_responder_handles
+            .insert(id, client_responder_handle);
         Ok(())
     }
 
@@ -292,15 +282,12 @@ impl ClientReactorAcceptorTask {
         &mut self,
         id: ClientId,
     ) -> Result<(), SummersetError> {
-        let mut tx_replies_guard = self.tx_replies.guard();
-        if !tx_replies_guard.contains_key(&id) {
+        if !self.tx_replies.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
-        tx_replies_guard.remove(id);
+        self.tx_replies.remove(&id);
 
-        let mut client_responder_handles_guard =
-            self.client_responder_handles.guard();
-        client_responder_handles_guard.remove(id);
+        self.client_responder_handles.remove(&id);
 
         Ok(())
     }
@@ -348,7 +335,7 @@ impl ClientReactorAcceptorTask {
     }
 }
 
-/// ClientReactor per-client responder task.
+/// `ClientReactor` per-client responder task.
 struct ClientReactorResponderTask {
     id: ClientId,
     addr: SocketAddr,
@@ -399,7 +386,7 @@ impl ClientReactorResponderTask {
         }
     }
 
-    /// Reads a client control request from given TcpStream.
+    /// Reads a client control request from given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_req(
         // first 8 bytes being the request length, and the rest bytes being the
@@ -410,7 +397,7 @@ impl ClientReactorResponderTask {
         safe_tcp_read(req_buf, conn_read).await
     }
 
-    /// Writes a control event reply through given TcpStream.
+    /// Writes a control event reply through given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_reply(
         reply_buf: &mut BytesMut,
@@ -534,12 +521,14 @@ impl ClientReactorResponderTask {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::Barrier;
+    use tokio::time::{self, Duration};
+
     use super::*;
     use crate::client::ClientCtrlStub;
     use crate::manager::ServerInfo;
-    use std::sync::Arc;
-    use tokio::sync::Barrier;
-    use tokio::time::{self, Duration};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
@@ -625,6 +614,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn api_client_leave() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();

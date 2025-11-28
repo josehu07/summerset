@@ -1,4 +1,4 @@
-//! Replication protocol: EPaxos.
+//! Replication protocol: `EPaxos`.
 //!
 //! Leaderless Egalitarian Paxos that allows any replica to be command leader.
 //! There's' no distinction between commit vs. execute latency now in Summerset
@@ -6,6 +6,7 @@
 //!   - <https://www.cs.cmu.edu/~dga/papers/epaxos-sosp2013.pdf>
 //!   - <https://www.usenix.org/system/files/nsdi21-tollman.pdf>
 
+use bincode::{Decode, Encode};
 mod control;
 mod dependency;
 mod durability;
@@ -17,11 +18,15 @@ mod request;
 mod snapshot;
 
 use std::collections::HashMap;
-use std::fmt;
 use std::net::SocketAddr;
-use std::ops;
 use std::path::Path;
-use std::slice;
+use std::{fmt, ops, slice};
+
+use async_trait::async_trait;
+use get_size::GetSize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -32,15 +37,6 @@ use crate::server::{
     ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, SummersetError};
-
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -107,18 +103,27 @@ impl Default for ReplicaConfigEPaxos {
 /// Ballot number type. Use 0 as a null ballot number.
 type Ballot = u64;
 
-/// Sequence number type for PreAccepts. Use 0 as a dummy number.
+/// Sequence number type for `PreAccepts`. Use 0 as a dummy number.
 type SeqNum = u64;
 
 /// Dependency set type with the assumption that, since dependencies here are
 /// naturally transitive, we just need to record the highest interfering column
 /// index for each row.
 #[derive(
-    Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, GetSize,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
+    GetSize,
 )]
 struct DepSet(Vec<Option<usize>>); // length always == population
 
-/// Instance status enum.
+/// `Instance` status enum.
 #[derive(
     Debug,
     PartialEq,
@@ -129,6 +134,8 @@ struct DepSet(Vec<Option<usize>>); // length always == population
     Copy,
     Serialize,
     Deserialize,
+    Encode,
+    Decode,
     GetSize,
 )]
 enum Status {
@@ -147,22 +154,22 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Command leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
-    /// Replicas from which I have received PreAccept confirmations.
+    /// Replicas from which I have received `PreAccept` confirmations.
     pre_accept_acks: Bitmap,
 
-    /// The set of PreAccept replies received so far.
+    /// The set of `PreAccept` replies received so far.
     pre_accept_replies: HashMap<ReplicaId, (SeqNum, DepSet)>,
 
     /// Replicas from which I have received Accept confirmations.
     accept_acks: Bitmap,
 
-    /// Replicas from which I have received ExpPrepare confirmations.
+    /// Replicas from which I have received `ExpPrepare` confirmations.
     exp_prepare_acks: Bitmap,
 
-    /// Max ballot among received ExpPrepare replies.
+    /// Max ballot among received `ExpPrepare` replies.
     exp_prepare_max_bal: Ballot,
 
-    /// The set of ExpPrepare replies with the highest ballot number.
+    /// The set of `ExpPrepare` replies with the highest ballot number.
     exp_prepare_voteds: HashMap<ReplicaId, (Status, SeqNum, DepSet, ReqBatch)>,
 }
 
@@ -185,6 +192,8 @@ struct ReplicaBookkeeping {
     Copy,
     Serialize,
     Deserialize,
+    Encode,
+    Decode,
     GetSize,
 )]
 struct SlotIdx(ReplicaId, usize);
@@ -209,7 +218,7 @@ struct Instance {
     /// Ballot number.
     bal: Ballot,
 
-    /// Instance status.
+    /// `Instance` status.
     status: Status,
 
     /// Sequence number.
@@ -230,7 +239,7 @@ struct Instance {
     /// True if from external client, else false.
     external: bool,
 
-    /// True if explicitly avoiding fast path after the PreAccept phase.
+    /// True if explicitly avoiding fast path after the `PreAccept` phase.
     avoid_fast_path: bool,
 
     /// Offset of first durable WAL log entry related to this instance.
@@ -238,10 +247,12 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 #[allow(clippy::enum_variant_names)]
 enum WalEntry {
-    /// Records a newly initiated PreAccept phase instance.
+    /// Records a newly initiated `PreAccept` phase instance.
     PreAcceptSlot {
         slot: SlotIdx,
         ballot: Ballot,
@@ -274,7 +285,9 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -289,9 +302,9 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
-    /// PreAccept message from command leader to replicas.
+    /// `PreAccept` message from command leader to replicas.
     PreAccept {
         /// Slot index of the instance from peer to be accepted.
         slot: SlotIdx,
@@ -303,7 +316,7 @@ enum PeerMsg {
         reqs: ReqBatch,
     },
 
-    /// PreAccept reply from replica to command leader.
+    /// `PreAccept` reply from replica to command leader.
     PreAcceptReply {
         slot: SlotIdx,
         ballot: Ballot,
@@ -336,14 +349,14 @@ enum PeerMsg {
         reqs: ReqBatch,
     },
 
-    /// ExpPrepare message from replica that suspects a failure to others.
+    /// `ExpPrepare` message from replica that suspects a failure to others.
     ExpPrepare { slot: SlotIdx, new_ballot: Ballot },
 
-    /// ExpPrepare reply from replica to sender.
+    /// `ExpPrepare` reply from replica to sender.
     ExpPrepareReply {
         slot: SlotIdx,
         new_ballot: Ballot,
-        /// Highest ballot *accepted* before the one in ExpPrepare.
+        /// Highest ballot *accepted* before the one in `ExpPrepare`.
         voted_bal: Ballot,
         /// Last accepted in which phase.
         voted_status: Status,
@@ -355,7 +368,7 @@ enum PeerMsg {
 
     /// Peer-to-peer periodic heartbeat.
     Heartbeat {
-        /// exec_bar of each row of the instance space; for conservative
+        /// `exec_bar` of each row of the instance space; for conservative
         /// snapshotting purpose.
         exec_bars: Vec<usize>, // length always == population
         /// For conservative snapshotting purpose.
@@ -363,7 +376,7 @@ enum PeerMsg {
     },
 }
 
-/// EPaxos server replica module.
+/// `EPaxos` server replica module.
 pub(crate) struct EPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -386,22 +399,22 @@ pub(crate) struct EPaxosReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
@@ -421,10 +434,10 @@ pub(crate) struct EPaxosReplica {
 
     /// Column index of the first non-executed instance of each row.
     /// It is always true that
-    ///   exec_bar <= commit_bar <= start_slot + insts.len()
+    ///   `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
     exec_bars: Vec<usize>, // length always == population
 
-    /// Map from peer ID -> its latest minimum exec_bar I know across its rows;
+    /// Map from peer ID -> its latest minimum `exec_bar` I know across its rows;
     /// this is for conservative snapshotting purpose.
     peer_exec_min: HashMap<ReplicaId, usize>,
 
@@ -468,6 +481,7 @@ impl EPaxosReplica {
 
     /// Locate the first null slot or append a null instance if no holes exist
     /// in specified row.
+    #[allow(clippy::cast_possible_truncation)]
     fn first_null_slot(&mut self, row: ReplicaId) -> SlotIdx {
         let row = row as usize;
         for c in self.exec_bars[row]..(self.start_col + self.insts[row].len()) {
@@ -484,7 +498,7 @@ impl EPaxosReplica {
     /// Compose a unique ballot number from base.
     #[inline]
     fn make_unique_ballot(id: ReplicaId, base: u64) -> Ballot {
-        ((base << 8) | ((id + 1) as u64)) as Ballot
+        ((base << 8) | u64::from(id + 1)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
@@ -499,7 +513,7 @@ impl EPaxosReplica {
         Self::make_unique_ballot(id, 0)
     }
 
-    /// Compose LogActionId from slot index & entry type.
+    /// Compose `LogActionId` from slot index & entry type.
     /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: SlotIdx, entry_type: Status) -> LogActionId {
@@ -514,7 +528,7 @@ impl EPaxosReplica {
         ((col << 8) | (row << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into slot index & entry type.
+    /// Decompose `LogActionId` into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (SlotIdx, Status) {
         let col = (log_action_id >> 8) as usize;
@@ -529,7 +543,7 @@ impl EPaxosReplica {
         (SlotIdx(row, col), entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: SlotIdx, cmd_idx: usize) -> CommandId {
         let (row, col) = slot.unpack();
@@ -539,7 +553,7 @@ impl EPaxosReplica {
         ((col << 26) | (row << 20) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (SlotIdx, usize) {
         let col = (command_id >> 26) as usize;
@@ -551,6 +565,7 @@ impl EPaxosReplica {
 
 #[async_trait]
 impl GenericReplica for EPaxosReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -637,11 +652,9 @@ impl GenericReplica for EPaxosReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -680,7 +693,7 @@ impl GenericReplica for EPaxosReplica {
             population,
             simple_quorum_cnt: (population / 2) + 1,
             super_quorum_cnt: if config.optimized_quorum {
-                (population / 2) + (((population / 2) + 1) / 2)
+                (population / 2) + (population / 2).div_ceil(2)
             } else {
                 (population / 2) * 2
             },
@@ -709,6 +722,7 @@ impl GenericReplica for EPaxosReplica {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &mut self,
         mut rx_term: watch::Receiver<bool>,
@@ -862,7 +876,7 @@ impl Default for ClientConfigEPaxos {
     }
 }
 
-/// EPaxos client-side module.
+/// `EPaxos` client-side module.
 pub(crate) struct EPaxosClient {
     /// Client ID.
     id: ClientId,
@@ -928,41 +942,41 @@ impl GenericEndpoint for EPaxosClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if nearest one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id)
-                    || servers_info[&self.server_id].is_paused
-                {
-                    self.server_id = (self.server_id + 1) % population;
-                }
-                if self.server_id != self.config.near_server_id {
-                    pf_warn!(
-                        "near server {} inactive, using {} instead...",
-                        self.config.near_server_id,
-                        self.server_id
-                    );
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, api_stub);
-                }
-                Ok(())
+            // shift to a new server_id if nearest one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.server_id)
+                || servers_info[&self.server_id].is_paused
+            {
+                self.server_id = (self.server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            if self.server_id != self.config.near_server_id {
+                pf_warn!(
+                    "near server {} inactive, using {} instead...",
+                    self.config.near_server_id,
+                    self.server_id
+                );
+            }
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, api_stub);
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

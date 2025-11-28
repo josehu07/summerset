@@ -12,7 +12,6 @@ tokio = { workspace = true }
 rand = { workspace = true }
 rand_distr = { workspace = true }
 rangemap = { workspace = true }
-lazy_static = { workspace = true }
 serde = { workspace = true }
 toml = { workspace = true }
 log = { workspace = true }

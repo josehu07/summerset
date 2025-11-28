@@ -1,5 +1,11 @@
 //! Public interface to the Summerset core library, linked by both server
 //! executable and client library.
+#![allow(
+    clippy::similar_names,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::uninlined_format_args
+)]
 
 #[macro_use]
 mod utils;
@@ -14,24 +20,20 @@ mod protocols;
 // Things (other than exported macros) exposed to users of this crate:
 
 #[doc(inline)]
-pub use crate::utils::{
-    logger_init, Bitmap, RSCodeword, Stopwatch, SummersetError, Timer, ME,
-};
-
+pub use crate::client::{ClientCtrlStub, ClientId, GenericEndpoint};
 #[doc(inline)]
 pub use crate::manager::{ClusterManager, CtrlReply, CtrlRequest, ServerInfo};
-
+#[doc(inline)]
+pub use crate::protocols::SmrProtocol;
 #[doc(inline)]
 pub use crate::server::{
     ApiReply, ApiRequest, Command, CommandResult, ConfChange, GenericReplica,
     ReplicaId, RequestId,
 };
-
 #[doc(inline)]
-pub use crate::client::{ClientCtrlStub, ClientId, GenericEndpoint};
-
-#[doc(inline)]
-pub use crate::protocols::SmrProtocol;
+pub use crate::utils::{
+    Bitmap, ME, RSCodeword, Stopwatch, SummersetError, Timer, logger_init,
+};
 
 // below are config structs exposed for users to know how to write TOML-format
 // config strings

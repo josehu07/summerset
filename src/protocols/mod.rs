@@ -1,14 +1,16 @@
 //! Summerset's collection of replication protocols.
+#![allow(clippy::wildcard_imports, clippy::unused_async)]
 
 use std::fmt;
 use std::net::SocketAddr;
+
+use bincode::{Decode, Encode};
+use serde::{Deserialize, Serialize};
 
 use crate::client::GenericEndpoint;
 use crate::manager::ClusterManager;
 use crate::server::GenericReplica;
 use crate::utils::SummersetError;
-
-use serde::{Deserialize, Serialize};
 
 mod rep_nothing;
 pub use rep_nothing::{ClientConfigRepNothing, ReplicaConfigRepNothing};
@@ -55,7 +57,9 @@ use bodega::{BodegaClient, BodegaReplica};
 pub use bodega::{ClientConfigBodega, ReplicaConfigBodega};
 
 /// Enum of supported replication protocol types.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Encode, Decode,
+)]
 pub enum SmrProtocol {
     RepNothing,
     SimplePush,
@@ -80,7 +84,8 @@ macro_rules! box_if_ok {
 }
 
 impl SmrProtocol {
-    /// Parse command line string into SmrProtocol enum.
+    /// Parse command line string into `SmrProtocol` enum.
+    #[must_use]
     pub fn parse_name(name: &str) -> Option<Self> {
         match name {
             "RepNothing" => Some(Self::RepNothing),

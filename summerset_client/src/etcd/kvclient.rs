@@ -2,13 +2,11 @@
 
 use std::net::SocketAddr;
 
-use crate::etcd::ClientConfigEtcd;
-
+use etcd_client as etcdcli;
+use summerset::{parsed_config, SummersetError};
 use tokio::time::Duration;
 
-use etcd_client as etcdcli;
-
-use summerset::{parsed_config, SummersetError};
+use crate::etcd::ClientConfigEtcd;
 
 /// etcd KV client wrapper.
 pub(crate) struct EtcdKvClient {

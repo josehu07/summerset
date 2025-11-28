@@ -1,10 +1,9 @@
-//! Raft -- leader election.
+//! `Raft` -- leader election.
 
 use std::cmp;
 use std::collections::HashSet;
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult, ReplicaId};
 use crate::utils::SummersetError;
@@ -57,15 +56,15 @@ impl RaftReplica {
                 );
             }
 
-            if self.role != Role::Follower {
+            if self.role == Role::Follower {
+                Ok(false)
+            } else {
                 self.role = Role::Follower;
                 self.heartbeater.set_sending(false);
                 self.control_hub
                     .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                 pf_info!("converted back to follower");
                 Ok(true)
-            } else {
-                Ok(false)
             }
         } else {
             Ok(false)
@@ -179,7 +178,7 @@ impl RaftReplica {
         Ok(())
     }
 
-    /// Broadcasts empty AppendEntries messages as heartbeats to all peers.
+    /// Broadcasts empty `AppendEntries` messages as heartbeats to all peers.
     pub(super) async fn bcast_heartbeats(
         &mut self,
     ) -> Result<(), SummersetError> {

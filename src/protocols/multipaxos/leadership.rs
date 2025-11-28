@@ -1,7 +1,6 @@
-//! MultiPaxos -- leader election & heartbeats.
+//! `MultiPaxos` -- leader election & heartbeats.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LeaseNotice, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
@@ -30,19 +29,19 @@ impl MultiPaxosReplica {
             // if leasing enabled, revoke old lease if any made to old leader,
             // then initiate granting to the new leader
             if self.config.enable_leader_leases {
-                if let Some(old_leader) = self.leader {
-                    if old_leader != self.id {
-                        self.lease_manager.add_notice(
-                            self.bal_max_seen,
-                            LeaseNotice::DoRevoke {
-                                peers: Some(Bitmap::from((
-                                    self.population,
-                                    vec![old_leader],
-                                ))),
-                            },
-                        )?;
-                        self.ensure_lease_revoked(old_leader).await?;
-                    }
+                if let Some(old_leader) = self.leader
+                    && old_leader != self.id
+                {
+                    self.lease_manager.add_notice(
+                        self.bal_max_seen,
+                        LeaseNotice::DoRevoke {
+                            peers: Some(Bitmap::from((
+                                self.population,
+                                vec![old_leader],
+                            ))),
+                        },
+                    )?;
+                    self.ensure_lease_revoked(old_leader).await?;
                 }
 
                 // initiate granting to new leader
@@ -70,6 +69,7 @@ impl MultiPaxosReplica {
     /// If current leader is not me but times out, steps up as leader, and
     /// sends self-initiated Prepare messages to followers for all in-progress
     /// instances.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn become_a_leader(
         &mut self,
         timeout_source: ReplicaId,
@@ -82,21 +82,17 @@ impl MultiPaxosReplica {
 
         // if leasing enabled, start to revoke old lease
         let mut old_leader = None;
-        if self.config.enable_leader_leases {
-            if let Some(leader) = self.leader {
-                if leader != self.id {
-                    self.lease_manager.add_notice(
-                        self.bal_max_seen,
-                        LeaseNotice::DoRevoke {
-                            peers: Some(Bitmap::from((
-                                self.population,
-                                vec![leader],
-                            ))),
-                        },
-                    )?;
-                    old_leader = Some(leader);
-                }
-            }
+        if self.config.enable_leader_leases
+            && let Some(leader) = self.leader
+            && leader != self.id
+        {
+            self.lease_manager.add_notice(
+                self.bal_max_seen,
+                LeaseNotice::DoRevoke {
+                    peers: Some(Bitmap::from((self.population, vec![leader]))),
+                },
+            )?;
+            old_leader = Some(leader);
         }
 
         self.leader = Some(self.id);
@@ -208,10 +204,10 @@ impl MultiPaxosReplica {
 
         // before moving on, ensure that any lease to old leader has either
         // been RevokeReplied or timed out
-        if self.config.enable_leader_leases {
-            if let Some(old_leader) = old_leader {
-                self.ensure_lease_revoked(old_leader).await?;
-            }
+        if self.config.enable_leader_leases
+            && let Some(old_leader) = old_leader
+        {
+            self.ensure_lease_revoked(old_leader).await?;
         }
 
         Ok(())
@@ -222,21 +218,20 @@ impl MultiPaxosReplica {
         &mut self,
     ) -> Result<(), SummersetError> {
         // check and send lease promise refresh to leader
-        if self.config.enable_leader_leases {
-            if let Some(leader) = self.leader {
-                if leader != self.id {
-                    let to_refresh = self.lease_manager.attempt_refresh(
-                        Some(&Bitmap::from((self.population, vec![leader]))),
-                    )?;
-                    if to_refresh.count() > 0 {
-                        self.transport_hub.bcast_lease_msg(
-                            0, // only one lease purpose exists in the system
-                            self.bal_max_seen,
-                            LeaseMsg::Promise,
-                            Some(to_refresh),
-                        )?;
-                    }
-                }
+        if self.config.enable_leader_leases
+            && let Some(leader) = self.leader
+            && leader != self.id
+        {
+            let to_refresh = self.lease_manager.attempt_refresh(Some(
+                &Bitmap::from((self.population, vec![leader])),
+            ))?;
+            if to_refresh.count() > 0 {
+                self.transport_hub.bcast_lease_msg(
+                    0, // only one lease purpose exists in the system
+                    self.bal_max_seen,
+                    LeaseMsg::Promise,
+                    Some(to_refresh),
+                )?;
             }
         }
 
@@ -328,6 +323,7 @@ impl MultiPaxosReplica {
             // is definitely safe to be snapshotted
             if exec_bar > self.peer_exec_bar[&peer] {
                 *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                #[allow(clippy::cast_possible_truncation)]
                 let passed_cnt = 1 + self
                     .peer_exec_bar
                     .values()
@@ -349,7 +345,7 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// React to a CommitNotice message from leader.
+    /// React to a `CommitNotice` message from leader.
     pub(super) fn heard_commit_notice(
         &mut self,
         peer: ReplicaId,
@@ -370,8 +366,8 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// React to an updated commit_bar received from (probably) leader. Slots
-    /// up to received commit_bar are safe to commit; submit their commands
+    /// React to an updated `commit_bar` received from (probably) leader. Slots
+    /// up to received `commit_bar` are safe to commit; submit their commands
     /// for execution.
     fn advance_commit_bar(
         &mut self,

@@ -1,7 +1,6 @@
-//! SimplePush -- recovery from WAL.
+//! `SimplePush` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::{Bitmap, SummersetError};
 

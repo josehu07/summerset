@@ -1,7 +1,6 @@
-//! RS-Paxos -- leader election.
+//! `RS-Paxos` -- leader election.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
@@ -42,6 +41,7 @@ impl RSPaxosReplica {
     /// If current leader is not me but times out, steps up as leader, and
     /// sends self-initiated Prepare messages to followers for all in-progress
     /// instances.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn become_a_leader(
         &mut self,
         timeout_source: ReplicaId,
@@ -316,6 +316,7 @@ impl RSPaxosReplica {
             // is definitely safe to be snapshotted
             if exec_bar > self.peer_exec_bar[&peer] {
                 *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                #[allow(clippy::cast_possible_truncation)]
                 let passed_cnt = 1 + self
                     .peer_exec_bar
                     .values()

@@ -1,10 +1,9 @@
-//! CRaft -- snapshotting & GC.
+//! `CRaft` -- snapshotting & GC.
 
 use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{ApiRequest, Command, LogAction, LogResult};
 use crate::utils::SummersetError;
@@ -57,7 +56,7 @@ impl CRaftReplica {
         }
     }
 
-    /// Discard everything lower than start_slot in durable log.
+    /// Discard everything lower than `start_slot` in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         // do a dummy sync read to force all previously submitted log actions
         // to be processed
@@ -116,7 +115,7 @@ impl CRaftReplica {
         Ok(())
     }
 
-    /// Take a snapshot up to current last_exec, then discard the in-mem log up
+    /// Take a snapshot up to current `last_exec`, then discard the in-mem log up
     /// to that index as well as their data in the durable log file.
     //
     // NOTE: the current implementation does not guard against crashes in the

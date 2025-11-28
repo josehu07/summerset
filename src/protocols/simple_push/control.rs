@@ -1,14 +1,13 @@
-//! SimplePush -- manager control actions.
+//! `SimplePush` -- manager control actions.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // SimplePushReplica control messages handling
 impl SimplePushReplica {
-    /// Handler of ResetState control message.
+    /// Handler of `ResetState` control message.
     async fn handle_ctrl_reset_state(
         &mut self,
         durable: bool,

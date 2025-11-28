@@ -1,7 +1,6 @@
-//! QuorumLeases -- quorum leaseholder roles configuration maintenance.
+//! `QuorumLeases` -- quorum leaseholder roles configuration maintenance.
 
 use super::*;
-
 use crate::server::LeaseNotice;
 
 // QuorumLeasesReplica quorum leaseholder roles configuration logic
@@ -21,10 +20,10 @@ impl QuorumLeasesReplica {
             return false;
         }
 
-        if let Some(leader) = delta.leader {
-            if leader >= population {
-                return false;
-            }
+        if let Some(leader) = delta.leader
+            && leader >= population
+        {
+            return false;
         }
 
         if let Some(responders) = &delta.responders {
@@ -42,7 +41,7 @@ impl QuorumLeasesReplica {
     /// Applies a valid configuration change delta.
     pub(super) fn apply_conf_delta(
         delta: ConfChange,
-        qlease_conf: &mut RespondersConf,
+        qlease_conf: &mut RespondersConf<()>,
     ) -> Result<(), SummersetError> {
         debug_assert!(!delta.reset);
         if let Some(leader) = delta.leader {
@@ -80,24 +79,12 @@ impl QuorumLeasesReplica {
         for (idx, (client, req_id, delta)) in
             conf_changes.into_iter().enumerate()
         {
-            if idx != apply_idx {
-                // not applied; directly reply to client as ignored
-                self.external_api.send_reply(
-                    ApiReply::Conf {
-                        id: req_id,
-                        success: false,
-                    },
-                    client,
-                )?;
-                pf_trace!(
-                    "replied -> client {} slot {} conf ignored",
-                    client,
-                    slot
-                );
-            } else {
+            if idx == apply_idx {
                 // to apply; first ensure revocation of all the existing
                 // quorum leases
-                debug_assert!(self.commit_bar > self.qlease_ver as usize);
+                debug_assert!(
+                    self.commit_bar > usize::try_from(self.qlease_ver)?
+                );
                 let peers = self.qlease_grantees().clone();
                 self.qlease_manager.add_notice(
                     self.qlease_num,
@@ -149,13 +136,27 @@ impl QuorumLeasesReplica {
                         slot
                     );
                 }
+            } else {
+                // not applied; directly reply to client as ignored
+                self.external_api.send_reply(
+                    ApiReply::Conf {
+                        id: req_id,
+                        success: false,
+                    },
+                    client,
+                )?;
+                pf_trace!(
+                    "replied -> client {} slot {} conf ignored",
+                    client,
+                    slot
+                );
             }
         }
 
         Ok(())
     }
 
-    /// Update the highest_slot tracking info given a new request batch about
+    /// Update the `highest_slot` tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_slot(
         slot: usize,
@@ -205,10 +206,9 @@ impl QuorumLeasesReplica {
                             cmd: Command::Put { key: k, value },
                             ..
                         } = req
+                            && k == key
                         {
-                            if k == key {
-                                return Ok(Some((slot, Some(value.clone()))));
-                            }
+                            return Ok(Some((slot, Some(value.clone()))));
                         }
                     }
                     logged_err!(

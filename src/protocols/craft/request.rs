@@ -1,7 +1,6 @@
-//! CRaft -- client request entrance.
+//! `CRaft` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 

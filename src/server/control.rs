@@ -2,19 +2,18 @@
 
 use std::net::SocketAddr;
 
+use bytes::BytesMut;
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
 use crate::manager::CtrlMsg;
 use crate::server::ReplicaId;
 use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_connect_with_retry, SummersetError, ME,
+    ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
 };
-
-use bytes::BytesMut;
-
-use tokio::io::AsyncReadExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
 /// The manager control message handler module.
 pub(crate) struct ControlHub {
@@ -74,9 +73,10 @@ impl ControlHub {
     pub(crate) async fn recv_ctrl(
         &mut self,
     ) -> Result<CtrlMsg, SummersetError> {
-        match self.rx_recv.recv().await {
-            Some(msg) => Ok(msg),
-            None => logged_err!("recv channel has been closed"),
+        if let Some(msg) = self.rx_recv.recv().await {
+            Ok(msg)
+        } else {
+            logged_err!("recv channel has been closed")
         }
     }
 
@@ -107,7 +107,7 @@ impl ControlHub {
     }
 }
 
-/// ControlHub control messenger task.
+/// `ControlHub` control messenger task.
 struct ControlHubMessengerTask {
     conn_read: OwnedReadHalf,
     conn_write: OwnedWriteHalf,
@@ -147,7 +147,7 @@ impl ControlHubMessengerTask {
         }
     }
 
-    /// Reads a manager control message from given TcpStream.
+    /// Reads a manager control message from given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_ctrl(
         // first 8 bytes being the message length, and the rest bytes being the
@@ -158,7 +158,7 @@ impl ControlHubMessengerTask {
         safe_tcp_read(read_buf, conn_read).await
     }
 
-    /// Writes a control message through given TcpStream.
+    /// Writes a control message through given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_ctrl(
         write_buf: &mut BytesMut,

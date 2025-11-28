@@ -2,13 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::server::ReplicaId;
-use crate::utils::{Bitmap, SummersetError, Timer};
-
 use rand::prelude::*;
-
 use tokio::sync::mpsc;
 use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+
+use crate::server::ReplicaId;
+use crate::utils::{Bitmap, SummersetError, Timer};
 
 /// Multiplexed heartbeat timeout events type.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -50,7 +49,7 @@ pub(crate) struct Heartbeater {
     is_sending: bool,
 
     /// Heartbeat reply counters for approximate detection of peer health.
-    /// Tuple of (#hb_replied, #hb_replied seen at last send, repetition).
+    /// Tuple of (#`hb_replied`, #`hb_replied` seen at last send, repetition).
     reply_cnts: HashMap<ReplicaId, (u64, u64, u8)>,
 
     /// Approximate health status tracking of peer replicas; this is a more
@@ -76,7 +75,8 @@ impl Heartbeater {
         if hear_timeout_max < hear_timeout_min + Duration::from_millis(100) {
             return logged_err!(
                 "heartbeat max hear_timeout {:?} must be >= 100ms + min hear_timeout {:?}",
-                hear_timeout_max, hear_timeout_min
+                hear_timeout_max,
+                hear_timeout_min
             );
         }
         if send_interval < Duration::from_millis(1)
@@ -106,7 +106,7 @@ impl Heartbeater {
                             Some(move || {
                                 tx_timeout_ref.send(p).expect(
                                     "sending to tx_timeout_ref should succeed",
-                                )
+                                );
                             }),
                             false,
                         ),
@@ -151,15 +151,13 @@ impl Heartbeater {
                                 continue; // explosion already cancelled, ignore
                             }
                             return Ok(HeartbeatEvent::HearTimeout {peer});
-                        } else {
-                            return logged_err!(
-                                "peer {} not found in hear_timers",
-                                peer
-                            );
                         }
-                    } else {
-                        return logged_err!("all timeout channel senders closed");
+                        return logged_err!(
+                            "peer {} not found in hear_timers",
+                            peer
+                        );
                     }
+                    return logged_err!("all timeout channel senders closed");
                 },
 
                 // a sending tick
@@ -174,11 +172,12 @@ impl Heartbeater {
     fn kickoff_timer_inner(&self, timer: &Timer) -> Result<(), SummersetError> {
         timer.cancel()?;
 
-        let timeout_ms = thread_rng().gen_range(
+        let timeout_ms = rand::rng().random_range(
             self.hear_timeout_min.as_millis()
                 ..=self.hear_timeout_max.as_millis(),
         );
         // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
+        #[allow(clippy::cast_possible_truncation)]
         timer.kickoff(Duration::from_millis(timeout_ms as u64))
     }
 
@@ -189,15 +188,15 @@ impl Heartbeater {
         peer: Option<ReplicaId>,
     ) -> Result<(), SummersetError> {
         if let Some(peer) = peer {
-            if peer != self.me {
+            if peer == self.me {
+                Ok(())
+            } else {
                 let timer = self.hear_timers.get(&peer);
                 if let Some(timer) = timer {
                     self.kickoff_timer_inner(timer)
                 } else {
                     logged_err!("heartbeat timer for peer {} not found", peer)
                 }
-            } else {
-                Ok(())
             }
         } else {
             for timer in self.hear_timers.values() {
@@ -207,7 +206,7 @@ impl Heartbeater {
         }
     }
 
-    /// Gets a reference to the hear_timers map.
+    /// Gets a reference to the `hear_timers` map.
     pub(crate) fn hear_timers(&self) -> &HashMap<ReplicaId, Timer> {
         &self.hear_timers
     }
@@ -245,7 +244,7 @@ impl Heartbeater {
     pub(crate) fn update_bcast_cnts(&mut self) -> Result<bool, SummersetError> {
         let mut peer_death = false;
 
-        for (&peer, cnts) in self.reply_cnts.iter_mut() {
+        for (&peer, cnts) in &mut self.reply_cnts {
             if cnts.0 > cnts.1 {
                 // more hb replies have been received from this peer; it is
                 // probably alive
@@ -255,6 +254,7 @@ impl Heartbeater {
                 // did not receive hb reply from this peer at least for the
                 // last sent hb from me; increment repetition count
                 cnts.2 += 1;
+                #[allow(clippy::cast_possible_truncation)]
                 let repeat_threshold = (self.hear_timeout_min.as_millis()
                     / self.send_interval.period().as_millis())
                     as u8;

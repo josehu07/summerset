@@ -1,9 +1,8 @@
-//! Raft -- durable logging.
+//! `Raft` -- durable logging.
 
 use std::cmp;
 
 use super::*;
-
 use crate::server::{LogActionId, LogResult};
 use crate::utils::SummersetError;
 
@@ -112,22 +111,22 @@ impl RaftReplica {
 
         // if all consecutive entries are made durable, reply AppendEntries
         // success back to leader
-        if slot == slot_e {
-            if let Some(leader) = self.leader {
-                self.transport_hub.send_msg(
-                    PeerMsg::AppendEntriesReply {
-                        term: self.curr_term,
-                        end_slot: slot_e,
-                        conflict: None,
-                    },
-                    leader,
-                )?;
-                pf_trace!(
-                    "sent AppendEntriesReply -> {} up to slot {}",
-                    leader,
-                    slot_e
-                );
-            }
+        if slot == slot_e
+            && let Some(leader) = self.leader
+        {
+            self.transport_hub.send_msg(
+                PeerMsg::AppendEntriesReply {
+                    term: self.curr_term,
+                    end_slot: slot_e,
+                    conflict: None,
+                },
+                leader,
+            )?;
+            pf_trace!(
+                "sent AppendEntriesReply -> {} up to slot {}",
+                leader,
+                slot_e
+            );
         }
 
         Ok(())
@@ -157,6 +156,7 @@ impl RaftReplica {
             return logged_err!("unexpected log result type: {:?}", log_result);
         }
 
+        #[allow(clippy::match_wildcard_for_single_variants)]
         match entry_type {
             Role::Follower => self.handle_logged_follower_append(slot, slot_e),
             Role::Leader => {

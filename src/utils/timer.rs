@@ -4,15 +4,14 @@
 //! timeout intervals.
 
 use std::marker::Send;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-use crate::utils::SummersetError;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::FutureExt;
-
-use tokio::sync::{watch, Notify};
+use tokio::sync::{Notify, watch};
 use tokio::time::{self, Duration, Instant};
+
+use crate::utils::SummersetError;
 
 /// Timer utility for signalling after a given timeout.
 ///
@@ -140,6 +139,7 @@ impl Timer {
     }
 
     /// Checks if the timer has exploded since last kickoff.
+    #[must_use]
     pub fn exploded(&self) -> bool {
         self.exploded.load(Ordering::Acquire)
     }
@@ -200,9 +200,7 @@ where
             if let Some(ddl) = deadline {
                 sleep.as_mut().reset(ddl);
 
-                if !self.allow_backwards {
-                    (&mut sleep).await;
-                } else {
+                if self.allow_backwards {
                     tokio::select! {
                         () = (&mut sleep) => {
                             // deadline reached and no newer deadline set
@@ -216,6 +214,8 @@ where
                             continue;
                         }
                     }
+                } else {
+                    (&mut sleep).await;
                 }
 
                 // explode only if deadline not changed since last wakeup
@@ -237,9 +237,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::sync::mpsc;
     use tokio::time::{Duration, Instant};
+
+    use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn timer_timeout() -> Result<(), SummersetError> {

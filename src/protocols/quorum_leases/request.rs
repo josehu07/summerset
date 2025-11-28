@@ -1,7 +1,6 @@
-//! QuorumLeases -- client request entrance.
+//! `QuorumLeases` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, LogAction};
 use crate::utils::{Bitmap, SummersetError};
 
@@ -14,6 +13,7 @@ impl QuorumLeasesReplica {
     ///
     /// Returns an updated req batch retaining commands that are are decided
     /// should go through normal consensus.
+    #[allow(clippy::too_many_lines)]
     async fn treat_read_only_reqs(
         &mut self,
         req_batch: &mut ReqBatch,
@@ -173,9 +173,10 @@ impl QuorumLeasesReplica {
         // if I'm not a prepared leader, ignore client write requests
         if !self.is_leader() || self.bal_prepared == 0 {
             for (client, req) in req_batch {
+                #[allow(clippy::match_wildcard_for_single_variants)]
                 let req_id = match req {
-                    ApiRequest::Req { id: req_id, .. } => Some(req_id),
-                    ApiRequest::Conf { id: req_id, .. } => Some(req_id),
+                    ApiRequest::Req { id: req_id, .. }
+                    | ApiRequest::Conf { id: req_id, .. } => Some(req_id),
                     _ => None,
                 };
                 if let Some(req_id) = req_id {

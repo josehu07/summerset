@@ -1,7 +1,6 @@
-//! Raft -- client request entrance.
+//! `Raft` -- client request entrance.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
 use crate::utils::SummersetError;
 

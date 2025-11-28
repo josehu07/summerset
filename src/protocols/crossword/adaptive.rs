@@ -1,7 +1,6 @@
-//! Crossword -- assignment adaptability.
+//! `Crossword` -- assignment adaptability.
 
 use super::*;
-
 use crate::utils::SummersetError;
 
 // CrosswordReplica linear regression perf monitoring
@@ -93,8 +92,8 @@ impl CrosswordReplica {
         Ok(assignment)
     }
 
-    /// Compute minimum number of shards_per_replica (assuming balanced
-    /// assignment) that is be responsive for a given peer_alive cnt.
+    /// Compute minimum number of `shards_per_replica` (assuming balanced
+    /// assignment) that is be responsive for a given `peer_alive` cnt.
     #[inline]
     pub(super) fn min_shards_per_replica(
         rs_data_shards: u8,
@@ -106,11 +105,11 @@ impl CrosswordReplica {
             * (rs_data_shards / majority)
     }
 
-    /// Get the proper assignment policy given data size and peer_alive count.
+    /// Get the proper assignment policy given data size and `peer_alive` count.
     // NOTE: if data_size == exactly `usize::MAX` this will fail; won't bother
     //       to account for this rare case right now
     #[inline]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::ref_option)]
     pub(super) fn pick_assignment_policy<'a>(
         assignment_adaptive: bool,
         assignment_balanced: bool,
@@ -141,6 +140,7 @@ impl CrosswordReplica {
             } else if qdisc_info.delay + qdisc_info.jitter <= 0.0 {
                 dj_spr
             } else {
+                #[allow(clippy::cast_precision_loss)]
                 let b_ms = (data_size as f64 * 1000.0)
                     / (qdisc_info.rate * 1024.0 * 1024.0 * 1024.0 / 8.0);
                 let d_ms = qdisc_info.delay + qdisc_info.jitter;
@@ -156,6 +156,7 @@ impl CrosswordReplica {
             // boundary line if doing adaptive config choosing
             let mut config_times =
                 Vec::<(u8, f64)>::with_capacity(majority as usize);
+            #[allow(clippy::cast_possible_truncation)]
             for (spr, q) in (dj_spr..=rs_data_shards)
                 .step_by(dj_spr as usize)
                 .enumerate()
@@ -164,8 +165,8 @@ impl CrosswordReplica {
                 let load_size =
                     ((data_size / rs_data_shards as usize) + 1) * spr as usize;
                 let mut peer_times: Vec<f64> = linreg_model
-                    .iter()
-                    .map(|(_, model)| model.predict(load_size))
+                    .values()
+                    .map(|model| model.predict(load_size))
                     .collect();
                 peer_times.sort_by(|x, y| x.partial_cmp(y).unwrap());
                 config_times.push((spr, peer_times[q as usize - 2]));
@@ -209,6 +210,7 @@ impl CrosswordReplica {
                 debug_assert!(tr >= ts);
                 // approximate size as the PeerMsg type's stack size + shards
                 // payload size
+                #[allow(clippy::cast_precision_loss)]
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
@@ -245,6 +247,7 @@ impl CrosswordReplica {
             #[allow(clippy::comparison_chain)]
             if id == hb_id {
                 debug_assert!(tr >= ts);
+                #[allow(clippy::cast_precision_loss)]
                 let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
@@ -273,17 +276,11 @@ impl CrosswordReplica {
         keep_ms: u64,
     ) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
-        let keep_us = now_us - 1000 * keep_ms as u128;
+        let keep_us = now_us - 1000 * u128::from(keep_ms);
 
-        for (&peer, regressor) in self.regressor.iter_mut() {
+        for (&peer, regressor) in &mut self.regressor {
             regressor.discard_before(keep_us);
-            if !self.heartbeater.peer_alive().get(peer)? {
-                // if peer not considered alive, use a very high delay
-                self.linreg_model
-                    .get_mut(&peer)
-                    .unwrap()
-                    .update(0.0, 999.0, 0.0);
-            } else {
+            if self.heartbeater.peer_alive().get(peer)? {
                 // otherwise, compute simple linear regression
                 match regressor.calc_model(self.config.linreg_outlier_ratio) {
                     Ok(model) => {
@@ -293,6 +290,12 @@ impl CrosswordReplica {
                         // pf_trace!("calc_model error: {}", e);
                     }
                 }
+            } else {
+                // if peer not considered alive, use a very high delay
+                self.linreg_model
+                    .get_mut(&peer)
+                    .unwrap()
+                    .update(0.0, 999.0, 0.0);
             }
         }
 

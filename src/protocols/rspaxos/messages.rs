@@ -1,10 +1,9 @@
-//! RS-Paxos -- peer-peer messaging.
+//! `RS-Paxos` -- peer-peer messaging.
 
 use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
@@ -85,6 +84,7 @@ impl RSPaxosReplica {
     }
 
     /// Handler of Prepare reply from replica.
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_msg_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -288,7 +288,8 @@ impl RSPaxosReplica {
                         )?;
                         pf_trace!(
                             "submitted AcceptData log action for slot {} bal {}",
-                            this_slot, ballot
+                            this_slot,
+                            ballot
                         );
 
                         // send Accept messages to all peers

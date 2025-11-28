@@ -3,6 +3,7 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -12,6 +13,12 @@ mod request;
 use std::net::SocketAddr;
 use std::path::Path;
 
+use async_trait::async_trait;
+use get_size::GetSize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::Duration;
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -20,15 +27,6 @@ use crate::server::{
     ReplicaId, StateMachine, StorageHub,
 };
 use crate::utils::SummersetError;
-
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::Duration;
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -59,7 +57,9 @@ impl Default for ReplicaConfigRepNothing {
 }
 
 /// WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
@@ -71,7 +71,7 @@ struct Instance {
     execed: Vec<bool>,
 }
 
-/// RepNothing server replica module.
+/// `RepNothing` server replica module.
 // TransportHub module not needed here.
 pub(crate) struct RepNothingReplica {
     /// Replica ID in cluster.
@@ -89,16 +89,16 @@ pub(crate) struct RepNothingReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
     /// In-memory log of instances.
@@ -110,15 +110,15 @@ pub(crate) struct RepNothingReplica {
 
 // RepNothingReplica common helpers
 impl RepNothingReplica {
-    /// Compose CommandId from instance index & command index within.
+    /// Compose `CommandId` from instance index & command index within.
     #[inline]
     fn make_command_id(inst_idx: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(inst_idx <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(inst_idx).is_ok());
+        debug_assert!(u32::try_from(cmd_idx).is_ok());
         ((inst_idx << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into instance index & command index within.
+    /// Decompose `CommandId` into instance index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let inst_idx = (command_id >> 32) as usize;
@@ -295,7 +295,7 @@ impl Default for ClientConfigRepNothing {
     }
 }
 
-/// RepNothing client-side module.
+/// `RepNothing` client-side module.
 pub(crate) struct RepNothingClient {
     /// Client ID.
     id: ClientId,
@@ -351,34 +351,34 @@ impl GenericEndpoint for RepNothingClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // find a server to connect to, starting from provided server_id
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.config.server_id) {
-                    self.config.server_id =
-                        (self.config.server_id + 1) % population;
-                }
-                // connect to that server
-                pf_debug!(
-                    "connecting to server {} '{}'...",
-                    self.config.server_id,
-                    servers_info[&self.config.server_id].api_addr
-                );
-                let api_stub = ClientApiStub::new_by_connect(
-                    self.id,
-                    servers_info[&self.config.server_id].api_addr,
-                )
-                .await?;
-                self.api_stub = Some(api_stub);
-                Ok(())
+            // find a server to connect to, starting from provided server_id
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.config.server_id) {
+                self.config.server_id =
+                    (self.config.server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            // connect to that server
+            pf_debug!(
+                "connecting to server {} '{}'...",
+                self.config.server_id,
+                servers_info[&self.config.server_id].api_addr
+            );
+            let api_stub = ClientApiStub::new_by_connect(
+                self.id,
+                servers_info[&self.config.server_id].api_addr,
+            )
+            .await?;
+            self.api_stub = Some(api_stub);
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

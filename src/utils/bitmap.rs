@@ -2,19 +2,51 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::hash::BuildHasher;
 use std::ops::Range;
 
-use crate::utils::SummersetError;
-
+use bincode::{Decode, Encode};
 use fixedbitset::FixedBitSet;
-
 use get_size::GetSize;
-
 use serde::{Deserialize, Serialize};
+
+use crate::utils::SummersetError;
 
 /// Compact bitmap for u8 ID -> bool mapping.
 #[derive(Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bitmap(FixedBitSet);
+
+// implement `Encode` and `Decode` traits for `Bitmap`
+impl Encode for Bitmap {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> Result<(), bincode::error::EncodeError> {
+        let len = self.0.len();
+        // Encode logical bit length, then the backing word slice (no copy).
+        len.encode(encoder)?;
+        self.0.as_slice().encode(encoder)
+    }
+}
+
+impl<Ctx> Decode<Ctx> for Bitmap {
+    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        let len: usize = usize::decode(decoder)?;
+        // Decode backing words and build without extra copies.
+        let words: Vec<usize> = Vec::<usize>::decode(decoder)?;
+        Ok(Bitmap(FixedBitSet::with_capacity_and_blocks(len, words)))
+    }
+}
+
+impl<'de, Ctx> bincode::BorrowDecode<'de, Ctx> for Bitmap {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Ctx>>(
+        decoder: &mut D,
+    ) -> Result<Self, bincode::error::DecodeError> {
+        Decode::decode(decoder)
+    }
+}
 
 // implement `GetSize` trait for `Bitmap`; the heap size is approximated as
 // #bits rounded up to multiple of 4 bytes
@@ -27,10 +59,9 @@ impl GetSize for Bitmap {
 impl Bitmap {
     /// Creates a new bitmap of given size. If `ones` is true, all slots are
     /// marked true initially; otherwise, all slots are initially false.
+    #[must_use]
     pub fn new(size: u8, ones: bool) -> Self {
-        if size == 0 {
-            panic!("invalid bitmap size {}", size);
-        }
+        assert!(size != 0, "invalid bitmap size {}", size);
         let mut bitset = FixedBitSet::with_capacity(size as usize);
 
         if ones {
@@ -67,12 +98,16 @@ impl Bitmap {
 
     /// Returns the size of the bitmap.
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn size(&self) -> u8 {
         self.0.len() as u8
     }
 
     /// Returns the number of trues in the bitmap.
     #[inline]
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn count(&self) -> u8 {
         self.0.count_ones(..) as u8
     }
@@ -106,7 +141,9 @@ impl Bitmap {
 
     /// Allows `for (id, bit) in map.iter()`.
     #[inline]
-    pub fn iter(&self) -> BitmapIter {
+    #[must_use]
+    #[allow(clippy::iter_without_into_iter)]
+    pub fn iter(&self) -> BitmapIter<'_> {
         BitmapIter { map: self, idx: 0 }
     }
 }
@@ -192,7 +229,7 @@ impl From<&Bitmap> for Vec<u8> {
 }
 
 // Convert -> set of indexes where the flag is true.
-impl From<Bitmap> for HashSet<u8> {
+impl<S: BuildHasher + Default> From<Bitmap> for HashSet<u8, S> {
     fn from(bitmap: Bitmap) -> Self {
         bitmap
             .iter()
@@ -202,7 +239,7 @@ impl From<Bitmap> for HashSet<u8> {
 }
 
 // Convert -> set of indexes where the flag is true.
-impl From<&Bitmap> for HashSet<u8> {
+impl<S: BuildHasher + Default> From<&Bitmap> for HashSet<u8, S> {
     fn from(bitmap: &Bitmap) -> Self {
         bitmap
             .iter()
@@ -222,6 +259,7 @@ impl Iterator for BitmapIter<'_> {
     type Item = (u8, bool);
 
     fn next(&mut self) -> Option<Self::Item> {
+        #[allow(clippy::cast_possible_truncation)]
         let id: u8 = self.idx as u8;
         if id < self.map.size() {
             self.idx += 1;
@@ -240,11 +278,11 @@ impl fmt::Debug for Bitmap {
             .iter()
             .filter_map(|(i, flag)| if flag { Some(i) } else { None })
         {
-            if !first_idx {
-                write!(f, ",{}", i)?;
-            } else {
+            if first_idx {
                 write!(f, "{}", i)?;
                 first_idx = false;
+            } else {
+                write!(f, ",{}", i)?;
             }
         }
         write!(f, "}}")
@@ -276,9 +314,9 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic]
+    #[should_panic = "bitmap initialization with empty size should panic"]
     fn new_invalid() {
-        Bitmap::new(0, true);
+        let _ = Bitmap::new(0, true);
     }
 
     #[test]
@@ -321,10 +359,10 @@ mod tests {
 
     #[test]
     fn bitmap_union() {
-        let mut mapa = Bitmap::from((5, vec![0, 1, 3]));
-        let mapb = Bitmap::from((5, vec![0, 4]));
-        assert!(mapa.union(&mapb).is_ok());
-        assert_eq!(mapa, Bitmap::from((5, vec![0, 1, 3, 4])));
+        let mut map_a = Bitmap::from((5, vec![0, 1, 3]));
+        let map_b = Bitmap::from((5, vec![0, 4]));
+        assert!(map_a.union(&map_b).is_ok());
+        assert_eq!(map_a, Bitmap::from((5, vec![0, 1, 3, 4])));
     }
 
     #[test]
@@ -346,5 +384,37 @@ mod tests {
             assert_eq!(ref_map[id as usize], flag);
         }
         assert_eq!(Vec::<u8>::from(map), [0, 1, 3, 4]);
+    }
+
+    #[test]
+    fn bincode_encode_decode() -> Result<(), SummersetError> {
+        let mut map = Bitmap::from((10, vec![0, 2, 3, 9]));
+        map.set(5, true)?;
+        let bytes = bincode::encode_to_vec(&map, bincode::config::standard())?;
+        let (decoded, read) = bincode::decode_from_slice::<Bitmap, _>(
+            &bytes,
+            bincode::config::standard(),
+        )?;
+        assert_eq!(read, bytes.len());
+        assert_eq!(decoded, map);
+        Ok(())
+    }
+
+    #[test]
+    fn bincode_length_bits() -> Result<(), SummersetError> {
+        let mut map = Bitmap::new(24, false);
+        for i in [1u8, 5, 7, 12, 17, 23] {
+            map.set(i, true)?;
+        }
+        let bytes = bincode::encode_to_vec(&map, bincode::config::standard())?;
+        let (decoded, _) = bincode::decode_from_slice::<Bitmap, _>(
+            &bytes,
+            bincode::config::standard(),
+        )?;
+        assert_eq!(decoded.size(), 24);
+        for i in 0..24 {
+            assert_eq!(decoded.get(i)?, map.get(i)?);
+        }
+        Ok(())
     }
 }

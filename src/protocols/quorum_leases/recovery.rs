@@ -1,13 +1,13 @@
-//! QuorumLeases -- recovery from WAL.
+//! `QuorumLeases` -- recovery from WAL.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // QuorumLeasesReplica recovery from WAL log
 impl QuorumLeasesReplica {
     /// Apply a durable storage log entry for recovery.
+    #[allow(clippy::too_many_lines)]
     async fn recover_apply_entry(
         &mut self,
         entry: WalEntry,
@@ -95,6 +95,7 @@ impl QuorumLeasesReplica {
                         // execute all commands in this instance on state machine
                         // synchronously
                         for (_, req) in inst.reqs.clone() {
+                            #[allow(clippy::match_wildcard_for_single_variants)]
                             match req {
                                 ApiRequest::Req { cmd, .. } => {
                                     self.state_machine

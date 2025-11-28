@@ -1,16 +1,15 @@
-//! Raft -- peer-peer messaging.
+//! `Raft` -- peer-peer messaging.
 
 use std::cmp;
 
 use super::*;
-
 use crate::server::{ApiRequest, LogAction, LogResult, ReplicaId};
 use crate::utils::SummersetError;
 
 // RaftReplica peer-peer messages handling
 impl RaftReplica {
-    /// Handler of AppendEntries message from leader.
-    #[allow(clippy::too_many_arguments)]
+    /// Handler of `AppendEntries` message from leader.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn handle_msg_append_entries(
         &mut self,
         leader: ReplicaId,
@@ -218,7 +217,8 @@ impl RaftReplica {
         Ok(())
     }
 
-    /// Handler of AppendEntries reply from follower.
+    /// Handler of `AppendEntries` reply from follower.
+    #[allow(clippy::too_many_lines)]
     async fn handle_msg_append_entries_reply(
         &mut self,
         peer: ReplicaId,
@@ -262,6 +262,7 @@ impl RaftReplica {
                     continue; // cannot decide commit using non-latest term
                 }
 
+                #[allow(clippy::cast_possible_truncation)]
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
@@ -295,6 +296,7 @@ impl RaftReplica {
 
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
+                #[allow(clippy::cast_possible_truncation)]
                 let match_cnt = 1 + self
                     .match_slot
                     .values()
@@ -385,7 +387,7 @@ impl RaftReplica {
         Ok(())
     }
 
-    /// Handler of RequestVote message from candidate.
+    /// Handler of `RequestVote` message from candidate.
     async fn handle_msg_request_vote(
         &mut self,
         candidate: ReplicaId,
@@ -479,7 +481,7 @@ impl RaftReplica {
         Ok(())
     }
 
-    /// Handler of RequestVote reply from peer.
+    /// Handler of `RequestVote` reply from peer.
     async fn handle_msg_request_vote_reply(
         &mut self,
         peer: ReplicaId,
@@ -500,7 +502,7 @@ impl RaftReplica {
         self.votes_granted.insert(peer);
 
         // if a majority of servers have voted for me, become the leader
-        if self.votes_granted.len() as u8 >= self.quorum_cnt {
+        if u8::try_from(self.votes_granted.len())? >= self.quorum_cnt {
             self.become_the_leader().await?;
         }
 

@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 
-use crate::utils::SummersetError;
-
 use statistical::{mean, standard_deviation};
+
+use crate::utils::SummersetError;
 
 /// Using usize as ID type.
 type RecordId = usize;
@@ -23,6 +23,7 @@ pub struct Stopwatch {
 
 impl Stopwatch {
     /// Creates a new stopwatch utility.
+    #[must_use]
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Stopwatch {
@@ -47,24 +48,25 @@ impl Stopwatch {
         self.records.entry(id).or_default();
         let record = self.records.get_mut(&id).unwrap();
 
-        if step != record.len() {
-            Err(SummersetError::msg(format!(
-                "step mismatch: expect {} got {}",
-                record.len(),
-                step
-            )))
-        } else {
+        if step == record.len() {
             record.push(if let Some(ts) = now {
                 ts
             } else {
                 SystemTime::now()
             });
             Ok(())
+        } else {
+            Err(SummersetError::msg(format!(
+                "step mismatch: expect {} got {}",
+                record.len(),
+                step
+            )))
         }
     }
 
     /// Checks if a record ID exists.
     #[inline]
+    #[must_use]
     #[allow(dead_code)]
     pub fn has_id(&self, id: RecordId) -> bool {
         self.records.contains_key(&id)
@@ -83,8 +85,9 @@ impl Stopwatch {
         self.records.clear();
     }
 
-    /// Gather a summary of #records as well as (mean_us, stdev_us) of times
+    /// Gather a summary of #records as well as (`mean_us`, `stdev_us`) of times
     /// taken in each interval, up to step index, across all current records.
+    #[must_use]
     pub fn summarize(&self, steps: usize) -> (usize, Vec<(f64, f64)>) {
         debug_assert!(steps > 0);
         let mut step_times: Vec<Vec<f64>> =
@@ -95,6 +98,7 @@ impl Stopwatch {
             if record.len() > steps {
                 cnt += 1;
                 for i in 0..steps {
+                    #[allow(clippy::cast_precision_loss)]
                     step_times[i].push(
                         record[i + 1]
                             .duration_since(record[i])
@@ -105,6 +109,11 @@ impl Stopwatch {
             }
         }
 
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation
+        )]
         let outliers = (cnt as f32 * 0.1) as usize;
         if cnt - outliers > 2 {
             let step_stats = step_times
@@ -129,8 +138,9 @@ impl Stopwatch {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::time::{self, Duration};
+
+    use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn stopwatch_records() -> Result<(), SummersetError> {

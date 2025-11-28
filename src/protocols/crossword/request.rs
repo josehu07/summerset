@@ -1,15 +1,15 @@
-//! Crossword -- client request entrance.
+//! `Crossword` -- client request entrance.
 
 use std::collections::HashMap;
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CrosswordReplica client requests entrance
 impl CrosswordReplica {
     /// Handler of client request batch chan recv.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn handle_req_batch(
         &mut self,
         mut req_batch: ReqBatch,
@@ -72,10 +72,10 @@ impl CrosswordReplica {
 
         // [for perf breakdown only]
         let slot = self.first_null_slot()?;
-        if self.bal_prepared > 0 {
-            if let Some(sw) = self.bd_stopwatch.as_mut() {
-                sw.record_now(slot, 0, None)?;
-            }
+        if self.bal_prepared > 0
+            && let Some(sw) = self.bd_stopwatch.as_mut()
+        {
+            sw.record_now(slot, 0, None)?;
         }
 
         // compute the complete Reed-Solomon codeword for the batch data
@@ -197,7 +197,7 @@ impl CrosswordReplica {
         &mut self,
     ) -> Result<Option<(String, usize)>, SummersetError> {
         let (mut key, mut ver) = (None, 0);
-        for inst in self.insts.iter_mut() {
+        for inst in &mut self.insts {
             if inst.status >= Status::Committed
                 && inst.reqs_cw.avail_shards() >= self.rs_data_shards
             {
@@ -211,10 +211,12 @@ impl CrosswordReplica {
                         ..
                     } = req
                     {
-                        if key.is_none() {
-                            key = Some(k.into());
-                        } else if key.as_ref().unwrap() == k {
+                        if let Some(kk) = &key
+                            && kk == k
+                        {
                             ver += 1;
+                        } else {
+                            key = Some(k.into());
                         }
                     }
                 }

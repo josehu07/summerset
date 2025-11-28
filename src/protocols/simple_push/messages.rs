@@ -1,7 +1,6 @@
-//! SimplePush -- peer-peer messaging.
+//! `SimplePush` -- peer-peer messaging.
 
 use super::*;
-
 use crate::client::ClientId;
 use crate::server::{ApiRequest, LogAction, LogActionId, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
@@ -84,7 +83,7 @@ impl SimplePushReplica {
                     self.state_machine.submit_cmd(
                         Self::make_command_id(inst_idx, cmd_idx),
                         cmd.clone(),
-                    )?
+                    )?;
                 }
             }
         }

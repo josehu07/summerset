@@ -4,16 +4,14 @@ use std::collections::HashSet;
 use std::io::{self, Write};
 use std::str::SplitWhitespace;
 
-use crate::drivers::{DriverClosedLoop, DriverReply};
-
 use color_print::{cprint, cprintln};
-
-use tokio::time::Duration;
-
 use summerset::{
     logged_err, pf_error, Bitmap, Command, ConfChange, CtrlReply, CtrlRequest,
     GenericEndpoint, ReplicaId, SummersetError,
 };
+use tokio::time::Duration;
+
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 /// Prompt string at the start of line.
 const PROMPT: &str = ">>>>> ";

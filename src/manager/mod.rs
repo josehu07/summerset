@@ -6,7 +6,6 @@ mod reactor;
 mod reigner;
 
 pub use clusman::{ClusterManager, ServerInfo};
-pub use reactor::{CtrlReply, CtrlRequest};
-
 pub(crate) use reactor::ClientReactor;
+pub use reactor::{CtrlReply, CtrlRequest};
 pub(crate) use reigner::{CtrlMsg, ServerReigner};

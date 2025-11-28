@@ -83,12 +83,12 @@ impl QdiscInfo {
                 .stdout,
         )?;
         let line = output.trim().to_string();
-        if !line.is_empty() {
-            Ok(line.trim().to_string())
-        } else {
+        if line.is_empty() {
             Err(SummersetError::msg(
                 "error getting `tc qdisc show` output line",
             ))
+        } else {
+            Ok(line.trim().to_string())
         }
     }
 
@@ -218,11 +218,12 @@ impl QdiscInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::process::Command;
 
+    use super::*;
+
     #[test]
-    #[ignore]
+    #[ignore = "ad-hoc test for special experiments only"]
     fn qdisc_run_cmd() -> Result<(), SummersetError> {
         // just testing if command running is functional here
         let output = String::from_utf8(

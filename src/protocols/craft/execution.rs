@@ -1,7 +1,6 @@
-//! CRaft -- command execution.
+//! `CRaft` -- command execution.
 
 use super::*;
-
 use crate::server::{ApiReply, ApiRequest, CommandId, CommandResult};
 use crate::utils::SummersetError;
 

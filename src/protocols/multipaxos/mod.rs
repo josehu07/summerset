@@ -1,4 +1,4 @@
-//! Replication protocol: MultiPaxos.
+//! Replication protocol: `MultiPaxos`.
 //!
 //! Multi-decree Paxos protocol. References:
 //!   - <https://www.microsoft.com/en-us/research/uploads/prod/2016/12/paxos-simple-Copy.pdf>
@@ -8,6 +8,7 @@
 //!   - <https://github.com/efficient/epaxos/blob/master/src/paxos/paxos.go>
 //!   - <https://www.usenix.org/system/files/hotstorage19-paper-charapko.pdf>
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -24,6 +25,13 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
+use atomic_refcell::AtomicRefCell;
+use get_size::GetSize;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -35,19 +43,9 @@ use crate::server::{
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
-use atomic_refcell::AtomicRefCell;
-
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
-
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ReplicaConfigMultiPaxos {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -84,7 +82,7 @@ pub struct ReplicaConfigMultiPaxos {
     /// Enable nearest majority quorum read optimization?
     pub enable_quorum_reads: bool,
 
-    /// Enable promptive CommitNotice sending for committed instances?
+    /// Enable promptive `CommitNotice` sending for committed instances?
     pub urgent_commit_notice: bool,
 
     /// Path to snapshot file.
@@ -103,17 +101,17 @@ pub struct ReplicaConfigMultiPaxos {
 
     // [for perf breakdown only]
     /// Recording the latest committed value version of a key?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_value_ver: bool,
 
     // [for perf breakdown only]
     /// Recording total payload size received from per peer?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_size_recv: bool,
 
     // [for access cnt stats only]
     /// Recording critical-path server access statistics?
-    /// Only effective if record_breakdown is set to true.
+    /// Only effective if `record_breakdown` is set to true.
     pub record_node_cnts: bool,
 
     // [for benchmarking purposes only]
@@ -153,9 +151,19 @@ impl Default for ReplicaConfigMultiPaxos {
 /// Ballot number type. Use 0 as a null ballot number.
 type Ballot = u64;
 
-/// Instance status enum.
+/// `Instance` status enum.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Status {
     Null = 0,
@@ -171,14 +179,14 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
     /// Replicas from which I have received Prepare confirmations.
-    /// This field is only tracked on the trigger_slot entry of the log.
+    /// This field is only tracked on the `trigger_slot` entry of the log.
     prepare_acks: Bitmap,
 
     /// Max ballot among received Prepare replies.
@@ -194,10 +202,10 @@ struct ReplicaBookkeeping {
     /// Source leader replica ID for replying to Prepares and Accepts.
     source: ReplicaId,
 
-    /// If in Preparing status, the trigger_slot of this Prepare phase.
+    /// If in Preparing status, the `trigger_slot` of this Prepare phase.
     trigger_slot: usize,
 
-    /// If in Preparing status, the endprep_slot of this Prepare phase.
+    /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 }
 
@@ -208,7 +216,7 @@ struct ReadQueryBookkeeping {
     /// a vec of client IDs but nah doesn't matter).
     reads: ReqBatch,
 
-    /// Replicas from which I have received ReadQuery replies.
+    /// Replicas from which I have received `ReadQuery` replies.
     rq_acks: Bitmap,
 
     /// The reply with the highest slot number found for each key.
@@ -221,11 +229,11 @@ struct Instance {
     /// Ballot number.
     bal: Ballot,
 
-    /// Instance status.
+    /// `Instance` status.
     status: Status,
 
     /// Batch of client requests. This field is overwritten directly when
-    /// receiving PrepareReplies; this is just a small engineering choice
+    /// receiving `PrepareReplies`; this is just a small engineering choice
     /// to avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs: ReqBatch,
 
@@ -247,7 +255,9 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -268,7 +278,9 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -282,7 +294,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -295,16 +307,16 @@ enum PeerMsg {
 
     /// Prepare reply from replica to leader.
     PrepareReply {
-        /// In our implementation, we choose to break the PrepareReply into
+        /// In our implementation, we choose to break the `PrepareReply` into
         /// slot-wise messages for simplicity.
         slot: usize,
-        /// Also carry the trigger_slot information to make it easier for the
+        /// Also carry the `trigger_slot` information to make it easier for the
         /// leader to track reply progress.
         trigger_slot: usize,
         /// Due to the slot-wise design choice, we need a way to let leader
-        /// know when have all PrepareReplies been received. We use the
-        /// endprep_slot field to convey this: when all slots' PrepareReplies
-        /// up to endprep_slot are received, the "wholesome" PrepareReply
+        /// know when have all `PrepareReplies` been received. We use the
+        /// `endprep_slot` field to convey this: when all slots' `PrepareReplies`
+        /// up to `endprep_slot` are received, the "wholesome" `PrepareReply`
         /// can be considered received.
         // NOTE: this currently assumes the "ordering" property of TCP.
         endprep_slot: usize,
@@ -371,7 +383,7 @@ enum PeerMsg {
     CommitNotice { ballot: Ballot, commit_bar: usize },
 }
 
-/// MultiPaxos server replica module.
+/// `MultiPaxos` server replica module.
 pub(crate) struct MultiPaxosReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -391,28 +403,28 @@ pub(crate) struct MultiPaxosReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<WalEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
     heartbeater: Heartbeater,
 
-    /// LeaseManager module.
+    /// `LeaseManager` module.
     lease_manager: LeaseManager,
 
     /// Who do I think is the effective leader of the cluster right now?
@@ -440,10 +452,10 @@ pub(crate) struct MultiPaxosReplica {
     accept_bar: usize,
 
     /// Map from peer ID (including my self) who replied to my Prepare -> its
-    /// accept_bar then; this is for safe stable leader leases purpose.
+    /// `accept_bar` then; this is for safe stable leader leases purpose.
     peer_accept_bar: HashMap<ReplicaId, usize>,
 
-    /// Minimum of the max accept_bar among any majority set of peer_accept_bar;
+    /// Minimum of the max `accept_bar` among any majority set of `peer_accept_bar`;
     /// this is for safe stable leader leases purpose.
     peer_accept_max: usize,
 
@@ -452,10 +464,10 @@ pub(crate) struct MultiPaxosReplica {
 
     /// Index of the first non-executed instance.
     /// It is always true that
-    ///   exec_bar <= commit_bar <= accept_bar <= start_slot + insts.len()
+    ///   `exec_bar` <= `commit_bar` <= `accept_bar` <= `start_slot` + `insts.len()`
     exec_bar: usize,
 
-    /// Map from peer ID -> its latest exec_bar I know; this is for conservative
+    /// Map from peer ID -> its latest `exec_bar` I know; this is for conservative
     /// snapshotting purpose.
     peer_exec_bar: HashMap<ReplicaId, usize>,
 
@@ -511,6 +523,7 @@ impl MultiPaxosReplica {
 
     /// Create an empty null instance.
     #[inline]
+    #[allow(clippy::unused_self)]
     fn null_instance(&self) -> Instance {
         Instance {
             bal: 0,
@@ -538,7 +551,7 @@ impl MultiPaxosReplica {
     /// Compose a unique ballot number from base.
     #[inline]
     fn make_unique_ballot(&self, base: u64) -> Ballot {
-        ((base << 8) | ((self.id + 1) as u64)) as Ballot
+        ((base << 8) | u64::from(self.id + 1)) as Ballot
     }
 
     /// Compose a unique ballot number greater than the given one.
@@ -547,7 +560,7 @@ impl MultiPaxosReplica {
         self.make_unique_ballot((bal >> 8) + 1)
     }
 
-    /// Compose LogActionId from slot index & entry type.
+    /// Compose `LogActionId` from slot index & entry type.
     /// Uses the `Status` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
@@ -560,7 +573,7 @@ impl MultiPaxosReplica {
         ((slot << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into slot index & entry type.
+    /// Decompose `LogActionId` into slot index & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
         let slot = (log_action_id >> 2) as usize;
@@ -574,15 +587,15 @@ impl MultiPaxosReplica {
         (slot, entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot).is_ok());
         debug_assert!(cmd_idx <= (u32::MAX as usize) / 2);
         ((slot << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
@@ -593,14 +606,15 @@ impl MultiPaxosReplica {
     /// Special composition of a command ID used at read-only shortcuts.
     #[inline]
     fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
-        debug_assert!(client <= (u32::MAX as ClientId));
-        debug_assert!(req_id <= (u32::MAX as RequestId) / 2);
+        debug_assert!(client <= ClientId::from(u32::MAX));
+        debug_assert!(req_id <= RequestId::from(u32::MAX) / 2);
         ((client << 32) | (1 << 31) | req_id) as CommandId
     }
 }
 
 #[async_trait]
 impl GenericReplica for MultiPaxosReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -709,11 +723,9 @@ impl GenericReplica for MultiPaxosReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -801,6 +813,7 @@ impl GenericReplica for MultiPaxosReplica {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &mut self,
         mut rx_term: watch::Receiver<bool>,
@@ -919,8 +932,8 @@ impl GenericReplica for MultiPaxosReplica {
                 // [for perf breakdown only]
                 // performance breakdown stats printing
                 _ = self.bd_print_interval.tick(), if !paused && self.config.record_breakdown => {
-                    if self.is_leader() {
-                        if let Some(sw) = self.bd_stopwatch.as_mut() {
+                    if self.is_leader()
+                        && let Some(sw) = self.bd_stopwatch.as_mut() {
                             let (cnt, stats) = sw.summarize(4);
                             pf_info!("bd cnt {} ldur {:.2} {:.2} arep {:.2} {:.2} \
                                                 qrum {:.2} {:.2} exec {:.2} {:.2}",
@@ -928,9 +941,8 @@ impl GenericReplica for MultiPaxosReplica {
                                           stats[2].0, stats[2].1, stats[3].0, stats[3].1);
                             sw.remove_all();
                         }
-                    }
-                    if self.config.record_value_ver {
-                        if let Ok(Some((key, ver))) = self.val_ver_of_first_key() {
+                    if self.config.record_value_ver
+                        && let Some((key, ver)) = self.val_ver_of_first_key() {
                             pf_info!("ver of {} @ {} ms is {}",
                                      key,
                                      Instant::now()
@@ -938,7 +950,6 @@ impl GenericReplica for MultiPaxosReplica {
                                        .as_millis(),
                                      ver);
                         }
-                    }
                     if self.config.record_size_recv {
                         for (peer, recv) in &mut self.bw_accumulators {
                             pf_info!("bw period bytes recv <- {} : {}", peer, recv);
@@ -1021,7 +1032,7 @@ impl Default for ClientConfigMultiPaxos {
     }
 }
 
-/// MultiPaxos client-side module.
+/// `MultiPaxos` client-side module.
 pub(crate) struct MultiPaxosClient {
     /// Client ID.
     id: ClientId,
@@ -1099,49 +1110,48 @@ impl GenericEndpoint for MultiPaxosClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.curr_server_id)
-                    || servers_info[&self.curr_server_id].is_paused
-                {
-                    self.curr_server_id =
-                        (self.curr_server_id + 1) % population;
-                }
-                if self.config.near_server_id < population {
-                    let mut near_server_id = self.config.near_server_id;
-                    if !servers_info.contains_key(&near_server_id)
-                        || servers_info[&near_server_id].is_paused
-                    {
-                        pf_warn!(
-                            "near server {} inactive, using {} instead...",
-                            near_server_id,
-                            self.curr_server_id
-                        );
-                        near_server_id = self.curr_server_id;
-                    }
-                    self.near_server_id = Some(near_server_id);
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
-                }
-                Ok(())
+            // shift to a new server_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.curr_server_id)
+                || servers_info[&self.curr_server_id].is_paused
+            {
+                self.curr_server_id = (self.curr_server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            if self.config.near_server_id < population {
+                let mut near_server_id = self.config.near_server_id;
+                if !servers_info.contains_key(&near_server_id)
+                    || servers_info[&near_server_id].is_paused
+                {
+                    pf_warn!(
+                        "near server {} inactive, using {} instead...",
+                        near_server_id,
+                        self.curr_server_id
+                    );
+                    near_server_id = self.curr_server_id;
+                }
+                self.near_server_id = Some(near_server_id);
+            }
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 
@@ -1226,15 +1236,14 @@ impl GenericEndpoint for MultiPaxosClient {
                 self.curr_server_id
             )));
         }
-        if let Some(near_server_id) = self.near_server_id {
-            if near_server_id != self.curr_server_id
-                && !self.api_stubs.contains_key(&near_server_id)
-            {
-                return Err(SummersetError::msg(format!(
-                    "server_id {} not in api_stubs",
-                    near_server_id
-                )));
-            }
+        if let Some(near_server_id) = self.near_server_id
+            && near_server_id != self.curr_server_id
+            && !self.api_stubs.contains_key(&near_server_id)
+        {
+            return Err(SummersetError::msg(format!(
+                "server_id {} not in api_stubs",
+                near_server_id
+            )));
         }
 
         let mut reply = if self

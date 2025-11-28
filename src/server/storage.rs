@@ -4,24 +4,24 @@ use std::fmt;
 use std::io::SeekFrom;
 use std::path::Path;
 
-use crate::server::ReplicaId;
-use crate::utils::SummersetError;
-
+use bincode::{Decode, Encode};
 use get_size::GetSize;
-
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+use crate::server::ReplicaId;
+use crate::utils::SummersetError;
 
 /// Log action ID type.
 pub(crate) type LogActionId = u64;
 
 /// Action command to the logger. File cursor will be positioned at EOF after
 /// every action.
-#[derive(Debug, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode, GetSize)]
 pub(crate) enum LogAction<Ent> {
     /// Read a log entry out.
     Read { offset: usize },
@@ -45,7 +45,7 @@ pub(crate) enum LogAction<Ent> {
 }
 
 /// Action result returned by the logger.
-#[derive(Debug, Serialize, Deserialize, PartialEq, GetSize)]
+#[derive(Debug, Serialize, Deserialize, Encode, Decode, PartialEq, GetSize)]
 pub(crate) enum LogResult<Ent> {
     /// `Some(entry)` if successful, else `None`.
     Read {
@@ -90,7 +90,9 @@ where
     Ent: fmt::Debug
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + Send
         + Sync
@@ -105,11 +107,11 @@ where
         path: &Path,
     ) -> Result<Self, SummersetError> {
         // prepare backing file
-        if !fs::try_exists(path).await? {
+        if fs::try_exists(path).await? {
+            pf_info!("backer file '{}' already exists", path.display());
+        } else {
             File::create(path).await?;
             pf_info!("created backer file '{}'", path.display());
-        } else {
-            pf_info!("backer file '{}' already exists", path.display());
         }
         let mut backer_file =
             OpenOptions::new().read(true).write(true).open(path).await?;
@@ -144,9 +146,10 @@ where
     pub(crate) async fn get_result(
         &mut self,
     ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
-        match self.rx_ack.recv().await {
-            Some((id, result)) => Ok((id, result)),
-            None => logged_err!("ack channel has been closed"),
+        if let Some((id, result)) = self.rx_ack.recv().await {
+            Ok((id, result))
+        } else {
+            logged_err!("ack channel has been closed")
         }
     }
 
@@ -179,14 +182,13 @@ where
             let (this_id, result) = self.get_result().await?;
             if this_id == id {
                 return Ok((old_results, result));
-            } else {
-                old_results.push((this_id, result));
             }
+            old_results.push((this_id, result));
         }
     }
 }
 
-/// StorageHub durable logger task.
+/// `StorageHub` durable logger task.
 struct StorageHubLoggerTask<Ent> {
     rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
     tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
@@ -201,7 +203,9 @@ where
     Ent: fmt::Debug
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + Send
         + Sync
         + 'static,
@@ -220,6 +224,7 @@ where
                 e
             );
         }
+        #[allow(clippy::cast_possible_truncation)]
         let file_size: usize = metadata.unwrap().len() as usize;
 
         Ok(StorageHubLoggerTask {
@@ -252,6 +257,7 @@ where
 
         // read entry length header
         backer.seek(SeekFrom::Start(offset as u64)).await?;
+        #[allow(clippy::cast_possible_truncation)]
         let entry_len: usize = backer.read_u64().await? as usize;
         let offset_e = offset + 8 + entry_len;
         if offset_e > file_size {
@@ -263,7 +269,10 @@ where
         // read entry content
         let mut entry_buf: Vec<u8> = vec![0; entry_len];
         backer.read_exact(&mut entry_buf[..]).await?;
-        let entry = bincode::deserialize(&entry_buf)?;
+        let (entry, _): (Ent, usize) = bincode::decode_from_slice(
+            &entry_buf,
+            bincode::config::standard(),
+        )?;
         backer.seek(SeekFrom::End(0)).await?; // recover cursor to EOF
         Ok((Some(entry), offset_e))
     }
@@ -287,7 +296,8 @@ where
             return Ok((false, file_size));
         }
 
-        let entry_bytes = bincode::serialize(entry)?;
+        let entry_bytes =
+            bincode::encode_to_vec(entry, bincode::config::standard())?;
         let entry_len = entry_bytes.len();
 
         // write entry length header first
@@ -319,7 +329,8 @@ where
         entry: &Ent,
         sync: bool,
     ) -> Result<usize, SummersetError> {
-        let entry_bytes = bincode::serialize(entry)?;
+        let entry_bytes =
+            bincode::encode_to_vec(entry, bincode::config::standard())?;
         let entry_len = entry_bytes.len();
 
         // write entry length header first
@@ -500,15 +511,25 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Eq,
+        Serialize,
+        Deserialize,
+        Encode,
+        Decode,
+        GetSize,
+    )]
     struct TestEntry(String);
 
     async fn prepare_test_file(path: &str) -> Result<File, SummersetError> {
-        if !fs::try_exists(path).await? {
-            File::create(path).await?;
-        } else {
+        if fs::try_exists(path).await? {
             let file = OpenOptions::new().write(true).open(path).await?;
             file.set_len(0).await?;
+        } else {
+            File::create(path).await?;
         }
         let file = OpenOptions::new().read(true).write(true).open(path).await?;
         Ok(file)
@@ -563,7 +584,8 @@ mod tests {
         let mut backer_file =
             prepare_test_file("/tmp/test-backer-1.log").await?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let entry_bytes = bincode::serialize(&entry)?;
+        let entry_bytes =
+            bincode::encode_to_vec(&entry, bincode::config::standard())?;
         let mid_size = StorageHubLoggerTask::append_entry(
             &mut backer_file,
             0,
@@ -771,7 +793,8 @@ mod tests {
         let path = Path::new("/tmp/test-backer-6.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
-        let entry_bytes = bincode::serialize(&entry)?;
+        let entry_bytes =
+            bincode::encode_to_vec(&entry, bincode::config::standard())?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         hub.submit_action(2, LogAction::Truncate { offset: 0 })?;
@@ -812,7 +835,8 @@ mod tests {
         let path = Path::new("/tmp/test-backer-7.log");
         let mut hub = StorageHub::new_and_setup(0, path).await?;
         let entry = TestEntry("abcdefgh".into());
-        let entry_bytes = bincode::serialize(&entry)?;
+        let entry_bytes =
+            bincode::encode_to_vec(&entry, bincode::config::standard())?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         assert_eq!(

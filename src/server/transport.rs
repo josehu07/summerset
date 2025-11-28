@@ -9,19 +9,14 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
-use crate::utils::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
-    Bitmap, SummersetError,
-};
-
-use get_size::GetSize;
-
+use bincode::{Decode, Encode};
 use bytes::BytesMut;
-
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-
+use dashmap::DashMap;
+use get_size::GetSize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
@@ -29,8 +24,16 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 
+use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
+use crate::utils::{
+    Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+    tcp_connect_with_retry,
+};
+
 /// Peer-peer message wrapper type that includes leave notification variants.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Encode, Deserialize, Decode, GetSize,
+)]
 enum PeerMessage<Msg> {
     /// Normal protocol-specific message.
     Msg { msg: Msg },
@@ -64,10 +67,7 @@ pub(crate) struct TransportHub<Msg> {
 
     /// Map from peer ID -> sender side of the send channel, shared with the
     /// peer acceptor task.
-    tx_sends: flashmap::ReadHandle<
-        ReplicaId,
-        mpsc::UnboundedSender<PeerMessage<Msg>>,
-    >,
+    tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
 
     /// Join handle of the peer acceptor task.
     _peer_acceptor_handle: JoinHandle<()>,
@@ -82,7 +82,7 @@ pub(crate) struct TransportHub<Msg> {
 
     /// Map from peer ID -> peer messenger task join handles, shared with
     /// the peer acceptor task.
-    _peer_messenger_handles: flashmap::ReadHandle<ReplicaId, JoinHandle<()>>,
+    _peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
 }
 
 // TransportHub public API implementation
@@ -91,7 +91,9 @@ where
     Msg: fmt::Debug
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + GetSize
         + Send
         + Sync
@@ -117,13 +119,12 @@ where
         let (tx_recv, rx_recv) =
             mpsc::unbounded_channel::<(ReplicaId, PeerMessage<Msg>)>();
 
-        let (tx_sends_write, tx_sends_read) = flashmap::new::<
-            ReplicaId,
-            mpsc::UnboundedSender<PeerMessage<Msg>>,
-        >();
+        let tx_sends: Arc<
+            DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>,
+        > = Arc::new(DashMap::new());
 
-        let (peer_messenger_handles_write, peer_messenger_handles_read) =
-            flashmap::new::<ReplicaId, JoinHandle<()>>();
+        let peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>> =
+            Arc::new(DashMap::new());
 
         // the connect & connack channels are used to notify the peer acceptor
         // task to proactively connect to some peer
@@ -135,8 +136,8 @@ where
             me,
             tx_recv.clone(),
             peer_listener,
-            tx_sends_write,
-            peer_messenger_handles_write,
+            tx_sends.clone(),
+            peer_messenger_handles.clone(),
             rx_connect,
             tx_connack,
             tx_leases,
@@ -148,11 +149,11 @@ where
             me,
             population,
             rx_recv,
-            tx_sends: tx_sends_read,
+            tx_sends,
             _peer_acceptor_handle: peer_acceptor_handle,
             tx_connect,
             rx_connack,
-            _peer_messenger_handles: peer_messenger_handles_read,
+            _peer_messenger_handles: peer_messenger_handles,
         })
     }
 
@@ -164,19 +165,14 @@ where
         peer_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         self.tx_connect.send((id, peer_addr))?;
-        match self.rx_connack.recv().await {
-            Some(ack_id) => {
-                if ack_id != id {
-                    logged_err!(
-                        "peer ID mismatch: expected {}, got {}",
-                        id,
-                        ack_id
-                    )
-                } else {
-                    Ok(())
-                }
+        if let Some(ack_id) = self.rx_connack.recv().await {
+            if ack_id == id {
+                Ok(())
+            } else {
+                logged_err!("peer ID mismatch: expected {}, got {}", id, ack_id)
             }
-            None => logged_err!("connack channel closed"),
+        } else {
+            logged_err!("connack channel closed")
         }
     }
 
@@ -198,9 +194,9 @@ where
 
     /// Gets a bitmap where currently connected peers are set true.
     pub(crate) fn current_peers(&self) -> Result<Bitmap, SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
         let mut peers = Bitmap::new(self.population, false);
-        for &id in tx_sends_guard.keys() {
+        for entry in self.tx_sends.iter() {
+            let id = *entry.key();
             if let Err(e) = peers.set(id, true) {
                 return logged_err!("error setting peer {}: {}", id, e);
             }
@@ -214,18 +210,14 @@ where
         msg: PeerMessage<Msg>,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
-        match tx_sends_guard.get(&peer) {
-            Some(tx_send) => {
-                tx_send.send(msg).map_err(SummersetError::msg)?;
-            }
-            None => {
-                // NOTE: commented out to avoid spurious error messages
-                // pf_error!(
-                //     "peer ID {} not found among connected ones",
-                //     peer
-                // );
-            }
+        if let Some(tx_send) = self.tx_sends.get(&peer) {
+            tx_send.value().send(msg).map_err(SummersetError::msg)?;
+        } else {
+            // NOTE: commented out to avoid spurious error messages
+            // pf_error!(
+            //     "peer ID {} not found among connected ones",
+            //     peer
+            // );
         }
 
         Ok(())
@@ -233,26 +225,28 @@ where
 
     /// Broadcasts message to specified peers by sending to the send channel.
     /// If `target` is `None`, broadcast to all current peers.
+    #[allow(clippy::needless_pass_by_value)]
     fn bcast_msg_inner(
         &mut self,
         msg: PeerMessage<Msg>,
         target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
-        let tx_sends_guard = self.tx_sends.guard();
-        for &peer in tx_sends_guard.keys() {
+        for entry in self.tx_sends.iter() {
+            let peer = *entry.key();
             if peer == self.me {
                 continue;
             }
-            if let Some(ref target) = target {
-                if peer >= target.size() || !target.get(peer)? {
-                    continue;
-                }
+            if let Some(ref target) = target
+                && (peer >= target.size() || !target.get(peer)?)
+            {
+                continue;
             }
 
             // not skipped
-            tx_sends_guard
+            self.tx_sends
                 .get(&peer)
                 .unwrap()
+                .value()
                 .send(msg.clone())
                 .map_err(SummersetError::msg)?;
         }
@@ -322,12 +316,14 @@ where
     pub(crate) async fn recv_msg(
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
-        match self.rx_recv.recv().await {
-            Some((id, peer_msg)) => match peer_msg {
-                PeerMessage::Msg { msg } => Ok((id, msg)),
-                _ => logged_err!("unexpected peer message type"),
-            },
-            None => logged_err!("recv channel has been closed"),
+        if let Some((id, peer_msg)) = self.rx_recv.recv().await {
+            if let PeerMessage::Msg { msg } = peer_msg {
+                Ok((id, msg))
+            } else {
+                logged_err!("unexpected peer message type")
+            }
+        } else {
+            logged_err!("recv channel has been closed")
         }
     }
 
@@ -337,28 +333,33 @@ where
         &mut self,
     ) -> Result<(ReplicaId, Msg), SummersetError> {
         match self.rx_recv.try_recv() {
-            Ok((id, peer_msg)) => match peer_msg {
-                PeerMessage::Msg { msg } => Ok((id, msg)),
-                _ => logged_err!("unexpected peer message type"),
-            },
+            Ok((id, peer_msg)) => {
+                if let PeerMessage::Msg { msg } = peer_msg {
+                    Ok((id, msg))
+                } else {
+                    logged_err!("unexpected peer message type")
+                }
+            }
             Err(e) => Err(SummersetError::msg(e)),
         }
     }
 
     /// Broadcasts leave notifications to all peers and waits for replies.
+    #[allow(clippy::unused_async)]
     pub(crate) async fn leave(&mut self) -> Result<(), SummersetError> {
         #[allow(unused_variables)]
         let mut num_peers = 0;
-        let tx_sends_guard = self.tx_sends.guard();
-        for &peer in tx_sends_guard.keys() {
+        for entry in self.tx_sends.iter() {
+            let peer = *entry.key();
             if peer == self.me {
                 continue;
             }
 
             // not skipped
-            tx_sends_guard
+            self.tx_sends
                 .get(&peer)
                 .unwrap()
+                .value()
                 .send(PeerMessage::Leave)
                 .map_err(SummersetError::msg)?;
             num_peers += 1;
@@ -383,18 +384,15 @@ where
     }
 }
 
-/// TransportHub peer acceptor task.
+/// `TransportHub` peer acceptor task.
 struct TransportHubAcceptorTask<Msg> {
     me: ReplicaId,
 
     tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-    tx_sends: flashmap::WriteHandle<
-        ReplicaId,
-        mpsc::UnboundedSender<PeerMessage<Msg>>,
-    >,
+    tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
 
     peer_listener: TcpListener,
-    peer_messenger_handles: flashmap::WriteHandle<ReplicaId, JoinHandle<()>>,
+    peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
 
     rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
     tx_connack: mpsc::UnboundedSender<ReplicaId>,
@@ -411,7 +409,9 @@ where
     Msg: fmt::Debug
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + Send
         + Sync
         + 'static,
@@ -422,14 +422,10 @@ where
         me: ReplicaId,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         peer_listener: TcpListener,
-        tx_sends: flashmap::WriteHandle<
-            ReplicaId,
-            mpsc::UnboundedSender<PeerMessage<Msg>>,
+        tx_sends: Arc<
+            DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>,
         >,
-        peer_messenger_handles: flashmap::WriteHandle<
-            ReplicaId,
-            JoinHandle<()>,
-        >,
+        peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
         rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
         tx_connack: mpsc::UnboundedSender<ReplicaId>,
         tx_leases: HashMap<
@@ -444,8 +440,8 @@ where
         TransportHubAcceptorTask {
             me,
             tx_recv,
-            peer_listener,
             tx_sends,
+            peer_listener,
             peer_messenger_handles,
             rx_connect,
             tx_connack,
@@ -465,15 +461,12 @@ where
         let mut stream = tcp_connect_with_retry(conn_addr, 15).await?;
         stream.write_u8(self.me).await?; // send my ID
 
-        let mut peer_messenger_handles_guard =
-            self.peer_messenger_handles.guard();
-        if peer_messenger_handles_guard.contains_key(&id) {
+        if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!("duplicate peer ID to connect: {}", id);
         }
 
-        let mut tx_sends_guard = self.tx_sends.guard();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
-        tx_sends_guard.insert(id, tx_send);
+        self.tx_sends.insert(id, tx_send);
 
         let mut messenger = TransportHubMessengerTask::new(
             id,
@@ -486,7 +479,8 @@ where
         );
         let peer_messenger_handle =
             tokio::spawn(async move { messenger.run().await });
-        peer_messenger_handles_guard.insert(id, peer_messenger_handle);
+        self.peer_messenger_handles
+            .insert(id, peer_messenger_handle);
 
         pf_debug!("connected to peer {}", id);
         Ok(())
@@ -504,15 +498,12 @@ where
         }
         let id = id.unwrap();
 
-        let mut peer_messenger_handles_guard =
-            self.peer_messenger_handles.guard();
-        if peer_messenger_handles_guard.contains_key(&id) {
+        if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!("duplicate peer ID listened: {}", id);
         }
 
-        let mut tx_sends_guard = self.tx_sends.guard();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
-        tx_sends_guard.insert(id, tx_send);
+        self.tx_sends.insert(id, tx_send);
 
         let mut messenger = TransportHubMessengerTask::new(
             id,
@@ -525,7 +516,8 @@ where
         );
         let peer_messenger_handle =
             tokio::spawn(async move { messenger.run().await });
-        peer_messenger_handles_guard.insert(id, peer_messenger_handle);
+        self.peer_messenger_handles
+            .insert(id, peer_messenger_handle);
 
         pf_debug!("waited on peer {}", id);
         Ok(())
@@ -536,15 +528,12 @@ where
         &mut self,
         id: ReplicaId,
     ) -> Result<(), SummersetError> {
-        let mut tx_sends_guard = self.tx_sends.guard();
-        if !tx_sends_guard.contains_key(&id) {
+        if !self.tx_sends.contains_key(&id) {
             return logged_err!("peer {} not found among connected ones", id);
         }
-        tx_sends_guard.remove(id);
+        self.tx_sends.remove(&id);
 
-        let mut peer_messenger_handles_guard =
-            self.peer_messenger_handles.guard();
-        peer_messenger_handles_guard.remove(id);
+        self.peer_messenger_handles.remove(&id);
 
         Ok(())
     }
@@ -606,7 +595,7 @@ where
     }
 }
 
-/// TransportHub per-peer messenger task.
+/// `TransportHub` per-peer messenger task.
 struct TransportHubMessengerTask<Msg> {
     /// Corresponding peer's ID.
     id: ReplicaId,
@@ -636,7 +625,9 @@ where
     Msg: fmt::Debug
         + Clone
         + Serialize
+        + Encode
         + DeserializeOwned
+        + Decode<()>
         + Send
         + Sync
         + 'static,
@@ -677,7 +668,7 @@ where
         }
     }
 
-    /// Writes a message through given TcpStream.
+    /// Writes a message through given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     fn write_msg(
         write_buf: &mut BytesMut,
@@ -688,7 +679,7 @@ where
         safe_tcp_write(write_buf, write_buf_cursor, conn_write, msg)
     }
 
-    /// Reads a message from given TcpStream.
+    /// Reads a message from given `TcpStream`.
     /// This is a non-method function to ease `tokio::select!` sharing.
     async fn read_msg(
         // first 8 bytes being the message length, and the rest bytes being the
@@ -700,6 +691,7 @@ where
     }
 
     /// Starts a per-peer messenger task loop.
+    #[allow(clippy::too_many_lines)]
     async fn run(&mut self) {
         pf_debug!(
             "peer_messenger task for {} '{}' spawned",
@@ -732,7 +724,7 @@ where
                             pf_error!("proactively sending LeaveReply msg");
                         },
 
-                        Some(PeerMessage::LeaseMsg { .. }) | Some(PeerMessage::Msg { .. }) => {
+                        Some(PeerMessage::LeaseMsg { .. } | PeerMessage::Msg { .. }) => {
                             match Self::write_msg(
                                 &mut self.write_buf,
                                 &mut self.write_buf_cursor,
@@ -856,12 +848,24 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+
+    use serde::{Deserialize, Serialize};
     use tokio::sync::Barrier;
 
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, GetSize)]
+    use super::*;
+
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Eq,
+        Serialize,
+        Encode,
+        Deserialize,
+        Decode,
+        GetSize,
+    )]
     struct TestMsg(String);
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]

@@ -2,21 +2,22 @@
 
 use std::collections::HashMap;
 
-use crate::server::ReplicaId;
-use crate::utils::SummersetError;
-
+use bincode::{Decode, Encode};
 use get_size::GetSize;
-
 use serde::{Deserialize, Serialize};
-
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+use crate::server::ReplicaId;
+use crate::utils::SummersetError;
 
 /// Command ID type.
 pub type CommandId = u64;
 
 /// Command to the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 pub enum Command {
     /// Get the value of given key.
     Get { key: String },
@@ -28,6 +29,7 @@ pub enum Command {
 impl Command {
     /// Is the command type read-only? If so, returns the key queried.
     #[inline]
+    #[must_use]
     pub fn read_only(&self) -> Option<&String> {
         if let Command::Get { key } = self {
             Some(key)
@@ -38,6 +40,7 @@ impl Command {
 
     /// Is the command non-read-only? If so, returns the key updated.
     #[inline]
+    #[must_use]
     pub fn write_key(&self) -> Option<&String> {
         if let Command::Put { key, .. } = self {
             Some(key)
@@ -48,7 +51,9 @@ impl Command {
 }
 
 /// Command execution result returned by the state machine.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 pub enum CommandResult {
     /// `Some(value)` if key is found in state machine, else `None`.
     Get { value: Option<String> },
@@ -60,6 +65,7 @@ pub enum CommandResult {
 impl CommandResult {
     /// Is the command type read-only?
     #[inline]
+    #[must_use]
     pub fn read_only(&self) -> bool {
         matches!(self, CommandResult::Get { .. })
     }
@@ -68,7 +74,7 @@ impl CommandResult {
 /// State is simply a `HashMap` from `String` key -> `String` value.
 type State = HashMap<String, String>;
 
-/// The local volatile state machine, which is simply an in-memory HashMap.
+/// The local volatile state machine, which is simply an in-memory `HashMap`.
 pub(crate) struct StateMachine {
     /// My replica ID.
     _me: ReplicaId,
@@ -79,7 +85,7 @@ pub(crate) struct StateMachine {
     /// Receiver side of the ack channel.
     rx_ack: mpsc::UnboundedReceiver<(CommandId, CommandResult)>,
 
-    /// Join handle of the executor task. The state HashMap is owned by this
+    /// Join handle of the executor task. The state `HashMap` is owned by this
     /// task.
     _executor_handle: JoinHandle<()>,
 }
@@ -89,6 +95,7 @@ impl StateMachine {
     /// Creates a new state machine with one executor task. Spawns the
     /// executor task. Creates an exec channel for submitting commands to the
     /// state machine and an ack channel for getting results.
+    #[allow(clippy::unused_async)]
     pub(crate) async fn new_and_setup(
         me: ReplicaId,
     ) -> Result<Self, SummersetError> {
@@ -119,9 +126,10 @@ impl StateMachine {
     pub(crate) async fn get_result(
         &mut self,
     ) -> Result<(CommandId, CommandResult), SummersetError> {
-        match self.rx_ack.recv().await {
-            Some((id, result)) => Ok((id, result)),
-            None => logged_err!("ack channel has been closed"),
+        if let Some((id, result)) = self.rx_ack.recv().await {
+            Ok((id, result))
+        } else {
+            logged_err!("ack channel has been closed")
         }
     }
 
@@ -152,19 +160,18 @@ impl StateMachine {
             let (this_id, result) = self.get_result().await?;
             if this_id == id {
                 return Ok((old_results, result));
-            } else {
-                old_results.push((this_id, result));
             }
+            old_results.push((this_id, result));
         }
     }
 }
 
-/// StateMachine command executor task.
+/// `StateMachine` command executor task.
 struct StateMachineExecutorTask {
     rx_exec: mpsc::UnboundedReceiver<(CommandId, Command)>,
     tx_ack: mpsc::UnboundedSender<(CommandId, CommandResult)>,
 
-    /// State is ultimately just a key-value HashMap.
+    /// State is ultimately just a key-value `HashMap`.
     state: State,
 }
 
@@ -184,16 +191,14 @@ impl StateMachineExecutorTask {
     /// Executes given command on the state machine state.
     /// This is a non-method function to make tests easier to write.
     fn execute(state: &mut State, cmd: &Command) -> CommandResult {
-        let result = match cmd {
+        match cmd {
             Command::Get { key } => CommandResult::Get {
                 value: state.get(key).cloned(),
             },
             Command::Put { key, value } => CommandResult::Put {
                 old_value: state.insert(key.clone(), value.clone()),
             },
-        };
-
-        result
+        }
     }
 
     /// Starts the command executor task loop.
@@ -216,8 +221,10 @@ impl StateMachineExecutorTask {
 
 #[cfg(test)]
 mod tests {
+    use rand::Rng;
+    use rand::seq::IndexedRandom;
+
     use super::*;
-    use rand::{seq::SliceRandom, Rng};
 
     #[test]
     fn get_empty() {
@@ -283,8 +290,8 @@ mod tests {
     }
 
     fn gen_rand_str(len: usize) -> String {
-        rand::thread_rng()
-            .sample_iter(&rand::distributions::Alphanumeric)
+        rand::rng()
+            .sample_iter(&rand::distr::Alphanumeric)
             .take(len)
             .map(char::from)
             .collect()
@@ -313,7 +320,7 @@ mod tests {
         let keys: Vec<&String> = ref_state.keys().collect();
         for _ in 0..100 {
             let key: String = if rand::random() {
-                (*keys.choose(&mut rand::thread_rng()).unwrap()).into()
+                (*keys.choose(&mut rand::rng()).unwrap()).into()
             } else {
                 "nonexist!".into()
             };

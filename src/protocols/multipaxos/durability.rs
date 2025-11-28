@@ -1,13 +1,12 @@
-//! MultiPaxos -- durable logging.
+//! `MultiPaxos` -- durable logging.
 
 use super::*;
-
 use crate::server::{ApiRequest, LogActionId, LogResult};
 use crate::utils::SummersetError;
 
 // MultiPaxosReplica durable WAL logging
 impl MultiPaxosReplica {
-    /// Handler of PrepareBal logging result chan recv.
+    /// Handler of `PrepareBal` logging result chan recv.
     fn handle_logged_prepare_bal(
         &mut self,
         slot: usize,
@@ -36,18 +35,17 @@ impl MultiPaxosReplica {
                 endprep_slot,
                 ..
             }) = inst.leader_bk
+                && slot <= endprep_slot
             {
-                if slot <= endprep_slot {
-                    self.handle_msg_prepare_reply(
-                        self.id,
-                        slot,
-                        trigger_slot,
-                        endprep_slot,
-                        inst.bal,
-                        voted,
-                        self.accept_bar,
-                    )?;
-                }
+                self.handle_msg_prepare_reply(
+                    self.id,
+                    slot,
+                    trigger_slot,
+                    endprep_slot,
+                    inst.bal,
+                    voted,
+                    self.accept_bar,
+                )?;
             }
         } else {
             // on follower replica, finishing the logging of a
@@ -83,7 +81,7 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Handler of AcceptData logging result chan recv.
+    /// Handler of `AcceptData` logging result chan recv.
     fn handle_logged_accept_data(
         &mut self,
         slot: usize,
@@ -146,7 +144,7 @@ impl MultiPaxosReplica {
         Ok(())
     }
 
-    /// Handler of CommitSlot logging result chan recv.
+    /// Handler of `CommitSlot` logging result chan recv.
     fn handle_logged_commit_slot(
         &mut self,
         slot: usize,

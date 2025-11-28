@@ -1,14 +1,13 @@
 //! Closed-loop client-side driver implementation.
 
-use crate::drivers::DriverReply;
-
-use tokio::time::{Duration, Instant};
-
 use summerset::{
     logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
     ClientId, Command, CommandResult, ConfChange, GenericEndpoint, RequestId,
     SummersetError, Timer,
 };
+use tokio::time::{Duration, Instant};
+
+use crate::drivers::DriverReply;
 
 /// Closed-loop driver struct.
 pub(crate) struct DriverClosedLoop {

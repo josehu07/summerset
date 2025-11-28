@@ -1,7 +1,6 @@
-//! EPaxos -- client request entrance.
+//! `EPaxos` -- client request entrance.
 
 use super::*;
-
 use crate::server::LogAction;
 use crate::utils::{Bitmap, SummersetError};
 

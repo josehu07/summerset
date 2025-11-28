@@ -2,17 +2,15 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::drivers::{DriverClosedLoop, DriverReply};
-
 use serde::Deserialize;
-
-use tokio::time::Duration;
-
 use summerset::{
     logged_err, parsed_config, pf_error, pf_info, Bitmap, CommandResult,
     ConfChange, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, ServerInfo,
     SummersetError,
 };
+use tokio::time::Duration;
+
+use crate::drivers::{DriverClosedLoop, DriverReply};
 
 /// Mod parameters struct.
 #[derive(Debug, Deserialize)]

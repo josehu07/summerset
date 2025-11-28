@@ -1,9 +1,8 @@
-//! Crossword -- leader election.
+//! `Crossword` -- leader election.
 
 use std::collections::{HashMap, VecDeque};
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
@@ -44,6 +43,7 @@ impl CrosswordReplica {
     /// If current leader is not me but times out, steps up as leader, and
     /// sends self-initiated Prepare messages to followers for all in-progress
     /// instances.
+    #[allow(clippy::too_many_lines)]
     pub(super) async fn become_a_leader(
         &mut self,
         timeout_source: ReplicaId,
@@ -195,7 +195,7 @@ impl CrosswordReplica {
                 },
                 None,
             )?;
-            for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+            for (&peer, pending) in &mut self.pending_heartbeats {
                 if self.heartbeater.peer_alive().get(peer)? {
                     pending.push_back((now_us, self.next_hb_id));
                 }
@@ -222,7 +222,7 @@ impl CrosswordReplica {
             },
             None,
         )?;
-        for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+        for (&peer, pending) in &mut self.pending_heartbeats {
             if self.heartbeater.peer_alive().get(peer)? {
                 pending.push_back((now_us, self.next_hb_id));
             }
@@ -364,6 +364,7 @@ impl CrosswordReplica {
             // is definitely safe to be snapshotted
             if exec_bar > self.peer_exec_bar[&peer] {
                 *self.peer_exec_bar.get_mut(&peer).unwrap() = exec_bar;
+                #[allow(clippy::cast_possible_truncation)]
                 let passed_cnt = 1 + self
                     .peer_exec_bar
                     .values()
@@ -387,7 +388,8 @@ impl CrosswordReplica {
 
     /// Check all instances in the Accepting phase and redo their Accepts
     /// using the current assignment policy. This is a performance optimization
-    /// for soft fallback triggered when peer_alive count decreases.
+    /// for soft fallback triggered when `peer_alive` count decreases.
+    #[allow(clippy::too_many_lines)]
     fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         let alive_cnt = self.heartbeater.peer_alive().count();
@@ -423,7 +425,7 @@ impl CrosswordReplica {
                 {
                     // the assignment policy used for this instance was already
                     // responsive for current # of healthy nodes
-                    for (peer, pending) in self.pending_accepts.iter_mut() {
+                    for (peer, pending) in &mut self.pending_accepts {
                         while let Some(record) = pending.pop_front() {
                             if slot == record.1 {
                                 new_pending_accepts
@@ -529,7 +531,7 @@ impl CrosswordReplica {
                         },
                         None,
                     )?;
-                    for (&peer, pending) in self.pending_heartbeats.iter_mut() {
+                    for (&peer, pending) in &mut self.pending_heartbeats {
                         if self.heartbeater.peer_alive().get(peer)? {
                             pending.push_back((now_us, self.next_hb_id));
                         }

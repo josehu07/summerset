@@ -1,8 +1,9 @@
-//! Replication protocol: CRaft (Coded-Raft).
+//! Replication protocol: `CRaft` (Coded-`Raft`).
 //!
-//! Raft with erasure coding and fall-back mechanism. References:
+//! `Raft` with erasure coding and fall-back mechanism. References:
 //!   - <https://www.usenix.org/conference/fast20/presentation/wang-zizhong>
 
+use bincode::{Decode, Encode};
 mod control;
 mod durability;
 mod execution;
@@ -16,6 +17,13 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
 
+use async_trait::async_trait;
+use get_size::GetSize;
+use reed_solomon_erasure::galois_8::ReedSolomon;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
@@ -26,19 +34,9 @@ use crate::server::{
 };
 use crate::utils::{RSCodeword, SummersetError};
 
-use async_trait::async_trait;
-
-use get_size::GetSize;
-
-use serde::{Deserialize, Serialize};
-
-use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
-
-use reed_solomon_erasure::galois_8::ReedSolomon;
-
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ReplicaConfigCRaft {
     /// Client request batching interval in millisecs.
     pub batch_interval_ms: u64,
@@ -57,7 +55,7 @@ pub struct ReplicaConfigCRaft {
     /// Max timeout of not hearing any heartbeat from leader in millisecs.
     pub hb_hear_timeout_max: u64,
 
-    /// Interval of leader sending AppendEntries heartbeats to followers.
+    /// Interval of leader sending `AppendEntries` heartbeats to followers.
     pub hb_send_interval_ms: u64,
 
     /// Disable heartbeat timer (to force a deterministic leader during tests).
@@ -120,7 +118,9 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-mem + persistent entry of log, containing a term and a (possibly
 /// partial) commands batch.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 struct LogEntry {
     /// Term number.
     term: Term,
@@ -142,7 +142,9 @@ struct LogEntry {
 // NOTE: Raft makes the persistent log exactly mirror the in-memory log, so
 //       the backer file is not a WAL log in runtime operation; it might get
 //       overwritten, etc.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum DurEntry {
     /// Durable metadata.
     Metadata {
@@ -165,25 +167,29 @@ impl DurEntry {
     }
 
     fn unpack_meta(self) -> Result<(Term, Option<ReplicaId>), SummersetError> {
-        match self {
-            DurEntry::Metadata {
-                curr_term,
-                voted_for,
-            } => Ok((
+        if let DurEntry::Metadata {
+            curr_term,
+            voted_for,
+        } = self
+        {
+            Ok((
                 curr_term,
                 if voted_for == ReplicaId::MAX {
                     None
                 } else {
                     Some(voted_for)
                 },
-            )),
-            _ => logged_err!("unpacking non Metadata entry"),
+            ))
+        } else {
+            logged_err!("unpacking non Metadata entry")
         }
     }
 }
 
 /// Snapshot file entry type.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -197,9 +203,9 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
 enum PeerMsg {
-    /// AppendEntries from leader to followers.
+    /// `AppendEntries` from leader to followers.
     AppendEntries {
         term: Term,
         prev_slot: usize,
@@ -210,24 +216,24 @@ enum PeerMsg {
         last_snap: usize,
     },
 
-    /// AppendEntries reply from follower to leader.
+    /// `AppendEntries` reply from follower to leader.
     AppendEntriesReply {
         term: Term,
-        /// For correct tracking of which AppendEntries this reply is for.
+        /// For correct tracking of which `AppendEntries` this reply is for.
         end_slot: usize,
         /// If success, `None`; otherwise, contains a pair of the conflicting
         /// entry's term and my first index for that term.
         conflict: Option<(Term, usize)>,
     },
 
-    /// RequestVote from leader to followers.
+    /// `RequestVote` from leader to followers.
     RequestVote {
         term: Term,
         last_slot: usize,
         last_term: Term,
     },
 
-    /// RequestVote reply from follower to leader.
+    /// `RequestVote` reply from follower to leader.
     RequestVoteReply { term: Term, granted: bool },
 
     /// Reconstruction read from new leader to followers.
@@ -242,7 +248,17 @@ enum PeerMsg {
 
 /// Replica role type.
 #[derive(
-    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    Encode,
+    Decode,
 )]
 enum Role {
     Follower,
@@ -250,7 +266,7 @@ enum Role {
     Leader,
 }
 
-/// CRaft server replica module.
+/// `CRaft` server replica module.
 pub(crate) struct CRaftReplica {
     /// Replica ID in cluster.
     id: ReplicaId,
@@ -275,22 +291,22 @@ pub(crate) struct CRaftReplica {
     /// Address string for internal peer-peer communication.
     _p2p_addr: SocketAddr,
 
-    /// ControlHub module.
+    /// `ControlHub` module.
     control_hub: ControlHub,
 
-    /// ExternalApi module.
+    /// `ExternalApi` module.
     external_api: ExternalApi,
 
-    /// StateMachine module.
+    /// `StateMachine` module.
     state_machine: StateMachine,
 
-    /// StorageHub module.
+    /// `StorageHub` module.
     storage_hub: StorageHub<DurEntry>,
 
-    /// StorageHub module for the snapshot file.
+    /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
 
-    /// TransportHub module.
+    /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
 
     /// Heartbeater module.
@@ -334,9 +350,9 @@ pub(crate) struct CRaftReplica {
     next_slot: HashMap<ReplicaId, usize>,
 
     /// For each server, index of the next log entry to try to send for an
-    /// AppendEntries message. This is added due to the asynchronous nature
+    /// `AppendEntries` message. This is added due to the asynchronous nature
     /// of Summerset's implementation.
-    /// It is always true that next_slot[r] <= try_next_slot[r]
+    /// It is always true that `next_slot`[r] <= `try_next_slot`[r]
     try_next_slot: HashMap<ReplicaId, usize>,
 
     /// For each server, index of the highest log entry known to be replicated.
@@ -363,7 +379,7 @@ pub(crate) struct CRaftReplica {
 
 // CRaftReplica common helpers
 impl CRaftReplica {
-    /// Compose LogActionId from (slot, end_slot) pair & entry type.
+    /// Compose `LogActionId` from (slot, `end_slot`) pair & entry type.
     /// Uses the `Role` enum type to represent different entry types.
     #[inline]
     fn make_log_action_id(
@@ -371,6 +387,7 @@ impl CRaftReplica {
         slot_e: usize,
         entry_type: Role,
     ) -> LogActionId {
+        #[allow(clippy::match_wildcard_for_single_variants)]
         let type_num = match entry_type {
             Role::Follower => 1,
             Role::Leader => 2,
@@ -379,7 +396,7 @@ impl CRaftReplica {
         ((slot << 33) | (slot_e << 2) | type_num) as LogActionId
     }
 
-    /// Decompose LogActionId into (slot, end_slot) pair & entry type.
+    /// Decompose `LogActionId` into (slot, `end_slot`) pair & entry type.
     #[inline]
     fn split_log_action_id(log_action_id: LogActionId) -> (usize, usize, Role) {
         let slot = (log_action_id >> 33) as usize;
@@ -393,15 +410,15 @@ impl CRaftReplica {
         (slot, slot_e, entry_type)
     }
 
-    /// Compose CommandId from slot index & command index within.
+    /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
-        debug_assert!(slot <= (u32::MAX as usize));
-        debug_assert!(cmd_idx <= (u32::MAX as usize));
+        debug_assert!(u32::try_from(slot).is_ok());
+        debug_assert!(u32::try_from(cmd_idx).is_ok());
         ((slot << 32) | cmd_idx) as CommandId
     }
 
-    /// Decompose CommandId into slot index & command index within.
+    /// Decompose `CommandId` into slot index & command index within.
     #[inline]
     fn split_command_id(command_id: CommandId) -> (usize, usize) {
         let slot = (command_id >> 32) as usize;
@@ -412,6 +429,7 @@ impl CRaftReplica {
 
 #[async_trait]
 impl GenericReplica for CRaftReplica {
+    #[allow(clippy::too_many_lines)]
     async fn new_and_setup(
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
@@ -498,11 +516,9 @@ impl GenericReplica for CRaftReplica {
             api_addr,
             p2p_addr,
         })?;
-        let to_peers = if let CtrlMsg::ConnectToPeers { to_peers, .. } =
+        let CtrlMsg::ConnectToPeers { to_peers, .. } =
             control_hub.recv_ctrl().await?
-        {
-            to_peers
-        } else {
+        else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -593,6 +609,7 @@ impl GenericReplica for CRaftReplica {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run(
         &mut self,
         mut rx_term: watch::Receiver<bool>,
@@ -746,7 +763,7 @@ impl Default for ClientConfigCRaft {
     }
 }
 
-/// CRaft client-side module.
+/// `CRaft` client-side module.
 pub(crate) struct CRaftClient {
     /// Client ID.
     id: ClientId,
@@ -811,34 +828,34 @@ impl GenericEndpoint for CRaftClient {
         }
 
         let reply = self.ctrl_stub.recv_reply().await?;
-        match reply {
-            CtrlReply::QueryInfo {
-                population,
-                servers_info,
-            } => {
-                self.population = population;
+        if let CtrlReply::QueryInfo {
+            population,
+            servers_info,
+        } = reply
+        {
+            self.population = population;
 
-                // shift to a new server_id if current one not active
-                debug_assert!(!servers_info.is_empty());
-                while !servers_info.contains_key(&self.server_id)
-                    || servers_info[&self.server_id].is_paused
-                {
-                    self.server_id = (self.server_id + 1) % population;
-                }
-                // establish connection to all servers
-                self.servers = servers_info
-                    .into_iter()
-                    .map(|(id, info)| (id, info.api_addr))
-                    .collect();
-                for (&id, &server) in &self.servers {
-                    pf_debug!("connecting to server {} '{}'...", id, server);
-                    let api_stub =
-                        ClientApiStub::new_by_connect(self.id, server).await?;
-                    self.api_stubs.insert(id, api_stub);
-                }
-                Ok(())
+            // shift to a new server_id if current one not active
+            debug_assert!(!servers_info.is_empty());
+            while !servers_info.contains_key(&self.server_id)
+                || servers_info[&self.server_id].is_paused
+            {
+                self.server_id = (self.server_id + 1) % population;
             }
-            _ => logged_err!("unexpected reply type received"),
+            // establish connection to all servers
+            self.servers = servers_info
+                .into_iter()
+                .map(|(id, info)| (id, info.api_addr))
+                .collect();
+            for (&id, &server) in &self.servers {
+                pf_debug!("connecting to server {} '{}'...", id, server);
+                let api_stub =
+                    ClientApiStub::new_by_connect(self.id, server).await?;
+                self.api_stubs.insert(id, api_stub);
+            }
+            Ok(())
+        } else {
+            logged_err!("unexpected reply type received")
         }
     }
 

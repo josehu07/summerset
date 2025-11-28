@@ -1,7 +1,6 @@
-//! RepNothing -- client request entrance.
+//! `RepNothing` -- client request entrance.
 
 use super::*;
-
 use crate::client::ClientId;
 use crate::server::{ApiRequest, LogAction, LogActionId};
 use crate::utils::SummersetError;

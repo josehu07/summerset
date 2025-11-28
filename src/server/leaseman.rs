@@ -1,17 +1,18 @@
 //! Summerset server lease management module implementation.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use crate::server::ReplicaId;
-use crate::utils::{Bitmap, SummersetError, Timer};
-
+use bincode::{Decode, Encode};
+use dashmap::DashMap;
 use get_size::GetSize;
-
 use serde::{Deserialize, Serialize};
-
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+
+use crate::server::ReplicaId;
+use crate::utils::{Bitmap, SummersetError, Timer};
 
 /// Lease group ID that's unique per lease purpose.
 pub(crate) type LeaseGid = u16;
@@ -20,10 +21,12 @@ pub(crate) type LeaseGid = u16;
 pub(crate) type LeaseNum = u64;
 
 /// Lease-related peer-to-peer messages, used as a sub-category of the message
-/// type of TransportHub.
+/// type of `TransportHub`.
 // TODO: merge promise refreshes with heartbeats after turning heartbeats into
 //       a generic server module
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, GetSize)]
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Encode, Deserialize, Decode, GetSize,
+)]
 pub(crate) enum LeaseMsg {
     /// Push-based Guard phase. Optionally carries an `accept_bar` for setting
     /// safe local-read thresholds for eligible protocols.
@@ -34,13 +37,13 @@ pub(crate) enum LeaseMsg {
     /// Promise or refresh the lease for fixed amount of time.
     Promise,
     /// Reply to Promise. `held` is true if lease was guarded/held and so will
-    /// be successfully held for the next T_lease window; is false otherwise.
+    /// be successfully held for the next `T_lease` window; is false otherwise.
     PromiseReply { held: bool },
 
     /// Revoke lease if held.
     Revoke,
     /// Reply to Revoke. `held` is true if lease promise was held; as long as
-    /// RevokeReply is received, revocation is guaranteed to have taken effect
+    /// `RevokeReply` is received, revocation is guaranteed to have taken effect
     /// whether or not this field is true.
     RevokeReply { held: bool },
 }
@@ -59,11 +62,11 @@ pub(crate) enum LeaseAction {
     /// by `get_action()` internally.
     NextRefresh { peer: ReplicaId },
 
-    /// To indicate a peer being removed from promises_sent by a successful
-    /// active RevokeReply (or any other reason).
+    /// To indicate a peer being removed from `promises_sent` by a successful
+    /// active `RevokeReply` (or any other reason).
     GrantRemoved { peer: ReplicaId, held: bool },
 
-    /// To indicate that promises_held has been cleared.
+    /// To indicate that `promises_held` has been cleared.
     LeaseCleared,
 
     /// In case the protocol logic needs it:
@@ -79,7 +82,7 @@ pub(crate) enum LeaseAction {
     HigherNumber,
 
     /// In case the protocol logic needs it:
-    /// Received a Guard message that carries an accept_bar.
+    /// Received a Guard message that carries an `accept_bar`.
     GuardAcceptBar { peer: ReplicaId, accept_bar: usize },
 }
 
@@ -121,8 +124,8 @@ pub(crate) enum LeaseNotice {
 /// Current implementation uses the push-based guard + promise approach with no
 /// clock synchronization but with the assumption of bounded-error elapsed time
 /// across nodes. Reference in:
-///   https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf
-/// except minor simplifications (e.g., no seq_ACKs) thanks to TCP semantics.
+///   <https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf>
+/// except minor simplifications (e.g., no `seq_ACK`s) thanks to TCP semantics.
 ///
 /// It delegates lease refreshing to the existing heartbeats mechanism of the
 /// protocol. It takes care of other things, e.g., expiration, internally.
@@ -133,7 +136,7 @@ pub(crate) struct LeaseManager {
     /// Total number of replicas in the cluster.
     population: u8,
 
-    /// Expiration timeout used as both T_guard and T_lease.
+    /// Expiration timeout used as both `T_guard` and `T_lease`.
     expire_timeout: Duration,
 
     /// Receiver side of the action channel.
@@ -143,13 +146,13 @@ pub(crate) struct LeaseManager {
     tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
 
     /// Map from peer ID I've grant lease to on current lease number ->
-    /// (T_guard timer, revocation intention flag); shared with the lease
+    /// (`T_guard` timer, revocation intention flag); shared with the lease
     /// manager task.
-    promises_sent: flashmap::ReadHandle<ReplicaId, (Timer, bool)>,
+    promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>>,
 
     /// Map from peer ID I've been granted lease from (i.e., held) on current
-    /// lease number -> T_lease timer; shared with the lease manager task.
-    promises_held: flashmap::ReadHandle<ReplicaId, Timer>,
+    /// lease number -> `T_lease` timer; shared with the lease manager task.
+    promises_held: Arc<DashMap<ReplicaId, Timer>>,
 
     /// Set of peer IDs to which the next heartbeat should be a promise refresh.
     refresh_mark: HashSet<ReplicaId>,
@@ -160,8 +163,8 @@ pub(crate) struct LeaseManager {
 
 // LeaseManager public API implementation
 impl LeaseManager {
-    /// Creates a new lease manager. Returns a tuple of the created LeaseManager
-    /// and a clone of the notice channel sender to be used by the TransportHub
+    /// Creates a new lease manager. Returns a tuple of the created `LeaseManager`
+    /// and a clone of the notice channel sender to be used by the `TransportHub`
     /// to feed lease messages directly in.
     pub(crate) fn new_and_setup(
         me: ReplicaId,
@@ -192,10 +195,10 @@ impl LeaseManager {
         let (tx_notice, rx_notice) = mpsc::unbounded_channel();
         let (tx_action, rx_action) = mpsc::unbounded_channel();
 
-        let (promises_sent_write, promises_sent_read) =
-            flashmap::new::<ReplicaId, (Timer, bool)>();
-        let (promises_held_write, promises_held_read) =
-            flashmap::new::<ReplicaId, Timer>();
+        let promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>> =
+            Arc::new(DashMap::new());
+        let promises_held: Arc<DashMap<ReplicaId, Timer>> =
+            Arc::new(DashMap::new());
 
         let mut manager = LeaseManagerLogicTask::new(
             me,
@@ -205,8 +208,8 @@ impl LeaseManager {
             tx_action,
             tx_notice.clone(),
             rx_notice,
-            promises_sent_write,
-            promises_held_write,
+            promises_sent.clone(),
+            promises_held.clone(),
         );
         let lease_manager_handle =
             tokio::spawn(async move { manager.run().await });
@@ -219,8 +222,8 @@ impl LeaseManager {
                 expire_timeout,
                 rx_action,
                 tx_notice,
-                promises_sent: promises_sent_read,
-                promises_held: promises_held_read,
+                promises_sent,
+                promises_held,
                 refresh_mark: HashSet::new(),
                 _lease_manager_handle: lease_manager_handle,
             },
@@ -232,8 +235,8 @@ impl LeaseManager {
     #[allow(dead_code)]
     pub(crate) fn grant_set(&self) -> Bitmap {
         let mut map = Bitmap::new(self.population, false);
-        for &r in self.promises_sent.guard().keys() {
-            map.set(r, true).unwrap();
+        for entry in self.promises_sent.iter() {
+            map.set(*entry.key(), true).unwrap();
         }
         map
     }
@@ -242,16 +245,17 @@ impl LeaseManager {
     #[allow(dead_code)]
     pub(crate) fn lease_set(&self) -> Bitmap {
         let mut map = Bitmap::new(self.population, false);
-        for &r in self.promises_held.guard().keys() {
-            map.set(r, true).unwrap();
+        for entry in self.promises_held.iter() {
+            map.set(*entry.key(), true).unwrap();
         }
         map
     }
 
     /// Gets the number of promises currently held (implicitly always including
     /// self so always >= 1).
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn lease_cnt(&self) -> u8 {
-        1 + self.promises_held.guard().len() as u8
+        1 + self.promises_held.len() as u8
     }
 
     /// Adds a lease notice to be taken care of by the lease manager by sending
@@ -271,21 +275,20 @@ impl LeaseManager {
     pub(crate) async fn get_action(
         &mut self,
     ) -> Result<(LeaseNum, LeaseAction), SummersetError> {
-        match self.rx_action.recv().await {
-            Some((lease_num, action)) => {
-                if let LeaseAction::NextRefresh { peer } = action {
-                    // bookkeep refresh_mark set internally
-                    self.refresh_mark.insert(peer);
-                }
-                Ok((lease_num, action))
+        if let Some((lease_num, action)) = self.rx_action.recv().await {
+            if let LeaseAction::NextRefresh { peer } = action {
+                // bookkeep refresh_mark set internally
+                self.refresh_mark.insert(peer);
             }
-            None => logged_err!("action channel has been closed"),
+            Ok((lease_num, action))
+        } else {
+            logged_err!("action channel has been closed")
         }
     }
 
     /// Checks if the next heartbeat to peers should be marked as a promise
     /// refresh. If `peers` is `None`, checks all peers. For a peer, if to
-    /// refresh, extends the promise_sent timer for them by T_lease and unmarks
+    /// refresh, extends the `promise_sent` timer for them by `T_lease` and unmarks
     /// refresh. Returns the set of peers that should send refresh to.
     ///
     /// This synchronous version method is called right before every heartbeat
@@ -295,20 +298,18 @@ impl LeaseManager {
         peers: Option<&Bitmap>,
     ) -> Result<Bitmap, SummersetError> {
         let mut to_refresh = Bitmap::new(self.population, false);
-        let promises_sent = self.promises_sent.guard();
-        for &peer in promises_sent.keys() {
+        for entry in self.promises_sent.iter() {
+            let peer = *entry.key();
             if peer != self.me
                 && peers
-                    .map(|bm| bm.get(peer).unwrap_or(false))
-                    .unwrap_or(true)
+                    .is_none_or(|bm| bm.get(peer).unwrap_or(false))
                 // bookkeep refresh_mark set internally
                 && self.refresh_mark.remove(&peer)
             {
-                if let Some((timer, revoking)) = promises_sent.get(&peer) {
-                    if !revoking {
-                        timer.extend(self.expire_timeout)?;
-                        to_refresh.set(peer, true)?;
-                    }
+                let (timer, revoking) = entry.value();
+                if !revoking {
+                    timer.extend(self.expire_timeout)?;
+                    to_refresh.set(peer, true)?;
                 }
             }
         }
@@ -316,7 +317,7 @@ impl LeaseManager {
     }
 }
 
-/// LeaseManager manager logic task.
+/// `LeaseManager` manager logic task.
 struct LeaseManagerLogicTask {
     me: ReplicaId,
     population: u8,
@@ -335,8 +336,8 @@ struct LeaseManagerLogicTask {
     guards_sent: HashMap<ReplicaId, Timer>,
     guards_held: HashMap<ReplicaId, Timer>,
 
-    promises_sent: flashmap::WriteHandle<ReplicaId, (Timer, bool)>,
-    promises_held: flashmap::WriteHandle<ReplicaId, Timer>,
+    promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>>,
+    promises_held: Arc<DashMap<ReplicaId, Timer>>,
 }
 
 impl LeaseManagerLogicTask {
@@ -350,8 +351,8 @@ impl LeaseManagerLogicTask {
         tx_action: mpsc::UnboundedSender<(LeaseNum, LeaseAction)>,
         tx_notice: mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
         rx_notice: mpsc::UnboundedReceiver<(LeaseNum, LeaseNotice)>,
-        promises_sent: flashmap::WriteHandle<ReplicaId, (Timer, bool)>,
-        promises_held: flashmap::WriteHandle<ReplicaId, Timer>,
+        promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>>,
+        promises_held: Arc<DashMap<ReplicaId, Timer>>,
     ) -> Self {
         // the active lease number must be monotonically non-decreasing; old
         // lease numbers mean actions/notices for old leasing periods and are
@@ -390,14 +391,13 @@ impl LeaseManagerLogicTask {
         let peers = peers.unwrap_or(Bitmap::new(self.population, true));
         let mut bcast_peers = peers.clone();
 
-        let promises_sent = self.promises_sent.guard();
         for (peer, flag) in peers.iter() {
             if peer == self.me || !flag {
                 bcast_peers.set(peer, false)?;
                 continue;
             }
 
-            if promises_sent.contains_key(&peer) {
+            if self.promises_sent.contains_key(&peer) {
                 // already granting promise to this peer with this number, skip
                 bcast_peers.set(peer, false)?;
                 continue;
@@ -446,7 +446,6 @@ impl LeaseManagerLogicTask {
     ) -> Result<(), SummersetError> {
         let peers = peers.unwrap_or(Bitmap::new(self.population, true));
         let mut bcast_peers = peers.clone();
-        let promises_sent = self.promises_sent.guard();
 
         for (peer, flag) in peers.iter() {
             if peer == self.me || !flag {
@@ -458,9 +457,8 @@ impl LeaseManagerLogicTask {
             self.guards_sent.remove(&peer);
 
             // also ignore if not currently in promises_sent
-            if !promises_sent.contains_key(&peer) {
+            if !self.promises_sent.contains_key(&peer) {
                 bcast_peers.set(peer, false)?;
-                continue;
             }
         }
 
@@ -489,9 +487,8 @@ impl LeaseManagerLogicTask {
     ) -> Result<(), SummersetError> {
         self.guards_held.clear();
 
-        let mut promises_held = self.promises_held.guard();
         for peer in (0..self.population).filter(|&p| p != self.me) {
-            promises_held.remove(peer);
+            self.promises_held.remove(&peer);
         }
 
         pf_debug!("lease all held cleared @ {}", lease_num);
@@ -518,7 +515,7 @@ impl LeaseManagerLogicTask {
             peer
         );
 
-        if self.promises_held.guard().contains_key(&peer) {
+        if self.promises_held.contains_key(&peer) {
             // already held promise from this peer with this number, ignore
             return Ok(());
         }
@@ -557,7 +554,7 @@ impl LeaseManagerLogicTask {
         Ok(())
     }
 
-    /// Received a GuardReply message.
+    /// Received a `GuardReply` message.
     fn handle_msg_guard_reply(
         &mut self,
         lease_num: LeaseNum,
@@ -580,7 +577,7 @@ impl LeaseManagerLogicTask {
         // move peer from guards_sent to promises_sent and kickoff for
         // T_guard + T_promise
         timer.kickoff(self.guard_timeout + self.lease_timeout)?;
-        self.promises_sent.guard().insert(peer, (timer, false));
+        self.promises_sent.insert(peer, (timer, false));
 
         // send Promise message to this peer
         pf_trace!("lease send Promise @ {} -> {}", lease_num, peer);
@@ -602,13 +599,12 @@ impl LeaseManagerLogicTask {
     ) -> Result<(), SummersetError> {
         // pf_trace!("lease recv Promise @ {} <- {}", lease_num, peer);
 
-        let mut promises_held = self.promises_held.guard();
         if self.guards_held.contains_key(&peer) {
             // was in guard phase, this is the first promise
             pf_trace!("lease recv Promise @ {} <- {}", lease_num, peer);
             let timer = self.guards_held.remove(&peer).unwrap();
             timer.kickoff(self.lease_timeout)?;
-            promises_held.insert(peer, timer);
+            self.promises_held.insert(peer, timer);
             pf_debug!("lease promise held @ {} <- {}", lease_num, peer);
 
             // send PromiseReply back
@@ -620,12 +616,9 @@ impl LeaseManagerLogicTask {
                     msg: LeaseMsg::PromiseReply { held: true },
                 },
             ))?;
-        } else if promises_held.contains_key(&peer) {
+        } else if let Some(entry) = self.promises_held.get(&peer) {
             // was in promise phase, this is a refresh
-            promises_held
-                .get(&peer)
-                .unwrap()
-                .kickoff(self.lease_timeout)?;
+            entry.kickoff(self.lease_timeout)?;
 
             // send PromiseReply back
             // pf_trace!("lease send PromiseReply(T) @ {} -> {}", lease_num, peer);
@@ -651,7 +644,7 @@ impl LeaseManagerLogicTask {
         Ok(())
     }
 
-    /// Received a PromiseReply message.
+    /// Received a `PromiseReply` message.
     fn handle_msg_promise_reply(
         &mut self,
         lease_num: LeaseNum,
@@ -665,8 +658,7 @@ impl LeaseManagerLogicTask {
         //     peer
         // );
 
-        let mut promises_sent = self.promises_sent.guard();
-        if !promises_sent.contains_key(&peer) {
+        if !self.promises_sent.contains_key(&peer) {
             // not a PromiseReply I'm expecting, ignore
             return Ok(());
         }
@@ -674,13 +666,14 @@ impl LeaseManagerLogicTask {
             // failed promise, proactively remove peer from guards_sent or
             // promises_sent for efficiency
             self.guards_sent.remove(&peer);
-            promises_sent.remove(peer);
+            self.promises_sent.remove(&peer);
             self.tx_action
                 .send((lease_num, LeaseAction::GrantRemoved { peer, held }))?;
             return Ok(());
         }
 
-        let (timer, revoking) = promises_sent.get(&peer).unwrap();
+        let entry = self.promises_sent.get(&peer).unwrap();
+        let (timer, revoking) = (&entry.value().0, entry.value().1);
         if timer.exploded() {
             // timer has already timed out, it's just that the timeout notice
             // has not been processed by the manager yet; abort
@@ -694,7 +687,7 @@ impl LeaseManagerLogicTask {
             // allow next heartbeat be marked as a promise refresh
             // pf_trace!("lease mark NextRefresh @ {} -> {}", lease_num, peer);
             self.tx_action
-                .send((lease_num, LeaseAction::NextRefresh { peer }))?
+                .send((lease_num, LeaseAction::NextRefresh { peer }))?;
         }
         Ok(())
     }
@@ -709,7 +702,7 @@ impl LeaseManagerLogicTask {
 
         // remove existing guard or promise held from this peer
         self.guards_held.remove(&peer);
-        let held = self.promises_held.guard().remove(peer).is_some();
+        let held = self.promises_held.remove(&peer).is_some();
         if held {
             pf_debug!("lease revoked drop @ {} <- {}", lease_num, peer);
         }
@@ -731,7 +724,7 @@ impl LeaseManagerLogicTask {
         Ok(())
     }
 
-    /// Received a RevokeReply message.
+    /// Received a `RevokeReply` message.
     fn handle_msg_revoke_reply(
         &mut self,
         lease_num: LeaseNum,
@@ -747,7 +740,7 @@ impl LeaseManagerLogicTask {
 
         // remove existing guard or promise sent to this peer
         self.guards_sent.remove(&peer);
-        self.promises_sent.guard().remove(peer);
+        self.promises_sent.remove(&peer);
 
         // let protocol module know about successful revocation
         self.tx_action
@@ -765,7 +758,7 @@ impl LeaseManagerLogicTask {
 
         // remove existing guard or promise sent to this peer
         self.guards_sent.remove(&peer);
-        self.promises_sent.guard().remove(peer);
+        self.promises_sent.remove(&peer);
 
         // tell the protocol module about this timeout
         self.tx_action
@@ -783,7 +776,7 @@ impl LeaseManagerLogicTask {
 
         // remove existing guard or promise held from this peer
         self.guards_held.remove(&peer);
-        let held = self.promises_held.guard().remove(peer).is_some();
+        let held = self.promises_held.remove(&peer).is_some();
         if held {
             pf_debug!("lease expired drop @ {} <- {}", lease_num, peer);
         }
@@ -893,22 +886,16 @@ impl LeaseManagerLogicTask {
                 );
                 self.guards_sent.clear();
                 self.guards_held.clear();
-                {
-                    let mut promises_sent_guard = self.promises_sent.guard();
-                    for peer in (0..self.population).filter(|&p| p != self.me) {
-                        promises_sent_guard.remove(peer);
-                    }
+                for peer in (0..self.population).filter(|&p| p != self.me) {
+                    self.promises_sent.remove(&peer);
                 }
-                {
-                    let mut promises_held_guard = self.promises_held.guard();
-                    for peer in (0..self.population).filter(|&p| p != self.me) {
-                        if promises_held_guard.remove(peer).is_some() {
-                            pf_debug!(
-                                "lease highnum drop @ {} <- {}",
-                                self.active_num,
-                                peer
-                            );
-                        }
+                for peer in (0..self.population).filter(|&p| p != self.me) {
+                    if self.promises_held.remove(&peer).is_some() {
+                        pf_debug!(
+                            "lease highnum drop @ {} <- {}",
+                            self.active_num,
+                            peer
+                        );
                     }
                 }
                 self.active_num = lease_num;
@@ -937,13 +924,15 @@ impl LeaseManagerLogicTask {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::Arc;
-    use tokio::sync::mpsc::error::TryRecvError;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
     use tokio::sync::Barrier;
+    use tokio::sync::mpsc::error::TryRecvError;
     use tokio::task::JoinSet;
     use tokio::time;
+
+    use super::*;
 
     /// Mock server node (lease module caller) used for testing.
     struct TestNode {
@@ -954,6 +943,7 @@ mod tests {
 
     impl TestNode {
         /// Creates a cluster of connected test node structs.
+        #[allow(clippy::unused_async)]
         async fn new_cluster(
             population: u8,
             expire_timeout: Duration,
@@ -1048,6 +1038,7 @@ mod tests {
         }
 
         /// Broadcasts a messages to peers.
+        #[allow(clippy::needless_pass_by_value)]
         fn bcast_msg(
             &mut self,
             peers: Bitmap,
@@ -1175,6 +1166,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn promise_expired() -> Result<(), SummersetError> {
         let nodes =
             TestNode::new_cluster(2, Duration::from_millis(600)).await?;
@@ -1319,6 +1311,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn promise_refresh() -> Result<(), SummersetError> {
         let nodes =
             TestNode::new_cluster(2, Duration::from_millis(600)).await?;
@@ -1558,6 +1551,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn revoke_replied() -> Result<(), SummersetError> {
         let nodes =
             TestNode::new_cluster(2, Duration::from_millis(600)).await?;
@@ -1767,6 +1761,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn revoke_expired() -> Result<(), SummersetError> {
         let nodes =
             TestNode::new_cluster(2, Duration::from_millis(600)).await?;
@@ -1963,6 +1958,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn regrant_higher() -> Result<(), SummersetError> {
         let nodes =
             TestNode::new_cluster(2, Duration::from_millis(600)).await?;
@@ -2288,6 +2284,7 @@ mod tests {
                     // all node should have held leases from all peers at some
                     // point before any timeout happens
                     let abitmap = abitmap_ref.load(Ordering::Acquire);
+                    #[allow(clippy::cast_possible_truncation)]
                     if (abitmap.count_ones() as u8) == population {
                         break;
                     }

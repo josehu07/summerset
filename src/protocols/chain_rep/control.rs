@@ -1,14 +1,13 @@
-//! ChainRep -- manager control actions.
+//! `ChainRep` -- manager control actions.
 
 use super::*;
-
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // ChainRepReplica control messages handling
 impl ChainRepReplica {
-    /// Handler of ResetState control message.
+    /// Handler of `ResetState` control message.
     async fn handle_ctrl_reset_state(
         &mut self,
         durable: bool,

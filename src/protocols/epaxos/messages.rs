@@ -1,13 +1,12 @@
-//! EPaxos -- peer-peer messaging.
+//! `EPaxos` -- peer-peer messaging.
 
 use super::*;
-
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::SummersetError;
 
 // EPaxosReplica peer-peer messages handling
 impl EPaxosReplica {
-    /// Handler of PreAccept message from command leader.
+    /// Handler of `PreAccept` message from command leader.
     fn handle_msg_pre_accept(
         &mut self,
         peer: ReplicaId,
@@ -89,10 +88,11 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of PreAccept reply from replica.
+    /// Handler of `PreAccept` reply from replica.
     ///
     /// If `ballot` == 0, this is a special call made when I suspect a peer
     /// has failed; re-evaluate fast quorum eligibility for this slot
+    #[allow(clippy::too_many_lines)]
     pub(super) fn handle_msg_pre_accept_reply(
         &mut self,
         peer: ReplicaId,
@@ -435,7 +435,8 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of CommitNotice message from command leader.
+    /// Handler of `CommitNotice` message from command leader.
+    #[allow(clippy::needless_pass_by_value)]
     fn handle_msg_commit_notice(
         &mut self,
         peer: ReplicaId,
@@ -506,7 +507,7 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of ExpPrepare message from new command leader.
+    /// Handler of `ExpPrepare` message from new command leader.
     fn handle_msg_exp_prepare(
         &mut self,
         peer: ReplicaId,
@@ -571,8 +572,8 @@ impl EPaxosReplica {
         Ok(())
     }
 
-    /// Handler of ExpPrepare reply from replica.
-    #[allow(clippy::too_many_arguments)]
+    /// Handler of `ExpPrepare` reply from replica.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn handle_msg_exp_prepare_reply(
         &mut self,
         peer: ReplicaId,
@@ -627,7 +628,7 @@ impl EPaxosReplica {
         // check the set of replies with highest ballot received so far:
         // NOTE: move the start-phase blocks into common helper functions
         match Self::exp_prepare_next_step(
-            row as ReplicaId,
+            ReplicaId::try_from(row)?,
             leader_bk,
             self.population,
             self.simple_quorum_cnt,
