@@ -314,7 +314,7 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic = "bitmap initialization with empty size should panic"]
+    #[should_panic = "invalid bitmap size 0"]
     fn new_invalid() {
         let _ = Bitmap::new(0, true);
     }
