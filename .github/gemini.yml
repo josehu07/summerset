@@ -1,2 +1,3 @@
+# disable Gemini's automatic code review
 code_review:
   disable: true
