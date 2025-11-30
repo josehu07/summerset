@@ -15,15 +15,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v6
+
+    - name: Add rust stable toolchain with clippy
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
     - name: Get apt dependencies
       run: sudo apt-get install -y protobuf-compiler
+
     - name: Build
-      run: cargo build --workspace --verbose
-    - name: Add clippy component
-      run: rustup component add clippy
+      run: cargo build --workspace --verbose --all-targets
+
     - name: Clippy check
-      uses: actions-rs/clippy-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        args: --workspace
+      run: cargo clippy --workspace --verbose --all-targets -- -D warnings
