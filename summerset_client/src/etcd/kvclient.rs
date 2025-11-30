@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use etcd_client as etcdcli;
-use summerset::{parsed_config, SummersetError};
+use summerset::{SummersetError, parsed_config};
 use tokio::time::Duration;
 
 use crate::etcd::ClientConfigEtcd;

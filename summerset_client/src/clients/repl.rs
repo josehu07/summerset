@@ -6,8 +6,8 @@ use std::str::SplitWhitespace;
 
 use color_print::{cprint, cprintln};
 use summerset::{
-    logged_err, pf_error, Bitmap, Command, ConfChange, CtrlReply, CtrlRequest,
-    GenericEndpoint, ReplicaId, SummersetError,
+    Bitmap, Command, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint,
+    ReplicaId, SummersetError, logged_err, pf_error,
 };
 use tokio::time::Duration;
 

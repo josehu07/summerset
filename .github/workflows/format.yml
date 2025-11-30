@@ -15,10 +15,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Add rustfmt component
-      run: rustup component add rustfmt
+    - uses: actions/checkout@v6
+
+    - name: Add rust nightly toolchain with rustfmt
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt
+
     - name: Format check (Rust)
-      run: cargo fmt --all -- --check
+      run: cargo +nightly fmt --all -- --check
+
     - name: Format check (Python)
       uses: psf/black@stable

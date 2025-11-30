@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use summerset::{parsed_config, SummersetError};
+use summerset::{SummersetError, parsed_config};
 use tokio::time::Duration;
 use zookeeper_client as zkcli;
 

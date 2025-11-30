@@ -2,8 +2,8 @@
 name = "summerset_client"
 description = "Summerset client-side executable"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.91"
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [dependencies]

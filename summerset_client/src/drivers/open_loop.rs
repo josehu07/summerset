@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use summerset::{
-    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
-    ClientId, Command, GenericEndpoint, RequestId, SummersetError, Timer,
+    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, GenericEndpoint,
+    RequestId, SummersetError, Timer, logged_err, pf_debug, pf_error,
 };
 use tokio::time::{Duration, Instant};
 

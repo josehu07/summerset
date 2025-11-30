@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 
 use clap::Parser;
-use summerset::{logger_init, pf_error, pf_warn, SmrProtocol, SummersetError};
+use summerset::{SmrProtocol, SummersetError, logger_init, pf_error, pf_warn};
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
