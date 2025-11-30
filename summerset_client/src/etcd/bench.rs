@@ -5,11 +5,11 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use rand::distr::Alphanumeric;
 use rand::Rng;
+use rand::distr::Alphanumeric;
 use rangemap::RangeMap;
 use summerset::{
-    logged_err, parsed_config, pf_error, pf_info, pf_warn, SummersetError,
+    SummersetError, logged_err, parsed_config, pf_error, pf_info, pf_warn,
 };
 use tokio::time::{Duration, Instant};
 
@@ -357,16 +357,16 @@ impl EtcdBench {
                     };
 
                 let line = format!(
-                            "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
-                            elapsed.as_secs_f64(),
-                            tput,
-                            lat,
-                            wlat,
-                            rlat,
-                            0,
-                            self.valid_cnt,
-                            self.total_cnt
-                        );
+                    "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",
+                    elapsed.as_secs_f64(),
+                    tput,
+                    lat,
+                    wlat,
+                    rlat,
+                    0,
+                    self.valid_cnt,
+                    self.total_cnt
+                );
                 if let Some(output_file) = self.output_file.as_mut() {
                     writeln!(output_file, "{}", line)?;
                 } else {

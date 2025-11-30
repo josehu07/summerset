@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use log::{self, LevelFilter};
-use summerset::{logger_init, pf_error, SmrProtocol, SummersetError};
+use summerset::{SmrProtocol, SummersetError, logger_init, pf_error};
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 

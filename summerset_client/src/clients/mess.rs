@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use summerset::{
-    logged_err, parsed_config, pf_error, pf_info, Bitmap, CommandResult,
-    ConfChange, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, ServerInfo,
-    SummersetError,
+    Bitmap, CommandResult, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint,
+    ReplicaId, ServerInfo, SummersetError, logged_err, parsed_config, pf_error,
+    pf_info,
 };
 use tokio::time::Duration;
 

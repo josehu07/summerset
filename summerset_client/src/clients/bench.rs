@@ -6,14 +6,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use rand::distr::Alphanumeric;
 use rand::Rng;
+use rand::distr::Alphanumeric;
 use rand_distr::{Distribution, Normal, Uniform};
 use rangemap::RangeMap;
 use serde::Deserialize;
 use summerset::{
-    logged_err, parsed_config, pf_debug, pf_error, pf_info, pf_warn,
-    CommandResult, GenericEndpoint, RequestId, SummersetError,
+    CommandResult, GenericEndpoint, RequestId, SummersetError, logged_err,
+    parsed_config, pf_debug, pf_error, pf_info, pf_warn,
 };
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
