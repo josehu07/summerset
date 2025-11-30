@@ -5,12 +5,12 @@ use std::sync::LazyLock;
 
 use color_print::cprintln;
 use log::{self, LevelFilter};
-use rand::distr::Alphanumeric;
 use rand::Rng;
+use rand::distr::Alphanumeric;
 use serde::Deserialize;
 use summerset::{
-    logged_err, parsed_config, pf_debug, pf_error, CommandResult, CtrlReply,
-    CtrlRequest, GenericEndpoint, ReplicaId, SummersetError,
+    CommandResult, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId,
+    SummersetError, logged_err, parsed_config, pf_debug, pf_error,
 };
 use tokio::time::{self, Duration};
 
@@ -122,14 +122,14 @@ impl ClientTester {
             match result {
                 DriverReply::Success { cmd_result, .. } => {
                     if let CommandResult::Get { ref value } = cmd_result {
-                        if let Some(ref expect_value) = expect_value {
-                            if !Self::strings_match(value, expect_value) {
-                                return logged_err!(
-                                    "Get value mismatch: expect {:?}, got {:?}",
-                                    expect_value,
-                                    value
-                                );
-                            }
+                        if let Some(ref expect_value) = expect_value
+                            && !Self::strings_match(value, expect_value)
+                        {
+                            return logged_err!(
+                                "Get value mismatch: expect {:?}, got {:?}",
+                                expect_value,
+                                value
+                            );
                         }
                         return Ok(());
                     }
@@ -186,14 +186,14 @@ impl ClientTester {
             match result {
                 DriverReply::Success { cmd_result, .. } => {
                     if let CommandResult::Put { ref old_value } = cmd_result {
-                        if let Some(ref expect_old_value) = expect_old_value {
-                            if !Self::strings_match(old_value, expect_old_value)
-                            {
-                                return logged_err!(
-                                    "Put old_value mismatch: expect {:?}, got {:?}",
-                                    expect_old_value, old_value
-                                );
-                            }
+                        if let Some(ref expect_old_value) = expect_old_value
+                            && !Self::strings_match(old_value, expect_old_value)
+                        {
+                            return logged_err!(
+                                "Put old_value mismatch: expect {:?}, got {:?}",
+                                expect_old_value,
+                                old_value
+                            );
                         }
                         return Ok(());
                     }

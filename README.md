@@ -68,7 +68,7 @@ Comments / issues / PRs / usage in your own projects are always welcome!
 
 ## Build
 
-Install the [Rust toolchain](https://rustup.rs/) >= v1.85.0 if haven't. For \*nix:
+Install the latest [Rust toolchain](https://rustup.rs/) if haven't. For \*nix:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

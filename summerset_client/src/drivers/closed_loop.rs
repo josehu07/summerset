@@ -1,9 +1,9 @@
 //! Closed-loop client-side driver implementation.
 
 use summerset::{
-    logged_err, pf_debug, pf_error, ApiReply, ApiRequest, ClientCtrlStub,
-    ClientId, Command, CommandResult, ConfChange, GenericEndpoint, RequestId,
-    SummersetError, Timer,
+    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, CommandResult,
+    ConfChange, GenericEndpoint, RequestId, SummersetError, Timer, logged_err,
+    pf_debug, pf_error,
 };
 use tokio::time::{Duration, Instant};
 
@@ -256,12 +256,12 @@ impl DriverClosedLoop {
                         //             req_id, reply_id)
                         continue;
                     } else {
-                        if let Some(redirect) = redirect {
-                            if reply_id == req_id {
-                                return Ok(DriverReply::Redirect {
-                                    server: redirect,
-                                });
-                            }
+                        if let Some(redirect) = redirect
+                            && reply_id == req_id
+                        {
+                            return Ok(DriverReply::Redirect {
+                                server: redirect,
+                            });
                         }
                         return Ok(DriverReply::Failure);
                     }
