@@ -2,12 +2,8 @@ import random
 import statistics
 import argparse
 import pickle
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
 
 CLUSTER = 5
@@ -251,7 +247,7 @@ def plot_all_env_results(results, output_dir):
     plt.close()
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",

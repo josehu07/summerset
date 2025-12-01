@@ -25,5 +25,11 @@ jobs:
     - name: Format check (Rust)
       run: cargo +nightly fmt --all -- --check
 
+    - name: Add ruff tooling
+      uses: astral-sh/ruff-action@v3
+
     - name: Format check (Python)
-      uses: psf/black@stable
+      run: ruff format --check --diff
+
+    - name: Python lint check
+      run: ruff check

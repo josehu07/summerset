@@ -1,11 +1,9 @@
-import os
 import sys
 import argparse
 import subprocess
 import math
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 SERVER_CLI_PORT = 21379
@@ -196,7 +194,7 @@ def run_clients(
     return client_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

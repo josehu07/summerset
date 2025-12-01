@@ -1,8 +1,6 @@
-import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 PHYS_ENV_GROUP = "reg"
@@ -37,7 +35,7 @@ def gen_ycsb_a_trace(base):
                 fout.write(f"{op} {key}\n")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     base, _, _, _, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)

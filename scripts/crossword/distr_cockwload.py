@@ -4,8 +4,7 @@ import argparse
 import subprocess
 import math
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 COCK_REPO_NAME = "cockroach"
@@ -212,7 +211,7 @@ def run_workload(
     return client_proc
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

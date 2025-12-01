@@ -1,10 +1,7 @@
-import sys
-import os
 import signal
 import argparse
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 ETCD_REPO_NAME = "etcd"
@@ -182,7 +179,7 @@ def launch_servers(
     return server_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

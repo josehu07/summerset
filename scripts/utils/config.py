@@ -1,10 +1,8 @@
 import sys
-import os
 import toml
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from proc import run_process, run_process_over_ssh
-from net import lookup_dns_to_ip
+from .proc import run_process, run_process_over_ssh
+from .net import lookup_dns_to_ip
 
 
 DEFAULT_USER = "smr"

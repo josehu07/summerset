@@ -1,9 +1,7 @@
-import sys
 import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 PHYS_ENV_GROUP = "reg"
@@ -109,7 +107,7 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
                 fmapped.write(" ".join(segs) + "\n")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

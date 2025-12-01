@@ -2,8 +2,7 @@ import sys
 import os
 import subprocess
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from proc import run_process, run_process_over_ssh, wait_parallel_procs
+from .proc import run_process, run_process_over_ssh, wait_parallel_procs
 
 
 def path_get_last_segment(path):

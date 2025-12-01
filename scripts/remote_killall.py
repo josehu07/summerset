@@ -1,9 +1,6 @@
-import sys
-import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
 
 def compose_kill_cmds(
@@ -51,7 +48,7 @@ def killall_on_targets(
         utils.proc.wait_parallel_procs(procs)
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

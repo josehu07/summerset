@@ -1,9 +1,7 @@
-import sys
 import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
 
 EXCLUDE_NAMES = [
@@ -175,7 +173,7 @@ def build_on_targets(destinations, dst_path, release, sequential):
         utils.proc.wait_parallel_procs(procs)
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

@@ -79,7 +79,7 @@ def run_tester_client(protocol, test_name):
     return run_process(cmd)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"

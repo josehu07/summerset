@@ -1,10 +1,7 @@
-import sys
-import os
 import time
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
 
 IPERF_PORT = 37777
@@ -83,7 +80,7 @@ def ping_test(remotes, domains, na, nb):
         print(err.decode())
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

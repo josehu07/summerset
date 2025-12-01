@@ -2,14 +2,9 @@ import os
 import argparse
 import subprocess
 import multiprocessing
-
-# fmt: off
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-# fmt: on
-
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 
 
 EXPER_NAME = "rs_coding"
@@ -217,7 +212,7 @@ def plot_bench_results(results, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",

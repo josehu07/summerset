@@ -2,10 +2,12 @@ import sys
 import os
 import pprint
 
+# keeping this hardcoded import for now
 sys.path.append(
     f"{os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))}/scripts"
 )
 import utils
+
 
 RTTS = utils.config.PairsMap(
     # Ref: https://www.usenix.org/system/files/nsdi21-tollman.pdf#page=7
@@ -105,7 +107,7 @@ class Metrics:
         return normalized_cells
 
 
-if __name__ == "__main__":
+def main():
     metrics = Metrics()
     cells = metrics.shading()
 

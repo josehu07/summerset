@@ -4,6 +4,7 @@ import pprint
 
 from typing import Dict
 
+
 DROPBOX_DIR = os.path.expanduser("~/Dropbox/Apps/Overleaf")
 PROJECTS = [
     "Crossword-eurosys26",
@@ -72,7 +73,7 @@ def merge_bib_maps(bib_maps: Dict[str, Dict[str, str]]) -> Dict[str, str]:
     return bib_merged
 
 
-if __name__ == "__main__":
+def main():
     bib_maps = load_bib_files()
     bib_cnts = [len(m) for m in bib_maps.values()]
     print(f"\nLoaded: {bib_cnts} ∑={sum(bib_cnts)} entries")

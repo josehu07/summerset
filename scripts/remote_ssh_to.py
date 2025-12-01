@@ -1,9 +1,7 @@
-import sys
 import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
 
 def ssh_to_remote(remote, no_cd, base, repo):
@@ -16,7 +14,7 @@ def ssh_to_remote(remote, no_cd, base, repo):
     os.execvp("ssh", ssh_args)
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

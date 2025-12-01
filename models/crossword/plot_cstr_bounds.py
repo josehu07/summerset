@@ -1,13 +1,8 @@
 import argparse
 import math
-
-# fmt: off
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-# fmt: on
-
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.legend_handler import HandlerPatch
 
@@ -304,7 +299,7 @@ def plot_all_cstr_bounds(output_dir):
     plt.savefig(f"{output_dir}/cstr_bounds.pdf", bbox_inches=0)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",

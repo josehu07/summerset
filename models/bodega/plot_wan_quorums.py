@@ -1,10 +1,5 @@
 import math
-
-# fmt: off
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
 
 class World:
@@ -93,7 +88,7 @@ class World2DRect(World):
         return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
 
-if __name__ == "__main__":
+def main():
     world_1d_array = World1DArray(100, 5)
     world_1d_array.plot_quorum_delays()
 

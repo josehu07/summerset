@@ -1,11 +1,9 @@
-import os
 import sys
 import argparse
 import subprocess
 import math
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
 
 MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
@@ -227,7 +225,7 @@ def run_clients(
     return client_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -284,7 +282,7 @@ if __name__ == "__main__":
         description="client utility mode: repl|bench|tester|mess",
     )
 
-    parser_repl = subparsers.add_parser("repl", help="REPL mode")
+    _parser_repl = subparsers.add_parser("repl", help="REPL mode")
 
     parser_bench = subparsers.add_parser("bench", help="benchmark mode")
     parser_bench.add_argument(

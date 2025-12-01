@@ -6,12 +6,8 @@ import time
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
 
 def get_coverage_tputs() -> List[float]:
@@ -317,7 +313,7 @@ def plot_results(odir: str):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",

@@ -1,16 +1,10 @@
-import sys
 import os
 import argparse
 import time
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
 PHYS_ENV_GROUP = "wan"
@@ -560,7 +554,7 @@ def plot_rlats_results(results, write_time, plots_dir):
 #     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

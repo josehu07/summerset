@@ -244,5 +244,5 @@ def ring_world_model():
         print()
 
 
-if __name__ == "__main__":
+def main():
     ring_world_model()

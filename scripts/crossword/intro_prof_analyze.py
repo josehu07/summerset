@@ -1,16 +1,10 @@
-import sys
 import os
 import argparse
 import pickle
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
 PHYS_ENV_GROUP = "reg"
@@ -257,7 +251,7 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     return ax.get_legend_handles_labels()
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)

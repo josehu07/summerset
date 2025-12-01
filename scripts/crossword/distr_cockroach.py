@@ -1,11 +1,8 @@
-import sys
-import os
 import signal
 import argparse
 import time
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
 COCK_REPO_NAME = "cockroach"
@@ -299,7 +296,7 @@ def set_proper_settings(ipaddrs, hosts, cd_dir, num_replicas, try_force_leader):
         )
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
