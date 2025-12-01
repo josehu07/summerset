@@ -319,3 +319,7 @@ def main():
             )
         plot_ylabel(plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -311,3 +311,7 @@ def main():
     args = parser.parse_args()
 
     plot_all_cstr_bounds(args.output_dir)
+
+
+if __name__ == "__main__":
+    main()

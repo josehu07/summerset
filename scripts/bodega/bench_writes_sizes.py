@@ -761,3 +761,7 @@ def main():
 
         handles, labels = plot_put_ratios_results(results, plots_dir)
         handles, labels = plot_value_sizes_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

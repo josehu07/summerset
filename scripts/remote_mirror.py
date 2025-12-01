@@ -239,3 +239,7 @@ def main():
 
     if args.build:
         build_on_targets(destinations, DST_PATH, args.release, args.sequential)
+
+
+if __name__ == "__main__":
+    main()

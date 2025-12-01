@@ -311,3 +311,7 @@ def main():
         plot_len_cnts_cdfs(
             all_len_cnts["tidb"], all_len_cnts["cockroach"], collect_path
         )
+
+
+if __name__ == "__main__":
+    main()

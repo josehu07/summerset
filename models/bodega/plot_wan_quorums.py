@@ -97,3 +97,7 @@ def main():
 
     world_2d_rect = World2DRect(100, 50, 5)
     world_2d_rect.plot_quorum_delays()
+
+
+if __name__ == "__main__":
+    main()

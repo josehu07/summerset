@@ -209,3 +209,7 @@ def main():
                 print(
                     f"  {phase}: {mapped_load if phase == 'load' else mapped_run}"
                 )
+
+
+if __name__ == "__main__":
+    main()

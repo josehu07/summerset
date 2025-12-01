@@ -119,3 +119,7 @@ def main():
                 print(f"  \\cellcolor{{black!{int(cell)}}}")
             else:
                 print("  -")
+
+
+if __name__ == "__main__":
+    main()

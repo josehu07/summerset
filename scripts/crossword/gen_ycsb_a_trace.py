@@ -46,3 +46,7 @@ def main():
     else:
         gen_ycsb_a_trace(base)
         print(f"  Done: {YCSB_TRACE}")
+
+
+if __name__ == "__main__":
+    main()

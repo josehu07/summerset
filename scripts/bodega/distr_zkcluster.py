@@ -372,3 +372,7 @@ def main():
 
     for proc in server_procs:
         proc.wait()
+
+
+if __name__ == "__main__":
+    main()

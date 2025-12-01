@@ -283,3 +283,7 @@ def main():
         with open(f"{args.output_dir}/calc.envs.r_{CLUSTER}.pkl", "rb") as fpkl:
             results = pickle.load(fpkl)
             plot_all_env_results(results, args.output_dir)
+
+
+if __name__ == "__main__":
+    main()

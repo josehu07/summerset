@@ -1,5 +1,5 @@
 [project]
-name = "summerset-scripts"
+name = "summerset_scripts"
 version = "0.1.0"
 description = "Scripts for the Summerset project"
 readme = "README.md"
@@ -7,8 +7,4 @@ requires-python = ">=3.13"
 dependencies = ["matplotlib>=3.10.7", "numpy>=2.3.5", "toml>=0.10.2"]
 
 [dependency-groups]
-dev = [
-    "bibtexparser>=1.4.3",
-    "pdfcropmargins>=2.2.1",
- "ruff>=0.14.7",
-]
+dev = ["bibtexparser>=1.4.3", "pdfcropmargins>=2.2.1", "ruff>=0.14.7"]

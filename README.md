@@ -137,15 +137,15 @@ uv sync
 You can find the scripts for running Summerset processes locally in `scripts/`; use with:
 
 ```bash
-uv run python -m scripts.local_cluster.py -h
-uv run python -m scripts.local_clients.py -h
+uv run -m scripts.local_cluster.py -h
+uv run -m scripts.local_clients.py -h
 ```
 
 And for a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
 
 ```bash
-uv run python -m scripts.distr_cluster.py -h
-uv run python -m scripts.distr_clients.py -h
+uv run -m scripts.distr_cluster.py -h
+uv run -m scripts.distr_clients.py -h
 ```
 
 Note that these scripts use `sudo` and assume specific ranges of available ports, so a Linux server machine environment is recommended.

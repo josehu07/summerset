@@ -698,3 +698,7 @@ def main():
             plot_access_cnts_flat(access_cnts, plots_dir)
         else:
             plot_access_cnts(access_cnts, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

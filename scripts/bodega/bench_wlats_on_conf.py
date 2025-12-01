@@ -836,3 +836,7 @@ def main():
 
         handles, labels = plot_rlats_results(results, plots_dir)
         # plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

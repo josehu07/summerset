@@ -41,3 +41,7 @@ def main():
     if args.target not in remotes:
         raise ValueError(f"nickname '{args.target}' not found in toml file")
     ssh_to_remote(remotes[args.target], args.no_cd, base, repo)
+
+
+if __name__ == "__main__":
+    main()

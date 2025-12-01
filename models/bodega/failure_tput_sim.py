@@ -334,3 +334,7 @@ def main():
         run_simulations(args.odir)
     else:
         plot_results(args.odir)
+
+
+if __name__ == "__main__":
+    main()

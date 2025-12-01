@@ -246,3 +246,7 @@ def ring_world_model():
 
 def main():
     ring_world_model()
+
+
+if __name__ == "__main__":
+    main()

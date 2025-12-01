@@ -467,3 +467,7 @@ def main():
         handles, labels = plot_breakdown(bd_stats, plots_dir)
         plot_legend(handles, labels, plots_dir)
         # save_space_usage(space_usage, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

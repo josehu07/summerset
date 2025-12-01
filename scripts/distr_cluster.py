@@ -489,3 +489,7 @@ def main():
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()
     sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

@@ -88,3 +88,7 @@ def main():
         writer = bibtexparser.bwriter.BibTexWriter()
         f.write(writer.write(bib_database))
     print("See merged bibtex file: references.bib")
+
+
+if __name__ == "__main__":
+    main()

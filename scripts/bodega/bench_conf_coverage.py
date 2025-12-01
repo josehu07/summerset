@@ -758,3 +758,7 @@ def main():
 
         handle, label = plot_responders_results(results, plots_dir)
         handle, label = plot_key_ranges_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

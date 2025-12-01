@@ -102,3 +102,7 @@ def main():
         args.zookeeper,
         args.etcd,
     )
+
+
+if __name__ == "__main__":
+    main()

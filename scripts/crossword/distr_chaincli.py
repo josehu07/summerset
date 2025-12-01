@@ -261,3 +261,7 @@ def main():
         raise RuntimeError(f"client timed-out {timeout} secs")
 
     sys.exit(client_proc.returncode)
+
+
+if __name__ == "__main__":
+    main()

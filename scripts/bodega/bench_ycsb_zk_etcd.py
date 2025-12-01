@@ -1534,3 +1534,7 @@ def main():
             )
         plot_ylabels(plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

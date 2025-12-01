@@ -871,3 +871,7 @@ def main():
         ]
         ratio_rounds.sort(key=lambda rp: rp.put_ratio)
         plot_write_ratio_results(results, ratio_rounds, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

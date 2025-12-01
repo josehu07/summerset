@@ -416,3 +416,7 @@ def main():
 
         handles, labels = plot_bw_utils(bw_utils, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

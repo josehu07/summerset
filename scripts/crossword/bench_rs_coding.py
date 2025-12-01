@@ -249,3 +249,7 @@ def main():
         print_bench_results(results)
 
         # plot_bench_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

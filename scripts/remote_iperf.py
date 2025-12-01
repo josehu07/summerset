@@ -122,3 +122,7 @@ def main():
     if args.netem_asym:
         print("Clearing tc netem qdiscs...")
         utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
+
+
+if __name__ == "__main__":
+    main()

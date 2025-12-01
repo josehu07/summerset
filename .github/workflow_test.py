@@ -126,3 +126,7 @@ def main():
         exit(client_rc)
     else:
         exit(0)
+
+
+if __name__ == "__main__":
+    main()
