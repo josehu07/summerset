@@ -36,8 +36,10 @@ NETEM_RATE = lambda _: 1  # no effect given the original bandwidth
 
 def launch_cluster(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockroach.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockroach",
         "-p",
         protocol,
         "-c",
@@ -77,8 +79,10 @@ def wait_cluster_setup(sleep_secs=120):
 
 def load_cock_workload(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockwload.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockwload",
         "-p",
         protocol,
         "-g",
@@ -111,8 +115,10 @@ def load_cock_workload(remote0, base, repo, protocol):
 
 def run_cock_workload(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockwload.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockwload",
         "-p",
         protocol,
         "-g",

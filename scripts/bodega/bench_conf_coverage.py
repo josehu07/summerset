@@ -65,8 +65,10 @@ RESULT_SECS_END = 100
 
 def launch_cluster(remote0, base, repo, confname, keyrname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         "Bodega",
         "-n",
@@ -109,8 +111,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remotec, base, repo, confname, keyrname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         "Bodega",
         "-r",
@@ -165,8 +169,10 @@ def run_mess_client(
     remotec, base, repo, leader=None, key_range=None, responder=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         "Bodega",
         "-r",

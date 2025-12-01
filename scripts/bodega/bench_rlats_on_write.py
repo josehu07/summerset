@@ -92,8 +92,10 @@ WRITE_AT_SECS = 42
 
 def launch_cluster(remote0, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -136,8 +138,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remotec, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -200,8 +204,10 @@ def run_mess_client(
     write=None,
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",

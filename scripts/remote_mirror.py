@@ -25,7 +25,9 @@ EXCLUDE_NAMES = [
     "tla+/*/states/",
     # python caches
     "uv.lock",
+    "*/.venv/",
     "*/__pycache__/",
+    "*/.ruff_cache/",
     # OS & editors
     ".DS_Store",
     ".vscode/",

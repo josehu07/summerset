@@ -128,9 +128,10 @@ Currently supported client utility modes include: `repl` for an interactive CLI,
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset processes are provided. First, set up the `uv` environment:
+Some helper scripts for running Summerset processes are provided. First, install `uv` and set up the environment:
 
 ```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 

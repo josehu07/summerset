@@ -107,8 +107,10 @@ def gen_ycsb_trace(hosts, remotes, base, repo, workload, distribution):
     proc_traces = []
     for c, hostc in enumerate(hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]):
         cmd = [
-            "python3",
-            "./scripts/bodega/gen_ycsb_trace.py",
+            "uv",
+            "run",
+            "-m",
+            "scripts.bodega.gen_ycsb_trace",
             "-w",
             workload,
             "-k",
@@ -148,8 +150,10 @@ def launch_summerset_cluster(
     partition=None,  # to make effective ranged leases for relevant protocols
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -189,8 +193,10 @@ def launch_summerset_cluster(
 
 def launch_etcd_cluster(remote0, base, repo, pcname, workload, distribution):
     cmd = [
-        "python3",
-        "./scripts/bodega/distr_etcdcluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.bodega.distr_etcdcluster",
         "-n",
         str(NUM_REPLICAS),
         "-g",
@@ -220,8 +226,10 @@ def launch_zookeeper_cluster(
     remote0, base, repo, pcname, workload, distribution
 ):
     cmd = [
-        "python3",
-        "./scripts/bodega/distr_zkcluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.bodega.distr_zkcluster",
         "-n",
         str(NUM_REPLICAS),
         "-g",
@@ -265,8 +273,10 @@ def run_bench_clients(
     partition=None,  # to make effective ranged leases for relevant protocols
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -336,8 +346,10 @@ def run_mess_client(
     responder=None,
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -373,8 +385,10 @@ def run_etcd_clients(
     remotec, base, repo, pcname, workload, distribution, config=None
 ):
     cmd = [
-        "python3",
-        "./scripts/bodega/distr_etcdclients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.bodega.distr_etcdclients",
         "-r",
         "-g",
         PHYS_ENV_GROUP,
@@ -421,8 +435,10 @@ def run_zookeeper_clients(
     remotec, base, repo, pcname, workload, distribution, config=None
 ):
     cmd = [
-        "python3",
-        "./scripts/bodega/distr_zkclients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.bodega.distr_zkclients",
         "-r",
         "-g",
         PHYS_ENV_GROUP,

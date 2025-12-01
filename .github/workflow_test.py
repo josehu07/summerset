@@ -36,8 +36,10 @@ def kill_all_matching(name, force=False):
 
 def launch_cluster(protocol, num_replicas, config):
     cmd = [
-        "python3",
-        "./scripts/local_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.local_cluster",
         "-p",
         protocol,
         "-n",
@@ -68,8 +70,10 @@ def wait_cluster_setup(proc, num_replicas):
 
 def run_tester_client(protocol, test_name):
     cmd = [
-        "python3",
-        "./scripts/local_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.local_clients",
         "-p",
         protocol,
         "tester",
@@ -125,6 +129,7 @@ def main():
         print(f"Client tester exitted with {client_rc}")
         exit(client_rc)
     else:
+        print("Client tester finished successfully!")
         exit(0)
 
 

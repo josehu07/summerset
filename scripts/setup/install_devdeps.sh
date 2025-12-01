@@ -87,9 +87,9 @@ source $HOME/.profile
 
 
 echo
-echo "Installing global Python 3.12..."
-pyenv install 3.12
-pyenv global 3.12
+echo "Installing global Python 3.13..."
+pyenv install 3.13
+pyenv global 3.13
 source $HOME/.profile
 
 

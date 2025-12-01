@@ -21,8 +21,8 @@ def check_proper_cwd():
     if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir(
         "scripts/"
     ):
-        print("ERROR: script must be run under top-level repo!")
-        print("       example: python3 scripts/<paper>/<script>.py")
+        print("ERROR: script must be run with cwd at top-level repo!")
+        print("       example: uv run -m scripts.<paper>.<script>.py")
         sys.exit(1)
 
 

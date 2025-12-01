@@ -54,8 +54,10 @@ def launch_cluster_summerset(
     remote, base, repo, protocol, partition, num_clients, config=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-a",
@@ -100,8 +102,10 @@ def run_bench_clients_summerset(
     remote, base, repo, protocol, partition, num_clients
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-a",
@@ -218,8 +222,10 @@ def bench_round_summerset(
 
 def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_chainapp.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_chainapp",
         "-p",
         protocol,
         "-a",
@@ -258,8 +264,10 @@ def run_bench_clients_chain(
     remote, base, repo, protocol, partition, num_clients
 ):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_chaincli.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_chaincli",
         "-p",
         protocol,
         "-a",
@@ -577,7 +585,7 @@ def main():
             trace_procs.append(
                 utils.proc.run_process_over_ssh(
                     remotes[host],
-                    ["python3", f"./scripts/{GEN_YCSB_SCRIPT}"],
+                    ["uv", "run", "-m", "scripts.crossword.gen_ycsb_a_trace"],
                     cd_dir=f"{base}/{repo}",
                     capture_stdout=True,
                     capture_stderr=True,

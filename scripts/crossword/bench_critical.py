@@ -101,8 +101,10 @@ ROUNDS_PARAMS = [
 
 def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -144,8 +146,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol, round_params):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",

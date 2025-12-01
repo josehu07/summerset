@@ -147,8 +147,10 @@ PAIRS_NETEM_RATE = utils.config.PairsMap({}, default=0)
 
 def launch_cluster(remote0, base, repo, pcname, put_ratio, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -191,8 +193,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remote0, base, repo, pcname, put_ratio, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -247,8 +251,10 @@ def run_mess_client(
     remote0, base, repo, protocol, leader=None, key_range=None, responder=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",

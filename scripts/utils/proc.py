@@ -26,8 +26,10 @@ def kill_all_distr_procs(
 ):
     # print(f"Killing all procs on {group} {targets}...")
     cmd = [
-        "python3",
-        "scripts/remote_killall.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.remote_killall",
         "-g",
         group,
         "-t",
