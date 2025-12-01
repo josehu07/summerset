@@ -150,7 +150,10 @@ def plot_env_result_subplot(i, j, results):
     plt.ylim(0, ytop * 1.2)
 
     plt.xticks(
-        [0, xright], ["0", f"{int(xright)}"], fontsize="x-small", color="dimgray"
+        [0, xright],
+        ["0", f"{int(xright)}"],
+        fontsize="x-small",
+        color="dimgray",
     )
     plt.yticks(
         [ybottom, ytop],
@@ -230,7 +233,7 @@ def plot_all_env_results(results, output_dir):
             if i == 0 and j == 0:
                 handles, labels = ax.get_legend_handles_labels()
 
-    leg = fig.legend(
+    _lgd = fig.legend(
         handles,
         labels,
         loc="center left",
@@ -251,10 +254,17 @@ def plot_all_env_results(results, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-o", "--output_dir", type=str, default="./results", help="output folder"
+        "-o",
+        "--output_dir",
+        type=str,
+        default="./results",
+        help="output folder",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 

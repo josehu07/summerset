@@ -2,7 +2,6 @@ import sys
 import os
 import argparse
 import time
-import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -14,7 +13,6 @@ import matplotlib.pyplot as plt
 # fmt: on
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "wlats_on_conf"
@@ -249,7 +247,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, pcname, config=server_config
+    )
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -265,9 +265,13 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
             responder=",".join(list(map(str, responders))),
         )
         mout, merr = proc_mess.communicate()
-        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb") as fmout:
+        with open(
+            f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb"
+        ) as fmout:
             fmout.write(mout)
-        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb") as fmerr:
+        with open(
+            f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb"
+        ) as fmerr:
             fmerr.write(merr)
         time.sleep(5)
 
@@ -275,11 +279,15 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
+    proc_clients = run_bench_clients(
+        remotec, base, repo, pcname, config=client_config
+    )
 
     # wait till time for a replica failure
     time.sleep(FAILURE_AT_SECS)
-    print(f"    Forcing replica {FAILURE_REPLICA} to fail (@ {FAILURE_AT_SECS}s)...")
+    print(
+        f"    Forcing replica {FAILURE_REPLICA} to fail (@ {FAILURE_AT_SECS}s)..."
+    )
     proc_mess = run_mess_client(
         remotec,
         base,
@@ -491,23 +499,23 @@ def print_results(results):
         print(f"{pcname}")
         i = 0
         while i < len(result["time"]):
-            print(f"  time", end="")
+            print("  time", end="")
             for j in range(min(12, len(result["time"]) - i)):
-                print(f"  {result['time'][i+j]:7.0f}", end="")
+                print(f"  {result['time'][i + j]:7.0f}", end="")
             print()
-            print(f"  wlat", end="")
+            print("  wlat", end="")
             for j in range(min(12, len(result["time"]) - i)):
                 if result["wlat"][i + j] > 0:
-                    print(f"  {result['wlat'][i+j]:7.2f}", end="")
+                    print(f"  {result['wlat'][i + j]:7.2f}", end="")
                 else:
-                    print(f"        -", end="")
+                    print("        -", end="")
             print()
-            print(f"  rlat", end="")
+            print("  rlat", end="")
             for j in range(min(12, len(result["time"]) - i)):
                 if result["rlat"][i + j] > 0:
-                    print(f"  {result['rlat'][i+j]:7.2f}", end="")
+                    print(f"  {result['rlat'][i + j]:7.2f}", end="")
                 else:
-                    print(f"        -", end="")
+                    print("        -", end="")
             print()
             i += 12
 
@@ -520,7 +528,7 @@ def plot_rlats_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper")
+    fig = plt.figure("Exper")
 
     PCNAME = "Bodega"
     SERIES_ORDER = [
@@ -533,19 +541,27 @@ def plot_rlats_results(results, plots_dir):
     }
 
     for series in SERIES_ORDER:
-        label, color, marker, markersize = SERIES_LABEL_COLOR_MARKER_SIZE[series]
+        label, color, marker, markersize = SERIES_LABEL_COLOR_MARKER_SIZE[
+            series
+        ]
         times, lats = results[PCNAME]["time"], results[PCNAME][series]
         zidx = (
-            results[PCNAME]["wzidx"] if series == "wlat" else results[PCNAME]["rzidx"]
+            results[PCNAME]["wzidx"]
+            if series == "wlat"
+            else results[PCNAME]["rzidx"]
         )
         cidx = (
-            results[PCNAME]["wcidx"] if series == "wlat" else results[PCNAME]["rcidx"]
+            results[PCNAME]["wcidx"]
+            if series == "wlat"
+            else results[PCNAME]["rcidx"]
         )
         times_l = [times[i] / 1000.0 for i in range(zidx) if lats[i] > 0]
         lats_l = [lat for lat in lats[:zidx] if lat > 0]
         times_m = [times[i] / 1000.0 for i in range(zidx, cidx) if lats[i] > 0]
         lats_m = [lat for lat in lats[zidx:cidx] if lat > 0]
-        times_r = [times[i] / 1000.0 for i in range(cidx, len(times)) if lats[i] > 0]
+        times_r = [
+            times[i] / 1000.0 for i in range(cidx, len(times)) if lats[i] > 0
+        ]
         lats_r = [lat for lat in lats[cidx:] if lat > 0]
 
         plt.plot(
@@ -592,7 +608,7 @@ def plot_rlats_results(results, plots_dir):
     plt.text(
         failure_time - 0.1,
         160.0,
-        f"UT node\nfails",
+        "UT node\nfails",
         color="darkred",
         va="baseline",
         ha="center",
@@ -611,7 +627,7 @@ def plot_rlats_results(results, plots_dir):
     plt.text(
         timeout_time - 0.55,
         60.0,
-        f"hb timeout, changing to\nnew roster (here need to\nwait for lease expiration)",
+        "hb timeout, changing to\nnew roster (here need to\nwait for lease expiration)",
         color="gray",
         va="baseline",
         ha="left",
@@ -630,7 +646,7 @@ def plot_rlats_results(results, plots_dir):
     plt.text(
         change_time - 0.1,
         135.0,
-        f"fast regular\nroster change",
+        "fast regular\nroster change",
         color="darkred",
         va="top",
         ha="right",
@@ -721,7 +737,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -731,12 +750,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -746,7 +767,7 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         try:
-            print(f"Running experiments...")
+            print("Running experiments...")
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                 time.sleep(3)
 
@@ -780,7 +801,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

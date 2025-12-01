@@ -7,8 +7,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
 CHAIN_REPO_NAME = "chain"
 CHAIN_JAR_FOLDER = "deploy/server"
 
@@ -46,7 +44,11 @@ def run_process_pinned(
         )
     else:
         return utils.proc.run_process_over_ssh(
-            remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+            remote,
+            cmd,
+            capture_stderr=capture_stderr,
+            cd_dir=cd_dir,
+            cpu_list=cpu_list,
         )
 
 
@@ -171,13 +173,20 @@ if __name__ == "__main__":
         help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "--states_prefix",
@@ -192,16 +201,21 @@ if __name__ == "__main__":
         help="states file extra identifier after protocol name",
     )
     parser.add_argument(
-        "--keep_files", action="store_true", help="if set, keep any old durable files"
+        "--keep_files",
+        action="store_true",
+        help="if set, keep any old durable files",
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores",
+        type=int,
+        default=0,
+        help="if > 0, set CPU cores affinity",
     )
     args = parser.parse_args()
 
     # parse hosts config file
     base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
@@ -221,7 +235,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
+        raise ValueError(
+            f"#replicas {args.num_replicas} > #hosts in config file"
+        )
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}

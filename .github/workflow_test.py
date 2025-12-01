@@ -27,7 +27,7 @@ def kill_all_matching(name, force=False):
         for pid in pids:
             pid = pid.strip()
             if len(pid) > 0:
-                kill_cmd = f"sudo kill -9" if force else "sudo kill"
+                kill_cmd = "sudo kill -9" if force else "sudo kill"
                 kill_cmd += f" {int(pid)} > /dev/null 2>&1"
                 os.system(kill_cmd)
     except subprocess.CalledProcessError:
@@ -100,7 +100,9 @@ if __name__ == "__main__":
     elif args.protocol == "Raft":
         PROTOCOL = "Raft"
     else:
-        raise ValueError(f"unrecognized protocol {args.protocol} to run workflow test")
+        raise ValueError(
+            f"unrecognized protocol {args.protocol} to run workflow test"
+        )
 
     NUM_REPLICAS = 3
     TEST_NAME = "primitive_ops"

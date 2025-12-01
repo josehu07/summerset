@@ -8,8 +8,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
 CHAIN_REPO_NAME = "chain-client"
 CHAIN_JAR_FOLDER = "deploy/client"
 
@@ -17,7 +15,9 @@ CHAIN_JAR_FOLDER = "deploy/client"
 SERVER_APP_PORT = lambda p: 40020 + p
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix: f"{prefix}/{protocol}{midfix}.out"
+CLIENT_OUTPUT_PATH = (
+    lambda protocol, prefix, midfix: f"{prefix}/{protocol}{midfix}.out"
+)
 
 
 def run_process_pinned(
@@ -139,13 +139,20 @@ if __name__ == "__main__":
         help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "-t",
@@ -164,7 +171,10 @@ if __name__ == "__main__":
         "-l", "--length_s", type=int, required=True, help="run length in secs"
     )
     parser.add_argument(
-        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
+        "--pin_cores",
+        type=float,
+        default=0,
+        help="if not 0, set CPU cores affinity",
     )
     parser.add_argument(
         "--output_prefix",
@@ -182,7 +192,7 @@ if __name__ == "__main__":
 
     # parse hosts config file
     base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
@@ -242,7 +252,9 @@ if __name__ == "__main__":
             # doing automated experiments, so capture output
             out, _ = client_proc.communicate(timeout=timeout)
             with open(
-                CLIENT_OUTPUT_PATH(args.protocol, args.output_prefix, output_midfix),
+                CLIENT_OUTPUT_PATH(
+                    args.protocol, args.output_prefix, output_midfix
+                ),
                 "w+",
             ) as fout:
                 fout.write(out.decode())

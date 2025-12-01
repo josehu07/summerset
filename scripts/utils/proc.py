@@ -17,7 +17,12 @@ def kill_all_local_procs():
 
 
 def kill_all_distr_procs(
-    group, targets="all", chain=False, cockroach=False, etcd=False, zookeeper=False
+    group,
+    targets="all",
+    chain=False,
+    cockroach=False,
+    etcd=False,
+    zookeeper=False,
 ):
     # print(f"Killing all procs on {group} {targets}...")
     cmd = [
@@ -36,7 +41,9 @@ def kill_all_distr_procs(
         cmd.append("--etcd")
     if zookeeper:
         cmd.append("--zookeeper")
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
+    subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).wait()
 
 
 def run_process(
@@ -121,7 +128,13 @@ def run_process_over_ssh(
     else:
         wrapped_cmd = f". ~/.profile; cd {cd_dir}; {str_cmd}"
 
-    ssh_exec_cmd = ["ssh", "-o", "StrictHostKeyChecking=no", remote, wrapped_cmd]
+    ssh_exec_cmd = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        remote,
+        wrapped_cmd,
+    ]
     proc = subprocess.Popen(ssh_exec_cmd, stdout=stdout, stderr=stderr)
     return proc
 

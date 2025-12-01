@@ -38,17 +38,25 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
-    "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: "optimized_quorum=true"),
+    "RSPaxos": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
+    ),
     "Raft": ProtoFeats(True, True, None),
-    "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
-    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n//2}"),
-    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
-    "Bodega": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
+    "CRaft": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
+    ),
+    "Crossword": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={n // 2}"
+    ),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
+    "Bodega": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
 }
 
 
-def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
+def run_process_pinned(
+    i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None
+):
     cpu_list = None
     if cores_per_proc > 0:
         # get number of processors
@@ -104,7 +112,9 @@ def config_with_defaults(
     if PROTOCOL_FEATURES[protocol].extra_defaults is not None:
         config_dict.update(
             config_str_to_dict(
-                PROTOCOL_FEATURES[protocol].extra_defaults(num_replicas, replica_id)
+                PROTOCOL_FEATURES[protocol].extra_defaults(
+                    num_replicas, replica_id
+                )
             )
         )
 
@@ -117,7 +127,9 @@ def config_with_defaults(
     return config_dict_to_str(config_dict)
 
 
-def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, release):
+def compose_manager_cmd(
+    protocol, bind_ip, srv_port, cli_port, num_replicas, release
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_manager"]
     cmd += [
         "-p",
@@ -168,7 +180,9 @@ def wait_manager_setup(proc):
             break
 
 
-def compose_server_cmd(protocol, bind_ip, api_port, p2p_port, manager, config, release):
+def compose_server_cmd(
+    protocol, bind_ip, api_port, p2p_port, manager, config, release
+):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
@@ -248,7 +262,11 @@ if __name__ == "__main__":
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-r", "--release", action="store_true", help="if set, run release mode"
@@ -257,7 +275,10 @@ if __name__ == "__main__":
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--force_leader", type=int, default=-1, help="force this server to be leader"
+        "--force_leader",
+        type=int,
+        default=-1,
+        help="force this server to be leader",
     )
     parser.add_argument(
         "--states_prefix",
@@ -272,13 +293,20 @@ if __name__ == "__main__":
         help="states file extra identifier after protocol name",
     )
     parser.add_argument(
-        "--keep_files", action="store_true", help="if set, keep any old durable files"
+        "--keep_files",
+        action="store_true",
+        help="if set, keep any old durable files",
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores",
+        type=int,
+        default=0,
+        help="if > 0, set CPU cores affinity",
     )
     parser.add_argument(
-        "--use_veth", action="store_true", help="if set, use netns and veth setting"
+        "--use_veth",
+        action="store_true",
+        help="if set, use netns and veth setting",
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -292,7 +320,9 @@ if __name__ == "__main__":
 
     # check that number of replicas does not exceed 9
     if args.num_replicas > 9:
-        raise ValueError("#replicas > 9 not supported yet (as ports are hardcoded)")
+        raise ValueError(
+            "#replicas > 9 not supported yet (as ports are hardcoded)"
+        )
 
     # check protocol name
     if args.protocol not in PROTOCOL_FEATURES:

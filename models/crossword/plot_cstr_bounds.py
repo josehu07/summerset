@@ -37,7 +37,13 @@ def plot_cstr_bound(idx, cluster_size):
 
     # Classic Paxos/Raft point
     plt.scatter(
-        m, m, marker="s", s=100, color="black", label="Classic Paxos/Raft", zorder=10
+        m,
+        m,
+        marker="s",
+        s=100,
+        color="black",
+        label="Classic Paxos/Raft",
+        zorder=10,
     )
 
     # CRaft point
@@ -66,14 +72,27 @@ def plot_cstr_bound(idx, cluster_size):
         zorder=20,
     )
     if n <= 5:
-        plt.vlines(m, ymin=m, ymax=n, linestyles="-", color=line_color, zorder=20)
-        plt.vlines(n, ymin=1, ymax=n, linestyles="-", color=line_color, zorder=20)
+        plt.vlines(
+            m, ymin=m, ymax=n, linestyles="-", color=line_color, zorder=20
+        )
+        plt.vlines(
+            n, ymin=1, ymax=n, linestyles="-", color=line_color, zorder=20
+        )
         plt.hlines(
-            n, xmin=m - 0.05, xmax=n + 0.05, linestyles="-", color=line_color, zorder=20
+            n,
+            xmin=m - 0.05,
+            xmax=n + 0.05,
+            linestyles="-",
+            color=line_color,
+            zorder=20,
         )
     else:
-        plt.vlines(m, ymin=m, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
-        plt.vlines(n, ymin=1, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20)
+        plt.vlines(
+            m, ymin=m, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20
+        )
+        plt.vlines(
+            n, ymin=1, ymax=m + 1.4, linestyles="-", color=line_color, zorder=20
+        )
 
     # correct region
     xs = [m, m, n, n]
@@ -96,8 +115,20 @@ def plot_cstr_bound(idx, cluster_size):
 
     # environment tradeoff arrows
     plt.arrow(
-        m + 0.1 if n <= 3 else m + 0.1 if n <= 5 else m - 0.8 if n <= 7 else m - 0.4,
-        n + 1.1 if n <= 3 else m + 2.5 if n <= 5 else m + 1.6 if n <= 7 else m + 2.0,
+        m + 0.1
+        if n <= 3
+        else m + 0.1
+        if n <= 5
+        else m - 0.8
+        if n <= 7
+        else m - 0.4,
+        n + 1.1
+        if n <= 3
+        else m + 2.5
+        if n <= 5
+        else m + 1.6
+        if n <= 7
+        else m + 2.0,
         -1.3,
         0,
         linewidth=1,
@@ -111,7 +142,13 @@ def plot_cstr_bound(idx, cluster_size):
         zorder=50,
     )
     plt.text(
-        m + 0.3 if n <= 3 else m + 0.3 if n <= 5 else m - 0.9 if n <= 7 else m - 0.2,
+        m + 0.3
+        if n <= 3
+        else m + 0.3
+        if n <= 5
+        else m - 0.9
+        if n <= 7
+        else m - 0.2,
         n + 1.1 if n <= 3 else m + 2.6 if n <= 5 else m + 2.1,
         "if high RTT var.",
         horizontalalignment="left",
@@ -148,7 +185,8 @@ def plot_cstr_bound(idx, cluster_size):
     plt.xlim((0, X_TICKS[-1] + 0.7))
     plt.ylim((0, Y_TICKS[-1] + 2.7))
     plt.xticks(
-        X_TICKS[m - 1 : cluster_size], list(map(str, X_TICKS))[m - 1 : cluster_size]
+        X_TICKS[m - 1 : cluster_size],
+        list(map(str, X_TICKS))[m - 1 : cluster_size],
     )
     plt.yticks(Y_TICKS[:cluster_size], list(map(str, Y_TICKS))[:cluster_size])
 
@@ -176,7 +214,9 @@ def plot_cstr_bound(idx, cluster_size):
     #     # backgroundcolor=fill_color,
     # )
     plt.text(5.6, -2.7, f"n={n}, f={f}", fontsize=13, ha="center", va="center")
-    plt.text(2.2, -2.7, "▬", fontsize=13, color=line_color, ha="center", va="center")
+    plt.text(
+        2.2, -2.7, "▬", fontsize=13, color=line_color, ha="center", va="center"
+    )
 
     return ax
 
@@ -267,7 +307,11 @@ def plot_all_cstr_bounds(output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-o", "--output_dir", type=str, default="./results", help="output folder"
+        "-o",
+        "--output_dir",
+        type=str,
+        default="./results",
+        help="output folder",
     )
     args = parser.parse_args()
 

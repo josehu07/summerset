@@ -6,9 +6,6 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
-
 def ssh_to_remote(remote, no_cd, base, repo):
     ssh_args = ["ssh", "-o", "StrictHostKeyChecking=no"]
     if no_cd:
@@ -41,9 +38,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
-    )
+    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(args.group)
 
     if args.target not in remotes:
         raise ValueError(f"nickname '{args.target}' not found in toml file")

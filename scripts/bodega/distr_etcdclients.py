@@ -8,9 +8,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
-
 SERVER_CLI_PORT = 21379
 
 
@@ -150,7 +147,9 @@ def run_clients(
         server_pub_ip = ipaddrs[server]
         if dist_machs > 0:
             near_id = (
-                hosts.index(me if dist_machs <= 1 else td_hosts[i % len(td_hosts)])
+                hosts.index(
+                    me if dist_machs <= 1 else td_hosts[i % len(td_hosts)]
+                )
                 % num_replicas_for_near
             )
             server_pub_ip = ipaddrs[hosts[near_id]]
@@ -208,7 +207,9 @@ if __name__ == "__main__":
         default="Etcd",
         help="protocol name (unused yet)",
     )
-    parser.add_argument("-r", "--release", action="store_true", help="run release mode")
+    parser.add_argument(
+        "-r", "--release", action="store_true", help="run release mode"
+    )
     parser.add_argument(
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
@@ -216,7 +217,10 @@ if __name__ == "__main__":
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "-s",
@@ -226,7 +230,10 @@ if __name__ == "__main__":
         help="connecting server's host nickname (could be ignored with 'bench -d')",
     )
     parser.add_argument(
-        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
+        "--pin_cores",
+        type=float,
+        default=0,
+        help="if not 0, set CPU cores affinity",
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -269,16 +276,24 @@ if __name__ == "__main__":
     parser_bench.add_argument(
         "-k", "--num_keys", type=int, help="number of keys to choose from"
     )
-    parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
-    parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
-    parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser_bench.add_argument(
+        "-w", "--put_ratio", type=int, help="percentage of puts"
+    )
+    parser_bench.add_argument(
+        "-y", "--ycsb_trace", type=str, help="YCSB trace file"
+    )
+    parser_bench.add_argument(
+        "-l", "--length_s", type=int, help="run length in secs"
+    )
     parser_bench.add_argument(
         "--expect_halt",
         action="store_true",
         help="if set, expect there'll be a service halt",
     )
     parser_bench.add_argument(
-        "--use_random_keys", action="store_true", help="if set, generate random keys"
+        "--use_random_keys",
+        action="store_true",
+        help="if set, generate random keys",
     )
     parser_bench.add_argument(
         "--output_prefix",
@@ -297,7 +312,7 @@ if __name__ == "__main__":
 
     # parse hosts config file
     base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir = f"{base}/{repo}"
 
@@ -337,7 +352,9 @@ if __name__ == "__main__":
 
     # check that the utility mode is supported
     if UTILITY_PARAM_NAMES[args.utility] is None:
-        raise ValueError(f"utility mode '{args.utility}' not supported for etcd")
+        raise ValueError(
+            f"utility mode '{args.utility}' not supported for etcd"
+        )
 
     # run client executable(s)
     client_procs = run_clients(

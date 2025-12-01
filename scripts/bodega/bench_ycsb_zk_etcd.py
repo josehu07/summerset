@@ -16,7 +16,6 @@ import matplotlib.pyplot as plt
 # fmt: on
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "ycsb_zk_etcd"
@@ -223,7 +222,9 @@ def launch_etcd_cluster(remote0, base, repo, pcname, workload, distribution):
     )
 
 
-def launch_zookeeper_cluster(remote0, base, repo, pcname, workload, distribution):
+def launch_zookeeper_cluster(
+    remote0, base, repo, pcname, workload, distribution
+):
     cmd = [
         "python3",
         "./scripts/bodega/distr_zkcluster.py",
@@ -374,7 +375,9 @@ def run_mess_client(
     )
 
 
-def run_etcd_clients(remotec, base, repo, pcname, workload, distribution, config=None):
+def run_etcd_clients(
+    remotec, base, repo, pcname, workload, distribution, config=None
+):
     cmd = [
         "python3",
         "./scripts/bodega/distr_etcdclients.py",
@@ -548,10 +551,12 @@ def bench_round(
                 responder = ",".join(list(map(str, range(NUM_REPLICAS))))
             elif distribution == "zipfian":
                 key_range = (  # top 1/5 keys for each node
-                    f"k{c}{0:0{YCSB_KEY_LEN-2}d}-k{c}{YCSB_NUM_KEYS:0{YCSB_KEY_LEN-2}d}"
+                    f"k{c}{0:0{YCSB_KEY_LEN - 2}d}-k{c}{YCSB_NUM_KEYS:0{YCSB_KEY_LEN - 2}d}"
                 )
                 responder = (
-                    str(FORCE_LEADER) if c == FORCE_LEADER else f"{FORCE_LEADER},{c}"
+                    str(FORCE_LEADER)
+                    if c == FORCE_LEADER
+                    else f"{FORCE_LEADER},{c}"
                 )
 
             proc_mess = run_mess_client(
@@ -566,9 +571,13 @@ def bench_round(
                 partition=None if "QuorumLs" not in pcname else c,
             )
             mout, merr = proc_mess.communicate()
-            with open(f"{runlog_path}/{protocol}{midfix_str}.m.{c}.out", "wb") as fmout:
+            with open(
+                f"{runlog_path}/{protocol}{midfix_str}.m.{c}.out", "wb"
+            ) as fmout:
                 fmout.write(mout)
-            with open(f"{runlog_path}/{protocol}{midfix_str}.m.{c}.err", "wb") as fmerr:
+            with open(
+                f"{runlog_path}/{protocol}{midfix_str}.m.{c}.err", "wb"
+            ) as fmerr:
                 fmerr.write(merr)
         time.sleep(5)
 
@@ -698,7 +707,9 @@ def collect_outputs(output_dir):
                     RESULT_SECS_BEGIN,
                     RESULT_SECS_END,
                     0.1,
-                    agg_partitions=None if "QuorumLs" not in pcname else NUM_REPLICAS,
+                    agg_partitions=None
+                    if "QuorumLs" not in pcname
+                    else NUM_REPLICAS,
                 )
 
                 sd, sp, sj, sm = 10, 0, 0, 1
@@ -708,10 +719,18 @@ def collect_outputs(output_dir):
                     result["tput_sum"], sd, sp, sj, sm
                 )
                 wlat_list = utils.output.list_smoothing(
-                    [v for v in result["wlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["wlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
                 rlat_list = utils.output.list_smoothing(
-                    [v for v in result["rlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["rlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
 
                 results[workload][distribution][pcname] = {
@@ -804,31 +823,38 @@ def collect_outputs(output_dir):
                         / results[workload]["uniform"][pcname]["wlat"]["mean"]
                     )
                     for met in ("mean", "p50", "p99"):
-                        results[workload]["zipfian"][pcname]["wlat"][met] = results[
-                            workload
-                        ]["uniform"][pcname]["wlat"][met]
-                    results[workload]["zipfian"][pcname]["tput"]["mean"] *= ratio
+                        results[workload]["zipfian"][pcname]["wlat"][met] = (
+                            results[workload]["uniform"][pcname]["wlat"][met]
+                        )
+                    results[workload]["zipfian"][pcname]["tput"]["mean"] *= (
+                        ratio
+                    )
             for pcname in ("Bodega",):
                 if workload != "c" and (
                     results[workload]["uniform"][pcname]["wlat"]["mean"]
-                    < results[workload]["uniform"]["ZooKeeperDefault"]["wlat"]["mean"]
+                    < results[workload]["uniform"]["ZooKeeperDefault"]["wlat"][
+                        "mean"
+                    ]
                 ):
                     diff = (
                         results[workload]["uniform"][pcname]["wlat"]["p99"]
                         - results[workload]["uniform"][pcname]["wlat"]["mean"]
-                        + results[workload]["uniform"]["ZooKeeperDefault"]["wlat"][
-                            "p99"
-                        ]
-                        - results[workload]["uniform"]["ZooKeeperDefault"]["wlat"][
-                            "mean"
-                        ]
+                        + results[workload]["uniform"]["ZooKeeperDefault"][
+                            "wlat"
+                        ]["p99"]
+                        - results[workload]["uniform"]["ZooKeeperDefault"][
+                            "wlat"
+                        ]["mean"]
                     ) / 2
                     for met in ("mean", "p50"):
-                        results[workload]["uniform"][pcname]["wlat"][met] = results[
-                            workload
-                        ]["uniform"]["ZooKeeperDefault"]["wlat"][met]
+                        results[workload]["uniform"][pcname]["wlat"][met] = (
+                            results[workload]["uniform"]["ZooKeeperDefault"][
+                                "wlat"
+                            ][met]
+                        )
                     results[workload]["uniform"][pcname]["wlat"]["p99"] = (
-                        results[workload]["uniform"][pcname]["wlat"]["mean"] + diff
+                        results[workload]["uniform"][pcname]["wlat"]["mean"]
+                        + diff
                     )
 
     return results, ymax
@@ -873,7 +899,7 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-{distribution}")
+    _fig = plt.figure(f"Exper-{distribution}")
 
     PCNAMES_ORDER = [
         "EPaxos",
@@ -895,7 +921,12 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             "\\\\\\",
         ),
         "Bodega": ("Bodega", "lightsteelblue", "steelblue", "xxx"),
-        "EtcdDefault": ("etcd (default)\n    linearizable", "lightgray", "gray", None),
+        "EtcdDefault": (
+            "etcd (default)\n    linearizable",
+            "lightgray",
+            "gray",
+            None,
+        ),
         "EtcdStaleRd": ("etcd (stale)\n     non-linear.", "0.55", "0.4", None),
         "ZooKeeperSyncGet": (
             "ZK (sync)\n     non-linear.",
@@ -932,7 +963,7 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             #     norm_tput -= 5.0 - 4.8
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 norm_tput,
                 width=BAR_WIDTH,
@@ -1040,7 +1071,11 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             if result["mean"] is None:
                 xpos += 1
                 continue
-            rlat_mean, rlat_p50, rlat_p99 = result["mean"], result["p50"], result["p99"]
+            rlat_mean, _rlat_p50, rlat_p99 = (
+                result["mean"],
+                result["p50"],
+                result["p99"],
+            )
 
             # if rlat_mean > 105.0:  # manual y-axis break
             #     rlat_mean -= 105.0 - 75.5
@@ -1048,7 +1083,7 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             #     rlat_p99 -= 105.0 - 75.5
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 rlat_mean,
                 width=BAR_WIDTH,
@@ -1142,7 +1177,9 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
         (43.0 - 0.4, "f", "EtcdDefault"),
         (45.0 + 0.2, "f", "ZooKeeperSyncGet"),
     ):
-        norm_tput = math.floor(results[workload][distribution][pcname]["rlat"]["mean"])
+        norm_tput = math.floor(
+            results[workload][distribution][pcname]["rlat"]["mean"]
+        )
         plt.text(
             tmark_x,
             37,
@@ -1171,10 +1208,14 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
             if result["mean"] is None:
                 xpos += 1
                 continue
-            wlat_mean, wlat_p50, wlat_p99 = result["mean"], result["p50"], result["p99"]
+            wlat_mean, _wlat_p50, wlat_p99 = (
+                result["mean"],
+                result["p50"],
+                result["p99"],
+            )
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 wlat_mean,
                 width=BAR_WIDTH,
@@ -1261,7 +1302,7 @@ def plot_ylabels(plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Ylabels")
+    fig = plt.figure("Ylabels")
 
     ylabels = [
         "Norm Tput\n(to PQR)",
@@ -1321,7 +1362,7 @@ def plot_legend(handles, labels, plots_dir):
     handles.insert(7, matplotlib.lines.Line2D([], [], color="none"))
     labels.insert(7, "")
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -1363,7 +1404,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -1373,12 +1417,16 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
-        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, etcd=True, zookeeper=True)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.proc.kill_all_distr_procs(
+            PHYS_ENV_GROUP, etcd=True, zookeeper=True
+        )
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -1395,12 +1443,16 @@ if __name__ == "__main__":
         for workload in YCSB_WORKLOADS:
             for distribution in YCSB_DISTRIBUTIONS:
                 print(f"  workload {workload} {distribution}")
-                gen_ycsb_trace(hosts, remotes, base, repo, workload, distribution)
+                gen_ycsb_trace(
+                    hosts, remotes, base, repo, workload, distribution
+                )
 
         try:
             for workload in YCSB_WORKLOADS:
                 for distribution in YCSB_DISTRIBUTIONS:
-                    print(f"Running experiments workload {workload} {distribution}...")
+                    print(
+                        f"Running experiments workload {workload} {distribution}..."
+                    )
                     for pcname in (
                         list(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS.keys())
                         + list(ETCD_CLIENT_CONFIGS.keys())
@@ -1430,7 +1482,9 @@ if __name__ == "__main__":
 
         except utils.BreakingLoops:
             print("Experiment FAILED, breaking early...")
-            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, etcd=True, zookeeper=True)
+            utils.proc.kill_all_distr_procs(
+                PHYS_ENV_GROUP, etcd=True, zookeeper=True
+            )
 
         print("Fetching client output logs...")
         for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
@@ -1441,7 +1495,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

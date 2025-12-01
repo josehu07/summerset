@@ -177,18 +177,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
     )
-    parser.add_argument("-r", "--release", action="store_true", help="run release mode")
+    parser.add_argument(
+        "-r", "--release", action="store_true", help="run release mode"
+    )
     parser.add_argument(
         "-c", "--config", type=str, help="protocol-specific TOML config string"
     )
     parser.add_argument(
-        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
+        "--pin_cores",
+        type=float,
+        default=0,
+        help="if not 0, set CPU cores affinity",
     )
     parser.add_argument(
-        "--use_veth", action="store_true", help="if set, use netns and veth setting"
+        "--use_veth",
+        action="store_true",
+        help="if set, use netns and veth setting",
     )
     parser.add_argument(
-        "--timeout_ms", type=int, default=5000, help="client-side request timeout"
+        "--timeout_ms",
+        type=int,
+        default=5000,
+        help="client-side request timeout",
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -219,19 +229,29 @@ if __name__ == "__main__":
     parser_bench.add_argument(
         "-k", "--num_keys", type=int, help="number of keys to choose from"
     )
-    parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
-    parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
-    parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
+    parser_bench.add_argument(
+        "-w", "--put_ratio", type=int, help="percentage of puts"
+    )
+    parser_bench.add_argument(
+        "-y", "--ycsb_trace", type=str, help="YCSB trace file"
+    )
+    parser_bench.add_argument(
+        "-l", "--length_s", type=int, help="run length in secs"
+    )
     parser_bench.add_argument(
         "--expect_halt",
         action="store_true",
         help="if set, expect there'll be a service halt",
     )
     parser_bench.add_argument(
-        "--use_random_keys", action="store_true", help="if set, generate random keys"
+        "--use_random_keys",
+        action="store_true",
+        help="if set, generate random keys",
     )
     parser_bench.add_argument(
-        "--skip_preloading", action="store_true", help="if set, skip preloading phase"
+        "--skip_preloading",
+        action="store_true",
+        help="if set, skip preloading phase",
     )
     parser_bench.add_argument(
         "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
@@ -262,10 +282,17 @@ if __name__ == "__main__":
 
     parser_tester = subparsers.add_parser("tester", help="testing mode")
     parser_tester.add_argument(
-        "-t", "--test_name", type=str, required=True, help="<test_name>|basic|all"
+        "-t",
+        "--test_name",
+        type=str,
+        required=True,
+        help="<test_name>|basic|all",
     )
     parser_tester.add_argument(
-        "-k", "--keep_going", action="store_true", help="continue upon failed test"
+        "-k",
+        "--keep_going",
+        action="store_true",
+        help="continue upon failed test",
     )
     parser_tester.add_argument(
         "--logger_on", action="store_true", help="do not suppress logger output"

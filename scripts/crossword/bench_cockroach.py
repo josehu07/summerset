@@ -14,7 +14,6 @@ import matplotlib.pyplot as plt
 # fmt: on
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "cockroach"
@@ -204,7 +203,8 @@ def collect_outputs(output_dir):
 
     # normalize throughput according to #txns succeeded
     txns_ratio = (
-        results["Raft"]["payment"]["txns"] - results["Raft"]["payment"]["errors"]
+        results["Raft"]["payment"]["txns"]
+        - results["Raft"]["payment"]["errors"]
     ) / (
         results["Crossword"]["payment"]["txns"]
         - results["Crossword"]["payment"]["errors"]
@@ -239,7 +239,7 @@ def plot_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure("Exper-cockroach")
+    _fig = plt.figure("Exper-cockroach")
 
     TXN_TYPES_ORDER = [
         "newOrder",
@@ -280,7 +280,7 @@ def plot_results(results, plots_dir):
                 ymaxl = tput
 
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 tput,
                 width=1,
@@ -334,7 +334,7 @@ def plot_results(results, plots_dir):
                 ymaxl = p95
 
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 avg,
                 width=1,
@@ -389,7 +389,7 @@ def plot_legend(handles, labels, plots_dir):
 
     plt.axis("off")
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -415,11 +415,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -429,7 +432,7 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
@@ -445,7 +448,9 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -455,7 +460,7 @@ if __name__ == "__main__":
         )
 
         try:
-            print(f"Running experiments...")
+            print("Running experiments...")
             for protocol in PROTOCOLS:
                 time.sleep(3)
                 bench_round(

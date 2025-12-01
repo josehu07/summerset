@@ -6,15 +6,16 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
-
-
-def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False, etcd=False):
+def compose_kill_cmds(
+    chain=False, cockroach=False, zookeeper=False, etcd=False
+):
     cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
     if chain:
         cmds.append(["./scripts/crossword/kill_chain_procs.sh", "incl_distr"])
     if cockroach:
-        cmds.append(["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"])
+        cmds.append(
+            ["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"]
+        )
     if zookeeper:
         cmds.append(["./scripts/bodega/kill_zookeeper_procs.sh", "incl_distr"])
     if etcd:
@@ -23,7 +24,12 @@ def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False, etcd=False)
 
 
 def killall_on_targets(
-    destinations, cd_dir, chain=False, cockroach=False, zookeeper=False, etcd=False
+    destinations,
+    cd_dir,
+    chain=False,
+    cockroach=False,
+    zookeeper=False,
+    etcd=False,
 ):
     cmds = compose_kill_cmds(
         chain=chain, cockroach=cockroach, zookeeper=zookeeper, etcd=etcd
@@ -63,19 +69,21 @@ if __name__ == "__main__":
         "--chain", action="store_true", help="if set, kill ChainPaxos processes"
     )
     parser.add_argument(
-        "--cockroach", action="store_true", help="if set, kill CockroachDB processes"
+        "--cockroach",
+        action="store_true",
+        help="if set, kill CockroachDB processes",
     )
     parser.add_argument(
-        "--zookeeper", action="store_true", help="if set, kill ZooKeeper processes"
+        "--zookeeper",
+        action="store_true",
+        help="if set, kill ZooKeeper processes",
     )
     parser.add_argument(
         "--etcd", action="store_true", help="if set, kill etcd processes"
     )
     args = parser.parse_args()
 
-    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
-    )
+    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(args.group)
 
     targets = utils.config.parse_comma_separated(args.targets)
     destinations = []
@@ -87,7 +95,7 @@ if __name__ == "__main__":
                 raise ValueError(f"nickname '{target}' not found in toml file")
             destinations.append(remotes[target])
     if len(destinations) == 0:
-        raise ValueError(f"targets list is empty")
+        raise ValueError("targets list is empty")
 
     killall_on_targets(
         destinations,

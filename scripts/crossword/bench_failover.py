@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 # fmt: on
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "failover"
@@ -216,7 +215,9 @@ def collect_outputs(output_dir):
             # setting sd here also avoids the lines to completely overlap with
             # each other
             sd, sj = 15, 50
-        tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_list = utils.output.list_smoothing(
+            result["tput_sum"], sd, sp, sj, sm
+        )
 
         results[protocol] = {
             "time": result["time"],
@@ -446,11 +447,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -460,14 +464,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

@@ -23,8 +23,8 @@ RTTS = utils.config.PairsMap(
     },
     default=0,
 )
-LEADER = f"host1"
-CLIENT = f"host3"
+LEADER = "host1"
+CLIENT = "host3"
 
 PROTOCOLS = [
     "LeaderLs",
@@ -82,7 +82,8 @@ class Metrics:
 
         normalized_cells = {}
         columns = [
-            [values[i] for values in cells.values() if values[i] > 0] for i in range(4)
+            [values[i] for values in cells.values() if values[i] > 0]
+            for i in range(4)
         ]
         col_mins = [min(column) for column in columns]
         col_maxs = [max(column) for column in columns]

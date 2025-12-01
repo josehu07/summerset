@@ -2,7 +2,6 @@ import sys
 import os
 import argparse
 import time
-import math
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 import utils
@@ -14,7 +13,6 @@ import matplotlib.pyplot as plt
 # fmt: on
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "staleness"
@@ -136,15 +134,17 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str):
     )
 
 
-def bench_round(remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path):
+def bench_round(
+    remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path
+):
     midfix_str = round_midfix_str(gossip_gap, num_keys)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    config += f"+record_breakdown=true"
-    config += f"+record_value_ver=true"
+    config += "+record_breakdown=true"
+    config += "+record_value_ver=true"
     if protocol == "Crossword":
-        config += f"+init_assignment='1'"
+        config += "+init_assignment='1'"
         config += f"+gossip_tail_ignores={gossip_gap}"
 
     # launch service cluster
@@ -191,11 +191,15 @@ def collect_ver_stats(runlog_dir):
             candidates = set(range(NUM_REPLICAS))
             leader, sec0 = None, None
             result = [{"secs": [], "vers": []} for _ in range(NUM_REPLICAS)]
-            with open(f"{runlog_dir}/{protocol}{midfix_str}.s.err", "r") as flog:
+            with open(
+                f"{runlog_dir}/{protocol}{midfix_str}.s.err", "r"
+            ) as flog:
                 for line in flog:
                     if "becoming a leader" in line:
                         if leader is not None:
-                            raise RuntimeError("multiple leader step-up detected")
+                            raise RuntimeError(
+                                "multiple leader step-up detected"
+                            )
                         leader = get_node_id(line)
                     elif "ver of" in line:
                         node = get_node_id(line)
@@ -216,7 +220,9 @@ def collect_ver_stats(runlog_dir):
 
                         if sec > RESULT_SECS_END:
                             if leader is None:
-                                raise RuntimeError("leader step-up not detected")
+                                raise RuntimeError(
+                                    "leader step-up not detected"
+                                )
                             candidates.remove(node)
                             ver_stats[f"{protocol}{midfix_str}"] = {
                                 "leader": leader,
@@ -267,7 +273,7 @@ def collect_ver_stats(runlog_dir):
 def print_results(ver_stats, diff_stats):
     for protocol_with_midfix in ver_stats:
         print(protocol_with_midfix)
-        leader, result, davg, dresult = (
+        _leader, _result, davg, dresult = (
             ver_stats[protocol_with_midfix]["leader"],
             ver_stats[protocol_with_midfix]["result"],
             diff_stats[protocol_with_midfix]["avg"],
@@ -328,7 +334,9 @@ def plot_staleness(diff_stats, plots_dir):
         ys = None
         if protocol != "RSPaxos":
             ys = [
-                diff_stats[f"{protocol}{round_midfix_str(gossip_gap, k)}"]["avg"]
+                diff_stats[f"{protocol}{round_midfix_str(gossip_gap, k)}"][
+                    "avg"
+                ]
                 for k in NUM_KEYS_LIST
             ]
             if max(ys) > ymax:
@@ -349,7 +357,9 @@ def plot_staleness(diff_stats, plots_dir):
             linewidth=1.2,
             marker=marker,
             markersize=(
-                MARKER_SIZE if ".0" not in protocol_with_gap else MARKER_SIZE + 3
+                MARKER_SIZE
+                if ".0" not in protocol_with_gap
+                else MARKER_SIZE + 3
             ),
             label=label,
             zorder=zorder,
@@ -461,11 +471,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -475,14 +488,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

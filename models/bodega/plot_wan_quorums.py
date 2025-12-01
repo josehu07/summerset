@@ -17,12 +17,16 @@ class World:
         quorum_sizes = list(range(1, len(self.servers) + 1))
         quorum_delays = dict()
         for qs in quorum_sizes:
-            delays = [sorted_dists[ci][qs - 1] for ci in range(len(self.clients))]
+            delays = [
+                sorted_dists[ci][qs - 1] for ci in range(len(self.clients))
+            ]
             quorum_delays[qs] = delays
 
         for qs in quorum_sizes:
             # print(f" {qs}: {quorum_delays[qs]}")
-            plt.plot(list(range(len(self.clients))), quorum_delays[qs], label=str(qs))
+            plt.plot(
+                list(range(len(self.clients))), quorum_delays[qs], label=str(qs)
+            )
         plt.legend()
         plt.tight_layout()
         plt.savefig(f"models/bodega/{self.name}.png")

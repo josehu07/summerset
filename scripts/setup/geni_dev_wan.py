@@ -2,7 +2,7 @@
 
 # Import the Portal object and ProtoGENI lib.
 import geni.portal as portal  # type: ignore
-import geni.rspec.pg as rspec  # type: ignore
+import geni.rspec.pg as rspec  # type: ignore  # noqa: F401
 
 # Primary partition's disk image map.
 DISK_IMAGE = {

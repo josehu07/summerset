@@ -1,4 +1,3 @@
-import sys
 import os
 import bibtexparser
 import pprint
@@ -21,7 +20,9 @@ def load_bib_files():
         bib_file = f"{DROPBOX_DIR}/{project}/{BIB_FILENAME}"
         with open(bib_file, "r") as f:
             bib_database = bibtexparser.load(f)
-            bib_maps[project] = {entry["ID"]: entry for entry in bib_database.entries}
+            bib_maps[project] = {
+                entry["ID"]: entry for entry in bib_database.entries
+            }
 
     return bib_maps
 
@@ -30,7 +31,9 @@ def titles_match(title1: str, title2: str) -> bool:
     return title1.strip().lower() == title2.strip().lower()
 
 
-def prompt_manual_check(entry: Dict[str, str], existing: Dict[str, str]) -> bool:
+def prompt_manual_check(
+    entry: Dict[str, str], existing: Dict[str, str]
+) -> bool:
     print(f"\n--- Manual check required: {entry['ID']}")
     print("\nOld:")
     pprint.pprint(existing)
@@ -46,7 +49,9 @@ def prompt_manual_check(entry: Dict[str, str], existing: Dict[str, str]) -> bool
         raise ValueError("Invalid input, must enter 'y' or 'n'!")
 
 
-def process_one_entry(entry_id: str, entry: Dict[str, str], bib_merged: Dict[str, str]):
+def process_one_entry(
+    entry_id: str, entry: Dict[str, str], bib_merged: Dict[str, str]
+):
     if entry_id in bib_merged:
         # double check that titles match, otherwise prompt a manual check
         if not titles_match(entry["title"], bib_merged[entry_id]["title"]):
