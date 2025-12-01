@@ -1,11 +1,8 @@
-import sys
 import os
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 YCSB_DIR = lambda base: f"{base}/ycsb"
@@ -38,10 +35,10 @@ def gen_ycsb_a_trace(base):
                 fout.write(f"{op} {key}\n")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
-    base, _, _, _, _, _ = utils.config.parse_toml_file(TOML_FILENAME, PHYS_ENV_GROUP)
+    base, _, _, _, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
     print("Generating YCSB-A trace...")
     if os.path.isfile(YCSB_TRACE):
@@ -49,3 +46,7 @@ if __name__ == "__main__":
     else:
         gen_ycsb_a_trace(base)
         print(f"  Done: {YCSB_TRACE}")
+
+
+if __name__ == "__main__":
+    main()

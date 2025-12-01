@@ -1,20 +1,13 @@
-import sys
 import os
 import argparse
 import time
 import math
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "bw_utils"
@@ -37,8 +30,10 @@ BASE_LINK_RATE = 1 / 2
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -78,8 +73,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -127,25 +124,27 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
     real_protocol = protocol
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    config += f"+record_breakdown=true"
-    config += f"+record_size_recv=true"
+    config += "+record_breakdown=true"
+    config += "+record_size_recv=true"
     # if "Crossword" in protocol:
     #     config += f"+gossip_timeout_min=40"
     #     config += f"+gossip_timeout_max=60"
     if protocol == "Crossword":
-        config += f"+init_assignment='1'"
-        config += f"+gossip_batch_size=100"
+        config += "+init_assignment='1'"
+        config += "+gossip_batch_size=100"
     elif protocol == "CrosswordNoBatch":
         real_protocol = "Crossword"
-        config += f"+init_assignment='1'"
-        config += f"+gossip_batch_size=1"
+        config += "+init_assignment='1'"
+        config += "+gossip_batch_size=1"
     elif protocol == "CrosswordShards2":
         real_protocol = "Crossword"
-        config += f"+init_assignment='2'"
-        config += f"+gossip_batch_size=100"
+        config += "+init_assignment='2'"
+        config += "+gossip_batch_size=100"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, real_protocol, config=config)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, real_protocol, config=config
+    )
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -192,8 +191,12 @@ def collect_bw_utils(runlog_dir):
         # take average of middle part
         l_f_utils = l_f_utils[len(l_f_utils) // 2 : -len(l_f_utils) // 4]
         f_f_utils = f_f_utils[len(f_f_utils) // 2 : -len(f_f_utils) // 4]
-        l_f_nbytes = 0 if len(l_f_utils) == 0 else sum(l_f_utils) / len(l_f_utils)
-        f_f_nbytes = 0 if len(f_f_utils) == 0 else sum(f_f_utils) / len(f_f_utils)
+        l_f_nbytes = (
+            0 if len(l_f_utils) == 0 else sum(l_f_utils) / len(l_f_utils)
+        )
+        f_f_nbytes = (
+            0 if len(f_f_utils) == 0 else sum(f_f_utils) / len(f_f_utils)
+        )
         bw_utils[protocol] = {
             "L-F": l_f_nbytes,
             "F-F": f_f_nbytes,
@@ -206,7 +209,10 @@ def collect_bw_utils(runlog_dir):
     bw_utils["Crossword"]["F-F"] -= delta
 
     for protocol in bw_utils:
-        l_f_nbytes, f_f_nbytes = bw_utils[protocol]["L-F"], bw_utils[protocol]["F-F"]
+        l_f_nbytes, f_f_nbytes = (
+            bw_utils[protocol]["L-F"],
+            bw_utils[protocol]["F-F"],
+        )
         l_f_percentage = 100 * l_f_nbytes / (BASE_LINK_RATE * (10**9))
         f_f_percentage = 100 * f_f_nbytes / (BASE_LINK_RATE * (10**9))
         bw_utils[protocol] = {
@@ -236,7 +242,7 @@ def plot_bw_utils(bw_utils, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure("Exper")
+    _fig = plt.figure("Exper")
 
     PROTOCOLS_ORDER = [
         "MultiPaxos",
@@ -258,7 +264,7 @@ def plot_bw_utils(bw_utils, plots_dir):
         xpos = i + 1
         util = bw_utils[f"{protocol}"]["L-F"][1]
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
+        _bar = plt.bar(
             xpos,
             util,
             width=1,
@@ -289,7 +295,7 @@ def plot_bw_utils(bw_utils, plots_dir):
         xpos = i + 1
         util = bw_utils[f"{protocol}"]["F-F"][1]
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
+        _bar = plt.bar(
             xpos,
             util,
             width=1,
@@ -335,7 +341,7 @@ def plot_legend(handles, labels, plots_dir):
 
     plt.axis("off")
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handlelength=1.0,
@@ -350,7 +356,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -358,11 +364,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -372,14 +381,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -409,3 +420,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_bw_utils(bw_utils, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

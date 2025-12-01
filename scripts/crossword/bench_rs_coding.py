@@ -2,14 +2,9 @@ import os
 import argparse
 import subprocess
 import multiprocessing
-
-# fmt: off
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-# fmt: on
-
 import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
 
 
 EXPER_NAME = "rs_coding"
@@ -52,7 +47,7 @@ def parse_bench_results(output_dir):
         group, config, temp = None, None, None
         for line in fout:
             line = line.strip()
-            if line.startswith(f"Benchmarking ") and line.endswith(
+            if line.startswith("Benchmarking ") and line.endswith(
                 "EFFECTIVE STARTING"
             ):
                 group = line[line.find(" ") + 1 : line.find("/")].strip()
@@ -137,7 +132,7 @@ def plot_bench_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure("Bench")
+    _fig = plt.figure("Bench")
 
     xs, ys = [], []
     for r in results:
@@ -161,7 +156,9 @@ def plot_bench_results(results, plots_dir):
 
     cmap = plt.get_cmap("Reds")
     colors = cmap(np.linspace(1.0 - (vmax - vmin) / float(vmax), 0.6, cmap.N))
-    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list("Reds", colors)
+    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
+        "Reds", colors
+    )
 
     plt.imshow(data, cmap=new_cmap, aspect=0.6, norm="log")
     plt.colorbar(
@@ -174,7 +171,7 @@ def plot_bench_results(results, plots_dir):
 
     def readable_size(size):
         if size >= 1024 * 1024:
-            return f"{size // (1024*1024)}M"
+            return f"{size // (1024 * 1024)}M"
         elif size >= 1024:
             return f"{size // 1024}K"
         else:
@@ -182,9 +179,9 @@ def plot_bench_results(results, plots_dir):
 
     def readable_time(ms):
         if ms < 0.1:
-            return f"{ms*1000:.0f}μs"
+            return f"{ms * 1000:.0f}μs"
         elif ms < 1.0:
-            return f".{ms*10:.0f}ms"
+            return f".{ms * 10:.0f}ms"
         else:
             return f"{ms:.0f}ms"
 
@@ -204,7 +201,7 @@ def plot_bench_results(results, plots_dir):
     xticks = [readable_size(x) for x in xs]
     plt.xticks(list(range(len(xticks))), xticks)
 
-    yticks = [f"({d+p},{d})" for d, p in ys]
+    yticks = [f"({d + p},{d})" for d, p in ys]
     plt.yticks(list(range(len(yticks))), yticks)
 
     plt.tight_layout()
@@ -215,17 +212,20 @@ def plot_bench_results(results, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -249,3 +249,7 @@ if __name__ == "__main__":
         print_bench_results(results)
 
         # plot_bench_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,21 +1,14 @@
-import sys
 import os
 import argparse
 import time
 import statistics
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "conf_coverage"
@@ -44,7 +37,7 @@ RESPONDER_CONFS = {
 }
 
 KEY_LEN = 8  # hardcoded
-KEY_ITH = lambda i: f"k{i:0{KEY_LEN-1}d}"
+KEY_ITH = lambda i: f"k{i:0{KEY_LEN - 1}d}"
 NUM_KEYS = 1000
 KEY_RANGES = {
     "0": None,
@@ -52,7 +45,7 @@ KEY_RANGES = {
     "40": f"{KEY_ITH(0)}-{KEY_ITH(399)}",
     "60": f"{KEY_ITH(0)}-{KEY_ITH(599)}",
     "80": f"{KEY_ITH(0)}-{KEY_ITH(799)}",
-    "100": f"full",
+    "100": "full",
 }
 
 MIN_HOST0_CPUS = 30
@@ -72,8 +65,10 @@ RESULT_SECS_END = 100
 
 def launch_cluster(remote0, base, repo, confname, keyrname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         "Bodega",
         "-n",
@@ -116,8 +111,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remotec, base, repo, confname, keyrname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         "Bodega",
         "-r",
@@ -168,10 +165,14 @@ def run_bench_clients(remotec, base, repo, confname, keyrname, config=None):
     )
 
 
-def run_mess_client(remotec, base, repo, leader=None, key_range=None, responder=None):
+def run_mess_client(
+    remotec, base, repo, leader=None, key_range=None, responder=None
+):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         "Bodega",
         "-r",
@@ -288,7 +289,9 @@ def collect_outputs(output_dir):
             sd, sp, sj, sm = 10, 0, 0, 1
             # setting sm here to compensate for unstabilities of printing
             # things to console
-            tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+            tput_list = utils.output.list_smoothing(
+                result["tput_sum"], sd, sp, sj, sm
+            )
             wlat_list = utils.output.list_smoothing(
                 [v for v in result["wlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
             )
@@ -321,31 +324,47 @@ def collect_outputs(output_dir):
                 "wlat": {
                     "sorted": wlat_list,
                     "p50": (
-                        None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]
+                        None
+                        if len(wlat_list) == 0
+                        else wlat_list[len(wlat_list) // 2]
                     ),
                     "p99": (
-                        None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)
+                        None
+                        if len(wlat_list) == 0
+                        else np.percentile(wlat_list, 99)
                     ),
                     "mean": (
-                        None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)
+                        None
+                        if len(wlat_list) == 0
+                        else sum(wlat_list) / len(wlat_list)
                     ),
                     "stdev": (
-                        None if len(wlat_list) == 0 else statistics.stdev(wlat_list)
+                        None
+                        if len(wlat_list) == 0
+                        else statistics.stdev(wlat_list)
                     ),
                 },
                 "rlat": {
                     "sorted": rlat_list,
                     "p50": (
-                        None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]
+                        None
+                        if len(rlat_list) == 0
+                        else rlat_list[len(rlat_list) // 2]
                     ),
                     "p99": (
-                        None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)
+                        None
+                        if len(rlat_list) == 0
+                        else np.percentile(rlat_list, 99)
                     ),
                     "mean": (
-                        None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)
+                        None
+                        if len(rlat_list) == 0
+                        else sum(rlat_list) / len(rlat_list)
                     ),
                     "stdev": (
-                        None if len(rlat_list) == 0 else statistics.stdev(rlat_list)
+                        None
+                        if len(rlat_list) == 0
+                        else statistics.stdev(rlat_list)
                     ),
                 },
             }
@@ -391,7 +410,7 @@ def plot_responders_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-site")
+    fig = plt.figure("Exper-site")
 
     CONF_NAMES = ["0-0", "0-1", "0-2", "0-3", "0-4"]
     CONF_LABELS = ["WI", "+MA", "+SC", "+APT", "+UT"]
@@ -408,7 +427,7 @@ def plot_responders_results(results, plots_dir):
             result = results[confname]["100"][series]
             label, color, ecolor = SERIES_LABEL_COLORS[series]
 
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 result["mean"],
                 width=BAR_WIDTH,
@@ -479,7 +498,7 @@ def plot_key_ranges_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-keys")
+    fig = plt.figure("Exper-keys")
 
     KEYR_NAMES = ["0", "20", "40", "60", "80", "100"]
     KEYR_LABELS = ["0%", "20%", "40%", "60%", "80%", "100%"]
@@ -494,11 +513,15 @@ def plot_key_ranges_results(results, plots_dir):
 
     key_ranges = list(map(int, KEYR_NAMES))
     for series in SERIES_ORDER:
-        mean_list = [results["def"][keyr][series]["mean"] for keyr in KEYR_NAMES]
-        stdev_list = [results["def"][keyr][series]["stdev"] for keyr in KEYR_NAMES]
-        label, color, ecolor, marker, markersize = SERIES_LABEL_COLORS_MARKER_SIZE[
-            series
+        mean_list = [
+            results["def"][keyr][series]["mean"] for keyr in KEYR_NAMES
         ]
+        stdev_list = [
+            results["def"][keyr][series]["stdev"] for keyr in KEYR_NAMES
+        ]
+        label, color, ecolor, marker, markersize = (
+            SERIES_LABEL_COLORS_MARKER_SIZE[series]
+        )
 
         plt.plot(
             key_ranges,
@@ -570,7 +593,7 @@ def plot_legend(handles, labels, plots_dir):
     lb = labels.pop()
     labels.insert(3, lb)
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -590,7 +613,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -609,7 +632,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -619,12 +645,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -695,7 +723,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -736,3 +764,7 @@ if __name__ == "__main__":
 
         handle, label = plot_responders_results(results, plots_dir)
         handle, label = plot_key_ranges_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

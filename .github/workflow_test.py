@@ -27,7 +27,7 @@ def kill_all_matching(name, force=False):
         for pid in pids:
             pid = pid.strip()
             if len(pid) > 0:
-                kill_cmd = f"sudo kill -9" if force else "sudo kill"
+                kill_cmd = "sudo kill -9" if force else "sudo kill"
                 kill_cmd += f" {int(pid)} > /dev/null 2>&1"
                 os.system(kill_cmd)
     except subprocess.CalledProcessError:
@@ -36,8 +36,10 @@ def kill_all_matching(name, force=False):
 
 def launch_cluster(protocol, num_replicas, config):
     cmd = [
-        "python3",
-        "./scripts/local_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.local_cluster",
         "-p",
         protocol,
         "-n",
@@ -68,8 +70,10 @@ def wait_cluster_setup(proc, num_replicas):
 
 def run_tester_client(protocol, test_name):
     cmd = [
-        "python3",
-        "./scripts/local_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.local_clients",
         "-p",
         protocol,
         "tester",
@@ -79,7 +83,7 @@ def run_tester_client(protocol, test_name):
     return run_process(cmd)
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-p", "--protocol", type=str, required=True, help="protocol name"
@@ -100,7 +104,9 @@ if __name__ == "__main__":
     elif args.protocol == "Raft":
         PROTOCOL = "Raft"
     else:
-        raise ValueError(f"unrecognized protocol {args.protocol} to run workflow test")
+        raise ValueError(
+            f"unrecognized protocol {args.protocol} to run workflow test"
+        )
 
     NUM_REPLICAS = 3
     TEST_NAME = "primitive_ops"
@@ -123,4 +129,9 @@ if __name__ == "__main__":
         print(f"Client tester exitted with {client_rc}")
         exit(client_rc)
     else:
+        print("Client tester finished successfully!")
         exit(0)
+
+
+if __name__ == "__main__":
+    main()

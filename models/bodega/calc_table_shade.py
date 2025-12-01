@@ -2,10 +2,12 @@ import sys
 import os
 import pprint
 
+# keeping this hardcoded import for now
 sys.path.append(
     f"{os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))}/scripts"
 )
 import utils
+
 
 RTTS = utils.config.PairsMap(
     # Ref: https://www.usenix.org/system/files/nsdi21-tollman.pdf#page=7
@@ -23,8 +25,8 @@ RTTS = utils.config.PairsMap(
     },
     default=0,
 )
-LEADER = f"host1"
-CLIENT = f"host3"
+LEADER = "host1"
+CLIENT = "host3"
 
 PROTOCOLS = [
     "LeaderLs",
@@ -82,7 +84,8 @@ class Metrics:
 
         normalized_cells = {}
         columns = [
-            [values[i] for values in cells.values() if values[i] > 0] for i in range(4)
+            [values[i] for values in cells.values() if values[i] > 0]
+            for i in range(4)
         ]
         col_mins = [min(column) for column in columns]
         col_maxs = [max(column) for column in columns]
@@ -104,7 +107,7 @@ class Metrics:
         return normalized_cells
 
 
-if __name__ == "__main__":
+def main():
     metrics = Metrics()
     cells = metrics.shading()
 
@@ -116,3 +119,7 @@ if __name__ == "__main__":
                 print(f"  \\cellcolor{{black!{int(cell)}}}")
             else:
                 print("  -")
+
+
+if __name__ == "__main__":
+    main()

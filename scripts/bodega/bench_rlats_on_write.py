@@ -1,20 +1,12 @@
-import sys
 import os
 import argparse
 import time
-import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "rlats_on_write"
@@ -100,8 +92,10 @@ WRITE_AT_SECS = 42
 
 def launch_cluster(remote0, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -144,8 +138,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remotec, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -208,8 +204,10 @@ def run_mess_client(
     write=None,
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -255,7 +253,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, pcname, config=server_config
+    )
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -271,9 +271,13 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
             responder=",".join(list(map(str, responders))),
         )
         mout, merr = proc_mess.communicate()
-        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb") as fmout:
+        with open(
+            f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb"
+        ) as fmout:
             fmout.write(mout)
-        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb") as fmerr:
+        with open(
+            f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb"
+        ) as fmerr:
             fmerr.write(merr)
         time.sleep(5)
 
@@ -281,7 +285,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
+    proc_clients = run_bench_clients(
+        remotec, base, repo, pcname, config=client_config
+    )
 
     # wait till time for a single-shot write
     time.sleep(WRITE_AT_SECS)
@@ -291,7 +297,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
         base,
         repo,
         protocol,
-        write=f"k{0:0{KEY_LEN-1}d}:thisissomedummyvaluerighthereboi",
+        write=f"k{0:0{KEY_LEN - 1}d}:thisissomedummyvaluerighthereboi",
     )
     mout, merr = proc_mess.communicate()
     with open(f"{runlog_path}/{protocol}{midfix_str}.m.w.out", "wb") as fmout:
@@ -354,7 +360,8 @@ def collect_outputs(output_dir):
                                 dip_found = True
                                 base_time = buffer[0][0]
                                 result = [
-                                    (time - base_time, rlat) for time, rlat in buffer
+                                    (time - base_time, rlat)
+                                    for time, rlat in buffer
                                 ]
                         else:
                             result.append((time - base_time, rlat))
@@ -405,16 +412,16 @@ def print_results(results):
         print(f"{pcname}")
         i = 0
         while i < len(result["time"]):
-            print(f"  time", end="")
+            print("  time", end="")
             for j in range(min(12, len(result["time"]) - i)):
-                print(f"  {result['time'][i+j]:6.1f}", end="")
+                print(f"  {result['time'][i + j]:6.1f}", end="")
             print()
-            print(f"  rlat", end="")
+            print("  rlat", end="")
             for j in range(min(12, len(result["time"]) - i)):
                 if result["rlat"][i + j] > 0:
-                    print(f"  {result['rlat'][i+j]:6.2f}", end="")
+                    print(f"  {result['rlat'][i + j]:6.2f}", end="")
                 else:
-                    print(f"       -", end="")
+                    print("       -", end="")
             print()
             i += 12
 
@@ -427,7 +434,7 @@ def plot_rlats_results(results, write_time, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper")
+    fig = plt.figure("Exper")
 
     PCNAMES_ORDER = [
         "QuorumLs",
@@ -441,7 +448,9 @@ def plot_rlats_results(results, write_time, plots_dir):
     }
 
     for pcname in PCNAMES_ORDER:
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
+            pcname
+        ]
         times, rlats = results[pcname]["time"], results[pcname]["rlat"]
         zidx = results[pcname]["zidx"]
         times = [times[i] for i in range(len(rlats)) if rlats[i] > 0]
@@ -551,7 +560,7 @@ def plot_rlats_results(results, write_time, plots_dir):
 #     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -570,7 +579,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -580,12 +592,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -595,7 +609,7 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         try:
-            print(f"Running experiments...")
+            print("Running experiments...")
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                 time.sleep(3)
 
@@ -629,7 +643,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -670,3 +684,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_rlats_results(results, write_time, plots_dir)
         # plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

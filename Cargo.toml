@@ -51,7 +51,7 @@ zookeeper-client = { workspace = true }
 etcd-client = { workspace = true }
 
 [dev-dependencies]
-criterion = "0.7"
+criterion = "0.8"
 sysinfo = "0.37"
 
 [features]

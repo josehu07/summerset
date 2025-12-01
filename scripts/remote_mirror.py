@@ -1,12 +1,8 @@
-import sys
 import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
+from . import utils
 
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
 
 EXCLUDE_NAMES = [
     # output folders
@@ -28,7 +24,10 @@ EXCLUDE_NAMES = [
     # tla+ states
     "tla+/*/states/",
     # python caches
+    "uv.lock",
+    "*/.venv/",
     "*/__pycache__/",
+    "*/.ruff_cache/",
     # OS & editors
     ".DS_Store",
     ".vscode/",
@@ -54,10 +53,12 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     """WARNING: this deletes all unmatched files on remote!"""
     # source path must exist, end with the correct folder name, followed by a trailing '/'
     if not os.path.isdir(src_path):
-        raise ValueError(f"source path '{src_path}' is not an existing directory")
+        raise ValueError(
+            f"source path '{src_path}' is not an existing directory"
+        )
     src_path = os.path.realpath(src_path)
     src_seg = utils.file.path_get_last_segment(src_path)
-    if not repo_name in src_seg:
+    if repo_name not in src_seg:
         raise ValueError(
             f"source folder '{src_seg}' does not contain project name '{repo_name}'"
         )
@@ -94,7 +95,9 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
         procs = []
         for cmd in cmds:
             procs.append(
-                utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True)
+                utils.proc.run_process(
+                    cmd, capture_stdout=True, capture_stderr=True
+                )
             )
         print("Waiting for command results...")
         utils.proc.wait_parallel_procs(procs)
@@ -131,7 +134,9 @@ def build_on_targets(destinations, dst_path, release, sequential):
         print("Using build command for: summerset")
         cmd = compose_summerset_build_cmd(release)
     else:
-        raise RuntimeError(f"don't know what build command to use for '{dst_path}'")
+        raise RuntimeError(
+            f"don't know what build command to use for '{dst_path}'"
+        )
 
     # execute over SSH
     if sequential:
@@ -142,7 +147,9 @@ def build_on_targets(destinations, dst_path, release, sequential):
             if "summerset" in dst_path and "mass" in remote:
                 build_cmd = cmd[:-2]
 
-            proc = utils.proc.run_process_over_ssh(remote, build_cmd, cd_dir=dst_path)
+            proc = utils.proc.run_process_over_ssh(
+                remote, build_cmd, cd_dir=dst_path
+            )
             proc.wait()
     else:
         print("Running build commands in parallel...")
@@ -168,7 +175,7 @@ def build_on_targets(destinations, dst_path, release, sequential):
         utils.proc.wait_parallel_procs(procs)
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -196,7 +203,10 @@ if __name__ == "__main__":
         help="if set, run cargo build on all nodes",
     )
     parser.add_argument(
-        "-r", "--release", action="store_true", help="if set, build in release mode"
+        "-r",
+        "--release",
+        action="store_true",
+        help="if set, build in release mode",
     )
     parser.add_argument(
         "-s",
@@ -206,9 +216,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
-    )
+    base, repo, _, remotes, _, _ = utils.config.parse_toml_file(args.group)
 
     targets = utils.config.parse_comma_separated(args.targets)
     destinations = []
@@ -220,7 +228,7 @@ if __name__ == "__main__":
                 raise ValueError(f"nickname '{target}' not found in toml file")
             destinations.append(remotes[target])
     if len(destinations) == 0:
-        raise ValueError(f"targets list is empty")
+        raise ValueError("targets list is empty")
 
     SRC_PATH = "./"
     DST_PATH = f"{base}/{repo}"
@@ -233,3 +241,7 @@ if __name__ == "__main__":
 
     if args.build:
         build_on_targets(destinations, DST_PATH, args.release, args.sequential)
+
+
+if __name__ == "__main__":
+    main()

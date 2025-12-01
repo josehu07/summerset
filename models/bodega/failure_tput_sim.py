@@ -6,12 +6,8 @@ import time
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
 
 def get_coverage_tputs() -> List[float]:
@@ -42,7 +38,9 @@ class SimulationParams:
 
     failure_rate: float = 0.005  # Probability of failure per time unit
     recovery_rate: float = 0.01  # Probability of recovery per time unit
-    expire_duration: float = 3.0  # Expiration downtime after each failure (time units)
+    expire_duration: float = (
+        3.0  # Expiration downtime after each failure (time units)
+    )
     change_duration: float = 0.1  # Regular roster change duration (time units)
 
     dt: float = 0.01  # Time step for simulation
@@ -145,7 +143,7 @@ def run_simulations(odir: str):
         with open(log_path, "a") as flog:
             flog.write(msg + "\n")
 
-    with open(log_path, "w") as flog:
+    with open(log_path, "w") as _flog:
         pass  # Just create/clear the file
 
     log_print("Throughput if covered x nodes:")
@@ -164,8 +162,10 @@ def run_simulations(odir: str):
             result = simulate(params)
             runtime = time.time() - start_time
 
-            log_print(f" =>")
-            log_print(f"  Unavailability:      {result.unavailability_percent:.3f}%")
+            log_print(" =>")
+            log_print(
+                f"  Unavailability:      {result.unavailability_percent:.3f}%"
+            )
             log_print(
                 f"  Throughput est.:     {result.estimated_throughput:.3f} kreqs/sec"
             )
@@ -226,7 +226,9 @@ def plot_results(odir: str):
 
     num_servers = len(throughput_list) - 1
     results = {
-        "LeaderLeases-no-failure": [throughput_list[1] for _ in range(num_servers)],
+        "LeaderLeases-no-failure": [
+            throughput_list[1] for _ in range(num_servers)
+        ],
         "LeaderLeases-with-failure": [
             simulation_results[(i, False)] for i in range(1, num_servers + 1)
         ],
@@ -249,7 +251,7 @@ def plot_results(odir: str):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Model-ftsim")
+    _fig = plt.figure("Model-ftsim")
 
     CASES_ORDER = [
         "LeaderLeases-no-failure",
@@ -259,7 +261,10 @@ def plot_results(odir: str):
     ]
     CASES_LABEL_COLOR = {
         "LeaderLeases-no-failure": ("Leader Leases (no failures)", "pink"),
-        "LeaderLeases-with-failure": ("Leader Leases (with failures)", "lightcoral"),
+        "LeaderLeases-with-failure": (
+            "Leader Leases (with failures)",
+            "lightcoral",
+        ),
         "Bodega-no-failure": ("Bodega (no failures)", "lightsteelblue"),
         "Bodega-with-failure": ("Bodega (with failures)", "cornflowerblue"),
     }
@@ -272,7 +277,7 @@ def plot_results(odir: str):
         label, color = CASES_LABEL_COLOR[case]
         offset = width * multiplier
         hatch = "xx" if "with-failure" in case else None
-        bars = plt.bar(
+        _bars = plt.bar(
             x + offset,
             results[case],
             width,
@@ -308,7 +313,7 @@ def plot_results(odir: str):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
         "-o",
@@ -318,7 +323,10 @@ if __name__ == "__main__":
         help="directory that holds logs and outputs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -326,3 +334,7 @@ if __name__ == "__main__":
         run_simulations(args.odir)
     else:
         plot_results(args.odir)
+
+
+if __name__ == "__main__":
+    main()

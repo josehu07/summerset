@@ -2,11 +2,15 @@
 /target
 Cargo.lock
 
+uv.lock
+
 **/*.rs.bk
 *.pdb
 **/.DS_Store
 
+**/.venv/
 **/__pycache__/
+**/.ruff_cache/
 
 /.vscode/
 

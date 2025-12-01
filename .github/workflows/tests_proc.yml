@@ -23,11 +23,11 @@ jobs:
     - name: Add rust stable toolchain
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Get pip dependencies
-      run: pip3 install toml
+    - name: Get uv for Python
+      uses: astral-sh/setup-uv@v7
 
     - name: Run proc tests (MultiPaxos)
-      run: python3 .github/workflow_test.py -p MultiPaxos
+      run: uv run .github/workflow_test.py -p MultiPaxos
 
     - name: Run proc tests (Raft)
-      run: python3 .github/workflow_test.py -p Raft
+      run: uv run .github/workflow_test.py -p Raft

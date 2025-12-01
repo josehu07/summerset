@@ -1,13 +1,8 @@
-import sys
-import os
 import signal
 import argparse
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
 
 ETCD_REPO_NAME = "etcd"
 
@@ -71,7 +66,9 @@ def compose_server_cmd(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
+    backer_dir = PROTOCOL_STORE_PATH(
+        protocol, states_prefix, states_midfix, replica_id
+    )
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -138,7 +135,8 @@ def launch_servers(
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
     join_list = [
-        f"http://{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(num_replicas)
+        f"http://{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}"
+        for r in range(num_replicas)
     ]
 
     server_procs = []
@@ -181,21 +179,32 @@ def launch_servers(
     return server_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-p", "--protocol", type=str, default="Raft", help="protocol name (unused yet)"
+        "-p",
+        "--protocol",
+        type=str,
+        default="Raft",
+        help="protocol name (unused yet)",
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "--states_prefix",
@@ -210,16 +219,21 @@ if __name__ == "__main__":
         help="states file extra identifier after protocol name",
     )
     parser.add_argument(
-        "--keep_files", action="store_true", help="if set, keep any old durable files"
+        "--keep_files",
+        action="store_true",
+        help="if set, keep any old durable files",
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores",
+        type=int,
+        default=0,
+        help="if > 0, set CPU cores affinity",
     )
     args = parser.parse_args()
 
     # parse hosts config file
     base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_etcd = f"{base}/{ETCD_REPO_NAME}"
@@ -228,7 +242,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
+        raise ValueError(
+            f"#replicas {args.num_replicas} > #hosts in config file"
+        )
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -308,3 +324,7 @@ if __name__ == "__main__":
 
     for proc in server_procs:
         proc.wait()
+
+
+if __name__ == "__main__":
+    main()

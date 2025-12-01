@@ -1,14 +1,9 @@
 import sys
-import os
 import time
 import signal
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
-
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
+from . import utils
 
 
 SERVER_LOOP_IP = "0.0.0.0"
@@ -40,13 +35,19 @@ PROTOCOL_FEATURES = {
     "SimplePush": ProtoFeats(False, False, None),
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
-    "EPaxos": ProtoFeats(True, False, lambda n, _: f"optimized_quorum=true"),
-    "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
+    "EPaxos": ProtoFeats(True, False, lambda n, _: "optimized_quorum=true"),
+    "RSPaxos": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
+    ),
     "Raft": ProtoFeats(True, True, None),
-    "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n//2)//2}"),
-    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n//2}"),
-    "QuorumLeases": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
-    "Bodega": ProtoFeats(True, True, lambda n, _: f"sim_read_lease=false"),
+    "CRaft": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
+    ),
+    "Crossword": ProtoFeats(
+        True, True, lambda n, _: f"fault_tolerance={n // 2}"
+    ),
+    "QuorumLeases": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
+    "Bodega": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
 }
 
 
@@ -68,7 +69,11 @@ def run_process_pinned(
         )
     else:
         return utils.proc.run_process_over_ssh(
-            remote, cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+            remote,
+            cmd,
+            capture_stderr=capture_stderr,
+            cd_dir=cd_dir,
+            cpu_list=cpu_list,
         )
 
 
@@ -120,7 +125,9 @@ def config_with_defaults(
     if PROTOCOL_FEATURES[protocol].extra_defaults is not None:
         config_dict.update(
             config_str_to_dict(
-                PROTOCOL_FEATURES[protocol].extra_defaults(num_replicas, replica_id)
+                PROTOCOL_FEATURES[protocol].extra_defaults(
+                    num_replicas, replica_id
+                )
             )
         )
 
@@ -272,7 +279,7 @@ def launch_servers(
     return server_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -287,7 +294,11 @@ if __name__ == "__main__":
         help="if doing keyspace partitioning, the partition idx",
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-r", "--release", action="store_true", help="if set, run release mode"
@@ -299,10 +310,16 @@ if __name__ == "__main__":
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
-        "--force_leader", type=int, default=-1, help="force this server to be leader"
+        "--force_leader",
+        type=int,
+        default=-1,
+        help="force this server to be leader",
     )
     parser.add_argument(
         "--states_prefix",
@@ -317,13 +334,20 @@ if __name__ == "__main__":
         help="states file extra identifier after protocol name",
     )
     parser.add_argument(
-        "--keep_files", action="store_true", help="if set, keep any old durable files"
+        "--keep_files",
+        action="store_true",
+        help="if set, keep any old durable files",
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores",
+        type=int,
+        default=0,
+        help="if > 0, set CPU cores affinity",
     )
     parser.add_argument(
-        "--launch_wait", action="store_true", help="if set, wait 3s between launches"
+        "--launch_wait",
+        action="store_true",
+        help="if set, wait 3s between launches",
     )
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, skip cargo build"
@@ -332,7 +356,7 @@ if __name__ == "__main__":
 
     # parse hosts config file
     base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir = f"{base}/{repo}"
 
@@ -351,7 +375,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
+        raise ValueError(
+            f"#replicas {args.num_replicas} > #hosts in config file"
+        )
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -463,3 +489,7 @@ if __name__ == "__main__":
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()
     sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()

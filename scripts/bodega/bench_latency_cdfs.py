@@ -1,21 +1,13 @@
-import sys
 import os
 import argparse
-import time
 import random
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME_DATA = "loc_grid_wan"
@@ -54,7 +46,9 @@ def collect_outputs(output_dir):
     for put_ratio, is_read in SETTINGS_RATIO_RW:
         results[(put_ratio, is_read)] = dict()
         for pcname, protocol in PROTOCOLS_BSNAME.items():
-            results[(put_ratio, is_read)][pcname] = []  # will be a list of 5 lists
+            results[(put_ratio, is_read)][
+                pcname
+            ] = []  # will be a list of 5 lists
 
             for cgroup in range(NUM_REPLICAS):
                 result = utils.output.gather_outputs(
@@ -102,12 +96,22 @@ def collect_outputs(output_dir):
             results[(put_ratio, is_read)][pcname] = {
                 "sorted": merged,
                 "min": (None if len(merged) == 0 else merged[0]),
-                "p25": (None if len(merged) == 0 else np.percentile(merged, 25)),
-                "p50": (None if len(merged) == 0 else np.percentile(merged, 50)),
-                "p75": (None if len(merged) == 0 else np.percentile(merged, 75)),
-                "p99": (None if len(merged) == 0 else np.percentile(merged, 99)),
+                "p25": (
+                    None if len(merged) == 0 else np.percentile(merged, 25)
+                ),
+                "p50": (
+                    None if len(merged) == 0 else np.percentile(merged, 50)
+                ),
+                "p75": (
+                    None if len(merged) == 0 else np.percentile(merged, 75)
+                ),
+                "p99": (
+                    None if len(merged) == 0 else np.percentile(merged, 99)
+                ),
                 "max": (None if len(merged) == 0 else merged[-1]),
-                "mean": (None if len(merged) == 0 else sum(merged) / len(merged)),
+                "mean": (
+                    None if len(merged) == 0 else sum(merged) / len(merged)
+                ),
             }
 
     return results, None
@@ -169,7 +173,7 @@ def plot_latency_cdfs(results, put_ratio, is_read, plots_dir):
         lat_list = results[(put_ratio, is_read)][pcname]["sorted"]
         assert len(lat_list) >= NUM_MARKERS_PER_SERIES
 
-        cdf = plt.ecdf(
+        _cdf = plt.ecdf(
             lat_list,
             color=color,
             linewidth=1.2,
@@ -215,7 +219,7 @@ def plot_ylabel(plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Ylabel")
+    fig = plt.figure("Ylabel")
 
     ylabel = "CDF"
 
@@ -253,7 +257,7 @@ def plot_legend(handles, labels, plots_dir):
     handles = handles[::-1]
     labels = labels[::-1]
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -275,7 +279,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -287,7 +291,10 @@ if __name__ == "__main__":
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -307,6 +314,12 @@ if __name__ == "__main__":
         print_results(results)
 
         for put_ratio, is_read in SETTINGS_RATIO_RW:
-            handles, labels = plot_latency_cdfs(results, put_ratio, is_read, plots_dir)
+            handles, labels = plot_latency_cdfs(
+                results, put_ratio, is_read, plots_dir
+            )
         plot_ylabel(plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

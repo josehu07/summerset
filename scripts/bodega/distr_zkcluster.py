@@ -1,13 +1,8 @@
-import sys
-import os
 import signal
 import argparse
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
 
 ZK_REPO_NAME = "zookeeper"
 
@@ -72,7 +67,9 @@ def dump_server_configs(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
+    backer_dir = PROTOCOL_STORE_PATH(
+        protocol, states_prefix, states_midfix, replica_id
+    )
     if fresh_files:
         utils.proc.run_process(
             ["sudo", "rm", "-rf", backer_dir],
@@ -90,15 +87,15 @@ def dump_server_configs(
     # populate conf/zoo.cfg in zookeeper source root
     for cfg_r in range(len(node_ips)):
         configs = [
-            f"tickTime=120",
+            "tickTime=120",
             f"dataDir={PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, cfg_r)}/data",
             f"dataLogDir={PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, cfg_r)}/dlog",
             f"clientPort={cli_port}",
-            f"initLimit=600",
-            f"syncLimit=300",
-            f"minSessionTimeout=1000",
-            f"maxSessionTimeout=20000",
-            f"snapCount=10000000",  # don't trigger during bench
+            "initLimit=600",
+            "syncLimit=300",
+            "minSessionTimeout=1000",
+            "maxSessionTimeout=20000",
+            "snapCount=10000000",  # don't trigger during bench
         ]
         for r, ip in enumerate(node_ips):
             configs.append(f"server.{r}={ip}:{peer_port}:{elect_port}")
@@ -120,7 +117,9 @@ def copy_server_config(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
+    backer_dir = PROTOCOL_STORE_PATH(
+        protocol, states_prefix, states_midfix, replica_id
+    )
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -228,7 +227,7 @@ def launch_servers(
     return server_procs
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -240,13 +239,20 @@ if __name__ == "__main__":
         help="protocol name (unused yet)",
     )
     parser.add_argument(
-        "-n", "--num_replicas", type=int, required=True, help="number of replicas"
+        "-n",
+        "--num_replicas",
+        type=int,
+        required=True,
+        help="number of replicas",
     )
     parser.add_argument(
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "--states_prefix",
@@ -261,16 +267,21 @@ if __name__ == "__main__":
         help="states file extra identifier after protocol name",
     )
     parser.add_argument(
-        "--keep_files", action="store_true", help="if set, keep any old durable files"
+        "--keep_files",
+        action="store_true",
+        help="if set, keep any old durable files",
     )
     parser.add_argument(
-        "--pin_cores", type=int, default=0, help="if > 0, set CPU cores affinity"
+        "--pin_cores",
+        type=int,
+        default=0,
+        help="if > 0, set CPU cores affinity",
     )
     args = parser.parse_args()
 
     # parse hosts config file
     base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_zookeeper = f"{base}/{ZK_REPO_NAME}"
@@ -279,7 +290,9 @@ if __name__ == "__main__":
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
+        raise ValueError(
+            f"#replicas {args.num_replicas} > #hosts in config file"
+        )
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -359,3 +372,7 @@ if __name__ == "__main__":
 
     for proc in server_procs:
         proc.wait()
+
+
+if __name__ == "__main__":
+    main()

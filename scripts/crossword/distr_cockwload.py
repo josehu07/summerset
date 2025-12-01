@@ -4,11 +4,8 @@ import argparse
 import subprocess
 import math
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
 
 COCK_REPO_NAME = "cockroach"
 
@@ -17,7 +14,11 @@ SERVER_SQL_PORT = 26157
 
 
 WORKLOAD_OUTPUT_PATH = (
-    lambda protocol, prefix, midfix, workload, phase: f"{prefix}/{protocol}{midfix}.{workload}.{phase}"
+    lambda protocol,
+    prefix,
+    midfix,
+    workload,
+    phase: f"{prefix}/{protocol}{midfix}.{workload}.{phase}"
 )
 
 WORKLOAD_SETTINGS = {
@@ -109,7 +110,9 @@ def compose_init_cmd(
         workload,
         f"--concurrency={concurrency}",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["init"](concurrency, value_size, warehouses)
+    cmd += WORKLOAD_SETTINGS[workload]["init"](
+        concurrency, value_size, warehouses
+    )
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -135,7 +138,9 @@ def init_workload(
         warehouses //= max(value_size // 8, 1)
 
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT}"
-    cmd = compose_init_cmd(workload, concurrency, value_size, warehouses, sql_addr)
+    cmd = compose_init_cmd(
+        workload, concurrency, value_size, warehouses, sql_addr
+    )
 
     client_proc = run_process_pinned(
         cmd,
@@ -163,7 +168,9 @@ def compose_run_cmd(
         f"--concurrency={concurrency}",
         f"--duration={length_s}s",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["run"](concurrency, value_size, warehouses)
+    cmd += WORKLOAD_SETTINGS[workload]["run"](
+        concurrency, value_size, warehouses
+    )
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -204,7 +211,7 @@ def run_workload(
     return client_proc
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -215,13 +222,20 @@ if __name__ == "__main__":
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "--me", type=str, default="host0", help="main script runner's host nickname"
+        "--me",
+        type=str,
+        default="host0",
+        help="main script runner's host nickname",
     )
     parser.add_argument(
         "-w", "--workload", type=str, required=True, help="name of workload"
     )
     parser.add_argument(
-        "-c", "--concurrency", type=int, default=16, help="number of concurrent workers"
+        "-c",
+        "--concurrency",
+        type=int,
+        default=16,
+        help="number of concurrent workers",
     )
     parser.add_argument(
         "-v",
@@ -247,7 +261,10 @@ if __name__ == "__main__":
         "-l", "--length_s", type=int, default=60, help="run length in secs"
     )
     parser.add_argument(
-        "--pin_cores", type=float, default=0, help="if not 0, set CPU cores affinity"
+        "--pin_cores",
+        type=float,
+        default=0,
+        help="if not 0, set CPU cores affinity",
     )
     parser.add_argument(
         "--output_prefix",
@@ -265,7 +282,7 @@ if __name__ == "__main__":
 
     # parse hosts config file
     base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
     cd_dir_cockroach = f"{base}/{COCK_REPO_NAME}"
 
@@ -355,3 +372,7 @@ if __name__ == "__main__":
             raise RuntimeError(f"client timed-out {timeout} secs")
 
     sys.exit(client_proc.returncode)
+
+
+if __name__ == "__main__":
+    main()

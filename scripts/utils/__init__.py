@@ -1,12 +1,5 @@
-import sys
-import os
-
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import config
-import file
-import net
-import output
-import proc
+# Expose commonly used utility modules at package level for convenience imports.
+from . import config, proc, net, file, output  # noqa: E402,F401
 
 
 class BreakingLoops(Exception):

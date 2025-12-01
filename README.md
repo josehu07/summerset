@@ -128,24 +128,25 @@ Currently supported client utility modes include: `repl` for an interactive CLI,
 
 ### Helper Scripts
 
-Some helper scripts for running Summerset processes are provided. First, install dependencies:
+Some helper scripts for running Summerset processes are provided. First, install `uv` and set up the environment:
 
 ```bash
-pip3 install toml
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
 ```
 
-You can find the scripts for running Summerset processes locally in `scripts/`:
+You can find the scripts for running Summerset processes locally in `scripts/`; use with:
 
 ```bash
-python3 scripts/local_cluster.py -h
-python3 scripts/local_clients.py -h
+uv run -m scripts.local_cluster.py -h
+uv run -m scripts.local_clients.py -h
 ```
 
 And for a set of distributed machines (requiring correctly filled `scripts/remote_hosts.toml` file):
 
 ```bash
-python3 scripts/distr_cluster.py -h
-python3 scripts/distr_clients.py -h
+uv run -m scripts.distr_cluster.py -h
+uv run -m scripts.distr_clients.py -h
 ```
 
 Note that these scripts use `sudo` and assume specific ranges of available ports, so a Linux server machine environment is recommended.

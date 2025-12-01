@@ -1,20 +1,13 @@
-import sys
 import os
 import argparse
 import time
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "access_cnts"
@@ -221,7 +214,9 @@ def run_mess_client(
     )
 
 
-def bench_round(remote0, remotec, base, repo, pcname, runlog_path, responders=None):
+def bench_round(
+    remote0, remotec, base, repo, pcname, runlog_path, responders=None
+):
     protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
     midfix_str = f".{pcname}"
     print(f"  {EXPER_NAME}  {pcname:<12s}{midfix_str}")
@@ -234,7 +229,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path, responders=No
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
+    proc_cluster = launch_cluster(
+        remote0, base, repo, pcname, config=server_config
+    )
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -260,7 +257,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path, responders=No
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
+    proc_clients = run_bench_clients(
+        remotec, base, repo, pcname, config=client_config
+    )
 
     # wait for benchmarking clients to exit
     cout, cerr = proc_clients.communicate()
@@ -335,7 +334,7 @@ def plot_access_cnts_flat(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-access_cnts")
+    fig = plt.figure("Exper-access_cnts")
 
     PCNAMES_ORDER = [
         "MultiPaxos",
@@ -396,7 +395,7 @@ def plot_access_cnts_flat(results, plots_dir):
     ax.spines["right"].set_visible(False)
 
     plt.xticks([0, 50, 100], ["0", "50", "100"], fontsize=7.5)
-    plt.xlabel(f"%nodes touched by the client's reads")
+    plt.xlabel("%nodes touched by the client's reads")
     ax.xaxis.set_label_coords(0.10, -0.4)
 
     plt.yticks(
@@ -421,7 +420,7 @@ def plot_access_cnts(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-access_cnts")
+    fig = plt.figure("Exper-access_cnts")
 
     PCNAMES_ORDER = [
         "MultiPaxos",
@@ -522,16 +521,40 @@ def plot_access_cnts(results, plots_dir):
 
     # hardcoded for now, improve later
     plt.text(
-        0, -14, "\nnever\nlocal", clip_on=False, ha="center", va="top", fontsize=7.5
+        0,
+        -14,
+        "\nnever\nlocal",
+        clip_on=False,
+        ha="center",
+        va="top",
+        fontsize=7.5,
     )
     plt.text(
-        1, -14, "\nonly at\nleader", clip_on=False, ha="center", va="top", fontsize=7.5
+        1,
+        -14,
+        "\nonly at\nleader",
+        clip_on=False,
+        ha="center",
+        va="top",
+        fontsize=7.5,
     )
     plt.text(
-        2, -14, "\nwhen\nquiescent", clip_on=False, ha="center", va="top", fontsize=7.5
+        2,
+        -14,
+        "\nwhen\nquiescent",
+        clip_on=False,
+        ha="center",
+        va="top",
+        fontsize=7.5,
     )
     plt.text(
-        3, -14, "\nalways\nlocal", clip_on=False, ha="center", va="top", fontsize=7.5
+        3,
+        -14,
+        "\nalways\nlocal",
+        clip_on=False,
+        ha="center",
+        va="top",
+        fontsize=7.5,
     )
     plt.text(3.4, -15, "\n✓", clip_on=False, ha="center", va="top", fontsize=12)
 
@@ -543,7 +566,7 @@ def plot_access_cnts(results, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -562,7 +585,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     parser.add_argument(
         "-l",
@@ -578,12 +604,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -593,7 +621,7 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         try:
-            print(f"Running experiments...")
+            print("Running experiments...")
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                 time.sleep(3)
 
@@ -619,13 +647,15 @@ if __name__ == "__main__":
 
         print("Fetching client output logs...")
         utils.file.fetch_files_of_dir(
-            remotes[f"host{CLIENT_NODE}"], f"{base}/output/{EXPER_NAME}", output_path
+            remotes[f"host{CLIENT_NODE}"],
+            f"{base}/output/{EXPER_NAME}",
+            output_path,
         )
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -668,3 +698,7 @@ if __name__ == "__main__":
             plot_access_cnts_flat(access_cnts, plots_dir)
         else:
             plot_access_cnts(access_cnts, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

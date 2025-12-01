@@ -1,20 +1,12 @@
-import sys
 import os
 import argparse
 import time
 import math
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
+from .. import utils
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 
 EXPER_NAME = "critical"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
@@ -109,8 +101,10 @@ ROUNDS_PARAMS = [
 
 def launch_cluster(remote0, base, repo, protocol, round_params, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -152,8 +146,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol, round_params):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -204,10 +200,10 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if round_params.read_lease:
-        config += f"+sim_read_lease=true"
+        config += "+sim_read_lease=true"
     if protocol == "Crossword":
         config += f"+b_to_d_threshold={0.08}"
-        config += f"+disable_gossip_timer=true"
+        config += "+disable_gossip_timer=true"
 
     # launch service cluster
     proc_cluster = launch_cluster(
@@ -216,7 +212,9 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(remote0, base, repo, protocol, round_params)
+    proc_clients = run_bench_clients(
+        remote0, base, repo, protocol, round_params
+    )
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -265,7 +263,10 @@ def collect_outputs(output_dir):
                     or protocol == "Raft"
                     or protocol == "Crossword"
                 )
-            ) or (isinstance(round_params.value_size, str) and protocol == "Crossword"):
+            ) or (
+                isinstance(round_params.value_size, str)
+                and protocol == "Crossword"
+            ):
                 sm = 1 + (round_params.put_ratio / 100)
             tput_mean_list = utils.output.list_smoothing(
                 result["tput_sum"], sd, sp, sj, sm
@@ -291,10 +292,18 @@ def collect_outputs(output_dir):
         midfix_str = str(round_params)
         for protocol in PROTOCOLS:
             if f"{protocol}{midfix_str}" in results:
-                tput_mean_list = results[f"{protocol}{midfix_str}"]["tput"]["mean"]
-                tput_stdev_list = results[f"{protocol}{midfix_str}"]["tput"]["stdev"]
-                lat_mean_list = results[f"{protocol}{midfix_str}"]["lat"]["mean"]
-                lat_stdev_list = results[f"{protocol}{midfix_str}"]["lat"]["stdev"]
+                tput_mean_list = results[f"{protocol}{midfix_str}"]["tput"][
+                    "mean"
+                ]
+                tput_stdev_list = results[f"{protocol}{midfix_str}"]["tput"][
+                    "stdev"
+                ]
+                lat_mean_list = results[f"{protocol}{midfix_str}"]["lat"][
+                    "mean"
+                ]
+                lat_stdev_list = results[f"{protocol}{midfix_str}"]["lat"][
+                    "stdev"
+                ]
 
                 results[f"{protocol}{midfix_str}"] = {
                     "tput": {
@@ -306,7 +315,8 @@ def collect_outputs(output_dir):
                         ** 0.5,
                     },
                     "lat": {
-                        "mean": (sum(lat_mean_list) / len(lat_mean_list)) / 1000,
+                        "mean": (sum(lat_mean_list) / len(lat_mean_list))
+                        / 1000,
                         "stdev": (
                             sum(map(lambda s: s**2, lat_stdev_list))
                             / len(lat_stdev_list)
@@ -365,7 +375,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
             ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
+        _bar = plt.bar(
             xpos,
             result["mean"],
             width=1,
@@ -407,7 +417,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
             ymaxl = result["mean"]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-        bar = plt.bar(
+        _bar = plt.bar(
             xpos,
             result["mean"],
             width=1,
@@ -484,7 +494,9 @@ def plot_single_rounds_results(results, rounds_params, plots_dir):
                 # env_ymax[round_params.env_setting.group],
             )
             if not common_plotted:
-                plot_major_ylabels(["Throughput\n(reqs/s)", "Latency\n(ms)"], plots_dir)
+                plot_major_ylabels(
+                    ["Throughput\n(reqs/s)", "Latency\n(ms)"], plots_dir
+                )
                 plot_major_legend(handles, labels, plots_dir)
                 common_plotted = True
 
@@ -525,7 +537,7 @@ def plot_cluster_size_results(results, rounds_params, plots_dir):
         for protocol in PROTOCOLS_ORDER:
             result = protocol_results[protocol][i]
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 result,
                 width=1,
@@ -593,7 +605,7 @@ def plot_write_ratio_results(results, rounds_params, plots_dir):
         for protocol in PROTOCOLS_ORDER:
             result = protocol_results[protocol][i]
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 result,
                 width=1,
@@ -631,7 +643,7 @@ def plot_major_ylabels(ylabels, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Ylabels")
+    fig = plt.figure("Ylabels")
 
     assert len(ylabels) == 2
 
@@ -639,13 +651,17 @@ def plot_major_ylabels(ylabels, plots_dir):
     plt.ylabel(ylabels[0])
     for spine in ax1.spines.values():
         spine.set_visible(False)
-    plt.tick_params(bottom=False, labelbottom=False, left=False, labelleft=False)
+    plt.tick_params(
+        bottom=False, labelbottom=False, left=False, labelleft=False
+    )
 
     ax2 = plt.subplot(212)
     plt.ylabel(ylabels[1])
     for spine in ax2.spines.values():
         spine.set_visible(False)
-    plt.tick_params(bottom=False, labelbottom=False, left=False, labelleft=False)
+    plt.tick_params(
+        bottom=False, labelbottom=False, left=False, labelleft=False
+    )
 
     fig.subplots_adjust(left=0.5)
 
@@ -729,7 +745,7 @@ def plot_minor_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -737,11 +753,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -750,13 +769,13 @@ if __name__ == "__main__":
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, _, remotes_reg, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, "reg"
-        )
-        _, _, _, remotes_wan, _, _ = utils.config.parse_toml_file(TOML_FILENAME, "wan")
+        base, repo, _, remotes_reg, _, _ = utils.config.parse_toml_file("reg")
+        _, _, _, remotes_wan, _, _ = utils.config.parse_toml_file("wan")
         remotes = {"reg": remotes_reg, "wan": remotes_wan}
         for group in ("reg", "wan"):
-            utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes[group]["host0"])
+            utils.proc.check_enough_cpus(
+                MIN_HOST0_CPUS, remote=remotes[group]["host0"]
+            )
             utils.proc.kill_all_distr_procs(group)
             utils.file.do_cargo_build(
                 True, cd_dir=f"{base}/{repo}", remotes=remotes[group]
@@ -832,19 +851,31 @@ if __name__ == "__main__":
         print_results(results)
 
         single_rounds = [
-            rp for rp in ROUNDS_PARAMS if any(map(lambda t: "single" in t, rp.tags))
+            rp
+            for rp in ROUNDS_PARAMS
+            if any(map(lambda t: "single" in t, rp.tags))
         ]
         plot_single_rounds_results(results, single_rounds, plots_dir)
 
         cluster_rounds = [
-            rp for rp in ROUNDS_PARAMS if any(map(lambda t: "cluster" in t, rp.tags))
+            rp
+            for rp in ROUNDS_PARAMS
+            if any(map(lambda t: "cluster" in t, rp.tags))
         ]
         cluster_rounds.sort(key=lambda rp: rp.num_replicas)
-        handles, labels = plot_cluster_size_results(results, cluster_rounds, plots_dir)
+        handles, labels = plot_cluster_size_results(
+            results, cluster_rounds, plots_dir
+        )
         plot_minor_legend(handles, labels, plots_dir)
 
         ratio_rounds = [
-            rp for rp in ROUNDS_PARAMS if any(map(lambda t: "ratio" in t, rp.tags))
+            rp
+            for rp in ROUNDS_PARAMS
+            if any(map(lambda t: "ratio" in t, rp.tags))
         ]
         ratio_rounds.sort(key=lambda rp: rp.put_ratio)
         plot_write_ratio_results(results, ratio_rounds, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,5 @@
 import math
-
-# fmt: off
-import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
 
 
 class World:
@@ -17,12 +12,16 @@ class World:
         quorum_sizes = list(range(1, len(self.servers) + 1))
         quorum_delays = dict()
         for qs in quorum_sizes:
-            delays = [sorted_dists[ci][qs - 1] for ci in range(len(self.clients))]
+            delays = [
+                sorted_dists[ci][qs - 1] for ci in range(len(self.clients))
+            ]
             quorum_delays[qs] = delays
 
         for qs in quorum_sizes:
             # print(f" {qs}: {quorum_delays[qs]}")
-            plt.plot(list(range(len(self.clients))), quorum_delays[qs], label=str(qs))
+            plt.plot(
+                list(range(len(self.clients))), quorum_delays[qs], label=str(qs)
+            )
         plt.legend()
         plt.tight_layout()
         plt.savefig(f"models/bodega/{self.name}.png")
@@ -89,7 +88,7 @@ class World2DRect(World):
         return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
 
-if __name__ == "__main__":
+def main():
     world_1d_array = World1DArray(100, 5)
     world_1d_array.plot_quorum_delays()
 
@@ -98,3 +97,7 @@ if __name__ == "__main__":
 
     world_2d_rect = World2DRect(100, 50, 5)
     world_2d_rect.plot_quorum_delays()
+
+
+if __name__ == "__main__":
+    main()

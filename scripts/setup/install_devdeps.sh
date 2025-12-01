@@ -87,14 +87,13 @@ source $HOME/.profile
 
 
 echo
-echo "Installing Python 3.12..."
-pyenv install 3.12
-pyenv global 3.12
+echo "Installing global Python 3.13..."
+pyenv install 3.13
+pyenv global 3.13
 source $HOME/.profile
 
 
 echo
-echo "Installing necessary pip packages..."
-pip3 install numpy \
-             matplotlib \
-             toml
+echo "Installing uv and set up environment..."
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync

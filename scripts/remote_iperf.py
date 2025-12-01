@@ -1,13 +1,7 @@
-import sys
-import os
 import time
 import argparse
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-import utils
-
-
-TOML_FILENAME = "scripts/remote_hosts.toml"
+from . import utils
 
 
 IPERF_PORT = 37777
@@ -86,7 +80,7 @@ def ping_test(remotes, domains, na, nb):
         print(err.decode())
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -94,17 +88,22 @@ if __name__ == "__main__":
         "-g", "--group", type=str, default="reg", help="hosts group to run on"
     )
     parser.add_argument(
-        "-m", "--netem_asym", action="store_true", help="demonstrate netem asym setting"
+        "-m",
+        "--netem_asym",
+        action="store_true",
+        help="demonstrate netem asym setting",
     )
     args = parser.parse_args()
 
     _, _, hosts, remotes, domains, ipaddrs = utils.config.parse_toml_file(
-        TOML_FILENAME, args.group
+        args.group
     )
 
     if args.netem_asym:
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_asym(
             PAIRS_NETEM_MEAN,
             PAIRS_NETEM_JITTER,
@@ -123,3 +122,7 @@ if __name__ == "__main__":
     if args.netem_asym:
         print("Clearing tc netem qdiscs...")
         utils.net.clear_tc_qdisc_netems_main(remotes=remotes)
+
+
+if __name__ == "__main__":
+    main()

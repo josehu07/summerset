@@ -1,19 +1,12 @@
-import sys
 import os
 import argparse
 import time
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "ycsb_trace"
@@ -61,8 +54,10 @@ def launch_cluster_summerset(
     remote, base, repo, protocol, partition, num_clients, config=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-a",
@@ -103,10 +98,14 @@ def wait_cluster_setup_summerset(sleep_secs=30):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
+def run_bench_clients_summerset(
+    remote, base, repo, protocol, partition, num_clients
+):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-a",
@@ -150,17 +149,19 @@ def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_cli
     )
 
 
-def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_path):
+def bench_round_summerset(
+    remotes, base, repo, protocol, num_clients, runlog_path
+):
     print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
     if protocol != "ChainRep":
-        config += f"+sim_read_lease=true"
+        config += "+sim_read_lease=true"
     if protocol == "RSPaxos" or protocol == "CRaft":
-        config += f"+fault_tolerance=2"
+        config += "+fault_tolerance=2"
     if protocol == "Crossword":
         config += f"+b_to_d_threshold={0.08}"
-        config += f"+disable_gossip_timer=true"
+        config += "+disable_gossip_timer=true"
 
     # launch service clusters for each partition
     procs_cluster = []
@@ -221,8 +222,10 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
 
 def launch_cluster_chain(remote, base, repo, protocol, partition, num_clients):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_chainapp.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_chainapp",
         "-p",
         protocol,
         "-a",
@@ -257,10 +260,14 @@ def wait_cluster_setup_chain(sleep_secs=30):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients):
+def run_bench_clients_chain(
+    remote, base, repo, protocol, partition, num_clients
+):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_chaincli.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_chaincli",
         "-p",
         protocol,
         "-a",
@@ -387,7 +394,9 @@ def collect_outputs(output_dir):
                 )
 
                 part_tputs.append(sum(tput_mean_list) / len(tput_mean_list))
-                part_lats.append((sum(lat_mean_list) / len(lat_mean_list)) / 1000)
+                part_lats.append(
+                    (sum(lat_mean_list) / len(lat_mean_list)) / 1000
+                )
 
             results[protocol]["tputs"].append(sum(part_tputs))
             results[protocol]["lats"].append(sum(part_lats) / len(part_lats))
@@ -535,22 +544,28 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "-t", "--trace", action="store_true", help="if set, do YCSB trace generation"
+        "-t",
+        "--trace",
+        action="store_true",
+        help="if set, do YCSB trace generation",
     )
     parser.add_argument(
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -560,7 +575,7 @@ if __name__ == "__main__":
     if args.trace:
         print("Generating YCSB-A trace...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
@@ -570,7 +585,7 @@ if __name__ == "__main__":
             trace_procs.append(
                 utils.proc.run_process_over_ssh(
                     remotes[host],
-                    ["python3", f"./scripts/{GEN_YCSB_SCRIPT}"],
+                    ["uv", "run", "-m", "scripts.crossword.gen_ycsb_a_trace"],
                     cd_dir=f"{base}/{repo}",
                     capture_stdout=True,
                     capture_stderr=True,
@@ -582,14 +597,16 @@ if __name__ == "__main__":
     elif not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -599,7 +616,9 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -615,7 +634,9 @@ if __name__ == "__main__":
                 PROTOCOL_FUNCS = [
                     (p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS
                 ]
-                PROTOCOL_FUNCS += [(p, bench_round_chain) for p in CHAIN_PROTOCOLS]
+                PROTOCOL_FUNCS += [
+                    (p, bench_round_chain) for p in CHAIN_PROTOCOLS
+                ]
                 for protocol, bench_round_func in PROTOCOL_FUNCS:
                     time.sleep(3)
                     bench_round_func(
@@ -653,3 +674,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_results(results, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,19 +1,12 @@
-import sys
 import os
 import argparse
 import time
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "unbalanced"
@@ -59,8 +52,10 @@ def round_midfix_str(fault_tolerance, init_assignment):
 
 def launch_cluster(remote0, base, repo, protocol, midfix_str, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -102,8 +97,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol, midfix_str):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -161,7 +158,7 @@ def bench_round(
         config += f"+rs_total_shards={RS_TOTAL_SHARDS}"
         config += f"+rs_data_shards={RS_DATA_SHARDS}"
         config += f"+init_assignment='{init_assignment}'"
-        config += f"+disable_gossip_timer=true"
+        config += "+disable_gossip_timer=true"
 
     # launch service cluster
     proc_cluster = launch_cluster(
@@ -206,12 +203,16 @@ def collect_outputs(output_dir):
         )
 
         sd, sp, sj, sm = 10, 0, 0, 1
-        tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_mean_list = utils.output.list_smoothing(
+            result["tput_sum"], sd, sp, sj, sm
+        )
         tput_stdev_list = result["tput_stdev"]
 
         results[f"{protocol}{midfix_str}"] = {
             "mean": sum(tput_mean_list) / len(tput_mean_list),
-            "stdev": (sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list))
+            "stdev": (
+                sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
+            )
             ** 0.5,
         }
 
@@ -270,7 +271,7 @@ def plot_results(results, plots_dir):
         result = results[protocol_with_midfix]
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol_with_midfix]
-        bar = plt.bar(
+        _bar = plt.bar(
             xpos,
             result["mean"],
             width=1,
@@ -339,7 +340,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -347,11 +348,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -361,14 +365,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -378,7 +384,9 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -389,7 +397,11 @@ if __name__ == "__main__":
 
         try:
             print("Running experiments...")
-            for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
+            for (
+                protocol,
+                fault_tolerance,
+                init_assignment,
+            ) in PROTOCOL_FT_ASSIGNS:
                 time.sleep(3)
                 bench_round(
                     remotes["host0"],
@@ -430,3 +442,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_results(results, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,19 +1,12 @@
-import sys
 import os
 import argparse
 import time
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "adaptive"
@@ -55,8 +48,10 @@ NETEM_RATE_D = lambda r: 10 if r < 3 else 0.1
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -96,8 +91,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -146,10 +143,12 @@ def bench_round(remotes, base, repo, protocol, runlog_path):
         config += f"+fault_tolerance={NUM_REPLICAS // 2}"
     elif protocol == "Crossword":
         config += f"+b_to_d_threshold={0.08}"
-        config += f"+disable_gossip_timer=true"
+        config += "+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(remotes["host0"], base, repo, protocol, config=config)
+    proc_cluster = launch_cluster(
+        remotes["host0"], base, repo, protocol, config=config
+    )
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -238,7 +237,9 @@ def collect_outputs(output_dir):
             # setting sd here to avoid the lines to completely overlap with
             # each other
             sd = 22
-        tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+        tput_list = utils.output.list_smoothing(
+            result["tput_sum"], sd, sp, sj, sm
+        )
 
         results[protocol] = {
             "time": result["time"],
@@ -399,7 +400,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -407,11 +408,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -421,14 +425,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -438,7 +444,9 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN_A,
             NETEM_JITTER_A,
@@ -482,3 +490,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_results(results, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

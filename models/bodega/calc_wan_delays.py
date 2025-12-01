@@ -184,7 +184,9 @@ class NearbyRead(Protocol):
         super().__init__(world, f"NR-{read_qsize}")
         self.majority = (len(world.servers) + 1) // 2
         self.read_qsize = read_qsize
-        self.write_qsize = max(len(world.servers) + 1 - read_qsize, self.majority)
+        self.write_qsize = max(
+            len(world.servers) + 1 - read_qsize, self.majority
+        )
 
     def write_from(self, client):
         return 2 * (
@@ -202,7 +204,9 @@ class NearbyRead(Protocol):
         return 2 * self.world.distance(client, self.world.leader)
 
     def window_guess(self, client):
-        return 2 * self.world.quorum_max_from(self.world.leader, self.write_qsize)
+        return 2 * self.world.quorum_max_from(
+            self.world.leader, self.write_qsize
+        )
 
 
 def ring_world_model():
@@ -240,5 +244,9 @@ def ring_world_model():
         print()
 
 
-if __name__ == "__main__":
+def main():
     ring_world_model()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,20 +1,13 @@
-import sys
 import os
 import argparse
 import time
 import math
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "cockroach"
@@ -43,8 +36,10 @@ NETEM_RATE = lambda _: 1  # no effect given the original bandwidth
 
 def launch_cluster(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockroach.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockroach",
         "-p",
         protocol,
         "-c",
@@ -84,8 +79,10 @@ def wait_cluster_setup(sleep_secs=120):
 
 def load_cock_workload(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockwload.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockwload",
         "-p",
         protocol,
         "-g",
@@ -118,8 +115,10 @@ def load_cock_workload(remote0, base, repo, protocol):
 
 def run_cock_workload(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/crossword/distr_cockwload.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.crossword.distr_cockwload",
         "-p",
         protocol,
         "-g",
@@ -151,7 +150,7 @@ def run_cock_workload(remote0, base, repo, protocol):
     )
 
 
-def bench_round(remote0, base, repo, protocol):
+def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     # launch CockroachDB cluster
@@ -204,7 +203,8 @@ def collect_outputs(output_dir):
 
     # normalize throughput according to #txns succeeded
     txns_ratio = (
-        results["Raft"]["payment"]["txns"] - results["Raft"]["payment"]["errors"]
+        results["Raft"]["payment"]["txns"]
+        - results["Raft"]["payment"]["errors"]
     ) / (
         results["Crossword"]["payment"]["txns"]
         - results["Crossword"]["payment"]["errors"]
@@ -239,7 +239,7 @@ def plot_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure("Exper-cockroach")
+    _fig = plt.figure("Exper-cockroach")
 
     TXN_TYPES_ORDER = [
         "newOrder",
@@ -280,7 +280,7 @@ def plot_results(results, plots_dir):
                 ymaxl = tput
 
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 tput,
                 width=1,
@@ -334,7 +334,7 @@ def plot_results(results, plots_dir):
                 ymaxl = p95
 
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 avg,
                 width=1,
@@ -389,7 +389,7 @@ def plot_legend(handles, labels, plots_dir):
 
     plt.axis("off")
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -407,7 +407,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -415,11 +415,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -429,7 +432,7 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
@@ -445,7 +448,9 @@ if __name__ == "__main__":
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
+        utils.net.clear_tc_qdisc_netems_main(
+            remotes=remotes, capture_stderr=True
+        )
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -455,7 +460,7 @@ if __name__ == "__main__":
         )
 
         try:
-            print(f"Running experiments...")
+            print("Running experiments...")
             for protocol in PROTOCOLS:
                 time.sleep(3)
                 bench_round(
@@ -463,6 +468,7 @@ if __name__ == "__main__":
                     base,
                     repo,
                     protocol,
+                    runlog_path,
                 )
                 utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, cockroach=True)
                 utils.file.clear_fs_caches(remotes=remotes)
@@ -490,3 +496,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_results(results, plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

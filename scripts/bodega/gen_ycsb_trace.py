@@ -1,12 +1,9 @@
-import sys
 import os
 import argparse
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 YCSB_DIR = lambda base: f"{base}/ycsb"
@@ -18,7 +15,9 @@ YCSB_MAPPED = lambda w, d, p: f"/tmp/ycsb/workload{w}.{d}.{p}.rmapped.txt"
 KEY_LEN = 8  # for read_mapped option use
 
 
-def gen_ycsb_trace(base, phase, workload, num_keys, ops_cnt, distribution, trace_out):
+def gen_ycsb_trace(
+    base, phase, workload, num_keys, ops_cnt, distribution, trace_out
+):
     cmd = [
         f"{YCSB_DIR(base)}/bin/ycsb.sh",
         phase,
@@ -76,7 +75,9 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
                 key = line.split()[1]
                 if key not in key_cnt:
                     key_cnt[key] = 0
-    sorted_keys = list(sorted(key_cnt.keys(), key=lambda k: key_cnt[k], reverse=True))
+    sorted_keys = list(
+        sorted(key_cnt.keys(), key=lambda k: key_cnt[k], reverse=True)
+    )
 
     if len(key_map) == 0:
         sorted_cnts = sorted(key_cnt.values(), reverse=True)
@@ -90,7 +91,7 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
     base_num = len(key_map)
     for key in sorted_keys:
         if key not in key_map:
-            mapped_key = f"k{reader_loc}{base_num:0{KEY_LEN-2}d}"
+            mapped_key = f"k{reader_loc}{base_num:0{KEY_LEN - 2}d}"
             key_map[key] = mapped_key
 
             base_num += 1
@@ -106,7 +107,7 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
                 fmapped.write(" ".join(segs) + "\n")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -147,10 +148,14 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    base, _, _, _, _, _ = utils.config.parse_toml_file(TOML_FILENAME, PHYS_ENV_GROUP)
+    base, _, _, _, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
     workload = args.workload.lower()
-    if len(workload) != 1 or ord(workload) < ord("a") or ord(workload) > ord("f"):
+    if (
+        len(workload) != 1
+        or ord(workload) < ord("a")
+        or ord(workload) > ord("f")
+    ):
         raise ValueError(f"invalid workload name: {workload}")
 
     if not os.path.isdir("/tmp/ycsb"):
@@ -170,7 +175,7 @@ if __name__ == "__main__":
     trace_load = YCSB_OUTPUT(workload, args.distribution, "load")
     trace_run = YCSB_OUTPUT(workload, args.distribution, "run")
     if os.path.isfile(trace_load) and os.path.isfile(trace_run):
-        print(f"  load & run both already there, skipped")
+        print("  load & run both already there, skipped")
     else:
         for phase in ("load", "run"):
             gen_ycsb_trace(
@@ -186,11 +191,11 @@ if __name__ == "__main__":
 
     # if preparing for read leases...
     if args.read_mapped >= 0:
-        print(f"Mapping traces to range-enabled keys...")
+        print("Mapping traces to range-enabled keys...")
         mapped_load = YCSB_MAPPED(workload, args.distribution, "load")
         mapped_run = YCSB_MAPPED(workload, args.distribution, "run")
         if os.path.isfile(mapped_load) and os.path.isfile(mapped_run):
-            print(f"  load & run both already there, skipped")
+            print("  load & run both already there, skipped")
         else:
             key_map = dict()
             for phase in ("run", "load"):
@@ -201,4 +206,10 @@ if __name__ == "__main__":
                     key_map,
                     args.read_mapped,
                 )
-                print(f"  {phase}: {mapped_load if phase == 'load' else mapped_run}")
+                print(
+                    f"  {phase}: {mapped_load if phase == 'load' else mapped_run}"
+                )
+
+
+if __name__ == "__main__":
+    main()

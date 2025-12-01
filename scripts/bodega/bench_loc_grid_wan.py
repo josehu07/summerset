@@ -1,20 +1,13 @@
-import sys
 import os
 import argparse
 import time
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "loc_grid_wan"
@@ -134,8 +127,10 @@ RESULT_SECS_END = 130
 
 def launch_cluster(remote0, base, repo, pcname, put_ratio, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -178,8 +173,10 @@ def wait_cluster_setup(sleep_secs=60):
 
 def run_bench_clients(remotec, base, repo, pcname, put_ratio, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -234,8 +231,10 @@ def run_mess_client(
     remotec, base, repo, protocol, leader=None, key_range=None, responder=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -362,10 +361,18 @@ def collect_outputs(output_dir):
                     result["tput_sum"], sd, sp, sj, sm
                 )
                 wlat_list = utils.output.list_smoothing(
-                    [v for v in result["wlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["wlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
                 rlat_list = utils.output.list_smoothing(
-                    [v for v in result["rlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["rlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
 
                 results[put_ratio][cgroup][pcname] = {
@@ -488,7 +495,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-{put_ratio}")
+    _fig = plt.figure(f"Exper-{put_ratio}")
 
     PCNAMES_ORDER = [
         "MultiPaxos",
@@ -549,7 +556,8 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
         for pcname in PCNAMES_ORDER:
             result = results[put_ratio][cgroup][pcname]["tput"]
             norm_tput = (
-                result["mean"] / results[put_ratio][cgroup]["LeaderLs"]["tput"]["mean"]
+                result["mean"]
+                / results[put_ratio][cgroup]["LeaderLs"]["tput"]["mean"]
             )
             if norm_tput > ymaxl:
                 ymaxl = norm_tput
@@ -559,7 +567,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
                     norm_tput -= 27.5
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 norm_tput,
                 width=BAR_WIDTH,
@@ -616,7 +624,12 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
                 clip_on=False,
             )
             plt.fill(
-                [break_x - 0.55, break_x + 0.55, break_x + 0.55, break_x - 0.55],
+                [
+                    break_x - 0.55,
+                    break_x + 0.55,
+                    break_x + 0.55,
+                    break_x - 0.55,
+                ],
                 [2.02, 2.02, 2.38, 2.38],
                 "w",
                 fill=True,
@@ -660,7 +673,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
                 continue
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 result["mean"],
                 width=BAR_WIDTH,
@@ -695,7 +708,9 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
     if put_ratio == 0:
         plt.xticks(xticks, xticklabels)
         for cgi, cgroup in enumerate(CLIENT_GROUPS_ORDER):
-            ax2.get_xticklabels()[cgi].set_color(CLIENT_GROUPS_LABEL_COLOR[cgroup][1])
+            ax2.get_xticklabels()[cgi].set_color(
+                CLIENT_GROUPS_LABEL_COLOR[cgroup][1]
+            )
             # ax2.get_xticklabels()[cgi].set_weight("bold")
     else:
         plt.xticks(xticks, xticklabels)
@@ -743,7 +758,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
                 continue
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
-            bar = plt.bar(
+            _bar = plt.bar(
                 xpos,
                 result["mean"],
                 width=BAR_WIDTH,
@@ -789,7 +804,9 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
 
         plt.xticks(xticks, xticklabels)
         for cgi, cgroup in enumerate(CLIENT_GROUPS_ORDER):
-            ax3.get_xticklabels()[cgi].set_color(CLIENT_GROUPS_LABEL_COLOR[cgroup][1])
+            ax3.get_xticklabels()[cgi].set_color(
+                CLIENT_GROUPS_LABEL_COLOR[cgroup][1]
+            )
             # ax3.get_xticklabels()[cgi].set_weight("bold")
 
         plt.ylim(0.0, 100.0)
@@ -836,7 +853,7 @@ def plot_ylabels(plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Ylabels")
+    fig = plt.figure("Ylabels")
 
     ylabels = [
         "Norm Tput\n(to Ldr Ls)",
@@ -896,7 +913,7 @@ def plot_legend(handles, labels, plots_dir):
     # lb = labels.pop()
     # labels.insert(3, lb)
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handleheight=0.8,
@@ -916,7 +933,7 @@ def plot_legend(handles, labels, plots_dir):
     print(f"Plotted: {pdf_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -935,7 +952,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -945,12 +965,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -994,7 +1016,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -1034,6 +1056,12 @@ if __name__ == "__main__":
         print_results(results)
 
         for put_ratio in PUT_RATIOS:
-            handles, labels = plot_put_ratio_results(results, put_ratio, plots_dir)
+            handles, labels = plot_put_ratio_results(
+                results, put_ratio, plots_dir
+            )
         plot_ylabels(plots_dir)
         plot_legend(handles, labels, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

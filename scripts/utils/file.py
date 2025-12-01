@@ -2,8 +2,7 @@ import sys
 import os
 import subprocess
 
-sys.path.append(os.path.dirname(os.path.realpath(__file__)))
-from proc import run_process, run_process_over_ssh, wait_parallel_procs
+from .proc import run_process, run_process_over_ssh, wait_parallel_procs
 
 
 def path_get_last_segment(path):
@@ -19,9 +18,11 @@ def path_get_last_segment(path):
 
 def check_proper_cwd():
     cwd = os.getcwd()
-    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir("scripts/"):
-        print("ERROR: script must be run under top-level repo!")
-        print("       example: python3 scripts/<paper>/<script>.py")
+    if "summerset" not in path_get_last_segment(cwd) or not os.path.isdir(
+        "scripts/"
+    ):
+        print("ERROR: script must be run with cwd at top-level repo!")
+        print("       example: uv run -m scripts.<paper>.<script>.py")
         sys.exit(1)
 
 
@@ -33,7 +34,7 @@ def do_cargo_build(release, cd_dir=None, remotes=None):
     if remotes is None:
         rc = subprocess.Popen(cmd).wait()
         if rc != 0:
-            raise RuntimeError(f"cargo build failed")
+            raise RuntimeError("cargo build failed")
     else:
         procs = []
         for host in remotes:

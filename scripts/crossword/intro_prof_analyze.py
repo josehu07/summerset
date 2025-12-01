@@ -1,19 +1,12 @@
-import sys
 import os
 import argparse
 import pickle
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 PROFILE_LOGS_DIR = lambda db: f"/tmp/{db}/size-profiles"
@@ -67,7 +60,7 @@ def dump_profile_len_cnts(profile, pickle_path):
 
     sorted_profile = [(k[0], k[1], v) for k, v in profile.items()]
     sorted_profile.sort(key=lambda tup: tup[2], reverse=True)
-    print(f"  top 10 occurrences:")
+    print("  top 10 occurrences:")
     for i in range(10):
         num_entries, num_bytes, repeat_cnt = sorted_profile[i]
         percentage = int(repeat_cnt / total_samples * 100)
@@ -129,7 +122,12 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     }
 
     append_xticks, append_xticklabels = [], []
-    for db, (len_cnts, color, zorder, endx) in DBS_DATA_COLOR_ZORDER_ENDX.items():
+    for db, (
+        len_cnts,
+        color,
+        zorder,
+        endx,
+    ) in DBS_DATA_COLOR_ZORDER_ENDX.items():
         x, xmax, xmin = [], 0, float("inf")
         for l, c in len_cnts.items():
             if l > xmax:
@@ -197,7 +195,12 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     plt.yticks([0.5, 1.0])
 
     plt.vlines(
-        4096, ymin=0, ymax=1.05, colors="dimgray", linestyles="dashed", zorder=20
+        4096,
+        ymin=0,
+        ymax=1.05,
+        colors="dimgray",
+        linestyles="dashed",
+        zorder=20,
     )
     plt.text(16000, 0.22, "~45% are ≥ 4KB", color="dimgray", fontsize=9.5)
 
@@ -248,7 +251,7 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     return ax.get_legend_handles_labels()
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -256,11 +259,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -271,9 +277,7 @@ if __name__ == "__main__":
     if not args.plot:
         # downloading raw profiled logs
         os.system(f"mkdir -p {collect_path}")
-        _, _, _, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
-        )
+        _, _, _, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         for db_sys in ("cockroach",):
             saved_logs_path = f"{collect_path}/{db_sys}"
@@ -281,14 +285,18 @@ if __name__ == "__main__":
             os.system(f"rm -rf {saved_logs_path}")
             os.system(f"mkdir -p {saved_logs_path}")
 
-            collect_profile_logs(remotes, PROFILE_LOGS_DIR(db_sys), saved_logs_path)
+            collect_profile_logs(
+                remotes, PROFILE_LOGS_DIR(db_sys), saved_logs_path
+            )
             profile = parse_profile_results(saved_logs_path)
             dump_profile_len_cnts(profile, pickle_path)
 
     else:
         # analyzing & plotting results
         if not os.path.isdir(collect_path):
-            raise RuntimeError(f"collect directory {collect_path} does not exist")
+            raise RuntimeError(
+                f"collect directory {collect_path} does not exist"
+            )
 
         all_len_cnts = dict()
         for db_sys in ("tidb", "cockroach"):
@@ -303,3 +311,7 @@ if __name__ == "__main__":
         plot_len_cnts_cdfs(
             all_len_cnts["tidb"], all_len_cnts["cockroach"], collect_path
         )
+
+
+if __name__ == "__main__":
+    main()

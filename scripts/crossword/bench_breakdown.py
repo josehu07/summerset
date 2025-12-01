@@ -1,19 +1,12 @@
-import sys
 import os
 import argparse
 import time
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "reg"
 
 EXPER_NAME = "breakdown"
@@ -34,8 +27,10 @@ LENGTH_SECS = 30
 
 def launch_cluster(remote0, base, repo, protocol, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         protocol,
         "-n",
@@ -75,8 +70,10 @@ def wait_cluster_setup(sleep_secs=20):
 
 def run_bench_clients(remote0, base, repo, protocol):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -123,10 +120,10 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
-    config += f"+record_breakdown=true"
+    config += "+record_breakdown=true"
     if protocol == "Crossword":
-        config += f"+disable_gossip_timer=true"
-        config += f"+init_assignment='1'"
+        config += "+disable_gossip_timer=true"
+        config += "+init_assignment='1'"
 
     # launch service cluster
     proc_cluster = launch_cluster(remote0, base, repo, protocol, config=config)
@@ -194,7 +191,9 @@ def collect_bd_stats(runlog_dir):
     bd_stats = dict()
     for protocol, stats in raw_stats.items():
         bd_stats[protocol] = dict()
-        bd_stats[protocol]["comp"] = stats["comp"] if "comp" in stats else (0.0, 0.0)
+        bd_stats[protocol]["comp"] = (
+            stats["comp"] if "comp" in stats else (0.0, 0.0)
+        )
         bd_stats[protocol]["acc"] = (
             stats["arep"][0] - stats["ldur"][0],
             stats["arep"][1] - stats["ldur"][1],
@@ -382,7 +381,7 @@ def plot_legend(handles, labels, plots_dir):
 
     plt.axis("off")
 
-    lgd = plt.legend(
+    _lgd = plt.legend(
         handles,
         labels,
         handlelength=0.6,
@@ -405,7 +404,7 @@ def save_space_usage(space_usage, plots_dir):
     print(f"Saved: {txt_name}")
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -413,11 +412,14 @@ if __name__ == "__main__":
         "-o",
         "--odir",
         type=str,
-        default=f"./results",
+        default="./results",
         help="directory to hold outputs and logs",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -427,14 +429,16 @@ if __name__ == "__main__":
     if not args.plot:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -467,3 +471,7 @@ if __name__ == "__main__":
         handles, labels = plot_breakdown(bd_stats, plots_dir)
         plot_legend(handles, labels, plots_dir)
         # save_space_usage(space_usage, plots_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,20 +1,13 @@
-import sys
 import os
 import argparse
 import time
 import numpy as np
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-import utils
-
-# fmt: off
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# fmt: on
+
+from .. import utils
 
 
-TOML_FILENAME = "scripts/remote_hosts.toml"
 PHYS_ENV_GROUP = "wan"
 
 EXPER_NAME = "writes_sizes"
@@ -97,10 +90,14 @@ RESULT_SECS_BEGIN = 30
 RESULT_SECS_END = 100
 
 
-def launch_cluster(remote0, base, repo, pcname, value_size, put_ratio, config=None):
+def launch_cluster(
+    remote0, base, repo, pcname, value_size, put_ratio, config=None
+):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -141,10 +138,14 @@ def wait_cluster_setup(sleep_secs=60):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients(remotec, base, repo, pcname, value_size, put_ratio, config=None):
+def run_bench_clients(
+    remotec, base, repo, pcname, value_size, put_ratio, config=None
+):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -199,8 +200,10 @@ def run_mess_client(
     remotec, base, repo, protocol, leader=None, key_range=None, responder=None
 ):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -331,10 +334,18 @@ def collect_outputs(output_dir):
                     result["tput_sum"], sd, sp, sj, sm
                 )
                 wlat_list = utils.output.list_smoothing(
-                    [v for v in result["wlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["wlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
                 rlat_list = utils.output.list_smoothing(
-                    [v for v in result["rlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
+                    [v for v in result["rlat_avg"] if v > 0.0],
+                    sd,
+                    sp,
+                    sj,
+                    1 / sm,
                 )
 
                 results[value_size][put_ratio][pcname] = {
@@ -442,7 +453,7 @@ def plot_put_ratios_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-put_ratios")
+    fig = plt.figure("Exper-put_ratios")
 
     PCNAMES_ORDER = [
         "PQRLeaderLs",
@@ -459,9 +470,12 @@ def plot_put_ratios_results(results, plots_dir):
 
     for pcname in PCNAMES_ORDER:
         result = [
-            results[128][put_ratio][pcname]["tput"]["mean"] for put_ratio in PUT_RATIOS
+            results[128][put_ratio][pcname]["tput"]["mean"]
+            for put_ratio in PUT_RATIOS
         ]
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
+            pcname
+        ]
 
         plt.plot(
             PUT_RATIOS,
@@ -481,7 +495,7 @@ def plot_put_ratios_results(results, plots_dir):
     plt.xscale("symlog")
     plt.xticks([1, 2, 5, 10, 25, 50], list(map(str, [1, 2, 5, 10, 25, 50])))
     plt.minorticks_off()
-    plt.xlabel(f"Write ratio% (log scale)")
+    plt.xlabel("Write ratio% (log scale)")
 
     plt.ylim(bottom=0)
     plt.ylabel("Tput (k reqs/s)")
@@ -525,7 +539,7 @@ def plot_value_sizes_results(results, plots_dir):
             "pdf.fonttype": 42,
         }
     )
-    fig = plt.figure(f"Exper-value_sizes")
+    fig = plt.figure("Exper-value_sizes")
 
     PCNAMES_ORDER = [
         "PQRLeaderLs",
@@ -544,9 +558,12 @@ def plot_value_sizes_results(results, plots_dir):
 
     for pcname in PCNAMES_ORDER:
         result = [
-            results[value_size][5][pcname]["tput"]["mean"] for value_size in VALUE_SIZES
+            results[value_size][5][pcname]["tput"]["mean"]
+            for value_size in VALUE_SIZES
         ]
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
+            pcname
+        ]
 
         plt.plot(
             VALUE_SIZES,
@@ -566,7 +583,7 @@ def plot_value_sizes_results(results, plots_dir):
     plt.xscale("symlog")
     plt.xticks(VALUE_SIZES, VALUE_SIZE_STRS)
     plt.minorticks_off()
-    plt.xlabel(f"Value size (log scale)")
+    plt.xlabel("Value size (log scale)")
 
     plt.ylim(bottom=0)
     plt.ylabel("Tput (k reqs/s)")
@@ -595,7 +612,7 @@ def plot_value_sizes_results(results, plots_dir):
     return ax.get_legend_handles_labels()
 
 
-if __name__ == "__main__":
+def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -614,7 +631,10 @@ if __name__ == "__main__":
         help="host from which to fetch results to local",
     )
     parser.add_argument(
-        "-p", "--plot", action="store_true", help="if set, do the plotting phase"
+        "-p",
+        "--plot",
+        action="store_true",
+        help="if set, do the plotting phase",
     )
     args = parser.parse_args()
 
@@ -624,12 +644,14 @@ if __name__ == "__main__":
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
         base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
+        utils.file.do_cargo_build(
+            True, cd_dir=f"{base}/{repo}", remotes=remotes
+        )
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -704,7 +726,7 @@ if __name__ == "__main__":
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
         base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            TOML_FILENAME, PHYS_ENV_GROUP
+            PHYS_ENV_GROUP
         )
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -745,3 +767,7 @@ if __name__ == "__main__":
 
         handles, labels = plot_put_ratios_results(results, plots_dir)
         handles, labels = plot_value_sizes_results(results, plots_dir)
+
+
+if __name__ == "__main__":
+    main()
