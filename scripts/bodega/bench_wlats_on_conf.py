@@ -520,10 +520,11 @@ def print_results(results):
             i += 12
 
 
-def plot_rlats_results(results, plots_dir):
+def plot_wlats_results(results, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (4.8, 1.7),
+            # "figure.figsize": (4.8, 1.7),
+            "figure.figsize": (2.9, 1.7),
             "font.size": 9,
             "pdf.fonttype": 42,
         }
@@ -619,34 +620,38 @@ def plot_rlats_results(results, plots_dir):
     plt.vlines(
         [timeout_time],
         ymin=0.0,
-        ymax=45.0,
+        ymax=50.0,
         colors=["gray"],
         linestyles="--",
         linewidth=1.0,
     )
     plt.text(
         timeout_time - 0.55,
-        60.0,
-        "hb timeout, changing to\nnew roster (here need to\nwait for lease expiration)",
+        64.0,
+        # "hb timeout, changing to\nnew roster (here need to\nwait for lease expiration)",
+        "hb timeout",
         color="gray",
         va="baseline",
         ha="left",
     )
 
     # config change time
-    change_time = results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0
+    # change_time = results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0
+    change_time = (
+        results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0
+    ) - 0.03
     plt.vlines(
         [change_time],
         ymin=0.0,
-        ymax=105.0,
+        ymax=150.0,
         colors=["darkred"],
         linestyles="--",
         linewidth=1.0,
     )
     plt.text(
-        change_time - 0.1,
-        135.0,
-        "fast regular\nroster change",
+        change_time - 0.13,
+        220.0,
+        "fast\nregular\nroster\nchange",
         color="darkred",
         va="top",
         ha="right",
@@ -668,7 +673,7 @@ def plot_rlats_results(results, plots_dir):
         handlelength=1.4,
         markerscale=2.0,
         loc="upper right",
-        bbox_to_anchor=(1.01, 1.2),
+        bbox_to_anchor=(0.55, 1.2),
         ncol=1,
         borderpad=0.3,
         handletextpad=0.5,
@@ -840,7 +845,7 @@ def main():
         results = collect_outputs(output_dir)
         print_results(results)
 
-        handles, labels = plot_rlats_results(results, plots_dir)
+        handles, labels = plot_wlats_results(results, plots_dir)
         # plot_legend(handles, labels, plots_dir)
 
 

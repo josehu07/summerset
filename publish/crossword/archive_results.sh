@@ -19,9 +19,7 @@ fi
 
 
 BK_TAR_NAME="crossword.$1.tar.xz"
-
 DROPBOX_DIR="${HOME}/Dropbox/UW-Madison/Research/Data-Backups/Crossword"
-DB_TAR_NAME="$1.tar.xz"
 
 
 if [ $# -ge 2 ] && [ "$2" = "ex" ];
@@ -29,7 +27,7 @@ then
     # extracting...
     echo
     echo "Downloading archive from Dropbox..."
-    cp ${DROPBOX_DIR}/${DB_TAR_NAME} backups/${BK_TAR_NAME}
+    cp ${DROPBOX_DIR}/${BK_TAR_NAME} backups/${BK_TAR_NAME}
 
     echo
     echo "Extracting results/ <- backups/${BK_TAR_NAME}..."
@@ -46,5 +44,5 @@ else
 
     echo
     echo "Replicating archive to Dropbox..."
-    cp backups/${BK_TAR_NAME} ${DROPBOX_DIR}/${DB_TAR_NAME}
+    cp backups/${BK_TAR_NAME} ${DROPBOX_DIR}/${BK_TAR_NAME}
 fi

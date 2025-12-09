@@ -136,7 +136,7 @@ def print_results(results):
 def plot_latency_cdfs(results, put_ratio, is_read, plots_dir):
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (2.6, 2.0),
+            "figure.figsize": (2.6, 1.75),
             "font.size": 9,
             "pdf.fonttype": 42,
         }
