@@ -61,6 +61,8 @@ rse-simd = ["reed-solomon-erasure/simd-accel"]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+strip = false
+debug = "limited"
 
 [[bench]]
 name = "rse_bench"

@@ -126,11 +126,11 @@ SERVER_PIN_CORES = 16
 NUM_REPLICAS = 5
 NUM_CLIENTS = 5
 FREQ_TARGETS = [
-    100,
-    200,
+    # 100,
+    # 200,
     300,
-    # 400,
-    # 500,
+    400,
+    500,
 ]
 # NUM_CLIENTS_LIST = [
 #     5,
@@ -825,11 +825,11 @@ def main():
             print("Experiment FAILED, breaking early...")
             utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
 
-        print("Fetching client output logs...")
-        for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+        # print("Fetching client output logs...")
+        # for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
+        #     utils.file.fetch_files_of_dir(
+        #         remotes[host], f"{base}/output/{EXPER_NAME}", output_path
+        #     )
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
