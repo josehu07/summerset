@@ -26,8 +26,8 @@ const KEY_LEN: usize = 8;
 const MAX_VAL_LEN: usize = 16 * 1024 * 1024; // 16 MB
 
 /// Statistics printing interval.
-// const PRINT_INTERVAL: Duration = Duration::from_millis(100);
-const PRINT_INTERVAL: Duration = Duration::from_millis(250);
+const PRINT_INTERVAL: Duration = Duration::from_millis(100);
+// const PRINT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Finer-grained statistics printing interval.
 const FINE_PRINT_INTERVAL: Duration = Duration::from_millis(5);
