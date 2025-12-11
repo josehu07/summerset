@@ -2,6 +2,7 @@ import sys
 import argparse
 import subprocess
 import math
+import time
 
 from . import utils
 
@@ -464,6 +465,7 @@ def main():
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
     # run client executable(s)
+    ts_start = time.perf_counter()
     client_procs = run_clients(
         remotes,
         ipaddrs,
@@ -488,22 +490,43 @@ def main():
 
     # if running bench client, add proper timeout on wait
     timeout = None
+    is_timed_bench = (
+        args.utility == "bench"
+        and args.length_s is not None
+        and args.length_s > 0
+    )
     if args.utility == "bench":
-        if args.length_s is None or args.length_s == 0:
-            timeout = 600
-        else:
+        if is_timed_bench:
             timeout = args.length_s + 30
+        else:
+            timeout = 600  # 10 mins default
     try:
-        rcs = []
-        for i, client_proc in enumerate(client_procs):
-            rcs.append(client_proc.wait(timeout=timeout))
+        rcs, secs = utils.proc.wait_concurrent_clients(
+            client_procs, timeout_secs=timeout, ts_start=ts_start
+        )
     except subprocess.TimeoutExpired:
         if args.expect_halt:  # mainly for failover experiments
             print("WARN: getting expected halt, exiting...")
             sys.exit(0)
         raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 
-    if any(map(lambda rc: rc != 0, rcs)):
+    # consider failed if:
+    #   - all client processes returned non-zero
+    #   - any client returned non-zero and didn't run for expected benchmark length
+    #   - any client reutrned non-zero when not in timed benchmark mode
+    if (
+        all(map(lambda rc: rc != 0, rcs))
+        or (
+            is_timed_bench
+            and any(
+                map(
+                    lambda rc, sec: rc != 0 and sec < args.length_s * 0.9,
+                    zip(rcs, secs),
+                )
+            )
+        )
+        or ((not is_timed_bench) and any(map(lambda rc: rc != 0, rcs)))
+    ):
         sys.exit(1)
     else:
         sys.exit(0)

@@ -108,15 +108,15 @@ PROTOCOLS_BSNAME_CONFIGS_RESPONDERS = {
         {0, 1, 3, 4},
     ),
 }
-PROTOCOL_MAX_NUM_CLIENTS = {
-    "MultiPaxos": 35,
-    "LeaderLs": 30,
-    "EPaxos": 35,
-    "PQR": 35,
-    "PQRLeaderLs": 50,
-    "QuorumLs": 99,
-    "QuorumLsCtn": 99,
-    "Bodega": 99,
+PROTOCOL_MAX_FREQ_TARGET = {
+    "MultiPaxos": 10000,
+    "LeaderLs": 10000,
+    "EPaxos": 500,
+    "PQR": 10000,
+    "PQRLeaderLs": 10000,
+    "QuorumLs": 10000,
+    "QuorumLsCtn": 10000,
+    "Bodega": 10000,
 }
 
 MIN_HOST0_CPUS = 30
@@ -124,30 +124,30 @@ SERVER_PIN_CORES = 16
 # CLIENT_PIN_CORES = 2
 
 NUM_REPLICAS = 5
-# NUM_CLIENTS = 10
-NUM_CLIENTS_LIST = [
-    5,
-    10,
-    15,
-    20,
-    25,
-    30,
-    35,
-    40,
-    50,
-    75,
-    99,
-]  # => will be x10
-# FREQ_TARGETS = [
-#     100,
-#     250,
-#     500,
-#     1000,
-#     3000,
-#     5000,
-#     7500,
-#     10000,
-# ]  # => will be adjusted
+NUM_CLIENTS = 10
+# NUM_CLIENTS_LIST = [
+#     5,
+#     10,
+#     15,
+#     20,
+#     25,
+#     30,
+#     35,
+#     40,
+#     50,
+#     75,
+#     99,
+# ]  # => will be x10
+FREQ_TARGETS = [
+    100,
+    250,
+    500,
+    1000,
+    3000,
+    5000,
+    7500,
+    10000,
+]  # => will be adjusted
 NUM_KEYS = 1  # => will be x10
 VALUE_SIZE = 128
 PUT_RATIO = 10
@@ -158,7 +158,7 @@ RESULT_SECS_BEGIN = 30
 RESULT_SECS_END = 130
 
 
-def launch_cluster(remote0, base, repo, pcname, num_clients, config=None):
+def launch_cluster(remote0, base, repo, pcname, freq_target, config=None):
     cmd = [
         "uv",
         "run",
@@ -178,7 +178,7 @@ def launch_cluster(remote0, base, repo, pcname, num_clients, config=None):
         "--states_prefix",
         f"{base}/states/{EXPER_NAME}",
         "--states_midfix",
-        f".{pcname}.{num_clients}",
+        f".{pcname}.{freq_target}",
         "--pin_cores",
         str(SERVER_PIN_CORES),
         "--launch_wait",
@@ -204,7 +204,7 @@ def wait_cluster_setup(sleep_secs=60):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients(remotec, base, repo, pcname, num_clients, config=None):
+def run_bench_clients(remotec, base, repo, pcname, freq_target, config=None):
     cmd = [
         "uv",
         "run",
@@ -228,13 +228,13 @@ def run_bench_clients(remotec, base, repo, pcname, num_clients, config=None):
     cmd += [
         "bench",
         "-n",
-        str(num_clients),
+        str(NUM_CLIENTS),
         "-m",
         str(NUM_REPLICAS),
         "-d",
         str(NUM_REPLICAS),
         "-f",
-        str(0),  # closed-loop
+        str(freq_target),  # open-loop
         "-k",
         str(NUM_KEYS),
         "-v",
@@ -246,7 +246,7 @@ def run_bench_clients(remotec, base, repo, pcname, num_clients, config=None):
         "--output_prefix",
         f"{base}/output/{EXPER_NAME}",
         "--output_midfix",
-        f".{pcname}.{num_clients}",
+        f".{pcname}.{freq_target}",
     ]
 
     print(f"    Running benchmark clients ({LENGTH_SECS}s)...")
@@ -297,16 +297,16 @@ def run_mess_client(
     )
 
 
-def outputs_exist(output_dir, pcname, num_clients):
+def outputs_exist(output_dir, pcname, freq_target):
     protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
-    prefix = f"{output_dir}/{protocol}.{pcname}.{num_clients}"
-    return all(os.path.isfile(f"{prefix}.{c}.out") for c in range(num_clients))
+    prefix = f"{output_dir}/{protocol}.{pcname}.{freq_target}"
+    return all(os.path.isfile(f"{prefix}.{c}.out") for c in range(NUM_CLIENTS))
 
 
-def bench_round(remote0, remotec, base, repo, pcname, num_clients, runlog_path):
+def bench_round(remote0, remotec, base, repo, pcname, freq_target, runlog_path):
     protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
     responders = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][3]
-    midfix_str = f".{pcname}.{num_clients}"
+    midfix_str = f".{pcname}.{freq_target}"
     print(f"  {EXPER_NAME}  {pcname:<12s}{midfix_str}")
 
     # server-side configs
@@ -318,7 +318,7 @@ def bench_round(remote0, remotec, base, repo, pcname, num_clients, runlog_path):
 
     # launch service cluster
     proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, num_clients, config=server_config
+        remote0, base, repo, pcname, freq_target, config=server_config
     )
     wait_cluster_setup()
 
@@ -346,7 +346,7 @@ def bench_round(remote0, remotec, base, repo, pcname, num_clients, runlog_path):
 
     # start benchmarking clients
     proc_clients = run_bench_clients(
-        remotec, base, repo, pcname, num_clients, config=client_config
+        remotec, base, repo, pcname, freq_target, config=client_config
     )
 
     # wait for benchmarking clients to exit
@@ -375,19 +375,19 @@ def bench_round(remote0, remotec, base, repo, pcname, num_clients, runlog_path):
 
 def collect_outputs(output_dir):
     results = dict()
-    for num_clients in NUM_CLIENTS_LIST:
-        results[num_clients] = dict()
+    for freq_target in FREQ_TARGETS:
+        results[freq_target] = dict()
         for cgroup in range(NUM_REPLICAS):
-            results[num_clients][cgroup] = dict()
+            results[freq_target][cgroup] = dict()
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
-                if num_clients > PROTOCOL_MAX_NUM_CLIENTS.get(pcname, 999):
+                if freq_target > PROTOCOL_MAX_FREQ_TARGET.get(pcname, 99999):
                     continue
                 protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
 
                 try:
                     result = utils.output.gather_outputs(
-                        f"{protocol}.{pcname}.{num_clients}",
-                        num_clients,
+                        f"{protocol}.{pcname}.{freq_target}",
+                        NUM_CLIENTS,
                         output_dir,
                         RESULT_SECS_BEGIN,
                         RESULT_SECS_END,
@@ -397,7 +397,7 @@ def collect_outputs(output_dir):
                     )
                 except FileNotFoundError:
                     print(
-                        f"skipping {pcname} @ clients {num_clients} (cg {cgroup})..."
+                        f"skipping {pcname} @ freq {freq_target} (cg {cgroup})..."
                     )
                     continue
 
@@ -422,25 +422,25 @@ def collect_outputs(output_dir):
                     1 / sm,
                 )
 
-                results[num_clients][cgroup][pcname] = {
+                results[freq_target][cgroup][pcname] = {
                     "tput": tput_list,
                     "wlat": wlat_list,
                     "rlat": rlat_list,
                 }
 
     ymax = {"tput": 0.0, "wlat": 0.0, "rlat": 0.0}
-    for num_clients in NUM_CLIENTS_LIST:
+    for freq_target in FREQ_TARGETS:
         for cgroup in range(NUM_REPLICAS):
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
-                if pcname not in results[num_clients][cgroup]:
+                if pcname not in results[freq_target][cgroup]:
                     continue
 
-                curr_results = results[num_clients][cgroup][pcname]
+                curr_results = results[freq_target][cgroup][pcname]
                 tput_list = curr_results["tput"]
                 wlat_list = sorted(lat / 1000 for lat in curr_results["wlat"])
                 rlat_list = sorted(lat / 1000 for lat in curr_results["rlat"])
 
-                results[num_clients][cgroup][pcname] = {
+                results[freq_target][cgroup][pcname] = {
                     "tput": {
                         "mean": sum(tput_list) / len(tput_list),
                         # "stdev": (
@@ -486,7 +486,7 @@ def collect_outputs(output_dir):
                         ),
                     },
                 }
-                curr_results = results[num_clients][cgroup][pcname]
+                curr_results = results[freq_target][cgroup][pcname]
                 if curr_results["tput"]["mean"] > ymax["tput"]:
                     ymax["tput"] = curr_results["tput"]["mean"]
                 if (
@@ -505,13 +505,13 @@ def collect_outputs(output_dir):
 
 def aggregate_results(results):
     agg_results = {
-        pcname: {"clients": [], "tput": [], "alat": []}
+        pcname: {"freq": [], "tput": [], "alat": []}
         for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS
     }
 
-    for num_clients in NUM_CLIENTS_LIST:
-        print(f"clients {num_clients}")
-        for cgroup, pc_results in results.get(num_clients, {}).items():
+    for freq_target in FREQ_TARGETS:
+        print(f"freq {freq_target}")
+        for cgroup, pc_results in results.get(freq_target, {}).items():
             print(f"  cg {cgroup}")
             if len(pc_results) == 0:
                 print("    (no data)")
@@ -545,9 +545,9 @@ def aggregate_results(results):
     print("aggregated results:")
     for pcname in agg_results:
         print(f"  {pcname}")
-        for num_clients in NUM_CLIENTS_LIST:
+        for freq_target in FREQ_TARGETS:
             agg_tput, rlats, wlats = 0.0, [], []
-            for cgroup, pc_results in results.get(num_clients, {}).items():
+            for cgroup, pc_results in results.get(freq_target, {}).items():
                 if pcname not in pc_results:
                     continue
                 agg_tput += pc_results[pcname]["tput"]["mean"]
@@ -567,7 +567,7 @@ def aggregate_results(results):
             r_ratio = 1.0 - w_ratio
             alats = [r * r_ratio + w * w_ratio for r, w in zip(rlats, wlats)]
 
-            agg_results[pcname]["clients"].append(num_clients)
+            agg_results[pcname]["freq"].append(freq_target)
             agg_results[pcname]["tput"].append(agg_tput)
             agg_results[pcname]["alat"].append(sum(alats) / len(alats))
 
@@ -576,16 +576,16 @@ def aggregate_results(results):
             continue
 
         print("    tput", end="")
-        for num_clients, tput in zip(
-            agg_results[pcname]["clients"], agg_results[pcname]["tput"]
+        for freq, tput in zip(
+            agg_results[pcname]["freq"], agg_results[pcname]["tput"]
         ):
-            print(f"  [{num_clients}] {tput:7.2f}", end="")
+            print(f"  [{freq}] {tput:7.2f}", end="")
         print()
         print("    alat", end="")
-        for num_clients, alat in zip(
-            agg_results[pcname]["clients"], agg_results[pcname]["alat"]
+        for freq, alat in zip(
+            agg_results[pcname]["freq"], agg_results[pcname]["alat"]
         ):
-            print(f"  [{num_clients}] {alat:7.2f}", end="")
+            print(f"  [{freq}] {alat:7.2f}", end="")
         print()
 
     return agg_results
@@ -595,8 +595,8 @@ def plot_curves_results(agg_results, plots_dir, ymax=None):
     matplotlib.rcParams.update(
         {
             "figure.figsize": (
-                4.6,
-                1.9,
+                4.5,
+                2.1,
             ),
             "font.size": 9,
             "pdf.fonttype": 42,
@@ -657,8 +657,8 @@ def plot_curves_results(agg_results, plots_dir, ymax=None):
     ax1.spines["top"].set_visible(False)
     ax1.spines["right"].set_visible(False)
 
-    plt.xlabel("Throughput (k reqs/s)")
-    plt.ylabel("Avg. Latency (ms)")
+    plt.xlabel("Tput (k reqs/s)")
+    plt.ylabel("Avg. Req Latency (ms)")
 
     # axis ranges with a small padding
     xmax = max(
@@ -816,21 +816,21 @@ def main():
 
         while True:
             try:
-                for num_clients in NUM_CLIENTS_LIST:
-                    print(f"Running experiments clients = {num_clients}...")
+                for freq_target in FREQ_TARGETS:
+                    print(f"Running experiments freq = {freq_target}...")
                     for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
-                        if num_clients > PROTOCOL_MAX_NUM_CLIENTS.get(
-                            pcname, 999
+                        if freq_target > PROTOCOL_MAX_FREQ_TARGET.get(
+                            pcname, 99999
                         ):
                             print(
-                                f"  skipping {pcname} @ clients {num_clients} (> {PROTOCOL_MAX_NUM_CLIENTS[pcname]})"
+                                f"  Skipping {pcname} @ freq {freq_target} (> {PROTOCOL_MAX_FREQ_TARGET[pcname]})"
                             )
                             continue
                         if args.skip and outputs_exist(
-                            output_path, pcname, num_clients
+                            output_path, pcname, freq_target
                         ):
                             print(
-                                f"  skipping {pcname} @ clients {num_clients} (outputs exist)"
+                                f"  Skipping {pcname} @ freq {freq_target} (outputs exist)"
                             )
                             continue
                         time.sleep(3)
@@ -841,7 +841,7 @@ def main():
                             base,
                             repo,
                             pcname,
-                            num_clients,
+                            freq_target,
                             runlog_path,
                         )
                         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
