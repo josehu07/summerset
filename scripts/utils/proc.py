@@ -1,6 +1,8 @@
 import os
 import subprocess
 import multiprocessing
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def kill_all_matching(name):
@@ -154,6 +156,26 @@ def wait_parallel_procs(procs, names=None, check_rc=True):
                     print(proc.stdout.read().decode())
                 if proc.stderr is not None:
                     print(proc.stderr.read().decode())
+
+
+def wait_concurrent_clients(client_procs, timeout_secs=None, ts_start=None):
+    rcs = []
+    secs = None if ts_start is None else []
+
+    def wait_and_time(p):
+        rc = p.wait(timeout=timeout_secs)
+        elapsed = None if ts_start is None else time.perf_counter() - ts_start
+        return rc, elapsed
+
+    with ThreadPoolExecutor(max_workers=len(client_procs)) as executor:
+        futures = [executor.submit(wait_and_time, p) for p in client_procs]
+        for future in as_completed(futures):
+            rc, elapsed = future.result()
+            rcs.append(rc)
+            if secs is not None:
+                secs.append(elapsed)
+
+    return rcs, secs
 
 
 def get_cpu_count(remote=None):

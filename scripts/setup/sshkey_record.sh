@@ -42,5 +42,10 @@ echo "AuthorizedKeysFile .ssh/authorized_keys ${CONFIG_DIR}/authorized_keys" | s
 
 
 echo
+echo "Increasing MaxStartups to accommodate clients..."
+sudo sh -c 'sudo sed -i.bak -E "s/^[#]*MaxStartups.*/MaxStartups 500/" /etc/ssh/sshd_config'
+
+
+echo
 echo "Restarting the sshd daemon service..."
 sudo systemctl restart sshd

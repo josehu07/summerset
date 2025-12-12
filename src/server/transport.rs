@@ -345,7 +345,7 @@ where
     }
 
     /// Broadcasts leave notifications to all peers and waits for replies.
-    #[allow(clippy::unused_async)]
+    #[allow(unused_assignments, clippy::unused_async)]
     pub(crate) async fn leave(&mut self) -> Result<(), SummersetError> {
         #[allow(unused_variables)]
         let mut num_peers = 0;

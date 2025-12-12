@@ -65,7 +65,11 @@ def run_process_pinned(
         cpu_list = f"{core_start}-{core_end}"
     if remote is None or len(remote) == 0:
         return utils.proc.run_process(
-            cmd, capture_stderr=capture_stderr, cd_dir=cd_dir, cpu_list=cpu_list
+            cmd,
+            capture_stderr=capture_stderr,
+            cd_dir=cd_dir,
+            cpu_list=cpu_list,
+            # extra_env={"RUST_BACKTRACE": "1"},
         )
     else:
         return utils.proc.run_process_over_ssh(
@@ -74,6 +78,7 @@ def run_process_pinned(
             capture_stderr=capture_stderr,
             cd_dir=cd_dir,
             cpu_list=cpu_list,
+            # extra_env={"RUST_BACKTRACE": "1"},
         )
 
 

@@ -129,7 +129,7 @@ def simulate(params: SimulationParams) -> SimulationResult:
 
 def run_simulations(odir: str):
     """Run the simulation and display results"""
-    log_path = f"{odir}/ftsim/result.log"
+    log_path = f"{odir}/ftsim/result-ftsim.log"
 
     # Set random seed for reproducibility
     np.random.seed(42)
@@ -178,7 +178,7 @@ def parse_result_log(
     log_path: str,
 ) -> Tuple[List[float], Dict[Tuple[int, bool], float]]:
     """
-    Parse the result.log file to extract:
+    Parse the result-ftsim.log file to extract:
     1. Original throughput list
     2. Dictionary mapping (coverage, bodega) -> throughput estimation
 
@@ -221,7 +221,7 @@ def plot_results(odir: str):
     """
     Plot the results from the result log file.
     """
-    log_path = f"{odir}/ftsim/result.log"
+    log_path = f"{odir}/ftsim/result-ftsim.log"
     throughput_list, simulation_results = parse_result_log(log_path)
 
     num_servers = len(throughput_list) - 1
@@ -232,7 +232,7 @@ def plot_results(odir: str):
         "LeaderLeases-with-failure": [
             simulation_results[(i, False)] for i in range(1, num_servers + 1)
         ],
-        "Bodega-no-failure": throughput_list[1:],
+        "Bodega-no-failure": throughput_list[1 : num_servers + 1],
         "Bodega-with-failure": [
             simulation_results[(i, True)] for i in range(1, num_servers + 1)
         ],
@@ -246,7 +246,7 @@ def plot_results(odir: str):
 
     matplotlib.rcParams.update(
         {
-            "figure.figsize": (6.8, 2.3),
+            "figure.figsize": (3.5, 1.8),
             "font.size": 10,
             "pdf.fonttype": 42,
         }
@@ -260,13 +260,13 @@ def plot_results(odir: str):
         "Bodega-with-failure",
     ]
     CASES_LABEL_COLOR = {
-        "LeaderLeases-no-failure": ("Leader Leases (no failures)", "pink"),
+        "LeaderLeases-no-failure": ("Ldr Ls (no failures)", "pink"),
         "LeaderLeases-with-failure": (
-            "Leader Leases (with failures)",
+            "Ldr Ls (frequent failures)",
             "lightcoral",
         ),
         "Bodega-no-failure": ("Bodega (no failures)", "lightsteelblue"),
-        "Bodega-with-failure": ("Bodega (with failures)", "cornflowerblue"),
+        "Bodega-with-failure": ("Bodega (frequent failures)", "cornflowerblue"),
     }
 
     x = np.arange(1, num_servers + 1)  # X positions for groups
@@ -289,12 +289,19 @@ def plot_results(odir: str):
         )
         multiplier += 1
 
-    plt.xlabel("Number of Roster-Covered Replicas")
-    plt.ylabel("Throughput (k reqs/s)")
+    plt.xlabel("#Responders in Roster (Simulated)")
+    plt.ylabel("Tput (k reqs/s)")
     plt.xticks(
         x + width * 1.5, [str(i) for i in range(1, num_servers + 1)]
     )  # Center the x-tick labels
-    plt.legend(bbox_to_anchor=(1.04, 0.5), loc="center left", handlelength=1.0)
+    plt.legend(
+        loc="upper left",
+        bbox_to_anchor=(-0.01, 1.15),
+        handlelength=1.0,
+        handletextpad=0.5,
+        frameon=False,
+        fontsize=9,
+    )
 
     # Add vertical separation lines between groups
     for i in range(2, num_servers + 1):
@@ -305,9 +312,11 @@ def plot_results(odir: str):
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
+    plt.ylim(bottom=0, top=3)
+
     plt.tight_layout()
 
-    pdf_name = f"{odir}/ftsim/result.pdf"
+    pdf_name = f"{odir}/ftsim/result-ftsim.pdf"
     plt.savefig(pdf_name, bbox_inches="tight")
     plt.close()
     print(f"Plotted: {pdf_name}")

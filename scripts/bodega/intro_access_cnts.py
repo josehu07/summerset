@@ -541,7 +541,7 @@ def plot_access_cnts(results, plots_dir):
     plt.text(
         2,
         -14,
-        "\nwhen\nquiescent",
+        "\nonly when\nquiescent",
         clip_on=False,
         ha="center",
         va="top",

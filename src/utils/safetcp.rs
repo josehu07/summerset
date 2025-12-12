@@ -49,6 +49,17 @@ where
     #[allow(clippy::cast_possible_truncation)]
     let obj_end = 8 + obj_len as usize;
     if read_buf.capacity() < obj_end {
+        // sanity check that the object size is reasonable; there are cases
+        // when unexpected signal bytes slip through the connection when a
+        // benchmarking client exists abruptly, causing absurdly large `obj_len`
+        if obj_end > 1_000_000_000_000 {
+            // ~= 1 TB, never happens
+            read_buf.clear();
+            return Err(SummersetError::msg(format!(
+                "ignoring invalidly large obj_len: {}",
+                obj_len
+            )));
+        }
         // capacity not big enough, reserve more space
         read_buf.reserve(obj_end - read_buf.capacity());
     }
@@ -110,11 +121,11 @@ where
         return Err(SummersetError::msg(
             "attempting to retry while buffer is empty",
         ));
-    } else if obj.is_some() {
+    } else if let Some(obj) = obj {
         // sending a new object, fill write_buf
         debug_assert_eq!(*write_buf_cursor, 0);
         let write_bytes =
-            bincode::encode_to_vec(obj.unwrap(), bincode::config::standard())?;
+            bincode::encode_to_vec(obj, bincode::config::standard())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
         debug_assert_eq!(write_buf.len(), 8);
