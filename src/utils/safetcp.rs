@@ -121,11 +121,11 @@ where
         return Err(SummersetError::msg(
             "attempting to retry while buffer is empty",
         ));
-    } else if obj.is_some() {
+    } else if let Some(obj) = obj {
         // sending a new object, fill write_buf
         debug_assert_eq!(*write_buf_cursor, 0);
         let write_bytes =
-            bincode::encode_to_vec(obj.unwrap(), bincode::config::standard())?;
+            bincode::encode_to_vec(obj, bincode::config::standard())?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
         debug_assert_eq!(write_buf.len(), 8);
