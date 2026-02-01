@@ -23,7 +23,7 @@ clap = { version = "4.5", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 color-print = { version = "0.3", features = ["terminfo"] }
 zookeeper-client = "0.11"
-etcd-client = "0.17"
+etcd-client = "0.18"
 
 [dependencies]
 tokio = { workspace = true }
