@@ -458,18 +458,19 @@ impl ClientBench {
         let mut size = *self.value_size.get(&curr_sec).unwrap();
 
         // go through a probability distribution?
-        if self.unif_dist.is_some()
+        if let Some(unif_dist) = self.unif_dist.as_ref()
             && self.params.unif_interval_ms > 1
             && self.now.duration_since(self.last_unif).as_millis()
                 >= self.params.unif_interval_ms as u128
         {
             // an injected uniform distribution sample
-            size = self.unif_dist.as_ref().unwrap().sample(&mut rand::rng());
+            size = unif_dist.sample(&mut rand::rng());
             self.last_unif = self.now;
-        } else if self.unif_dist.is_some() && self.params.unif_interval_ms == 1
+        } else if let Some(unif_dist) = self.unif_dist.as_ref()
+            && self.params.unif_interval_ms == 1
         {
             // forcing a uniform distribution, ignoring all other settings
-            size = self.unif_dist.as_ref().unwrap().sample(&mut rand::rng());
+            size = unif_dist.sample(&mut rand::rng());
         } else if let Some(norm_dist) = self.norm_dist.as_ref() {
             // a normal distribution with current size as mean
             loop {

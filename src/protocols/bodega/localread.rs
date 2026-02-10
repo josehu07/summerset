@@ -208,6 +208,7 @@ impl BodegaReplica {
             Some((slot, None)) => {
                 // highest slot not committed
                 let inst = &mut self.insts[slot - self.start_slot];
+                #[allow(clippy::unnecessary_unwrap)]
                 if inst.status != Status::Accepting || inst.replica_bk.is_none()
                 {
                     // not even in Accepting status, very rare case; just reject
