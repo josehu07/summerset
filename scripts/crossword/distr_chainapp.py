@@ -16,8 +16,8 @@ SERVER_LEADER_TIMEOUT = 5000
 SERVER_NOOP_INTERVAL = 100
 
 
-PROTOCOL_BACKER_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}.wal"
 )
 
 PROTOCOLS = {"chain_delayed", "chain_mixed", "chainrep", "epaxos"}

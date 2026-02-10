@@ -9,8 +9,8 @@ from .. import utils
 SERVER_CLI_PORT = 20181
 
 
-CLIENT_OUTPUT_PATH = (
-    lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: (
+    f"{prefix}/{protocol}{midfix}.{i}.out"
 )
 
 UTILITY_PARAM_NAMES = {

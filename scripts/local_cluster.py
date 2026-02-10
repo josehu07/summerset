@@ -17,11 +17,11 @@ MANAGER_CLI_PORT = 30009  # NOTE: assuming at most 9 servers
 MANAGER_SRV_PORT = 30019
 
 
-PROTOCOL_BACKER_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}.wal"
 )
-PROTOCOL_SNAPSHOT_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}.snap"
 )
 
 
