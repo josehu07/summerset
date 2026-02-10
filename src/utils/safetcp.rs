@@ -165,6 +165,10 @@ pub(crate) async fn tcp_bind_with_retry(
 ) -> Result<TcpListener, SummersetError> {
     loop {
         let socket = TcpSocket::new_v4()?;
+        #[allow(
+            deprecated,
+            reason = "setting linger period explicitly to None to turn lingering off"
+        )]
         socket.set_linger(None)?;
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
@@ -198,6 +202,10 @@ pub(crate) async fn tcp_connect_with_retry(
 ) -> Result<TcpStream, SummersetError> {
     loop {
         let socket = TcpSocket::new_v4()?;
+        #[allow(
+            deprecated,
+            reason = "setting linger period explicitly to None to turn lingering off"
+        )]
         socket.set_linger(None)?;
         socket.set_reuseaddr(true)?;
         socket.set_reuseport(true)?;
