@@ -14,8 +14,8 @@ CHAIN_JAR_FOLDER = "deploy/client"
 SERVER_APP_PORT = lambda p: 40020 + p
 
 
-CLIENT_OUTPUT_PATH = (
-    lambda protocol, prefix, midfix: f"{prefix}/{protocol}{midfix}.out"
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix: (
+    f"{prefix}/{protocol}{midfix}.out"
 )
 
 

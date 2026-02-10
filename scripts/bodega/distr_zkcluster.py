@@ -12,8 +12,8 @@ SERVER_ELECT_PORT = 20988
 SERVER_CLI_PORT = 20181
 
 
-PROTOCOL_STORE_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}"
 )
 
 PROTOCOLS = {"ZooKeeper"}  # not accepting other strings yet...

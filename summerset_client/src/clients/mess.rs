@@ -107,16 +107,20 @@ impl ClientMess {
     ) -> Result<HashSet<ReplicaId>, SummersetError> {
         let mut servers = HashSet::new();
         for s in list_str.trim().split(',') {
-            if s == "l" && self.servers_info.is_some() {
+            if s == "l"
+                && let Some(servers_info) = self.servers_info.as_ref()
+            {
                 // special character 'l' means leader(s)
-                for (&id, info) in self.servers_info.as_ref().unwrap() {
+                for (&id, info) in servers_info {
                     if info.is_leader {
                         servers.insert(id);
                     }
                 }
-            } else if s == "a" && self.servers_info.is_some() {
+            } else if s == "a"
+                && let Some(servers_info) = self.servers_info.as_ref()
+            {
                 // special character 'a' means all servers
-                for &id in self.servers_info.as_ref().unwrap().keys() {
+                for &id in servers_info.keys() {
                     servers.insert(id);
                 }
             } else if s != "/" {

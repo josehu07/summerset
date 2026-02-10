@@ -13,8 +13,8 @@ SERVER_LISTEN_PORT = 26257
 SERVER_HTTP_PORT = 28080
 
 
-PROTOCOL_STORE_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}"
 )
 
 PROTOCOLS = {"Raft", "Crossword", "CRaft"}

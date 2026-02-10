@@ -11,8 +11,8 @@ SERVER_LISTEN_PORT = 21380
 SERVER_CLIENT_PORT = 21379
 
 
-PROTOCOL_STORE_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}"
 )
 
 PROTOCOLS = {"Raft"}  # not accepting other strings yet...

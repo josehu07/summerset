@@ -13,12 +13,8 @@ COCK_REPO_NAME = "cockroach"
 SERVER_SQL_PORT = 26157
 
 
-WORKLOAD_OUTPUT_PATH = (
-    lambda protocol,
-    prefix,
-    midfix,
-    workload,
-    phase: f"{prefix}/{protocol}{midfix}.{workload}.{phase}"
+WORKLOAD_OUTPUT_PATH = lambda protocol, prefix, midfix, workload, phase: (
+    f"{prefix}/{protocol}{midfix}.{workload}.{phase}"
 )
 
 WORKLOAD_SETTINGS = {

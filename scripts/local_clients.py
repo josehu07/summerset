@@ -12,8 +12,8 @@ MANAGER_VETH_IP = "10.0.0.0"
 MANAGER_CLI_PORT = 30009  # NOTE: assuming at most 9 servers
 
 
-CLIENT_OUTPUT_PATH = (
-    lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: (
+    f"{prefix}/{protocol}{midfix}.{i}.out"
 )
 
 UTILITY_PARAM_NAMES = {

@@ -15,11 +15,11 @@ MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
 MANAGER_SRV_PORT = lambda p: 40019 + p * 20
 
 
-PROTOCOL_BACKER_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}.wal"
 )
-PROTOCOL_SNAPSHOT_PATH = (
-    lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: (
+    f"{prefix}/{protocol}{midfix}.{r}.snap"
 )
 
 

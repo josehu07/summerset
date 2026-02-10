@@ -6,7 +6,7 @@ name = "summerset"
 description = "Distributed KV-store for SMR protocols research"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.93"
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [workspace.dependencies]
@@ -23,7 +23,7 @@ clap = { version = "4.5", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 color-print = { version = "0.3", features = ["terminfo"] }
 zookeeper-client = "0.11"
-etcd-client = "0.17"
+etcd-client = "0.18"
 
 [dependencies]
 tokio = { workspace = true }
@@ -52,7 +52,7 @@ etcd-client = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.8"
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 [features]
 rse-simd = ["reed-solomon-erasure/simd-accel"]
