@@ -413,7 +413,9 @@ impl CrosswordReplica {
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
         {
-            if inst.status == Status::Accepting && inst.leader_bk.is_some() {
+            if inst.status == Status::Accepting
+                && let Some(leader_bk) = inst.leader_bk.as_mut()
+            {
                 if self.assignment_balanced
                     && inst.assignment[0].count()
                         >= Self::min_shards_per_replica(
@@ -439,7 +441,7 @@ impl CrosswordReplica {
                 }
 
                 inst.bal = self.bal_prepared;
-                inst.leader_bk.as_mut().unwrap().accept_acks.clear();
+                leader_bk.accept_acks.clear();
                 let assignment = Self::pick_assignment_policy(
                     self.assignment_adaptive,
                     self.assignment_balanced,
