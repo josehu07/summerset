@@ -12,7 +12,7 @@ authors = ["Guanzhou Hu <me@josehu.com>"]
 [workspace.dependencies]
 tokio = { version = "1.48", features = ["full"] }
 rand = "0.9"
-rand_distr = "0.5"
+rand_distr = "0.6"
 rangemap = { version = "1.7", features = ["serde1"] }
 bytes = { version = "1.11", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
