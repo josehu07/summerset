@@ -8,7 +8,7 @@ use std::{fmt, hint};
 
 use criterion::measurement::{Measurement, ValueFormatter, WallTime};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rand::Rng;
+use rand::RngExt;
 use rand::distr::Alphanumeric;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use summerset::{RSCodeword, SummersetError};
