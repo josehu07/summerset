@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use rand::Rng;
+use rand::RngExt;
 use rand::distr::Alphanumeric;
 use rand_distr::{Distribution, Normal, Uniform};
 use rangemap::RangeMap;

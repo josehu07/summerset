@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 use color_print::cprintln;
 use log::{self, LevelFilter};
-use rand::Rng;
+use rand::RngExt;
 use rand::distr::Alphanumeric;
 use serde::Deserialize;
 use summerset::{

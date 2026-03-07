@@ -1,22 +1,26 @@
 [workspace]
 members = ["summerset_server", "summerset_client", "summerset_manager"]
 
+[workspace.package]
+edition = "2024"
+rust-version = "1.94"
+
 [package]
 name = "summerset"
 description = "Distributed KV-store for SMR protocols research"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.93"
+edition = { workspace = true }
+rust-version = { workspace = true }
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [workspace.dependencies]
 tokio = { version = "1.48", features = ["full"] }
-rand = "0.9"
-rand_distr = "0.5"
+rand = "0.10"
+rand_distr = "0.6"
 rangemap = { version = "1.7", features = ["serde1"] }
 bytes = { version = "1.11", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-toml = { version = "0.9", features = ["parse"] }
+toml = { version = "1.0", features = ["parse"] }
 log = "0.4"
 env_logger = "0.11"
 clap = { version = "4.5", features = ["derive"] }

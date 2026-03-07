@@ -221,7 +221,7 @@ impl StateMachineExecutorTask {
 
 #[cfg(test)]
 mod tests {
-    use rand::Rng;
+    use rand::RngExt;
     use rand::seq::IndexedRandom;
 
     use super::*;

@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use rand::Rng;
+use rand::RngExt;
 use rand::distr::Alphanumeric;
 use rangemap::RangeMap;
 use summerset::{
