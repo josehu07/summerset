@@ -1,3 +1,9 @@
+# Bodega Artifact (OSDI '26)
+
+Please see [publish/bodega/ARTIFACT.md](publish/bodega/ARTIFACT.md) for Bodega artifact evaluation instructions.
+
+---
+
 # Summerset <img src="publish/README-logo.png" alt="Logo" height="26" />
 
 [![Format check](https://github.com/josehu07/summerset/actions/workflows/format.yml/badge.svg)](https://github.com/josehu07/summerset/actions?query=josehu07%3Aformat)
