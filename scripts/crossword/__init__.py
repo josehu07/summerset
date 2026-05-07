@@ -1,1 +1,0 @@
-# Crossword experiment scripts package.

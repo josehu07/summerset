@@ -68,10 +68,6 @@ codegen-units = 1
 strip = false
 debug = "limited"
 
-[[bench]]
-name = "rse_bench"
-harness = false
-
 [workspace.lints.clippy]
 pedantic = "warn"
 

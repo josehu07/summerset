@@ -294,6 +294,7 @@ impl ClientBench {
                     .map(|(_, &vs)| {
                         (
                             vs,
+                            #[allow(clippy::cast_precision_loss)]
                             Normal::new(
                                 vs as f32,
                                 vs as f32 * params.norm_stdev_ratio,
@@ -461,6 +462,11 @@ impl ClientBench {
         let mut size = *self.value_size.get(&curr_sec).unwrap();
 
         // go through a probability distribution?
+        #[allow(
+            clippy::cast_lossless,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         if let Some(unif_dist) = self.unif_dist.as_ref()
             && self.params.unif_interval_ms > 1
             && self.now.duration_since(self.last_unif).as_millis()

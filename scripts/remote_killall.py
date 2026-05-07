@@ -7,12 +7,6 @@ def compose_kill_cmds(
     chain=False, cockroach=False, zookeeper=False, etcd=False
 ):
     cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
-    if chain:
-        cmds.append(["./scripts/crossword/kill_chain_procs.sh", "incl_distr"])
-    if cockroach:
-        cmds.append(
-            ["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"]
-        )
     if zookeeper:
         cmds.append(["./scripts/bodega/kill_zookeeper_procs.sh", "incl_distr"])
     if etcd:

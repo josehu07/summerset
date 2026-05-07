@@ -42,7 +42,6 @@ Reference:
 | `Raft` | Raft with explicit log and strong leadership | [paper](https://raft.github.io/raft.pdf) |
 | `RSPaxos` | MultiPaxos w/ RS erasure code sharding | [paper](https://madsys.cs.tsinghua.edu.cn/publications/HPDC2014-mu.pdf) |
 | `CRaft` | Raft w/ erasure code sharding and fallback | [paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf) |
-| `Crossword` | Quorum-shards tradeoff for dynamic payloads | tba |
 | `QuorumLeases` | Local reads at leaseholders when quiescent | [paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf) |
 | `Bodega` | Always-local linearizable reads via roster leases | tba |
 
