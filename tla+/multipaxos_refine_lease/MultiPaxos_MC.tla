@@ -48,6 +48,7 @@ AtMostOneStableLeader ==
          /\ Cardinality({g \in grants:
                             /\ g.to = p2
                             /\ g.bal = node[p2].balMaxKnown}) >= MajorityNum)
+         /\ node[p1].balMaxKnown = node[p2].balMaxKnown
         => (p1 = p2)
 
 THEOREM AbstractSpec => /\ []AtMostOneGrantPerNode

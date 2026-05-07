@@ -259,6 +259,7 @@ define
                                             /\ g.to = r
                                             /\ g.bal = node[r].balMaxKnown})
                            >= MajorityNum
+                        /\ \A g \in grants: g.to => g.bal =< node[r].balMaxKnown
 
     AppendObserved(seq) ==
         LET filter(e) == e \notin Range(observed)
