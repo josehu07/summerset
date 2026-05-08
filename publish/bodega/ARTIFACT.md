@@ -147,7 +147,7 @@ uv run -m scripts.bodega.bench_loc_grid_geo
 Figure 8 (d)(e)(f) -- run on `wan` cluster `host0`:  
 
 ```sh
-# on reg host0
+# on wan host0
 uv run -m scripts.bodega.bench_loc_grid_wan
 ```
 
