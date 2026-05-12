@@ -652,7 +652,7 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "55992ec6" /\ chksum(tla) = "15bf90a5")
+\* BEGIN TRANSLATION (chksum(pcal) = "6802373a" /\ chksum(tla) = "e78773e2")
 VARIABLES pc, msgs, grants, node, pending, observed, crashed
 
 (* define statement *)
@@ -666,6 +666,7 @@ ThinkAmLeader(r) == /\ node[r].leader = r
                                         /\ g.to = r
                                         /\ g.bal = node[r].balMaxKnown})
                        >= MajorityNum
+                    /\ \A g \in grants: g.bal =< node[r].balMaxKnown
 
 AppendObserved(seq) ==
     LET filter(e) == e \notin Range(observed)
