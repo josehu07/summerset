@@ -21,8 +21,8 @@ sudo ubuntu-mainline-kernel.sh -c
 
 
 echo
-echo "Installing longterm kernel v6.1.64..."
-sudo ubuntu-mainline-kernel.sh -i "6.1.64"
+echo "Installing longterm kernel v6.1.25..."
+sudo ubuntu-mainline-kernel.sh -i "6.1.25"
 
 
 echo

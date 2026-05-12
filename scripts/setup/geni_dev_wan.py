@@ -7,9 +7,9 @@ import geni.rspec.pg as rspec  # type: ignore  # noqa: F401
 # Primary partition's disk image map.
 DISK_IMAGE = {
     "c220g5": "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.wan",
-    "xl170": "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.wan",
+    "xl170": "urn:publicid:IDN+utah.cloudlab.us+image+advosuwmadison-PG0:smr.dev.wan",
     "c6320": "urn:publicid:IDN+clemson.cloudlab.us+image+advosuwmadison-PG0:smr.dev.wan",
-    "rs620": "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.wan",
+    "rs620": "urn:publicid:IDN+cloudlab.umass.edu+image+advosuwmadison-PG0:smr.dev.wan",
     "r320": "urn:publicid:IDN+apt.emulab.net+image+advosuwmadison-PG0:smr.dev.wan",
 }
 

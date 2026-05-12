@@ -80,6 +80,8 @@ host3 = "smr@pcxxx.cloudlab.umass.edu"
 host4 = "smr@aptxxx.apt.emulab.net"
 ```
 
+You can find the nodes' domain names under the "List View" tab. Please ignore the ssh command with your username -- our image uses a custom username.
+
 Sync the local repo to all remote hosts and build Summerset in release mode:
 
 ```sh
@@ -105,7 +107,7 @@ uv run -m scripts.remote_iperf -g wan
 
 ## Evaluation
 
-Evaluation can be done via automated wrapper scripts.
+Evaluation can be done via automated wrapper scripts. These scripts currently require the local machine to be able to SSH to CloudLab nodes via default SSH identity (i.e., custom `-i <xxx.id_rsa>` not yet supported).
 
 ### Killing Processes
 
