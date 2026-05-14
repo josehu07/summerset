@@ -563,14 +563,14 @@ macro HandlePrepareReplies(r) begin
         await Cardinality({pr.src: pr \in prs}) >= MajorityNum;
         with prsGot \in {prsGot \in SUBSET prs:
                          Cardinality({pr.src: pr \in prsGot}) >= MajorityNum},
-             lts = LastTouchedSlot(prs)
+             lts = LastTouchedSlot(prsGot)
         do
             \* marks this ballot as prepared and saves highest voted command
             \* in each slot if any
             node[r].balPrepared := node[r].balMaxKnown ||
             node[r].insts :=
                 [s \in Slots |->
-                    LET pvw == PeakVotedWrite(prs, s)
+                    LET pvw == PeakVotedWrite(prsGot, s)
                         adopted == \/ node[r].insts[s].status = "Preparing"
                                    \/ /\ node[r].insts[s].status = "Empty"
                                       /\ pvw # "nil"
@@ -1172,10 +1172,10 @@ rloop(self) == /\ pc[self] = "rloop"
                                      /\ Cardinality({pr.src: pr \in prs}) >= MajorityNum
                                      /\ \E prsGot \in {prsGot \in SUBSET prs:
                                                        Cardinality({pr.src: pr \in prsGot}) >= MajorityNum}:
-                                          LET lts == LastTouchedSlot(prs) IN
+                                          LET lts == LastTouchedSlot(prsGot) IN
                                             /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
                                                                     ![self].insts = [s \in Slots |->
-                                                                                        LET pvw == PeakVotedWrite(prs, s)
+                                                                                        LET pvw == PeakVotedWrite(prsGot, s)
                                                                                             adopted == \/ node[self].insts[s].status = "Preparing"
                                                                                                        \/ /\ node[self].insts[s].status = "Empty"
                                                                                                           /\ pvw # "nil"
