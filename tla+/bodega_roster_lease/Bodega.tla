@@ -558,37 +558,41 @@ macro HandlePrepareReplies(r) begin
           /\ node[r].balPrepared = 0;
     \* when there are enough number of PrepareReplies of desired ballot
     with prs = {m \in msgs: /\ m.type = "PrepareReply"
-                            /\ m.bal = node[r].balMaxKnown},
-         lts = LastTouchedSlot(prs)
+                            /\ m.bal = node[r].balMaxKnown}
     do
         await Cardinality({pr.src: pr \in prs}) >= MajorityNum;
-        \* marks this ballot as prepared and saves highest voted command
-        \* in each slot if any
-        node[r].balPrepared := node[r].balMaxKnown ||
-        node[r].insts :=
-            [s \in Slots |->
-                LET pvw == PeakVotedWrite(prs, s)
-                    adopted == \/ node[r].insts[s].status = "Preparing"
-                               \/ /\ node[r].insts[s].status = "Empty"
-                                  /\ pvw # "nil"
-                IN  [node[r].insts[s]
-                        EXCEPT !.status = IF adopted
-                                            THEN "Accepting"
-                                            ELSE @,
-                               !.write  = pvw,
-                               !.voted  = IF adopted
-                                            THEN [bal |-> node[r].balMaxKnown,
-                                                  write |-> pvw]
-                                            ELSE @]] ||
-        node[r].commitPrev := lts;
-        \* send Accept messages for in-progress instances and reply to myself
-        \* instantly; send PrepareNotices as well (mimicking threshold-carrying
-        \* messages, in paper manuscript this is achieved via Guard messages)
-        Send(     UNION
-                  {{AcceptMsg(r, node[r].balPrepared, s, node[r].insts[s].write),
-                    AcceptReplyMsg(r, node[r].balPrepared, s)}:
-                   s \in {s \in Slots: node[r].insts[s].status = "Accepting"}}
-             \cup {PrepareNoticeMsg(r, node[r].balPrepared, lts)});
+        with prsGot \in {prsGot \in SUBSET prs:
+                         Cardinality({pr.src: pr \in prsGot}) >= MajorityNum},
+             lts = LastTouchedSlot(prs)
+        do
+            \* marks this ballot as prepared and saves highest voted command
+            \* in each slot if any
+            node[r].balPrepared := node[r].balMaxKnown ||
+            node[r].insts :=
+                [s \in Slots |->
+                    LET pvw == PeakVotedWrite(prs, s)
+                        adopted == \/ node[r].insts[s].status = "Preparing"
+                                   \/ /\ node[r].insts[s].status = "Empty"
+                                      /\ pvw # "nil"
+                    IN  [node[r].insts[s]
+                            EXCEPT !.status = IF adopted
+                                                THEN "Accepting"
+                                                ELSE @,
+                                   !.write  = pvw,
+                                   !.voted  = IF adopted
+                                                THEN [bal |-> node[r].balMaxKnown,
+                                                      write |-> pvw]
+                                                ELSE @]] ||
+            node[r].commitPrev := lts;
+            \* send Accept messages for in-progress instances and reply to myself
+            \* instantly; send PrepareNotices as well (mimicking threshold-carrying
+            \* messages, in paper manuscript this is achieved via Guard messages)
+            Send(    UNION
+                     {{AcceptMsg(r, node[r].balPrepared, s, node[r].insts[s].write),
+                       AcceptReplyMsg(r, node[r].balPrepared, s)}:
+                      s \in {s \in Slots: node[r].insts[s].status = "Accepting"}}
+                \cup {PrepareNoticeMsg(r, node[r].balPrepared, lts)});
+        end with;
     end with;
 end macro;
 
@@ -682,15 +686,19 @@ macro HandleAcceptReplies(r) begin
                             /\ m.bal = node[r].balPrepared}
     do
         await WriteCommittable(r, ars);
-        \* marks this slot as committed and apply command
-        node[r].insts[s].status := "Committed" ||
-        node[r].commitUpTo := s;
-        \* append to observed events sequence if haven't yet, and remove
-        \* the command from pending
-        Observe(<<AckEvent(c, v, r)>>);
-        Resolve(c);
-        \* broadcast CommitNotice to followers
-        Send({CommitNoticeMsg(s)});
+        with arsGot \in {arsGot \in SUBSET ars:
+                         WriteCommittable(r, arsGot)}
+        do
+            \* marks this slot as committed and apply command
+            node[r].insts[s].status := "Committed" ||
+            node[r].commitUpTo := s;
+            \* append to observed events sequence if haven't yet, and remove
+            \* the command from pending
+            Observe(<<AckEvent(c, v, r)>>);
+            Resolve(c);
+            \* broadcast CommitNotice to followers
+            Send({CommitNoticeMsg(s)});
+        end with;
     end with;
 end macro;
 
@@ -1161,29 +1169,31 @@ rloop(self) == /\ pc[self] = "rloop"
                                    /\ node[self].balPrepared = 0
                                 /\ LET prs == {m \in msgs: /\ m.type = "PrepareReply"
                                                            /\ m.bal = node[self].balMaxKnown} IN
-                                     LET lts == LastTouchedSlot(prs) IN
-                                       /\ Cardinality({pr.src: pr \in prs}) >= MajorityNum
-                                       /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
-                                                               ![self].insts = [s \in Slots |->
-                                                                                   LET pvw == PeakVotedWrite(prs, s)
-                                                                                       adopted == \/ node[self].insts[s].status = "Preparing"
-                                                                                                  \/ /\ node[self].insts[s].status = "Empty"
-                                                                                                     /\ pvw # "nil"
-                                                                                   IN  [node[self].insts[s]
-                                                                                           EXCEPT !.status = IF adopted
-                                                                                                               THEN "Accepting"
-                                                                                                               ELSE @,
-                                                                                                  !.write  = pvw,
-                                                                                                  !.voted  = IF adopted
-                                                                                                               THEN [bal |-> node[self].balMaxKnown,
-                                                                                                                     write |-> pvw]
-                                                                                                               ELSE @]],
-                                                               ![self].commitPrev = lts]
-                                       /\ msgs' = (msgs \cup (     UNION
-                                                                   {{AcceptMsg(self, node'[self].balPrepared, s, node'[self].insts[s].write),
-                                                                     AcceptReplyMsg(self, node'[self].balPrepared, s)}:
-                                                                    s \in {s \in Slots: node'[self].insts[s].status = "Accepting"}}
-                                                   \cup {PrepareNoticeMsg(self, node'[self].balPrepared, lts)}))
+                                     /\ Cardinality({pr.src: pr \in prs}) >= MajorityNum
+                                     /\ \E prsGot \in {prsGot \in SUBSET prs:
+                                                       Cardinality({pr.src: pr \in prsGot}) >= MajorityNum}:
+                                          LET lts == LastTouchedSlot(prs) IN
+                                            /\ node' = [node EXCEPT ![self].balPrepared = node[self].balMaxKnown,
+                                                                    ![self].insts = [s \in Slots |->
+                                                                                        LET pvw == PeakVotedWrite(prs, s)
+                                                                                            adopted == \/ node[self].insts[s].status = "Preparing"
+                                                                                                       \/ /\ node[self].insts[s].status = "Empty"
+                                                                                                          /\ pvw # "nil"
+                                                                                        IN  [node[self].insts[s]
+                                                                                                EXCEPT !.status = IF adopted
+                                                                                                                    THEN "Accepting"
+                                                                                                                    ELSE @,
+                                                                                                       !.write  = pvw,
+                                                                                                       !.voted  = IF adopted
+                                                                                                                    THEN [bal |-> node[self].balMaxKnown,
+                                                                                                                          write |-> pvw]
+                                                                                                                    ELSE @]],
+                                                                    ![self].commitPrev = lts]
+                                            /\ msgs' = (msgs \cup (     UNION
+                                                                        {{AcceptMsg(self, node'[self].balPrepared, s, node'[self].insts[s].write),
+                                                                          AcceptReplyMsg(self, node'[self].balPrepared, s)}:
+                                                                         s \in {s \in Slots: node'[self].insts[s].status = "Accepting"}}
+                                                        \cup {PrepareNoticeMsg(self, node'[self].balPrepared, lts)}))
                                 /\ UNCHANGED <<pending, observed, crashed, time>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ node[self].commitPrev = InfinitySlot
@@ -1237,11 +1247,13 @@ rloop(self) == /\ pc[self] = "rloop"
                                                                    /\ m.slot = s
                                                                    /\ m.bal = node[self].balPrepared} IN
                                              /\ WriteCommittable(self, ars)
-                                             /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
-                                                                     ![self].commitUpTo = s]
-                                             /\ observed' = AppendObserved((<<AckEvent(c, v, self)>>))
-                                             /\ pending' = RemovePending(c)
-                                             /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
+                                             /\ \E arsGot \in {arsGot \in SUBSET ars:
+                                                               WriteCommittable(self, arsGot)}:
+                                                  /\ node' = [node EXCEPT ![self].insts[s].status = "Committed",
+                                                                          ![self].commitUpTo = s]
+                                                  /\ observed' = AppendObserved((<<AckEvent(c, v, self)>>))
+                                                  /\ pending' = RemovePending(c)
+                                                  /\ msgs' = (msgs \cup ({CommitNoticeMsg(s)}))
                                 /\ UNCHANGED <<crashed, time>>
                              \/ /\ /\ ThinkAmFollower(self)
                                    /\ node[self].commitUpTo < NumWrites
