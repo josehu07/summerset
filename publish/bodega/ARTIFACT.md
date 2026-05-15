@@ -17,6 +17,8 @@ This artifact (GitHub [josehu07/summerset](https://github.com/josehu07/summerset
 
 We use [CloudLab](https://www.cloudlab.us/), a common platform used by systems researchers, as our testbed. If you are new to CloudLab and need access, please reach out to the AEC.
 
+> Since AE runs in parallel with paper draft revisions, we were making edits to the draft as we were preparing the artifact, and the Figure numbers below might be off by 1.
+
 Our evaluation setup includes a local development machine from where you run the scripts, and 2 CloudLab clusters mapping to Figure 8.
 
 ### Local Machine
