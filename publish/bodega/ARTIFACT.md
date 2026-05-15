@@ -17,7 +17,7 @@ This artifact (GitHub [josehu07/summerset](https://github.com/josehu07/summerset
 
 We use [CloudLab](https://www.cloudlab.us/), a common platform used by systems researchers, as our testbed. If you are new to CloudLab and need access, please reach out to the AEC.
 
-Our evaluation setup includes a local development machine from where you run the scripts, and 2 CloudLab clusters mapping to Figure 7.
+Our evaluation setup includes a local development machine from where you run the scripts, and 2 CloudLab clusters mapping to Figure 8.
 
 ### Local Machine
 
@@ -49,12 +49,12 @@ uv run -m scripts.remote_ssh_to -h  # should print help message
 ### CloudLab Clusters
 
 Log in to CloudLab console, and create two experiments, each instantiating a cluster. Please use the following profiles, respectively:
-* [smr.dev.wan](https://www.cloudlab.us/p/AdvOSUWMadison/smr.dev.wan): use 5 nodes (default) and leave the semi-round-robin flag unticked; this will create a cluster of 5 nodes in 5 different CloudLab datacenters, mapping to Figure 7. WAN scenario
-* [smr.dev.reg](https://www.cloudlab.us/p/AdvOSUWMadison/smr.dev.reg): use 5 nodes (default); this will create a cluster of 5 `c220g5` nodes used with emulated network interface latency, mapping to Figure 7. GEO scenario
+* [smr.dev.wan](https://www.cloudlab.us/p/AdvOSUWMadison/smr.dev.wan): use 5 nodes (default) and leave the semi-round-robin flag unticked; this will create a cluster of 5 nodes in 5 different CloudLab datacenters, mapping to Figure 8. WAN scenario
+* [smr.dev.reg](https://www.cloudlab.us/p/AdvOSUWMadison/smr.dev.reg): use 5 nodes (default); this will create a cluster of 5 `c220g5` nodes used with emulated network interface latency, mapping to Figure 8. GEO scenario
 
 > CloudLab resources are tight and you may fail to create the experiments due to insufficient availability. We have no control over CloudLab resources and reservations; we'd kindly ask reviewers to contact the AEC for coordinating availability if needed.
 >
-> If you cannot acquire the 5 `c220g5` nodes cluster, it is fine to skip, because it is used only in the emulated GEO setting of Figure 8 (a)(b)(c). All other experiments used the actual WAN cluster.
+> If you cannot acquire the 5 `c220g5` nodes cluster, it is fine to skip, because it is used only in the emulated GEO setting of Figure 9 (a)(b)(c). All other experiments used the actual WAN cluster.
 
 Once the experiments are ready, open `scripts/remote_hosts.toml` and replacement the placeholders with actual node urls (hostx mapping to nodex), like so:
 
@@ -139,70 +139,70 @@ uv run -m scripts.bodega.bench_<exper_name> -p
 
 To reproduce the results in our manuscript, please run the following scripts **on the said host**, respectively.
 
-Figure 8 (a)(b)(c) -- run on `reg` cluster `host0`:  
+Figure 9 (a)(b)(c) -- run on `reg` cluster `host0`:  
 
 ```sh
 # on reg host0
 uv run -m scripts.bodega.bench_loc_grid_geo
 ```
 
-Figure 8 (d)(e)(f) -- run on `wan` cluster `host0`:  
+Figure 9 (d)(e)(f) -- run on `wan` cluster `host0`:  
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_loc_grid_wan
 ```
 
-Figure 9 -- run on `wan` cluster `host0`:
+Figure 10 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_tput_lat_curve
 ```
 
-Figure 10 -- run on `wan` cluster `host0`:
+Figure 11 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_latency_cdfs
 ```
 
-Figure 11 -- run on `wan` cluster `host0`:
+Figure 12 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_rlats_on_write
 ```
 
-Figure 12 & 13 -- run on `wan` cluster `host0`:
+Figure 13 & 14 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_writes_sizes
 ```
 
-Figure 14 is based on simulation, can be run locally:
+Figure 15 is based on simulation, can be run locally:
 
 ```sh
 # local (note no -m)
 uv run models/bodega/failure_tput_sim.py
 ```
 
-Figure 15 -- run on `wan` cluster `host0`:
+Figure 16 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_wlats_on_conf
 ```
 
-Figure 16 & 17 -- run on `wan` cluster `host0`:
+Figure 17 & 18 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
 uv run -m scripts.bodega.bench_conf_coverage
 ```
 
-Figure 18 -- run on `wan` cluster `host0`:
+Figure 19 -- run on `wan` cluster `host0`:
 
 ```sh
 # on wan host0
