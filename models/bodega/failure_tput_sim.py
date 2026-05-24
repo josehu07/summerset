@@ -1,6 +1,7 @@
 # Monte Carlo simulation by Claude Sonnet 4
 
 import argparse
+import os
 import numpy as np
 import time
 import re
@@ -8,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 import matplotlib
 import matplotlib.pyplot as plt
+
+
+EXPER_NAME = "ftsim"
 
 
 def get_coverage_tputs() -> List[float]:
@@ -129,7 +133,8 @@ def simulate(params: SimulationParams) -> SimulationResult:
 
 def run_simulations(odir: str):
     """Run the simulation and display results"""
-    log_path = f"{odir}/ftsim/result-ftsim.log"
+    os.makedirs(f"{odir}/{EXPER_NAME}", exist_ok=True)
+    log_path = f"{odir}/{EXPER_NAME}/result-{EXPER_NAME}.log"
 
     # Set random seed for reproducibility
     np.random.seed(42)
@@ -221,7 +226,8 @@ def plot_results(odir: str):
     """
     Plot the results from the result log file.
     """
-    log_path = f"{odir}/ftsim/result-ftsim.log"
+    os.makedirs(f"{odir}/{EXPER_NAME}", exist_ok=True)
+    log_path = f"{odir}/{EXPER_NAME}/result-{EXPER_NAME}.log"
     throughput_list, simulation_results = parse_result_log(log_path)
 
     num_servers = len(throughput_list) - 1
@@ -251,7 +257,7 @@ def plot_results(odir: str):
             "pdf.fonttype": 42,
         }
     )
-    _fig = plt.figure("Model-ftsim")
+    _fig = plt.figure(f"Model-{EXPER_NAME}")
 
     CASES_ORDER = [
         "LeaderLeases-no-failure",
@@ -316,7 +322,7 @@ def plot_results(odir: str):
 
     plt.tight_layout()
 
-    pdf_name = f"{odir}/ftsim/result-ftsim.pdf"
+    pdf_name = f"{odir}/{EXPER_NAME}/result-{EXPER_NAME}.pdf"
     plt.savefig(pdf_name, bbox_inches="tight")
     plt.close()
     print(f"Plotted: {pdf_name}")
