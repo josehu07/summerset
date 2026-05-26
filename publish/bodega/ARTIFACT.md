@@ -1,5 +1,9 @@
 # Bodega Artifact (OSDI '26)
 
+[![Zenodo DOI](https://zenodo.org/badge/562207083.svg)](https://doi.org/10.5281/zenodo.20391788)
+
+Zenodo archive of this artifact is available at: <https://doi.org/10.5281/zenodo.20391788>.
+
 This document describes our artifact for Bodega (OSDI '26) and contains evaluation instructions.
 
 ## Contents
