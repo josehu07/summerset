@@ -15,7 +15,7 @@ Summerset is a distributed, replicated, protocol-generic key-value store support
 Reference:
 
 ```txt
-@phdthesis{
+@phdthesis{summerset
   author    = {Hu, Guanzhou},
   year      = {2025},
   title     = {Cloud Consensus Protocols With Optimistic Connectivity},
@@ -25,7 +25,6 @@ Reference:
   isbn      = {9798286499199},
   language  = {English},
   url       = {https://www.proquest.com/dissertations-theses/cloud-consensus-protocols-with-optimistic/docview/3228170052/se-2},
-  note      = {Copyright - Database copyright ProQuest LLC; ProQuest does not claim copyright in the individual underlying works; Last updated - 2025-08-01},
 }
 ```
 
@@ -44,7 +43,7 @@ Reference:
 | `CRaft` | Raft w/ erasure code sharding and fallback | [paper](https://www.usenix.org/system/files/fast20-wang_zizhong.pdf) |
 | `Crossword` | Quorum-shards tradeoff for dynamic payloads | tba |
 | `QuorumLeases` | Local reads at leaseholders when quiescent | [paper](https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf) |
-| `Bodega` | Always-local linearizable reads via roster leases | tba |
+| `Bodega` | Always-local linearizable reads via roster leases | [paper](https://www.usenix.org/conference/osdi26/presentation/hu-guanzhou), [website](https://bodega-consensus.com) |
 
 Formal TLA+ specification of some protocols are provided in `tla+/`.
 
