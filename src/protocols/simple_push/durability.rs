@@ -51,7 +51,7 @@ impl SimplePushReplica {
 
         // if this instance was pushed from a peer, reply to that peer
         if let Some((peer, src_inst_idx)) = inst.from_peer {
-            debug_assert!(inst.pending_peers.count() == 0);
+            debug_assert_eq!(inst.pending_peers.count(), 0);
             self.transport_hub.send_msg(
                 PushMsg::PushReply {
                     src_inst_idx,
