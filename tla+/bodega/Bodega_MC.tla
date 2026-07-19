@@ -14,14 +14,18 @@ SymmetricPerms ==      ConditionalPerm(Replicas)
 
 ConstMaxBallot == 2
 
+ConstTGuard == 1
+ConstTLease == 1
+ConstMaxTime == 3
+
 ----------
 
 (*************************)
 (* Type check invariant. *)
 (*************************)
 TypeOK == /\ \A m \in msgs: m \in Messages
-          /\ \A g \in grants: g \in LeaseGrants
           /\ \A r \in Replicas: node[r] \in NodeStates
+          /\ \A r \in Replicas: time[r] \in Times
           /\ Len(pending) =< NumCommands
           /\ Cardinality(Range(pending)) = Len(pending)
           /\ \A c \in Range(pending): c \in Commands
@@ -31,24 +35,46 @@ TypeOK == /\ \A m \in msgs: m \in Messages
           /\ \A e \in Range(observed): e \in ClientEvents
           /\ \A r \in Replicas: crashed[r] \in BOOLEAN
 
-THEOREM AbstractSpec => []TypeOK
+THEOREM Spec => []TypeOK
 
 ----------
 
-(**************************************)
-(* Lease safety guarantee assertions. *)
-(**************************************)
-AtMostOneGrantPerNode == AtMostOneGrantPerNodeIn(grants)
+(*************************************)
+(* Lease expiration safety property. *)
+(*************************************)
+LeaseExpirationSafety ==
+    \A f, p \in Replicas:
+        (/\ node[p].asGrantee[f].status = "Renewed"
+         /\ node[p].asGrantee[f].leaseExpire > time[p])
+            => (/\ node[f].asGrantor[p].status \in {"Renewing", "Revoking"}
+                /\ node[f].asGrantor[p].leaseExpire
+                   >= node[p].asGrantee[f].leaseExpire)
+
+THEOREM Spec => []LeaseExpirationSafety
+
+----------
+
+(******************************************)
+(* Lease uniqueness guarantee assertions. *)
+(******************************************)
+AtMostGrantsOneRoster ==
+    \A f \in Replicas, b \in Ballots:
+        Cardinality({ros \in Rosters:
+                     \E p \in Replicas: /\ FGrantsPWithRos(f, p, ros)
+                                        /\ ros.bal = b}) =< 1
 
 AtMostOneStableRoster ==
     \A ros1, ros2 \in Rosters:
-        (/\ Cardinality({g \in grants: g.roster = ros1}) >= MajorityNum
-         /\ Cardinality({g \in grants: g.roster = ros2}) >= MajorityNum
-         /\ ros1.bal = ros2.bal)
+        (/\ Cardinality({f \in Replicas:
+                         \E p \in Replicas: FGrantsPWithRos(f, p, ros1)})
+                >= MajorityNum
+         /\ Cardinality({f \in Replicas:
+                         \E p \in Replicas: FGrantsPWithRos(f, p, ros2)})
+                >= MajorityNum)
         => (ros1 = ros2)
 
-THEOREM AbstractSpec => /\ []AtMostOneGrantPerNode
-                        /\ []AtMostOneStableRoster
+THEOREM Spec => /\ []AtMostGrantsOneRoster
+                /\ []AtMostOneStableRoster
 
 ----------
 
@@ -84,11 +110,11 @@ ObeysRealTime(order) ==
             => (OrderIdxOfCmd(order, c1) < OrderIdxOfCmd(order, c2))
 
 Linearizability ==
-    terminated => 
+    terminated =>
         \E order \in [1..NumCommands -> Commands]:
             /\ IsLinearOrder(order)
             /\ ObeysRealTime(order)
 
-THEOREM AbstractSpec => Linearizability
+THEOREM Spec => Linearizability
 
 ====
