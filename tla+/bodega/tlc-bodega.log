@@ -2828,4 +2828,4 @@ Model checking completed. No error has been found.
 11164999780 states generated, 4274883464 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 61.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 18 and the 95th percentile is 1).
-Finished in 1d 19h at (2026-05-18 21:39:44)
+Finished in 1d 19h at (2026-05-18 21:39:45)
