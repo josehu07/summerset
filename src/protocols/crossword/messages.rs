@@ -144,7 +144,7 @@ impl CrosswordReplica {
         trigger_slot: usize,
         endprep_slot: usize,
         ballot: Ballot,
-        voted: Option<(Ballot, RSCodeword<ReqBatch>)>,
+        voted: Option<AcceptedValue>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -155,7 +155,7 @@ impl CrosswordReplica {
             slot,
             endprep_slot,
             ballot,
-            voted.as_ref().map(|(_, cw)| cw.avail_shards_map())
+            voted.as_ref().map(|value| value.reqs_cw.avail_shards_map())
         );
 
         // if ballot is what I'm currently waiting on for Prepare replies:
@@ -198,7 +198,7 @@ impl CrosswordReplica {
                     trigger_slot,
                     endprep_slot: my_endprep_slot,
                     prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
+                    prepare_values: HashMap::new(),
                     accept_acks: HashMap::new(),
                 });
 
@@ -231,20 +231,13 @@ impl CrosswordReplica {
                 debug_assert!(self.bal_max_seen >= ballot);
 
                 // bookkeep this Prepare reply
-                if let Some((bal, val)) = voted {
+                if let Some(value) = voted {
                     debug_assert!(inst.leader_bk.is_some());
                     let leader_bk = inst.leader_bk.as_mut().unwrap();
-                    #[allow(clippy::comparison_chain)]
-                    if bal > leader_bk.prepare_max_bal {
-                        // is of ballot > current maximum, so discard the
-                        // current codeword and take the replied codeword
-                        leader_bk.prepare_max_bal = bal;
-                        inst.reqs_cw = val;
-                    } else if bal == leader_bk.prepare_max_bal {
-                        // is of ballot == the one currently taken, so merge
-                        // the replied codeword into the current one
-                        inst.reqs_cw.absorb_other(val)?;
-                    }
+                    Self::record_prepared_value(
+                        &mut leader_bk.prepare_values,
+                        value,
+                    )?;
                 }
             }
 
@@ -276,11 +269,28 @@ impl CrosswordReplica {
                         .skip(trigger_slot - self.start_slot)
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
+                        let candidate = inst
+                            .leader_bk
+                            .as_ref()
+                            .unwrap()
+                            .prepare_values
+                            .values()
+                            .max_by_key(|value| value.ballot);
+                        if let Some(candidate) = candidate {
+                            inst.value_id = Some(candidate.value_id);
+                            inst.reqs_cw = candidate.reqs_cw.clone();
+                        } else {
+                            inst.value_id = None;
+                            inst.reqs_cw = RSCodeword::from_null(
+                                self.rs_data_shards,
+                                self.rs_total_shards - self.rs_data_shards,
+                            )?;
+                        }
+
                         if inst.reqs_cw.avail_shards() >= self.rs_data_shards {
                             // if quorum size >= majority and enough shards
-                            // with the highest ballot in quorum are gathered
-                            // to reconstruct the original data, use the
-                            // reconstructed request batch
+                            // of the highest-ballot value are gathered across
+                            // all ballots, reconstruct the original batch
                             if inst.reqs_cw.avail_data_shards()
                                 < self.rs_data_shards
                             {
@@ -288,6 +298,14 @@ impl CrosswordReplica {
                                 inst.reqs_cw
                                     .reconstruct_data(Some(&self.rs_coder))?;
                             }
+                            Self::verify_value_id(
+                                inst.value_id.expect(
+                                    "non-null Prepare value should have an identity",
+                                ),
+                                &mut inst.reqs_cw,
+                                self.rs_data_shards,
+                                self.rs_total_shards,
+                            )?;
                         } else if prepare_acks_cnt
                             >= (self.population - self.config.fault_tolerance)
                         {
@@ -295,8 +313,14 @@ impl CrosswordReplica {
                             // the highest ballot are not enough to reconstruct
                             // the original data, can choose any value; we just
                             // fill this instance with a null request batch
+                            let reqs = ReqBatch::new();
+                            inst.value_id = Some(Self::value_id(
+                                &reqs,
+                                self.rs_data_shards,
+                                self.rs_total_shards,
+                            )?);
                             inst.reqs_cw = RSCodeword::from_data(
-                                ReqBatch::new(),
+                                reqs,
                                 self.rs_data_shards,
                                 self.rs_total_shards - self.rs_data_shards,
                             )?;
@@ -338,8 +362,18 @@ impl CrosswordReplica {
                             &assignment[self.id as usize],
                             false,
                         )?;
+                        let value_id = inst.value_id.expect(
+                            "Accepting instance should have a value identity",
+                        );
                         inst.assignment.clone_from(assignment);
-                        inst.voted = (ballot, subset_copy.clone());
+                        Self::record_acceptance(
+                            &mut inst.voted,
+                            AcceptedValue {
+                                ballot,
+                                value_id,
+                                reqs_cw: subset_copy.clone(),
+                            },
+                        )?;
                         self.storage_hub.submit_action(
                             Self::make_log_action_id(
                                 this_slot,
@@ -349,6 +383,7 @@ impl CrosswordReplica {
                                 entry: WalEntry::AcceptData {
                                     slot: this_slot,
                                     ballot,
+                                    value_id,
                                     reqs_cw: subset_copy,
                                     assignment: assignment.clone(),
                                 },
@@ -371,6 +406,7 @@ impl CrosswordReplica {
                                 PeerMsg::Accept {
                                     slot: this_slot,
                                     ballot,
+                                    value_id,
                                     reqs_cw: inst.reqs_cw.subset_copy(
                                         &assignment[peer as usize],
                                         false,
@@ -405,6 +441,7 @@ impl CrosswordReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
+        value_id: ValueId,
         reqs_cw: RSCodeword<ReqBatch>,
         assignment: Vec<Bitmap>,
     ) -> Result<(), SummersetError> {
@@ -434,9 +471,20 @@ impl CrosswordReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert!(inst.bal <= ballot);
 
+            let recv_size = reqs_cw.get_size();
+            let wal_cw = reqs_cw.clone();
+            Self::record_acceptance(
+                &mut inst.voted,
+                AcceptedValue {
+                    ballot,
+                    value_id,
+                    reqs_cw,
+                },
+            )?;
             inst.bal = ballot;
             inst.status = Status::Accepting;
-            inst.reqs_cw = reqs_cw;
+            inst.value_id = Some(value_id);
+            inst.reqs_cw = inst.voted.as_ref().unwrap().reqs_cw.clone();
             inst.assignment = assignment;
             inst.replica_bk = Some(ReplicaBookkeeping {
                 source: peer,
@@ -449,19 +497,18 @@ impl CrosswordReplica {
                 (*self
                     .bw_accumulators
                     .get_mut(&peer)
-                    .expect("peer should exist in experiments")) +=
-                    inst.reqs_cw.get_size();
+                    .expect("peer should exist in experiments")) += recv_size;
             }
 
             // record update to instance ballot & data
-            inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Accepting),
                 LogAction::Append {
                     entry: WalEntry::AcceptData {
                         slot,
                         ballot,
-                        reqs_cw: inst.reqs_cw.clone(),
+                        value_id,
+                        reqs_cw: wal_cw,
                         assignment: inst.assignment.clone(),
                     },
                     sync: self.config.logger_sync,
@@ -614,8 +661,17 @@ impl CrosswordReplica {
                 continue;
             }
 
-            // send back my ballot for this slot and the available shards
-            slots_data.insert(slot, (inst.bal, reply_cw));
+            let Some(value_id) = inst.value_id else {
+                continue;
+            };
+            slots_data.insert(
+                slot,
+                AcceptedValue {
+                    ballot: inst.bal,
+                    value_id,
+                    reqs_cw: reply_cw,
+                },
+            );
         }
 
         if !slots_data.is_empty() {
@@ -635,9 +691,17 @@ impl CrosswordReplica {
     fn handle_msg_reconstruct_reply(
         &mut self,
         peer: ReplicaId,
-        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
+        slots_data: HashMap<usize, AcceptedValue>,
     ) -> Result<(), SummersetError> {
-        for (slot, (ballot, reqs_cw)) in slots_data {
+        for (
+            slot,
+            AcceptedValue {
+                ballot,
+                value_id,
+                reqs_cw,
+            },
+        ) in slots_data
+        {
             if slot < self.start_slot {
                 continue; // ignore if slot index outdated
             }
@@ -663,9 +727,9 @@ impl CrosswordReplica {
                     reqs_cw.get_size();
             }
 
-            // if reply not outdated and ballot is up-to-date
-            if inst.status < Status::Executed && ballot >= inst.bal {
-                // absorb the shards from this replica
+            // Same-value shards remain useful regardless of accepted ballot.
+            if inst.status < Status::Executed && inst.value_id == Some(value_id)
+            {
                 inst.reqs_cw.absorb_other(reqs_cw)?;
 
                 // if enough shards have been gathered, can push execution forward
@@ -687,6 +751,14 @@ impl CrosswordReplica {
                             inst.reqs_cw
                                 .reconstruct_data(Some(&self.rs_coder))?;
                         }
+                        Self::verify_value_id(
+                            inst.value_id.expect(
+                                "committed instance should have an identity",
+                            ),
+                            &mut inst.reqs_cw,
+                            self.rs_data_shards,
+                            self.rs_total_shards,
+                        )?;
                         let reqs = inst.reqs_cw.get_data()?;
 
                         // submit commands in committed instance to the state machine
@@ -749,11 +821,14 @@ impl CrosswordReplica {
             PeerMsg::Accept {
                 slot,
                 ballot,
+                value_id,
                 reqs_cw,
                 assignment,
             } => {
-                self.handle_msg_accept(peer, slot, ballot, reqs_cw, assignment)
-                    .await
+                self.handle_msg_accept(
+                    peer, slot, ballot, value_id, reqs_cw, assignment,
+                )
+                .await
             }
             PeerMsg::AcceptReply {
                 slot,

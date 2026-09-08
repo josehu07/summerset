@@ -6,6 +6,39 @@ use crate::utils::SummersetError;
 
 // CrosswordReplica recovery from WAL log
 impl CrosswordReplica {
+    /// Apply a recovered acceptance, retaining same-value shards from older
+    /// ballots encountered earlier in the WAL.
+    fn recover_accepted_data(
+        &mut self,
+        slot: usize,
+        accepted: AcceptedValue,
+        assignment: Vec<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        if slot < self.start_slot {
+            return Ok(());
+        }
+        while self.start_slot + self.insts.len() <= slot {
+            self.insts.push(self.null_instance()?);
+        }
+
+        let ballot = accepted.ballot;
+        let value_id = accepted.value_id;
+        let inst = &mut self.insts[slot - self.start_slot];
+        Self::record_acceptance(&mut inst.voted, accepted)?;
+        inst.bal = ballot;
+        inst.status = Status::Accepting;
+        inst.value_id = Some(value_id);
+        inst.reqs_cw = inst.voted.as_ref().unwrap().reqs_cw.clone();
+        inst.assignment = assignment;
+
+        // The PrepareBal action for this ballot may have been snapshotted.
+        self.bal_prep_sent = cmp::max(self.bal_prep_sent, ballot);
+        self.bal_prepared = cmp::max(self.bal_prepared, ballot);
+        self.bal_max_seen = cmp::max(self.bal_max_seen, ballot);
+        debug_assert!(self.bal_prepared <= self.bal_prep_sent);
+        Ok(())
+    }
+
     /// Apply a durable storage log entry for recovery.
     async fn recover_apply_entry(
         &mut self,
@@ -37,37 +70,18 @@ impl CrosswordReplica {
             WalEntry::AcceptData {
                 slot,
                 ballot,
+                value_id,
                 reqs_cw,
                 assignment,
-            } => {
-                if slot < self.start_slot {
-                    return Ok(()); // ignore if slot index outdated
-                }
-                // locate instance in memory, filling in null instances if needed
-                while self.start_slot + self.insts.len() <= slot {
-                    self.insts.push(self.null_instance()?);
-                }
-                // update instance state
-                let inst = &mut self.insts[slot - self.start_slot];
-                inst.bal = ballot;
-                inst.status = Status::Accepting;
-                inst.reqs_cw = reqs_cw.clone();
-                inst.assignment = assignment;
-                inst.voted = (ballot, reqs_cw);
-                // it could be the case that the PrepareBal action for this
-                // ballot has been snapshotted
-                if self.bal_prep_sent < ballot {
-                    self.bal_prep_sent = ballot;
-                }
-                // update bal_prepared and bal_max_seen
-                if self.bal_prepared < ballot {
-                    self.bal_prepared = ballot;
-                }
-                if self.bal_max_seen < ballot {
-                    self.bal_max_seen = ballot;
-                }
-                debug_assert!(self.bal_prepared <= self.bal_prep_sent);
-            }
+            } => self.recover_accepted_data(
+                slot,
+                AcceptedValue {
+                    ballot,
+                    value_id,
+                    reqs_cw,
+                },
+                assignment,
+            )?,
 
             WalEntry::CommitSlot { slot } => {
                 if slot < self.start_slot {

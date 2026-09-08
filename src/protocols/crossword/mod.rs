@@ -28,6 +28,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -209,6 +210,19 @@ enum Status {
 /// Request batch type (i.e., the "value" in Paxos).
 type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
+/// Ballot-independent identity digest of a request batch and its coding scheme.
+type ValueId = u128;
+
+/// Highest accepted ballot and all retained shards of its value.
+#[derive(
+    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
+)]
+struct AcceptedValue {
+    ballot: Ballot,
+    value_id: ValueId,
+    reqs_cw: RSCodeword<ReqBatch>,
+}
+
 /// Leader-side bookkeeping info for each instance initiated.
 #[derive(Debug, Clone)]
 struct LeaderBookkeeping {
@@ -221,8 +235,8 @@ struct LeaderBookkeeping {
     /// Replicas from which I have received Prepare confirmations.
     prepare_acks: Bitmap,
 
-    /// Max ballot among received Prepare replies.
-    prepare_max_bal: Ballot,
+    /// Shards gathered from Prepare replies, grouped by value identity.
+    prepare_values: HashMap<ValueId, AcceptedValue>,
 
     /// Replicas and their assigned shards which the received Accept
     /// confirmations cover.
@@ -256,12 +270,15 @@ struct Instance {
     /// avoid storing the full set of replies in `LeaderBookkeeping`.
     reqs_cw: RSCodeword<ReqBatch>,
 
+    /// Identity of the request batch in `reqs_cw`, if non-null.
+    value_id: Option<ValueId>,
+
     /// Shards assignment map which the leader used.
     assignment: Vec<Bitmap>,
 
-    /// Highest ballot and associated value I have accepted; this field is
-    /// required to support correct Prepare phase replies.
-    voted: (Ballot, RSCodeword<ReqBatch>),
+    /// Highest ballot and associated value I have accepted; shards of the same
+    /// value are retained across ballots for correct Prepare reconstruction.
+    voted: Option<AcceptedValue>,
 
     /// Leader-side bookkeeping info.
     leader_bk: Option<LeaderBookkeeping>,
@@ -288,6 +305,7 @@ enum WalEntry {
     AcceptData {
         slot: usize,
         ballot: Ballot,
+        value_id: ValueId,
         reqs_cw: RSCodeword<ReqBatch>,
         assignment: Vec<Bitmap>,
     },
@@ -347,15 +365,15 @@ enum PeerMsg {
         // NOTE: this currently assumes the "ordering" property of TCP.
         endprep_slot: usize,
         ballot: Ballot,
-        /// The accepted ballot number for that instance and the corresponding
-        /// request batch value shards known by replica.
-        voted: Option<(Ballot, RSCodeword<ReqBatch>)>,
+        /// Highest accepted ballot, value identity, and all retained shards.
+        voted: Option<AcceptedValue>,
     },
 
     /// Accept message from leader to replicas.
     Accept {
         slot: usize,
         ballot: Ballot,
+        value_id: ValueId,
         reqs_cw: RSCodeword<ReqBatch>,
         /// Shard-to-node assignment used for this instance.
         assignment: Vec<Bitmap>,
@@ -379,8 +397,8 @@ enum PeerMsg {
 
     /// Reconstruction read reply from replica to leader.
     ReconstructReply {
-        /// Map from slot -> (ballot, peer shards).
-        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
+        /// Map from slot to the identified shards known by the peer.
+        slots_data: HashMap<usize, AcceptedValue>,
     },
 
     /// Leader activity heartbeat.
@@ -576,14 +594,9 @@ impl CrosswordReplica {
                 self.rs_data_shards,
                 self.rs_total_shards - self.rs_data_shards,
             )?,
+            value_id: None,
             assignment: vec![],
-            voted: (
-                0,
-                RSCodeword::<ReqBatch>::from_null(
-                    self.rs_data_shards,
-                    self.rs_total_shards - self.rs_data_shards,
-                )?,
-            ),
+            voted: None,
             leader_bk: None,
             replica_bk: None,
             external: false,
@@ -655,6 +668,97 @@ impl CrosswordReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// Hash a request batch and a Reed-Solomon coding scheme into an identity digest.
+    fn value_id(
+        reqs: &ReqBatch,
+        rs_data_shards: u8,
+        rs_total_shards: u8,
+    ) -> Result<ValueId, SummersetError> {
+        let bytes = bincode::encode_to_vec(reqs, bincode::config::standard())?;
+        let mut hasher = Xxh3::new();
+        hasher.update(b"crossword");
+        hasher.update(&[rs_data_shards, rs_total_shards]);
+        hasher.update(&bytes);
+        Ok(hasher.digest128())
+    }
+
+    /// Record an acceptance without discarding shards retained for the same
+    /// value on older ballots.
+    fn record_acceptance(
+        voted: &mut Option<AcceptedValue>,
+        incoming: AcceptedValue,
+    ) -> Result<(), SummersetError> {
+        let Some(current) = voted else {
+            *voted = Some(incoming);
+            return Ok(());
+        };
+        if incoming.ballot < current.ballot {
+            return Err(SummersetError::msg(format!(
+                "accepted ballot regressed: {} -> {}",
+                current.ballot, incoming.ballot
+            )));
+        }
+        if incoming.ballot == current.ballot
+            && incoming.value_id != current.value_id
+        {
+            return Err(SummersetError::msg(format!(
+                "different values accepted at ballot {}",
+                incoming.ballot
+            )));
+        }
+        if incoming.value_id == current.value_id {
+            current.ballot = incoming.ballot;
+            current.reqs_cw.absorb_other(incoming.reqs_cw)?;
+        } else {
+            *current = incoming;
+        }
+        Ok(())
+    }
+
+    /// Add one Prepare reply to its value's cross-ballot shard pool.
+    fn record_prepared_value(
+        values: &mut HashMap<ValueId, AcceptedValue>,
+        incoming: AcceptedValue,
+    ) -> Result<(), SummersetError> {
+        if values.values().any(|value| {
+            value.ballot == incoming.ballot
+                && value.value_id != incoming.value_id
+        }) {
+            return Err(SummersetError::msg(format!(
+                "different values reported at ballot {}",
+                incoming.ballot
+            )));
+        }
+        if let Some(current) = values.get_mut(&incoming.value_id) {
+            current.ballot = cmp::max(current.ballot, incoming.ballot);
+            current.reqs_cw.absorb_other(incoming.reqs_cw)?;
+        } else {
+            values.insert(incoming.value_id, incoming);
+        }
+        Ok(())
+    }
+
+    /// Verify that reconstructed data matches its claimed value identity.
+    fn verify_value_id(
+        value_id: ValueId,
+        reqs_cw: &mut RSCodeword<ReqBatch>,
+        rs_data_shards: u8,
+        rs_total_shards: u8,
+    ) -> Result<(), SummersetError> {
+        let actual = Self::value_id(
+            reqs_cw.get_data()?,
+            rs_data_shards,
+            rs_total_shards,
+        )?;
+        if actual != value_id {
+            return Err(SummersetError::msg(format!(
+                "reconstructed value ID mismatch: expected {value_id:032x}, \
+                 got {actual:032x}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -1424,5 +1528,130 @@ impl GenericEndpoint for CrosswordClient {
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         &mut self.ctrl_stub
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod value_id {
+        use super::super::*;
+        use crate::server::Command;
+
+        fn batch(value: &str) -> ReqBatch {
+            vec![(
+                7,
+                ApiRequest::Req {
+                    id: 11,
+                    cmd: Command::Put {
+                        key: "key".into(),
+                        value: value.into(),
+                    },
+                },
+            )]
+        }
+
+        fn codeword(
+            reqs: ReqBatch,
+        ) -> Result<RSCodeword<ReqBatch>, SummersetError> {
+            let mut reqs_cw = RSCodeword::from_data(reqs, 3, 2)?;
+            reqs_cw.compute_parity(Some(&ReedSolomon::new(3, 2)?))?;
+            Ok(reqs_cw)
+        }
+
+        #[test]
+        fn value_id_covers_value_and_coding_scheme()
+        -> Result<(), SummersetError> {
+            let reqs = batch("x");
+            let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
+            assert_eq!(value_id, CrosswordReplica::value_id(&reqs, 3, 5)?);
+            assert_ne!(
+                value_id,
+                CrosswordReplica::value_id(&batch("y"), 3, 5)?
+            );
+            assert_ne!(value_id, CrosswordReplica::value_id(&reqs, 4, 5)?);
+            Ok(())
+        }
+
+        #[test]
+        fn accepted_value_retains_same_value_shards()
+        -> Result<(), SummersetError> {
+            let reqs = batch("x");
+            let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
+            let reqs_cw = codeword(reqs)?;
+            let mut voted = None;
+
+            CrosswordReplica::record_acceptance(
+                &mut voted,
+                AcceptedValue {
+                    ballot: 1,
+                    value_id,
+                    reqs_cw: reqs_cw
+                        .subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
+                },
+            )?;
+            CrosswordReplica::record_acceptance(
+                &mut voted,
+                AcceptedValue {
+                    ballot: 2,
+                    value_id,
+                    reqs_cw: reqs_cw
+                        .subset_copy(&Bitmap::from((5, vec![4])), false)?,
+                },
+            )?;
+
+            let voted = voted.unwrap();
+            assert_eq!(voted.ballot, 2);
+            assert_eq!(voted.reqs_cw.avail_shards(), 3);
+            Ok(())
+        }
+
+        #[test]
+        fn prepare_combines_same_value_across_ballots()
+        -> Result<(), SummersetError> {
+            let reqs = batch("x");
+            let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
+            let reqs_cw = codeword(reqs)?;
+            let other_reqs = batch("y");
+            let other_id = CrosswordReplica::value_id(&other_reqs, 3, 5)?;
+            let other_cw = codeword(other_reqs)?;
+            let mut values = HashMap::new();
+
+            CrosswordReplica::record_prepared_value(
+                &mut values,
+                AcceptedValue {
+                    ballot: 4,
+                    value_id,
+                    reqs_cw: reqs_cw
+                        .subset_copy(&Bitmap::from((5, vec![4])), false)?,
+                },
+            )?;
+            CrosswordReplica::record_prepared_value(
+                &mut values,
+                AcceptedValue {
+                    ballot: 3,
+                    value_id: other_id,
+                    reqs_cw: other_cw
+                        .subset_copy(&Bitmap::from((5, vec![1])), false)?,
+                },
+            )?;
+            CrosswordReplica::record_prepared_value(
+                &mut values,
+                AcceptedValue {
+                    ballot: 2,
+                    value_id,
+                    reqs_cw: reqs_cw
+                        .subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
+                },
+            )?;
+
+            let candidate =
+                values.values().max_by_key(|value| value.ballot).unwrap();
+            assert_eq!(candidate.value_id, value_id);
+            assert_eq!(candidate.reqs_cw.avail_shards(), 3);
+            let mut recovered = candidate.reqs_cw.clone();
+            recovered.reconstruct_data(Some(&ReedSolomon::new(3, 2)?))?;
+            CrosswordReplica::verify_value_id(value_id, &mut recovered, 3, 5)?;
+            Ok(())
+        }
     }
 }

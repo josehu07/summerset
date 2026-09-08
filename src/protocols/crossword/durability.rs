@@ -20,11 +20,7 @@ impl CrosswordReplica {
             self.insts[slot - self.start_slot].bal
         );
         let inst = &self.insts[slot - self.start_slot];
-        let voted = if inst.voted.0 > 0 {
-            Some(inst.voted.clone())
-        } else {
-            None
-        };
+        let voted = inst.voted.clone();
 
         if self.is_leader() {
             // on leader, finishing the logging of a `PrepareBal` entry

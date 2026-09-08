@@ -128,7 +128,7 @@ impl CrosswordReplica {
                     trigger_slot,
                     endprep_slot,
                     prepare_acks: Bitmap::new(self.population, false),
-                    prepare_max_bal: 0,
+                    prepare_values: HashMap::new(),
                     accept_acks: HashMap::new(),
                 });
 
@@ -466,8 +466,18 @@ impl CrosswordReplica {
                 let subset_copy = inst
                     .reqs_cw
                     .subset_copy(&assignment[self.id as usize], false)?;
+                let value_id = inst
+                    .value_id
+                    .expect("Accepting instance should have a value identity");
                 inst.assignment.clone_from(assignment);
-                inst.voted = (inst.bal, subset_copy.clone());
+                Self::record_acceptance(
+                    &mut inst.voted,
+                    AcceptedValue {
+                        ballot: inst.bal,
+                        value_id,
+                        reqs_cw: subset_copy.clone(),
+                    },
+                )?;
 
                 // record update to largest accepted ballot and corresponding data
                 self.storage_hub.submit_action(
@@ -476,6 +486,7 @@ impl CrosswordReplica {
                         entry: WalEntry::AcceptData {
                             slot,
                             ballot: inst.bal,
+                            value_id,
                             // persist only some shards on myself
                             reqs_cw: subset_copy,
                             assignment: assignment.clone(),
@@ -499,6 +510,7 @@ impl CrosswordReplica {
                         PeerMsg::Accept {
                             slot,
                             ballot: inst.bal,
+                            value_id,
                             reqs_cw: inst.reqs_cw.subset_copy(
                                 &assignment[peer as usize],
                                 false,

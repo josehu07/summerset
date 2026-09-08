@@ -441,10 +441,16 @@ macro HandleAccept(r) begin
         node[r].balMaxKnown := m.bal ||
         node[r].insts[m.slot].status := "Accepting" ||
         node[r].insts[m.slot].cmd := m.cmd ||
-        node[r].insts[m.slot].shards := m.shards ||
+        node[r].insts[m.slot].shards :=
+            IF node[r].insts[m.slot].voted.cmd = m.cmd
+                THEN node[r].insts[m.slot].voted.shards \union m.shards
+                ELSE m.shards ||
         node[r].insts[m.slot].voted.bal := m.bal ||
         node[r].insts[m.slot].voted.cmd := m.cmd ||
-        node[r].insts[m.slot].voted.shards := m.shards;
+        node[r].insts[m.slot].voted.shards :=
+            IF node[r].insts[m.slot].voted.cmd = m.cmd
+                THEN node[r].insts[m.slot].voted.shards \union m.shards
+                ELSE m.shards;
         \* send back AcceptReply
         Send({AcceptReplyMsg(r, m.bal, m.slot, m.shards)});
     end with;
@@ -550,8 +556,8 @@ end algorithm; *)
 
 ----------
 
-\* BEGIN TRANSLATION (chksum(pcal) = "3ad028fa" /\ chksum(tla) = "469611fd")
-VARIABLES pc, msgs, node, pending, observed, crashed
+\* BEGIN TRANSLATION (chksum(pcal) = "8054059" /\ chksum(tla) = "d205123")
+VARIABLES msgs, node, pending, observed, crashed, pc
 
 (* define statement *)
 UnseenPending(insts) ==
@@ -573,7 +579,7 @@ terminated == /\ Len(pending) = 0
 numCrashed == Cardinality({r \in Replicas: crashed[r]})
 
 
-vars == << pc, msgs, node, pending, observed, crashed >>
+vars == << msgs, node, pending, observed, crashed, pc >>
 
 ProcSet == (Replicas)
 
@@ -678,10 +684,14 @@ rloop(self) == /\ pc[self] = "rloop"
                                                              ![self].balMaxKnown = m.bal,
                                                              ![self].insts[m.slot].status = "Accepting",
                                                              ![self].insts[m.slot].cmd = m.cmd,
-                                                             ![self].insts[m.slot].shards = m.shards,
+                                                             ![self].insts[m.slot].shards = IF node[self].insts[m.slot].voted.cmd = m.cmd
+                                                                                                THEN node[self].insts[m.slot].voted.shards \union m.shards
+                                                                                                ELSE m.shards,
                                                              ![self].insts[m.slot].voted.bal = m.bal,
                                                              ![self].insts[m.slot].voted.cmd = m.cmd,
-                                                             ![self].insts[m.slot].voted.shards = m.shards]
+                                                             ![self].insts[m.slot].voted.shards = IF node[self].insts[m.slot].voted.cmd = m.cmd
+                                                                                                      THEN node[self].insts[m.slot].voted.shards \union m.shards
+                                                                                                      ELSE m.shards]
                                      /\ msgs' = (msgs \cup ({AcceptReplyMsg(self, m.bal, m.slot, m.shards)}))
                                 /\ UNCHANGED <<pending, observed, crashed>>
                              \/ /\ /\ node[self].leader = self

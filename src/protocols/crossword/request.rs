@@ -78,7 +78,12 @@ impl CrosswordReplica {
             sw.record_now(slot, 0, None)?;
         }
 
-        // compute the complete Reed-Solomon codeword for the batch data
+        // identify and compute the complete Reed-Solomon codeword
+        let value_id = Self::value_id(
+            &req_batch,
+            self.rs_data_shards,
+            self.rs_total_shards,
+        )?;
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
             self.rs_data_shards,
@@ -92,11 +97,12 @@ impl CrosswordReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
             inst.reqs_cw = reqs_cw;
+            inst.value_id = Some(value_id);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,
                 prepare_acks: Bitmap::new(self.population, false),
-                prepare_max_bal: 0,
+                prepare_values: HashMap::new(),
                 accept_acks: HashMap::new(),
             });
             inst.external = true;
@@ -138,13 +144,21 @@ impl CrosswordReplica {
             .reqs_cw
             .subset_copy(&assignment[self.id as usize], false)?;
         inst.assignment.clone_from(assignment);
-        inst.voted = (inst.bal, subset_copy.clone());
+        Self::record_acceptance(
+            &mut inst.voted,
+            AcceptedValue {
+                ballot: inst.bal,
+                value_id,
+                reqs_cw: subset_copy.clone(),
+            },
+        )?;
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::Accepting),
             LogAction::Append {
                 entry: WalEntry::AcceptData {
                     slot,
                     ballot: inst.bal,
+                    value_id,
                     // persist only some shards on myself
                     reqs_cw: subset_copy,
                     assignment: assignment.clone(),
@@ -169,6 +183,7 @@ impl CrosswordReplica {
                 PeerMsg::Accept {
                     slot,
                     ballot: inst.bal,
+                    value_id,
                     reqs_cw: inst
                         .reqs_cw
                         .subset_copy(&assignment[peer as usize], false)?,

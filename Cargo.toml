@@ -49,6 +49,7 @@ petgraph = "0.8"
 get-size = { version = "0.1", features = ["derive"] }
 linreg = "0.2"
 statistical = "1.0"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 # these are just for error conversion; could do it in a better way
 ctrlc = { workspace = true }
 zookeeper-client = { workspace = true }
