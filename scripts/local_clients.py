@@ -1,11 +1,10 @@
-import os
-import sys
 import argparse
-import subprocess
 import math
+import os
+import subprocess
+import sys
 
 from . import utils
-
 
 MANAGER_LOOP_IP = "127.0.0.1"
 MANAGER_VETH_IP = "10.0.0.0"
@@ -379,7 +378,7 @@ def main():
             sys.exit(0)
         raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 
-    if any(map(lambda rc: rc != 0, rcs)):
+    if any(rc != 0 for rc in rcs):
         sys.exit(1)
     else:
         sys.exit(0)

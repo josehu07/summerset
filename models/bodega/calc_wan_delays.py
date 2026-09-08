@@ -49,8 +49,7 @@ class RingWorld:
         max_incl = 0
         for s in includes:
             dist = self.distance(origin, s)
-            if dist > max_incl:
-                max_incl = dist
+            max_incl = max(max_incl, dist)
         return max(max_noni, max_incl)
 
 

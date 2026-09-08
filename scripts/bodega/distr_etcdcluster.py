@@ -1,8 +1,7 @@
-import signal
 import argparse
+import signal
 
 from .. import utils
-
 
 ETCD_REPO_NAME = "etcd"
 

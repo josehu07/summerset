@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -196,7 +196,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for protocol in PROTOCOLS:
         result = utils.output.gather_outputs(
             protocol,
@@ -264,8 +264,7 @@ def plot_results(results, plots_dir):
 
         xs = result["time"]
         ys = result["tput"]
-        if max(ys) > ymax:
-            ymax = max(ys)
+        ymax = max(ymax, max(ys))
 
         plt.plot(
             xs,

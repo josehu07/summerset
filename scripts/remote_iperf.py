@@ -1,8 +1,7 @@
-import time
 import argparse
+import time
 
 from . import utils
-
 
 IPERF_PORT = 37777
 IPERF_SECS = 10

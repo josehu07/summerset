@@ -2,19 +2,18 @@
 
 import argparse
 import os
-import numpy as np
-import time
 import re
+import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+
 import matplotlib
 import matplotlib.pyplot as plt
-
+import numpy as np
 
 EXPER_NAME = "ftsim"
 
 
-def get_coverage_tputs() -> List[float]:
+def get_coverage_tputs() -> list[float]:
     put_ratio = 0.1
     wlats = [40.96, 43.26, 45.31, 52.06, 57.69]
     rlats = [16.42, 12.03, 8.02, 5.37, 4.23]
@@ -38,7 +37,7 @@ class SimulationParams:
     max_coverage: int
 
     num_servers: int = 5  # Number of servers in the system
-    coverage_tputs: List[float] = field(default_factory=get_coverage_tputs)
+    coverage_tputs: list[float] = field(default_factory=get_coverage_tputs)
 
     failure_rate: float = 0.005  # Probability of failure per time unit
     recovery_rate: float = 0.01  # Probability of recovery per time unit
@@ -181,7 +180,7 @@ def run_simulations(odir: str):
 
 def parse_result_log(
     log_path: str,
-) -> Tuple[List[float], Dict[Tuple[int, bool], float]]:
+) -> tuple[list[float], dict[tuple[int, bool], float]]:
     """
     Parse the result-ftsim.log file to extract:
     1. Original throughput list
@@ -244,9 +243,9 @@ def plot_results(odir: str):
         ],
     }
     print("Parsed results:")
-    for case in results:
+    for case, tputs in results.items():
         print(f"  {case:>25s}:  ", end="")
-        for tput in results[case]:
+        for tput in tputs:
             print(f"{tput:.3f}  ", end="")
         print()
 
@@ -277,9 +276,7 @@ def plot_results(odir: str):
 
     x = np.arange(1, num_servers + 1)  # X positions for groups
     width = 0.2  # Width of each bar
-    multiplier = 0
-
-    for case in CASES_ORDER:
+    for multiplier, case in enumerate(CASES_ORDER):
         label, color = CASES_LABEL_COLOR[case]
         offset = width * multiplier
         hatch = "xx" if "with-failure" in case else None
@@ -293,8 +290,6 @@ def plot_results(odir: str):
             edgecolor="gray",
             linewidth=0,
         )
-        multiplier += 1
-
     plt.xlabel("#Responders in Roster (Simulated)")
     plt.ylabel("Tput (k reqs/s)")
     plt.xticks(

@@ -1,10 +1,9 @@
-import sys
 import argparse
-import subprocess
 import math
+import subprocess
+import sys
 
 from .. import utils
-
 
 SERVER_CLI_PORT = 21379
 
@@ -392,7 +391,7 @@ def main():
             sys.exit(0)
         raise RuntimeError(f"some client(s) timed-out {timeout} secs")
 
-    if any(map(lambda rc: rc != 0, rcs)):
+    if any(rc != 0 for rc in rcs):
         sys.exit(1)
     else:
         sys.exit(0)

@@ -1,8 +1,7 @@
-import signal
 import argparse
+import signal
 
 from .. import utils
-
 
 ZK_REPO_NAME = "zookeeper"
 
@@ -104,8 +103,7 @@ def dump_server_configs(
         if cfg_r == replica_id:
             cfg_path = f"{zk_repo}/conf/zoo.cfg"
         with open(cfg_path, "w") as fcfg:
-            for cfg in configs:
-                fcfg.write(cfg + "\n")
+            fcfg.writelines(cfg + "\n" for cfg in configs)
 
 
 def copy_server_config(

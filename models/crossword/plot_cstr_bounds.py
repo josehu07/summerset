@@ -1,11 +1,11 @@
 import argparse
 import math
-import numpy as np
-import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.legend_handler import HandlerPatch
 
+import matplotlib
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.legend_handler import HandlerPatch
 
 SUBPLOT_ARG = lambda idx: 141 + idx
 

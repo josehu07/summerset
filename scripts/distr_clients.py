@@ -1,11 +1,10 @@
-import sys
 import argparse
-import subprocess
 import math
+import subprocess
+import sys
 import time
 
 from . import utils
-
 
 MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
 
@@ -515,7 +514,7 @@ def main():
     #   - any client returned non-zero and didn't run for expected benchmark length
     #   - any client reutrned non-zero when not in timed benchmark mode
     if (
-        all(map(lambda rc: rc != 0, rcs))
+        all(rc != 0 for rc in rcs)
         or (
             is_timed_bench
             and any(
@@ -525,7 +524,7 @@ def main():
                 )
             )
         )
-        or ((not is_timed_bench) and any(map(lambda rc: rc != 0, rcs)))
+        or ((not is_timed_bench) and any(rc != 0 for rc in rcs))
     ):
         sys.exit(1)
     else:

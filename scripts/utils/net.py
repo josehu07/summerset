@@ -112,7 +112,7 @@ def set_tc_qdisc_netems_main(
     if remotes is None:
         remotes = [None]
     else:
-        remotes = [remotes[h] for h in sorted(list(remotes.keys()))]
+        remotes = [remotes[h] for h in sorted(remotes.keys())]
 
     procs = []
     for replica, remote in enumerate(remotes):
@@ -283,7 +283,7 @@ def set_tc_qdisc_netems_asym(
     """
     assert remotes is not None and len(remotes) > 1
     assert len(ipaddrs) == len(remotes)
-    host_idx = {h: i for i, h in enumerate(sorted(list(remotes.keys())))}
+    host_idx = {h: i for i, h in enumerate(sorted(remotes.keys()))}
     main_dev = {
         h: get_interface_name(remote=remote) for h, remote in remotes.items()
     }
@@ -303,7 +303,7 @@ def set_tc_qdisc_netems_asym(
     procs = []
     for host, remote in remotes.items():
         # add per-peer child netem qdiscs
-        for peer in remotes.keys():
+        for peer in remotes:
             procs.append(
                 add_tc_qdisc_band_netem(
                     main_dev[host],
@@ -391,7 +391,7 @@ def clear_tc_qdisc_netems_main(remotes=None, capture_stderr=False):
     if remotes is None:
         remotes = [None]
     else:
-        remotes = [remotes[h] for h in sorted(list(remotes.keys()))]
+        remotes = [remotes[h] for h in sorted(remotes.keys())]
 
     procs = []
     for remote in remotes:

@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -330,7 +330,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results, max_zidx = dict(), 0
+    results, max_zidx = {}, 0
     for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
         protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
         results[pcname] = []
@@ -401,8 +401,7 @@ def collect_outputs(output_dir):
             "rlat": rlat_list,
             "zidx": zidx,
         }
-        if zidx > max_zidx:
-            max_zidx = zidx
+        max_zidx = max(max_zidx, zidx)
 
     return results, time_list[max_zidx]
 
@@ -591,7 +590,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -642,7 +641,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -682,8 +681,8 @@ def main():
         results, write_time = collect_outputs(output_dir)
         print_results(results)
 
-        handles, labels = plot_rlats_results(results, write_time, plots_dir)
-        # plot_legend(handles, labels, plots_dir)
+        _handles, _labels = plot_rlats_results(results, write_time, plots_dir)
+        # plot_legend(_handles, _labels, plots_dir)
 
 
 if __name__ == "__main__":

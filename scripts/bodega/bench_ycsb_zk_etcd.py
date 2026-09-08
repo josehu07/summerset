@@ -1,14 +1,14 @@
-import os
 import argparse
-import time
 import math
-import matplotlib.lines
-import numpy as np
+import os
+import time
+
 import matplotlib
+import matplotlib.lines
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -692,11 +692,11 @@ def bench_round(
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for workload in YCSB_WORKLOADS:
-        results[workload] = dict()
+        results[workload] = {}
         for distribution in YCSB_DISTRIBUTIONS:
-            results[workload][distribution] = dict()
+            results[workload][distribution] = {}
             for pcname in (
                 list(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS.keys())
                 + list(ETCD_CLIENT_CONFIGS.keys())
@@ -807,8 +807,7 @@ def collect_outputs(output_dir):
                     },
                 }
                 curr_results = results[workload][distribution][pcname]
-                if curr_results["tput"]["mean"] > ymax["tput"]:
-                    ymax["tput"] = curr_results["tput"]["mean"]
+                ymax["tput"] = max(ymax["tput"], curr_results["tput"]["mean"])
                 if (
                     curr_results["wlat"]["mean"] is not None
                     and wlat_list[-1] > ymax["wlat"]
@@ -1426,7 +1425,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -1504,7 +1503,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 

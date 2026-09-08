@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import pickle
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -20,7 +20,7 @@ def collect_profile_logs(remotes, remote_logs_path, saved_logs_path):
 
 
 def parse_profile_results(saved_logs_path):
-    profile = dict()
+    profile = {}
     for log_file in os.listdir(saved_logs_path):
         # the first bunch of ranges are 'system' db ranges and should be excluded!
         # otherwise, small non-tpcc replication messages will dominate the profile
@@ -55,8 +55,8 @@ def dump_profile_len_cnts(profile, pickle_path):
 
     total_samples = sum(profile.values())
     print(f"  total samples:  {sum(profile.values())}")
-    print(f"  max num_entries:  {max(k[0] for k in profile.keys())}")
-    print(f"  max num_bytes:  {max(k[1] for k in profile.keys())}")
+    print(f"  max num_entries:  {max(k[0] for k in profile)}")
+    print(f"  max num_bytes:  {max(k[1] for k in profile)}")
 
     sorted_profile = [(k[0], k[1], v) for k, v in profile.items()]
     sorted_profile.sort(key=lambda tup: tup[2], reverse=True)
@@ -68,7 +68,7 @@ def dump_profile_len_cnts(profile, pickle_path):
             f"    {num_entries:5d}  {num_bytes:10d}  {repeat_cnt:7d}  {percentage:2d}%"
         )
 
-    len_cnts = dict()
+    len_cnts = {}
     for (_, num_bytes), repeat_cnt in profile.items():
         if num_bytes not in len_cnts:
             len_cnts[num_bytes] = repeat_cnt
@@ -130,10 +130,8 @@ def plot_len_cnts_cdfs(len_cnts_tidb, len_cnts_crdb, output_dir):
     ) in DBS_DATA_COLOR_ZORDER_ENDX.items():
         x, xmax, xmin = [], 0, float("inf")
         for l, c in len_cnts.items():
-            if l > xmax:
-                xmax = l
-            if l < xmin:
-                xmin = l
+            xmax = max(xmax, l)
+            xmin = min(xmin, l)
 
             # account for manually drawn axis breaks
             draw_l = l
@@ -298,7 +296,7 @@ def main():
                 f"collect directory {collect_path} does not exist"
             )
 
-        all_len_cnts = dict()
+        all_len_cnts = {}
         for db_sys in ("tidb", "cockroach"):
             pickle_path = f"{collect_path}/length_counts-{db_sys}.pkl"
             with open(pickle_path, "rb") as fpkl:

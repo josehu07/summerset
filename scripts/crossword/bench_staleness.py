@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -177,7 +177,7 @@ def bench_round(
 
 
 def collect_ver_stats(runlog_dir):
-    ver_stats = dict()
+    ver_stats = {}
 
     def get_node_id(line):
         return int(line[line.index("(") + 1 : line.index(")")])
@@ -228,7 +228,7 @@ def collect_ver_stats(runlog_dir):
                             }
                             break
 
-    diff_stats = dict()
+    diff_stats = {}
     for num_keys in NUM_KEYS_LIST:
         for protocol, gossip_gap in PROTOCOL_GAPS:
             midfix_str = round_midfix_str(gossip_gap, num_keys)
@@ -327,7 +327,7 @@ def plot_staleness(diff_stats, plots_dir):
     MARKER_SIZE = 4
 
     xmin = TIME_INTERVAL_UNIT - 0.5
-    ymax, protocol_ys = 0.0, dict()
+    ymax, protocol_ys = 0.0, {}
     for protocol, gossip_gap in PROTOCOL_GAPS + [("RSPaxos", None)]:
         ys = None
         if protocol != "RSPaxos":
@@ -337,8 +337,7 @@ def plot_staleness(diff_stats, plots_dir):
                 ]
                 for k in NUM_KEYS_LIST
             ]
-            if max(ys) > ymax:
-                ymax = max(ys)
+            ymax = max(ymax, max(ys))
         else:
             ys = [ymax * 1.6 for _ in NUM_KEYS_LIST]
         ys.sort(reverse=True)

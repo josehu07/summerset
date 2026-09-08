@@ -1,12 +1,12 @@
-import os
 import argparse
-import time
 import math
+import os
+import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -171,7 +171,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_bw_utils(runlog_dir):
-    bw_utils = dict()
+    bw_utils = {}
     for protocol in PROTOCOLS:
         l_f_utils, f_f_utils = [], []
 

@@ -1,9 +1,7 @@
 import os
-import bibtexparser
 import pprint
 
-from typing import Dict
-
+import bibtexparser
 
 DROPBOX_DIR = os.path.expanduser("~/Dropbox/Apps/Overleaf")
 PROJECTS = [
@@ -33,7 +31,7 @@ def titles_match(title1: str, title2: str) -> bool:
 
 
 def prompt_manual_check(
-    entry: Dict[str, str], existing: Dict[str, str]
+    entry: dict[str, str], existing: dict[str, str]
 ) -> bool:
     print(f"\n--- Manual check required: {entry['ID']}")
     print("\nOld:")
@@ -51,7 +49,7 @@ def prompt_manual_check(
 
 
 def process_one_entry(
-    entry_id: str, entry: Dict[str, str], bib_merged: Dict[str, str]
+    entry_id: str, entry: dict[str, str], bib_merged: dict[str, str]
 ):
     if entry_id in bib_merged:
         # double check that titles match, otherwise prompt a manual check
@@ -63,7 +61,7 @@ def process_one_entry(
         bib_merged[entry_id] = entry
 
 
-def merge_bib_maps(bib_maps: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+def merge_bib_maps(bib_maps: dict[str, dict[str, str]]) -> dict[str, str]:
     bib_merged = {}
 
     for bib_map in bib_maps.values():

@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -153,9 +153,9 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_bd_stats(runlog_dir):
-    raw_stats = dict()
+    raw_stats = {}
     for protocol in PROTOCOLS:
-        raw_stats[protocol] = dict()
+        raw_stats[protocol] = {}
         total_cnt = 0
 
         with open(f"{runlog_dir}/{protocol}.s.err", "r") as flog:
@@ -188,12 +188,10 @@ def collect_bd_stats(runlog_dir):
                 raw_stats[protocol][step][1] / total_cnt
             ) ** 0.5
 
-    bd_stats = dict()
+    bd_stats = {}
     for protocol, stats in raw_stats.items():
-        bd_stats[protocol] = dict()
-        bd_stats[protocol]["comp"] = (
-            stats["comp"] if "comp" in stats else (0.0, 0.0)
-        )
+        bd_stats[protocol] = {}
+        bd_stats[protocol]["comp"] = stats.get("comp", (0.0, 0.0))
         bd_stats[protocol]["acc"] = (
             stats["arep"][0] - stats["ldur"][0],
             stats["arep"][1] - stats["ldur"][1],
@@ -215,7 +213,7 @@ def collect_bd_stats(runlog_dir):
 
 
 def collect_space_usage(sdir):
-    space_usage = dict()
+    space_usage = {}
     for protocol in PROTOCOLS:
         wal_size = os.path.getsize(f"{sdir}/{protocol}.0.wal")
         space_usage[protocol] = wal_size / (1024.0 * 1024.0)
@@ -299,8 +297,7 @@ def plot_breakdown(bd_stats, plots_dir):
                 )
 
             xnow += stats[step][0]
-            if xnow > xmax:
-                xmax = xnow
+            xmax = max(xmax, xnow)
 
             if step in ("comp", "dur", "rep"):
                 range_xs[protocol].append(xnow)
@@ -399,8 +396,10 @@ def plot_legend(handles, labels, plots_dir):
 def save_space_usage(space_usage, plots_dir):
     txt_name = f"{plots_dir}/exper-wal-space.txt"
     with open(txt_name, "w") as ftxt:
-        for protocol, size_mb in space_usage.items():
-            ftxt.write(f"{protocol}  {size_mb:.2f} MB\n")
+        ftxt.writelines(
+            f"{protocol}  {size_mb:.2f} MB\n"
+            for protocol, size_mb in space_usage.items()
+        )
     print(f"Saved: {txt_name}")
 
 

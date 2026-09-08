@@ -1,4 +1,5 @@
 import math
+
 import matplotlib.pyplot as plt
 
 
@@ -10,7 +11,7 @@ class World:
             sorted_dists.append(c_dists)
 
         quorum_sizes = list(range(1, len(self.servers) + 1))
-        quorum_delays = dict()
+        quorum_delays = {}
         for qs in quorum_sizes:
             delays = [
                 sorted_dists[ci][qs - 1] for ci in range(len(self.clients))

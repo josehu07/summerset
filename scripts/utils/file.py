@@ -1,6 +1,6 @@
-import sys
 import os
 import subprocess
+import sys
 
 from .proc import run_process, run_process_over_ssh, wait_parallel_procs
 

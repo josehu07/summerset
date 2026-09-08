@@ -2,7 +2,6 @@ import os
 
 from .. import utils
 
-
 PHYS_ENV_GROUP = "reg"
 
 YCSB_DIR = lambda base: f"{base}/ycsb"
@@ -28,7 +27,7 @@ def gen_ycsb_a_trace(base):
     with open(YCSB_TRACE, "w+") as fout:
         for line in raw.strip().split("\n"):
             line = line.strip()
-            if line.startswith("READ ") or line.startswith("UPDATE "):
+            if line.startswith(("READ ", "UPDATE ")):
                 segs = line.split()
                 op = segs[0]
                 key = segs[2]

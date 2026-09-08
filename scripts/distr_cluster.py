@@ -1,10 +1,9 @@
+import argparse
+import signal
 import sys
 import time
-import signal
-import argparse
 
 from . import utils
-
 
 SERVER_LOOP_IP = "0.0.0.0"
 SERVER_API_PORT = lambda p, r: 40000 + (p * 20 + r)
@@ -101,7 +100,7 @@ def config_with_defaults(
         return {c[0]: c[1] for c in l}
 
     def config_dict_to_str(d):
-        l = ["=".join([k, v]) for k, v in d.items()]
+        l = [k + "=" + v for k, v in d.items()]
         return "+".join(l)
 
     backer_path = PROTOCOL_BACKER_PATH(

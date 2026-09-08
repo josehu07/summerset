@@ -1,12 +1,12 @@
-import os
 import argparse
+import os
 import random
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -42,9 +42,9 @@ SETTINGS_RATIO_RW = [
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for put_ratio, is_read in SETTINGS_RATIO_RW:
-        results[(put_ratio, is_read)] = dict()
+        results[(put_ratio, is_read)] = {}
         for pcname, protocol in PROTOCOLS_BSNAME.items():
             results[(put_ratio, is_read)][
                 pcname

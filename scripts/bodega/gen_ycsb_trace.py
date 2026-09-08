@@ -1,8 +1,7 @@
-import os
 import argparse
+import os
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -41,12 +40,7 @@ def gen_ycsb_trace(
     with open(trace_out, "w+") as fout:
         for line in raw.strip().split("\n"):
             line = line.strip()
-            if (
-                line.startswith("READ ")
-                or line.startswith("SCAN ")
-                or line.startswith("UPDATE ")
-                or line.startswith("INSERT ")
-            ):
+            if line.startswith(("READ ", "SCAN ", "UPDATE ", "INSERT ")):
                 segs = line.split()
                 op = segs[0]
                 key = segs[2]
@@ -61,11 +55,11 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
     assert isinstance(key_map, dict)
 
     # read original trace and count read frequency
-    key_cnt = dict()
+    key_cnt = {}
     with open(trace_file, "r") as ftrace:
         for line in ftrace:
             line = line.strip()
-            if line.startswith("READ") or line.startswith("SCAN"):
+            if line.startswith(("READ", "SCAN")):
                 key = line.split()[1]
                 if key not in key_cnt:
                     key_cnt[key] = 1
@@ -75,9 +69,7 @@ def map_ycsb_trace(trace_file, mapped_file, key_map, reader_loc):
                 key = line.split()[1]
                 if key not in key_cnt:
                     key_cnt[key] = 0
-    sorted_keys = list(
-        sorted(key_cnt.keys(), key=lambda k: key_cnt[k], reverse=True)
-    )
+    sorted_keys = sorted(key_cnt.keys(), key=lambda k: key_cnt[k], reverse=True)
 
     if len(key_map) == 0:
         sorted_cnts = sorted(key_cnt.values(), reverse=True)
@@ -197,7 +189,7 @@ def main():
         if os.path.isfile(mapped_load) and os.path.isfile(mapped_run):
             print("  load & run both already there, skipped")
         else:
-            key_map = dict()
+            key_map = {}
             for phase in ("run", "load"):
                 # map 'run' first to honor frequency counting
                 map_ycsb_trace(

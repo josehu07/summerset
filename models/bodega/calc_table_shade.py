@@ -1,13 +1,12 @@
-import sys
 import os
 import pprint
+import sys
 
 # keeping this hardcoded import for now
 sys.path.append(
     f"{os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))}/scripts"
 )
 import utils
-
 
 RTTS = utils.config.PairsMap(
     # Ref: https://www.usenix.org/system/files/nsdi21-tollman.pdf#page=7

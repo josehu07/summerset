@@ -1,11 +1,10 @@
-import os
-import sys
 import argparse
-import subprocess
 import math
+import os
+import subprocess
+import sys
 
 from .. import utils
-
 
 CHAIN_REPO_NAME = "chain-client"
 CHAIN_JAR_FOLDER = "deploy/client"

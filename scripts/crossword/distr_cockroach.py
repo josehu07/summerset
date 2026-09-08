@@ -1,9 +1,8 @@
-import signal
 import argparse
+import signal
 import time
 
 from .. import utils
-
 
 COCK_REPO_NAME = "cockroach"
 

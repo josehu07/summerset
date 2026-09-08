@@ -1,8 +1,8 @@
 """Running Summerset on a variable number of nodes across multiple sites (types hardcoded)."""
 
 # Import the Portal object and ProtoGENI lib.
-import geni.portal as portal  # type: ignore
-import geni.rspec.pg as rspec  # type: ignore  # noqa: F401
+from geni import portal  # type: ignore
+from geni.rspec import pg as rspec  # type: ignore  # noqa: F401
 
 # Primary partition's disk image map.
 DISK_IMAGE = {

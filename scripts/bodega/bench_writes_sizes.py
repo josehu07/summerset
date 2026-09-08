@@ -1,12 +1,12 @@
-import os
 import argparse
+import os
 import time
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -306,13 +306,13 @@ def bench_round(
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for value_size in VALUE_SIZES:
-        results[value_size] = dict()
+        results[value_size] = {}
         for put_ratio in PUT_RATIOS:
             if put_ratio != 5 and value_size != 128:
                 continue
-            results[value_size][put_ratio] = dict()
+            results[value_size][put_ratio] = {}
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                 protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
 
@@ -643,7 +643,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -725,7 +725,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -765,8 +765,8 @@ def main():
         results = collect_outputs(output_dir)
         print_results(results)
 
-        handles, labels = plot_put_ratios_results(results, plots_dir)
-        handles, labels = plot_value_sizes_results(results, plots_dir)
+        _handles, _labels = plot_put_ratios_results(results, plots_dir)
+        _handles, _labels = plot_value_sizes_results(results, plots_dir)
 
 
 if __name__ == "__main__":

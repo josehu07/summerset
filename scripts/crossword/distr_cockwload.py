@@ -1,11 +1,10 @@
-import os
-import sys
 import argparse
-import subprocess
 import math
+import os
+import subprocess
+import sys
 
 from .. import utils
-
 
 COCK_REPO_NAME = "cockroach"
 

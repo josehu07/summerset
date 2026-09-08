@@ -1,11 +1,11 @@
-import os
 import argparse
-import subprocess
 import multiprocessing
-import numpy as np
+import os
+import subprocess
+
 import matplotlib
 import matplotlib.pyplot as plt
-
+import numpy as np
 
 EXPER_NAME = "rs_coding"
 BENCH_GROUP_NAMES = ["time_taken", "cpu_usage", "mem_usage"]
@@ -42,7 +42,7 @@ def run_criterion_group(output_dir):
 
 
 def parse_bench_results(output_dir):
-    results = dict()
+    results = {}
     with open(f"{output_dir}/rs_coding.out", "r") as fout:
         group, config, temp = None, None, None
         for line in fout:
@@ -57,7 +57,7 @@ def parse_bench_results(output_dir):
                 p = int(name[name.find(",") + 1 : name.find(")")])
                 config, temp = (size, (d, p)), []
                 if config not in results:
-                    results[config] = dict()
+                    results[config] = {}
 
             if group == "time_taken":
                 if config is not None and "time:" in line:
@@ -149,10 +149,8 @@ def plot_bench_results(results, plots_dir):
         ms = res["time_taken"]
         xi, yi = xs.index(r[0]), ys.index(r[1])
         data[yi][xi] = ms
-        if ms > vmax:
-            vmax = ms
-        if ms < vmin:
-            vmin = ms
+        vmax = max(vmax, ms)
+        vmin = min(vmin, ms)
 
     cmap = plt.get_cmap("Reds")
     colors = cmap(np.linspace(1.0 - (vmax - vmin) / float(vmax), 0.6, cmap.N))

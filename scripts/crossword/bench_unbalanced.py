@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -190,7 +190,7 @@ def bench_round(
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for protocol, fault_tolerance, init_assignment in PROTOCOL_FT_ASSIGNS:
         midfix_str = round_midfix_str(fault_tolerance, init_assignment)
         result = utils.output.gather_outputs(
@@ -210,9 +210,7 @@ def collect_outputs(output_dir):
 
         results[f"{protocol}{midfix_str}"] = {
             "mean": sum(tput_mean_list) / len(tput_mean_list),
-            "stdev": (
-                sum(map(lambda s: s**2, tput_stdev_list)) / len(tput_stdev_list)
-            )
+            "stdev": (sum(s**2 for s in tput_stdev_list) / len(tput_stdev_list))
             ** 0.5,
         }
 

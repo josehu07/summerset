@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -347,7 +347,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results, wzidx, rzidx, wcidx, rcidx = dict(), 0, 0, 0, 0
+    results, wzidx, rzidx, wcidx, rcidx = {}, 0, 0, 0, 0
     for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
         protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
         results[pcname] = []
@@ -385,8 +385,7 @@ def collect_outputs(output_dir):
                                 (time - base_time, wlat, rlat)
                                 for time, wlat, rlat in buffer
                             ]
-                            if len(result) - zeros_cnt > wzidx:
-                                wzidx = len(result) - zeros_cnt
+                            wzidx = max(wzidx, len(result) - zeros_cnt)
                     else:
                         result.append((time - base_time, wlat, rlat))
                         if len(result) >= 1300:
@@ -397,8 +396,7 @@ def collect_outputs(output_dir):
                             zeros_cnt = 0
 
                         if zeros_cnt == 15:
-                            if len(result) - zeros_cnt > rzidx:
-                                rzidx = len(result) - zeros_cnt
+                            rzidx = max(rzidx, len(result) - zeros_cnt)
 
         # clean up spurious latency outliers due to injected failure
         for i in range(len(result)):
@@ -464,10 +462,8 @@ def collect_outputs(output_dir):
                                 (time - base_time, wlat, rlat)
                                 for time, wlat, rlat in buffer
                             ]
-                            if len(result) - czeros_cnt > rcidx:
-                                rcidx = len(result) - czeros_cnt
-                            if len(result) - wzeros_cnt > wcidx:
-                                wcidx = len(result) - wzeros_cnt
+                            rcidx = max(rcidx, len(result) - czeros_cnt)
+                            wcidx = max(wcidx, len(result) - wzeros_cnt)
                     else:
                         result.append((time - base_time, wlat, rlat))
                         if len(result) >= 300:
@@ -754,7 +750,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -805,7 +801,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -845,8 +841,8 @@ def main():
         results = collect_outputs(output_dir)
         print_results(results)
 
-        handles, labels = plot_wlats_results(results, plots_dir)
-        # plot_legend(handles, labels, plots_dir)
+        _handles, _labels = plot_wlats_results(results, plots_dir)
+        # plot_legend(_handles, _labels, plots_dir)
 
 
 if __name__ == "__main__":

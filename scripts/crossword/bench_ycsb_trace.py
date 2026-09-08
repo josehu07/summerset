@@ -1,11 +1,11 @@
-import os
 import argparse
+import os
 import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -213,7 +213,7 @@ def bench_round_summerset(
         ) as fserr:
             fserr.write(serr)
 
-    if any(map(lambda p: p.returncode != 0, procs_clients)):
+    if any(p.returncode != 0 for p in procs_clients):
         print("    Bench round FAILED!")
         raise utils.BreakingLoops
     else:
@@ -356,7 +356,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
         ) as fserr:
             fserr.write(serr)
 
-    if any(map(lambda p: p.returncode != 0, procs_clients)):
+    if any(p.returncode != 0 for p in procs_clients):
         print("    Bench round FAILED!")
         raise utils.BreakingLoops
     else:
@@ -364,7 +364,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
 
     for protocol in SUMMERSET_PROTOCOLS:
         results[protocol] = {"tputs": [], "lats": []}

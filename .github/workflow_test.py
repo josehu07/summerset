@@ -1,7 +1,7 @@
-import sys
-import os
 import argparse
+import os
 import subprocess
+import sys
 
 
 def do_cargo_build():
@@ -121,16 +121,16 @@ def main():
         client_rc = proc_client.wait(timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         print(f"Client tester did not finish in {TIMEOUT} secs")
-        exit(1)
+        sys.exit(1)
 
     proc_cluster.terminate()
 
     if client_rc != 0:
         print(f"Client tester exitted with {client_rc}")
-        exit(client_rc)
+        sys.exit(client_rc)
     else:
         print("Client tester finished successfully!")
-        exit(0)
+        sys.exit(0)
 
 
 if __name__ == "__main__":

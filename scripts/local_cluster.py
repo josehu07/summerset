@@ -1,10 +1,9 @@
-import sys
+import argparse
 import os
 import signal
-import argparse
+import sys
 
 from . import utils
-
 
 SERVER_LOOP_IP = "127.0.0.1"
 SERVER_VETH_IP = lambda r: f"10.0.1.{r}"
@@ -88,7 +87,7 @@ def config_with_defaults(
         return {c[0]: c[1] for c in l}
 
     def config_dict_to_str(d):
-        l = ["=".join([k, v]) for k, v in d.items()]
+        l = [k + "=" + v for k, v in d.items()]
         return "+".join(l)
 
     backer_path = PROTOCOL_BACKER_PATH(

@@ -1,8 +1,7 @@
-import signal
 import argparse
+import signal
 
 from .. import utils
-
 
 CHAIN_REPO_NAME = "chain"
 CHAIN_JAR_FOLDER = "deploy/server"
@@ -277,7 +276,7 @@ def main():
 
     # get the main Ethernet interface name on each host
     print("Getting main interface name...")
-    interfaces = dict()
+    interfaces = {}
     for host in hosts:
         print(f"  {host}: ", end="")
         interface = utils.net.get_interface_name(

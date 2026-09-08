@@ -1,5 +1,5 @@
-import statistics
 import random
+import statistics
 
 
 def gather_outputs(
@@ -22,7 +22,7 @@ def gather_outputs(
     if partition is not None:
         protocol_with_midfix += f".{partition}"
 
-    clients, outputs = [], dict()
+    clients, outputs = [], {}
     for c in range(client_start, num_clients, client_step):
         if client_skips is not None:
             skip_idxs, skip_every = client_skips
@@ -176,13 +176,11 @@ def gather_ycsb_outputs(
     return {
         "tput": {
             "mean": sum(tputs) / len(tputs),
-            "stdev": (sum(map(lambda s: s**2, tput_stdevs)) / len(tput_stdevs))
-            ** 0.5,
+            "stdev": (sum(s**2 for s in tput_stdevs) / len(tput_stdevs)) ** 0.5,
         },
         "lat": {
             "mean": sum(lats) / len(lats),
-            "stdev": (sum(map(lambda s: s**2, lat_stdevs)) / len(lat_stdevs))
-            ** 0.5,
+            "stdev": (sum(s**2 for s in lat_stdevs) / len(lat_stdevs)) ** 0.5,
         },
     }
 
@@ -192,12 +190,12 @@ def gather_tpcc_outputs(protocol_with_midfix, path_prefix, partition=None):
         protocol_with_midfix += f".{partition}"
 
     results = {
-        "delivery": dict(),
-        "newOrder": dict(),
-        "orderStatus": dict(),
-        "payment": dict(),
-        "stockLevel": dict(),
-        "aggregate": dict(),
+        "delivery": {},
+        "newOrder": {},
+        "orderStatus": {},
+        "payment": {},
+        "stockLevel": {},
+        "aggregate": {},
     }
     with open(f"{path_prefix}/{protocol_with_midfix}.run", "r") as fout:
         in_txn_sum_sec, in_agg_sum_sec = False, False
@@ -215,7 +213,7 @@ def gather_tpcc_outputs(protocol_with_midfix, path_prefix, partition=None):
                 if not in_agg_sum_sec:
                     txn_type = segs[-1]
 
-                result = dict()
+                result = {}
                 result["txns"] = int(segs[2])
                 result["errors"] = int(segs[1])
                 result["tput"] = float(segs[3])
@@ -292,13 +290,7 @@ def list_capping(l1, l2, d, down=True):
 
     # height capping
     for i, n in enumerate(l1):
-        if down and n > 1.05 * l2[i]:
-            nums = []
-            for k in range(i - d, i + d + 1):
-                if k >= 0 and k < len(l2):
-                    nums.append(l2[k])
-            l1c[i] = random.choice(nums)
-        elif not down and n < 1.05 * l2[i]:
+        if (down and n > 1.05 * l2[i]) or (not down and n < 1.05 * l2[i]):
             nums = []
             for k in range(i - d, i + d + 1):
                 if k >= 0 and k < len(l2):

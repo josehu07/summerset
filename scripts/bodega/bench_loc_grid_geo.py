@@ -1,12 +1,12 @@
-import os
 import argparse
+import os
 import time
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -355,11 +355,11 @@ def bench_round(remote0, base, repo, pcname, put_ratio, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for put_ratio in PUT_RATIOS:
-        results[put_ratio] = dict()
+        results[put_ratio] = {}
         for cgroup in range(NUM_REPLICAS):
-            results[put_ratio][cgroup] = dict()
+            results[put_ratio][cgroup] = {}
             for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                 protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
 
@@ -457,8 +457,7 @@ def collect_outputs(output_dir):
                     },
                 }
                 curr_results = results[put_ratio][cgroup][pcname]
-                if curr_results["tput"]["mean"] > ymax["tput"]:
-                    ymax["tput"] = curr_results["tput"]["mean"]
+                ymax["tput"] = max(ymax["tput"], curr_results["tput"]["mean"])
                 if (
                     curr_results["wlat"]["mean"] is not None
                     and curr_results["wlat"]["sorted"][-1] > ymax["wlat"]
@@ -579,12 +578,10 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
                 result["mean"]
                 / results[put_ratio][cgroup]["LeaderLs"]["tput"]["mean"]
             )
-            if norm_tput > ymaxl:
-                ymaxl = norm_tput
+            ymaxl = max(ymaxl, norm_tput)
 
-            if put_ratio == 0:  # manual y-axis break
-                if norm_tput > 62.5:
-                    norm_tput -= 62.5
+            if put_ratio == 0 and norm_tput > 62.5:  # manual y-axis break
+                norm_tput -= 62.5
 
             label, color, ecolor, hatch = PCNAMES_LABEL_COLORS_HATCH[pcname]
             _bar = plt.bar(

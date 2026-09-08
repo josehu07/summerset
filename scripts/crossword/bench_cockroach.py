@@ -1,12 +1,12 @@
-import os
 import argparse
-import time
 import math
+import os
+import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "reg"
 
@@ -191,7 +191,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for protocol in PROTOCOLS:
         results[protocol] = utils.output.gather_tpcc_outputs(
             f"{protocol}.{WLOAD_NAME}",
@@ -330,8 +330,7 @@ def plot_results(results, plots_dir):
                 results[protocol][txn_type]["lat_avg"],
                 results[protocol][txn_type]["lat_p95"],
             )
-            if p95 > ymaxl:
-                ymaxl = p95
+            ymaxl = max(ymaxl, p95)
 
             label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
             _bar = plt.bar(

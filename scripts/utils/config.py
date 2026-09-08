@@ -1,9 +1,9 @@
 import sys
+
 import toml
 
-from .proc import run_process, run_process_over_ssh
 from .net import lookup_dns_to_ip
-
+from .proc import run_process, run_process_over_ssh
 
 DEFAULT_USER = "smr"
 
@@ -44,7 +44,7 @@ def parse_toml_file(group, filename=DEFAULT_TOML_FILENAME):
         if "@" not in remotes[host]:
             remotes[host] = DEFAULT_USER + "@" + remotes[host]
 
-    hosts = sorted(list(remotes.keys()), key=lambda h: int(h[4:]))
+    hosts = sorted(remotes.keys(), key=lambda h: int(h[4:]))
     domains = {
         name: split_remote_string(remote)[1] for name, remote in remotes.items()
     }
@@ -72,7 +72,7 @@ def check_remote_is_me(remote):
 
 class PairsMap:
     def __init__(self, pairs, default=None):
-        self.pairs = dict()
+        self.pairs = {}
         self.default = default
 
         for (na, nb), val in pairs.items():

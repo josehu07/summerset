@@ -1,12 +1,12 @@
-import os
 import argparse
-import time
 import math
+import os
+import time
+
 import matplotlib
 import matplotlib.pyplot as plt
 
 from .. import utils
-
 
 EXPER_NAME = "critical"
 PROTOCOLS = ["MultiPaxos", "RSPaxos", "Raft", "CRaft", "Crossword"]
@@ -237,7 +237,7 @@ def bench_round(remote0, base, repo, protocol, round_params, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for round_params in ROUNDS_PARAMS:
         midfix_str = str(round_params)
         for protocol in PROTOCOLS:
@@ -309,7 +309,7 @@ def collect_outputs(output_dir):
                     "tput": {
                         "mean": sum(tput_mean_list) / len(tput_mean_list),
                         "stdev": (
-                            sum(map(lambda s: s**2, tput_stdev_list))
+                            sum(s**2 for s in tput_stdev_list)
                             / len(tput_stdev_list)
                         )
                         ** 0.5,
@@ -318,7 +318,7 @@ def collect_outputs(output_dir):
                         "mean": (sum(lat_mean_list) / len(lat_mean_list))
                         / 1000,
                         "stdev": (
-                            sum(map(lambda s: s**2, lat_stdev_list))
+                            sum(s**2 for s in lat_stdev_list)
                             / len(lat_stdev_list)
                         )
                         ** 0.5
@@ -371,8 +371,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["tput"]
-        if result["mean"] > ymaxl:
-            ymaxl = result["mean"]
+        ymaxl = max(ymaxl, result["mean"])
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         _bar = plt.bar(
@@ -413,8 +412,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
     for i, protocol in enumerate(PROTOCOLS_ORDER):
         xpos = i + 1
         result = results[f"{protocol}{midfix_str}"]["lat"]
-        if result["mean"] > ymaxl:
-            ymaxl = result["mean"]
+        ymaxl = max(ymaxl, result["mean"])
 
         label, color, hatch = PROTOCOLS_LABEL_COLOR_HATCH[protocol]
         _bar = plt.bar(
@@ -466,7 +464,7 @@ def plot_single_case_results(results, round_params, plots_dir, ymax=None):
 
 
 def plot_single_rounds_results(results, rounds_params, plots_dir):
-    env_ymax = dict()
+    env_ymax = {}
     for round_params in rounds_params:
         env_name = round_params.env_setting.group
         if env_name not in env_ymax:
@@ -478,10 +476,10 @@ def plot_single_rounds_results(results, rounds_params, plots_dir):
             midfix_str = str(round_params)
             tput_mean = results[f"{protocol}{midfix_str}"]["tput"]["mean"]
             lat_mean = results[f"{protocol}{midfix_str}"]["lat"]["mean"]
-            if tput_mean > env_ymax[env_name]["tput"]:
-                env_ymax[env_name]["tput"] = tput_mean
-            if lat_mean > env_ymax[env_name]["lat"]:
-                env_ymax[env_name]["lat"] = lat_mean
+            env_ymax[env_name]["tput"] = max(
+                env_ymax[env_name]["tput"], tput_mean
+            )
+            env_ymax[env_name]["lat"] = max(env_ymax[env_name]["lat"], lat_mean)
 
     common_plotted = False
     for round_params in rounds_params:
@@ -851,16 +849,12 @@ def main():
         print_results(results)
 
         single_rounds = [
-            rp
-            for rp in ROUNDS_PARAMS
-            if any(map(lambda t: "single" in t, rp.tags))
+            rp for rp in ROUNDS_PARAMS if any("single" in t for t in rp.tags)
         ]
         plot_single_rounds_results(results, single_rounds, plots_dir)
 
         cluster_rounds = [
-            rp
-            for rp in ROUNDS_PARAMS
-            if any(map(lambda t: "cluster" in t, rp.tags))
+            rp for rp in ROUNDS_PARAMS if any("cluster" in t for t in rp.tags)
         ]
         cluster_rounds.sort(key=lambda rp: rp.num_replicas)
         handles, labels = plot_cluster_size_results(
@@ -869,9 +863,7 @@ def main():
         plot_minor_legend(handles, labels, plots_dir)
 
         ratio_rounds = [
-            rp
-            for rp in ROUNDS_PARAMS
-            if any(map(lambda t: "ratio" in t, rp.tags))
+            rp for rp in ROUNDS_PARAMS if any("ratio" in t for t in rp.tags)
         ]
         ratio_rounds.sort(key=lambda rp: rp.put_ratio)
         plot_write_ratio_results(results, ratio_rounds, plots_dir)

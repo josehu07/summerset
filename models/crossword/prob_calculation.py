@@ -1,10 +1,10 @@
-import random
-import statistics
 import argparse
 import pickle
+import random
+import statistics
+
 import matplotlib
 import matplotlib.pyplot as plt
-
 
 CLUSTER = 5
 
@@ -56,7 +56,7 @@ def response_time_mean_stdev(n, q, c, s, d, b, jitter):
 
 def calc_fixed_env_result(n, d, b, jitter):
     m = n // 2 + 1
-    result = dict()
+    result = {}
     for q in range(m, n + 1):
         c = n + 1 - q
         result[(q, c)] = []
@@ -68,7 +68,7 @@ def calc_fixed_env_result(n, d, b, jitter):
 
 
 def calc_all_env_results(n):
-    results = dict()
+    results = {}
     for i, (d, b) in enumerate(POWERS):
         for j, jitter in enumerate(JITTERS):
             result = calc_fixed_env_result(n, d, b, jitter)
@@ -137,10 +137,8 @@ def plot_env_result_subplot(i, j, results):
         for cf in results[(i, j)]:
             for v in range(len(VSIZES)):
                 y = results[(i, jj)][cf][v][0]
-                if y > ytop:
-                    ytop = y
-                if y < ybottom:
-                    ybottom = y
+                ytop = max(ytop, y)
+                ybottom = min(ybottom, y)
 
     plt.xlim(0, xright * 1.1)
     plt.ylim(0, ytop * 1.2)

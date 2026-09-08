@@ -1,13 +1,13 @@
-import os
 import argparse
-import time
+import os
 import statistics
-import numpy as np
+import time
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -269,13 +269,13 @@ def bench_round(remote0, remotec, base, repo, confname, keyrname, runlog_path):
 
 
 def collect_outputs(output_dir):
-    results = dict()
+    results = {}
     for confname in RESPONDER_CONFS:
-        results[confname] = dict()
+        results[confname] = {}
         for keyrname in KEY_RANGES:
             if confname != "def" and keyrname != "100":
                 continue
-            results[confname][keyrname] = dict()
+            results[confname][keyrname] = {}
 
             result = utils.output.gather_outputs(
                 f"Bodega.{confname}.{keyrname}",
@@ -373,8 +373,8 @@ def collect_outputs(output_dir):
 
 
 def print_results(results):
-    for confname in RESPONDER_CONFS:
-        print(f"responders {RESPONDER_CONFS[confname]}")
+    for confname, responders in RESPONDER_CONFS.items():
+        print(f"responders {responders}")
         for keyrname in results[confname]:
             print(f"  key_range {KEY_RANGES[keyrname]}")
             result = results[confname][keyrname]
@@ -423,9 +423,8 @@ def plot_responders_results(results, plots_dir):
 
     xpos, xticks = 1, []
     for confname in CONF_NAMES:
-        for series in SERIES_LABEL_COLORS:
+        for series, (label, color, _) in SERIES_LABEL_COLORS.items():
             result = results[confname]["100"][series]
-            label, color, ecolor = SERIES_LABEL_COLORS[series]
 
             _bar = plt.bar(
                 xpos,
@@ -644,7 +643,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -722,7 +721,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -762,8 +761,8 @@ def main():
         results = collect_outputs(output_dir)
         print_results(results)
 
-        handle, label = plot_responders_results(results, plots_dir)
-        handle, label = plot_key_ranges_results(results, plots_dir)
+        _handle, _label = plot_responders_results(results, plots_dir)
+        _handle, _label = plot_key_ranges_results(results, plots_dir)
 
 
 if __name__ == "__main__":

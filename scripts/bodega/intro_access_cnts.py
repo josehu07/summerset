@@ -1,12 +1,12 @@
-import os
 import argparse
+import os
 import time
-import numpy as np
+
 import matplotlib
 import matplotlib.pyplot as plt
+import numpy as np
 
 from .. import utils
-
 
 PHYS_ENV_GROUP = "wan"
 
@@ -286,7 +286,7 @@ def bench_round(
 
 
 def collect_access_cnts(runlog_dir, flat_style):
-    access_cnts = dict()
+    access_cnts = {}
     for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
         protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
         node_cnts = {n: 0 for n in range(NUM_REPLICAS)}
@@ -443,8 +443,7 @@ def plot_access_cnts(results, plots_dir):
     x = np.arange(len(PCNAMES_ORDER))
     width = 0.16
 
-    pi = 0
-    for n in range(NUM_REPLICAS):
+    for pi, n in enumerate(range(NUM_REPLICAS)):
         i = NODES_NAME.index(f"S{n}")
         # skip S1 and S2 bars (hardcoded) as they are always zero
         # if NODES_NAME[i] in ["S1", "S2"]:
@@ -479,8 +478,6 @@ def plot_access_cnts(results, plots_dir):
                 rotation=90,
             )
             # if percent > 25:
-
-        pi += 1
 
     for i in range(len(PCNAMES_ORDER) - 1):
         plt.axvline(
@@ -603,7 +600,7 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
@@ -654,7 +651,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
             PHYS_ENV_GROUP
         )
 
