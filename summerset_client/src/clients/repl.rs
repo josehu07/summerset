@@ -169,7 +169,7 @@ impl ClientRepl {
     }
 
     /// Reads in user input and parses into a command.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn read_command(&mut self) -> Result<ReplCommand, SummersetError> {
         self.input_buf.clear();
         let nread = io::stdin().read_line(&mut self.input_buf)?;

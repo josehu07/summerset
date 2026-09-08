@@ -4,7 +4,8 @@
     clippy::similar_names,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    clippy::unused_async_trait_impl
 )]
 
 #[macro_use]

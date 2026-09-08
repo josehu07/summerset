@@ -147,7 +147,7 @@ impl EPaxosReplica {
         self.heartbeater.update_bcast_cnts()?;
 
         // I also heard this heartbeat from myself
-        self.heard_heartbeat(self.id, Vec::with_capacity(0), self.snap_bar)?;
+        self.heard_heartbeat(self.id, Vec::new(), self.snap_bar)?;
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
         Ok(())
