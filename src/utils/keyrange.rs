@@ -6,16 +6,19 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
-use std::mem::size_of;
+use std::mem::{MaybeUninit, size_of};
 
-use bincode::{Decode, Encode};
 use get_size::GetSize;
 use rangemap::RangeInclusiveMap;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use wincode::config::Config;
+use wincode::io::{Reader, Writer};
+use wincode::len::SeqLen;
+use wincode::{ReadResult, SchemaRead, SchemaWrite, WriteResult};
 
 use crate::server::ReplicaId;
-use crate::utils::{Bitmap, SummersetError};
+use crate::utils::{Bitmap, Codec, SummersetError};
 
 /// Responders configuration identifier number type.
 pub type ConfNum = u64;
@@ -23,9 +26,7 @@ pub type ConfNum = u64;
 /// Responders configuration struct. (for relevant protocols only)
 /// The associated index type is optional and, if used, could for example be
 /// lease group ID.
-#[derive(
-    PartialEq, Eq, Default, Clone, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(PartialEq, Eq, Default, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct RespondersConf<Idx: Clone + Eq + Hash> {
     /// If not `None`, supposed leader.
     pub leader: Option<ReplicaId>,
@@ -48,9 +49,8 @@ where
         + Default
         + Copy
         + Serialize
-        + Encode
         + DeserializeOwned
-        + Decode<()>
+        + Codec
         + GetSize
         + 'static,
 {
@@ -59,10 +59,7 @@ where
     pub(crate) fn empty(population: u8) -> Self {
         RespondersConf {
             leader: None,
-            responders: KeyRangeMap::new((
-                Bitmap::new(population, false),
-                None,
-            )),
+            responders: KeyRangeMap::new((Bitmap::new(population, false), None)),
             custom_map: HashMap::new(),
         }
     }
@@ -100,10 +97,7 @@ where
     /// Returns the responders bitmap (along with its associated index) for a
     /// key, or `None` if key not integer-mappable.
     #[inline]
-    pub fn get_responders_by_key(
-        &self,
-        key: &String,
-    ) -> Option<&(Bitmap, Option<Idx>)> {
+    pub fn get_responders_by_key(&self, key: &String) -> Option<&(Bitmap, Option<Idx>)> {
         self.responders.get(key).ok()
     }
 
@@ -170,13 +164,8 @@ where
     /// with any previously inserted ranges, or would exactly overwrite one
     /// existing range. Some protocol implementations may need to enforce this
     /// when setting a keys range.
-    pub(crate) fn range_clean(
-        &self,
-        start: &String,
-        end: &String,
-    ) -> Result<bool, SummersetError> {
-        let overlaps: Vec<_> =
-            self.responders.get_overlaps(start, end)?.collect();
+    pub(crate) fn range_clean(&self, start: &String, end: &String) -> Result<bool, SummersetError> {
+        let overlaps: Vec<_> = self.responders.get_overlaps(start, end)?.collect();
         match overlaps.len().cmp(&1) {
             Ordering::Less => Ok(true),
             Ordering::Equal => {
@@ -190,18 +179,12 @@ where
     /// Returns a clone of myself where a given node is unmarked from any
     /// special roles in the config. This clone is needed due to the current
     /// lack of support for mutable ref to values in `RangeMap`s.
-    pub(crate) fn clone_filtered(
-        &self,
-        id: ReplicaId,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) fn clone_filtered(&self, id: ReplicaId) -> Result<Self, SummersetError> {
         self.clone().into_filtered(id)
     }
 
     /// Same as `.clone_filtered()` except consuming `self`.
-    pub(crate) fn into_filtered(
-        self,
-        id: ReplicaId,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) fn into_filtered(self, id: ReplicaId) -> Result<Self, SummersetError> {
         let mut new_conf = RespondersConf {
             leader: if self.leader == Some(id) {
                 None
@@ -237,9 +220,8 @@ where
         + Default
         + Copy
         + Serialize
-        + Encode
         + DeserializeOwned
-        + Decode<()>
+        + Codec
         + GetSize
         + 'static,
 {
@@ -278,9 +260,8 @@ where
         + Default
         + Copy
         + Serialize
-        + Encode
         + DeserializeOwned
-        + Decode<()>
+        + Codec
         + GetSize
         + 'static,
 {
@@ -321,74 +302,63 @@ pub struct KeyRangeMap<T: Clone + Eq> {
     default: T,
 }
 
-impl<T> Encode for KeyRangeMap<T>
+// implement `SchemaWrite` and `SchemaRead` traits for `KeyRangeMap` by encoding
+// the default value, then a length-prefixed sequence of `(start, end, value)`
+//
+// SAFETY: `TYPE_META` is left as default `Dynamic`; `size_of` returns exactly
+// the sum of sizes of all items `write` writes, iterating in the same order.
+unsafe impl<T, C: Config> SchemaWrite<C> for KeyRangeMap<T>
 where
-    T: Encode + Clone + Eq,
+    T: SchemaWrite<C, Src = T> + Clone + Eq,
 {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        // encode default value
-        self.default.encode(encoder)?;
-        // encode entries as Vec<(start, end, value)>
-        let entries: Vec<(IntyKey, IntyKey, &T)> = self
-            .map
-            .iter()
-            .map(|(range, value)| (*range.start(), *range.end(), value))
-            .collect();
-        entries.encode(encoder)
+    type Src = Self;
+
+    fn size_of(src: &Self) -> WriteResult<usize> {
+        let key_size = |k: &IntyKey| <IntyKey as SchemaWrite<C>>::size_of(k);
+        src.map.iter().try_fold(
+            T::size_of(&src.default)? + C::LengthEncoding::write_bytes_needed(src.map.len())?,
+            |size, (range, value)| {
+                Ok(size + key_size(range.start())? + key_size(range.end())? + T::size_of(value)?)
+            },
+        )
+    }
+
+    fn write(mut writer: impl Writer, src: &Self) -> WriteResult<()> {
+        T::write(writer.by_ref(), &src.default)?;
+        C::LengthEncoding::write(writer.by_ref(), src.map.len())?;
+        for (range, value) in src.map.iter() {
+            <IntyKey as SchemaWrite<C>>::write(writer.by_ref(), range.start())?;
+            <IntyKey as SchemaWrite<C>>::write(writer.by_ref(), range.end())?;
+            T::write(writer.by_ref(), value)?;
+        }
+        Ok(())
     }
 }
 
-impl<T, Ctx> Decode<Ctx> for KeyRangeMap<T>
+// SAFETY: `TYPE_META` is left as default `Dynamic`; `dst` is initialized iff
+// returning `Ok(())`.
+unsafe impl<'de, T, C: Config> SchemaRead<'de, C> for KeyRangeMap<T>
 where
-    T: Decode<Ctx> + Clone + Eq,
+    T: SchemaRead<'de, C, Dst = T> + Clone + Eq,
 {
-    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let default = T::decode(decoder)?;
-        let entries: Vec<(IntyKey, IntyKey, T)> =
-            Vec::<(IntyKey, IntyKey, T)>::decode(decoder)?;
-        let mut map = RangeInclusiveMap::new();
-        for (start, end, value) in entries {
-            map.insert(start..=end, value);
-        }
-        Ok(KeyRangeMap { map, default })
-    }
-}
+    type Dst = Self;
 
-impl<'de, T, Ctx> bincode::BorrowDecode<'de, Ctx> for KeyRangeMap<T>
-where
-    T: bincode::BorrowDecode<'de, Ctx> + Clone + Eq,
-{
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let default = T::borrow_decode(decoder)?;
-        let entries: Vec<(IntyKey, IntyKey, T)> =
-            Vec::<(IntyKey, IntyKey, T)>::borrow_decode(decoder)?;
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self>) -> ReadResult<()> {
+        let default = T::get(reader.by_ref())?;
         let mut map = RangeInclusiveMap::new();
-        for (start, end, value) in entries {
-            map.insert(start..=end, value);
+        for _ in 0..C::LengthEncoding::read(reader.by_ref())? {
+            let start = <IntyKey as SchemaRead<'de, C>>::get(reader.by_ref())?;
+            let end = <IntyKey as SchemaRead<'de, C>>::get(reader.by_ref())?;
+            map.insert(start..=end, T::get(reader.by_ref())?);
         }
-        Ok(KeyRangeMap { map, default })
+        dst.write(KeyRangeMap { map, default });
+        Ok(())
     }
 }
 
 impl<T> KeyRangeMap<T>
 where
-    T: fmt::Debug
-        + Eq
-        + Default
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + GetSize
-        + 'static,
+    T: fmt::Debug + Eq + Default + Clone + Serialize + DeserializeOwned + Codec + GetSize + 'static,
 {
     /// Creates a new `KeyRangeMap` with all keys mapped to a default value.
     fn new(default: T) -> Self {
@@ -414,8 +384,7 @@ where
         &self,
         start: impl AsRef<str>,
         end: impl AsRef<str>,
-    ) -> Result<impl Iterator<Item = (&IntyKey, &IntyKey, &T)>, SummersetError>
-    {
+    ) -> Result<impl Iterator<Item = (&IntyKey, &IntyKey, &T)>, SummersetError> {
         let start_int = key_to_inty(start.as_ref())?;
         let end_int = key_to_inty(end.as_ref())?;
         if start_int > end_int {
@@ -476,16 +445,7 @@ where
 
 impl<T> GetSize for KeyRangeMap<T>
 where
-    T: fmt::Debug
-        + Eq
-        + Default
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + GetSize
-        + 'static,
+    T: fmt::Debug + Eq + Default + Clone + Serialize + DeserializeOwned + Codec + GetSize + 'static,
 {
     fn get_heap_size(&self) -> usize {
         self.map
@@ -498,6 +458,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::CODEC_CONFIG;
 
     #[test]
     fn new_default() -> Result<(), SummersetError> {
@@ -627,6 +588,30 @@ mod tests {
         assert!(!filtered.is_responder_by_key(&"k0".to_string(), 3));
         assert!(!filtered.is_responder_by_key(&"k400".to_string(), 3));
         assert!(!filtered.is_responder_by_idx(&7, 3));
+        Ok(())
+    }
+
+    #[test]
+    fn conf_codec_roundtrip() -> Result<(), SummersetError> {
+        let mut conf = RespondersConf::<u32>::empty(5);
+        conf.set_responders(
+            Some(&("k0".to_string(), "k123".to_string())),
+            Bitmap::from((5, vec![0, 1, 4])),
+            None,
+        )?;
+        conf.set_responders(
+            Some(&("k345".to_string(), "k456".to_string())),
+            Bitmap::from((5, vec![0, 2, 3])),
+            Some(7),
+        )?;
+        let bytes = wincode::config::serialize(&conf, CODEC_CONFIG)?;
+        assert_eq!(
+            usize::try_from(wincode::config::serialized_size(&conf, CODEC_CONFIG)?)?,
+            bytes.len()
+        );
+        let decoded: RespondersConf<u32> =
+            wincode::config::deserialize_exact(&bytes, CODEC_CONFIG)?;
+        assert_eq!(decoded, conf);
         Ok(())
     }
 }

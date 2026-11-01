@@ -2,9 +2,7 @@ from .proc import run_process, run_process_over_ssh, wait_parallel_procs
 
 
 def lookup_dns_to_ip(domain):
-    proc = run_process(
-        ["dig", "+short", domain], capture_stdout=True, print_cmd=False
-    )
+    proc = run_process(["dig", "+short", domain], capture_stdout=True, print_cmd=False)
     out, _ = proc.communicate()
     out = out.decode().strip()
     if len(out) == 0:
@@ -21,9 +19,7 @@ def get_interface_name(remote=None):
     if remote is None:
         proc = run_process(cmd, capture_stdout=True, print_cmd=False)
     else:
-        proc = run_process_over_ssh(
-            remote, cmd, capture_stdout=True, print_cmd=False
-        )
+        proc = run_process_over_ssh(remote, cmd, capture_stdout=True, print_cmd=False)
     out, _ = proc.communicate()
     out = out.decode().strip()
 
@@ -32,16 +28,10 @@ def get_interface_name(remote=None):
     return segs[4]
 
 
-def set_tc_qdisc_netem(
-    netns, dev, mean, jitter, rate, distribution="pareto", remote=None
-):
+def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto", remote=None):
     QLEN_LIMIT = 500000000
     delay_args = f"delay {mean}ms" if mean > 0 else ""
-    jitter_args = (
-        f"{jitter}ms distribution {distribution}"
-        if mean > 0 and jitter > 0
-        else ""
-    )
+    jitter_args = f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
     rate_args = f"rate {rate}gibit" if rate > 0 else ""
     cmd = [
         "tc",
@@ -56,11 +46,7 @@ def set_tc_qdisc_netem(
         rate_args,
     ]
     if netns is not None and len(netns) > 0:
-        cmd = (
-            ["sudo", "ip", "netns", "exec", netns]
-            + cmd
-            + ["limit", str(QLEN_LIMIT)]
-        )
+        cmd = ["sudo", "ip", "netns", "exec", netns] + cmd + ["limit", str(QLEN_LIMIT)]
     else:
         cmd = ["sudo"] + cmd
 
@@ -186,11 +172,7 @@ def add_tc_qdisc_band_netem(
     child = flowid.split(":")[-1] + "0:"
 
     delay_args = f"delay {mean}ms" if mean > 0 else ""
-    jitter_args = (
-        f"{jitter}ms distribution {distribution}"
-        if mean > 0 and jitter > 0
-        else ""
-    )
+    jitter_args = f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
     rate_args = f"rate {rate}gibit" if rate > 0 else ""
     cmd = [
         "tc",
@@ -219,9 +201,7 @@ def add_tc_qdisc_band_netem(
         )
 
 
-def add_tc_filter_for_ip_dst(
-    dev, ip_dst, higher_ports=False, flowid="1:4", remote=None
-):
+def add_tc_filter_for_ip_dst(dev, ip_dst, higher_ports=False, flowid="1:4", remote=None):
     assert flowid.count(":") == 1 and flowid[-1] != ":"
 
     cmd = [
@@ -284,9 +264,7 @@ def set_tc_qdisc_netems_asym(
     assert remotes is not None and len(remotes) > 1
     assert len(ipaddrs) == len(remotes)
     host_idx = {h: i for i, h in enumerate(sorted(remotes.keys()))}
-    main_dev = {
-        h: get_interface_name(remote=remote) for h, remote in remotes.items()
-    }
+    main_dev = {h: get_interface_name(remote=remote) for h, remote in remotes.items()}
 
     procs = []
     for host, remote in remotes.items():
@@ -369,9 +347,7 @@ def clear_tc_qdisc_netem(netns, dev, remote=None, capture_stderr=False):
         )
 
 
-def clear_tc_qdisc_netems_veth(
-    num_replicas, netns, dev, ifb, remote=None, capture_stderr=False
-):
+def clear_tc_qdisc_netems_veth(num_replicas, netns, dev, ifb, remote=None, capture_stderr=False):
     for replica in range(num_replicas):
         clear_tc_qdisc_netem(
             netns(replica),

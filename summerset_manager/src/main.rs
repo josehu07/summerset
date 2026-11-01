@@ -76,9 +76,10 @@ impl CliArgs {
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
-                format!("protocol name '{}' unrecognized", self.protocol),
-            ))
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(format!(
+                "protocol name '{}' unrecognized",
+                self.protocol
+            )))
         }
     }
 }

@@ -222,9 +222,7 @@ def launch_etcd_cluster(remote0, base, repo, pcname, workload, distribution):
     )
 
 
-def launch_zookeeper_cluster(
-    remote0, base, repo, pcname, workload, distribution
-):
+def launch_zookeeper_cluster(remote0, base, repo, pcname, workload, distribution):
     cmd = [
         "uv",
         "run",
@@ -381,9 +379,7 @@ def run_mess_client(
     )
 
 
-def run_etcd_clients(
-    remotec, base, repo, pcname, workload, distribution, config=None
-):
+def run_etcd_clients(remotec, base, repo, pcname, workload, distribution, config=None):
     cmd = [
         "uv",
         "run",
@@ -431,9 +427,7 @@ def run_etcd_clients(
     )
 
 
-def run_zookeeper_clients(
-    remotec, base, repo, pcname, workload, distribution, config=None
-):
+def run_zookeeper_clients(remotec, base, repo, pcname, workload, distribution, config=None):
     cmd = [
         "uv",
         "run",
@@ -499,16 +493,12 @@ def bench_round(
     if "Etcd" in pcname:
         protocol = "Etcd"
         procs_cluster = [
-            launch_etcd_cluster(
-                remotes["host0"], base, repo, pcname, workload, distribution
-            )
+            launch_etcd_cluster(remotes["host0"], base, repo, pcname, workload, distribution)
         ]
     elif "ZooKeeper" in pcname:
         protocol = "ZooKeeper"
         procs_cluster = [
-            launch_zookeeper_cluster(
-                remotes["host0"], base, repo, pcname, workload, distribution
-            )
+            launch_zookeeper_cluster(remotes["host0"], base, repo, pcname, workload, distribution)
         ]
     else:  # Summerset
         protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
@@ -563,11 +553,7 @@ def bench_round(
                 key_range = (  # top 1/5 keys for each node
                     f"k{c}{0:0{YCSB_KEY_LEN - 2}d}-k{c}{YCSB_NUM_KEYS:0{YCSB_KEY_LEN - 2}d}"
                 )
-                responder = (
-                    str(FORCE_LEADER)
-                    if c == FORCE_LEADER
-                    else f"{FORCE_LEADER},{c}"
-                )
+                responder = str(FORCE_LEADER) if c == FORCE_LEADER else f"{FORCE_LEADER},{c}"
 
             proc_mess = run_mess_client(
                 hostc,
@@ -581,13 +567,9 @@ def bench_round(
                 partition=None if "QuorumLs" not in pcname else c,
             )
             mout, merr = proc_mess.communicate()
-            with open(
-                f"{runlog_path}/{protocol}{midfix_str}.m.{c}.out", "wb"
-            ) as fmout:
+            with open(f"{runlog_path}/{protocol}{midfix_str}.m.{c}.out", "wb") as fmout:
                 fmout.write(mout)
-            with open(
-                f"{runlog_path}/{protocol}{midfix_str}.m.{c}.err", "wb"
-            ) as fmerr:
+            with open(f"{runlog_path}/{protocol}{midfix_str}.m.{c}.err", "wb") as fmerr:
                 fmerr.write(merr)
         time.sleep(5)
 
@@ -658,13 +640,9 @@ def bench_round(
     for p, proc_clients in enumerate(procs_clients):
         cout, cerr = proc_clients.communicate()
         postfix_str = ".c" if len(procs_clients) == 1 else f".c.{p}"
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.out", "wb"
-        ) as fcout:
+        with open(f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.out", "wb") as fcout:
             fcout.write(cout)
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.err", "wb"
-        ) as fcerr:
+        with open(f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.err", "wb") as fcerr:
             fcerr.write(cerr)
 
     # terminate the cluster
@@ -675,13 +653,9 @@ def bench_round(
     for p, proc_cluster in enumerate(procs_cluster):
         sout, serr = proc_cluster.communicate()
         postfix_str = ".s" if len(procs_clients) == 1 else f".s.{p}"
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.out", "wb"
-        ) as fsout:
+        with open(f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.out", "wb") as fsout:
             fsout.write(sout)
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.err", "wb"
-        ) as fserr:
+        with open(f"{runlog_path}/{protocol}{midfix_str}{postfix_str}.err", "wb") as fserr:
             fserr.write(serr)
 
     for proc_clients in procs_clients:
@@ -717,17 +691,13 @@ def collect_outputs(output_dir):
                     RESULT_SECS_BEGIN,
                     RESULT_SECS_END,
                     0.1,
-                    agg_partitions=None
-                    if "QuorumLs" not in pcname
-                    else NUM_REPLICAS,
+                    agg_partitions=None if "QuorumLs" not in pcname else NUM_REPLICAS,
                 )
 
                 sd, sp, sj, sm = 10, 0, 0, 1
                 # setting sm here to compensate for unstabilities of printing
                 # things to console
-                tput_list = utils.output.list_smoothing(
-                    result["tput_sum"], sd, sp, sj, sm
-                )
+                tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
                 wlat_list = utils.output.list_smoothing(
                     [v for v in result["wlat_avg"] if v > 0.0],
                     sd,
@@ -772,51 +742,21 @@ def collect_outputs(output_dir):
                         # ** 0.5,
                     },
                     "wlat": {
-                        "p50": (
-                            None
-                            if len(wlat_list) == 0
-                            else wlat_list[len(wlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(wlat_list) == 0
-                            else np.percentile(wlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(wlat_list) == 0
-                            else sum(wlat_list) / len(wlat_list)
-                        ),
+                        "p50": (None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]),
+                        "p99": (None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)),
+                        "mean": (None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)),
                     },
                     "rlat": {
-                        "p50": (
-                            None
-                            if len(rlat_list) == 0
-                            else rlat_list[len(rlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(rlat_list) == 0
-                            else np.percentile(rlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(rlat_list) == 0
-                            else sum(rlat_list) / len(rlat_list)
-                        ),
+                        "p50": (None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]),
+                        "p99": (None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)),
+                        "mean": (None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)),
                     },
                 }
                 curr_results = results[workload][distribution][pcname]
                 ymax["tput"] = max(ymax["tput"], curr_results["tput"]["mean"])
-                if (
-                    curr_results["wlat"]["mean"] is not None
-                    and wlat_list[-1] > ymax["wlat"]
-                ):
+                if curr_results["wlat"]["mean"] is not None and wlat_list[-1] > ymax["wlat"]:
                     ymax["wlat"] = wlat_list[-1]
-                if (
-                    curr_results["rlat"]["mean"] is not None
-                    and rlat_list[-1] > ymax["rlat"]
-                ):
+                if curr_results["rlat"]["mean"] is not None and rlat_list[-1] > ymax["rlat"]:
                     ymax["rlat"] = rlat_list[-1]
 
     # separate out write latency results
@@ -832,38 +772,27 @@ def collect_outputs(output_dir):
                         / results[workload]["uniform"][pcname]["wlat"]["mean"]
                     )
                     for met in ("mean", "p50", "p99"):
-                        results[workload]["zipfian"][pcname]["wlat"][met] = (
-                            results[workload]["uniform"][pcname]["wlat"][met]
-                        )
-                    results[workload]["zipfian"][pcname]["tput"]["mean"] *= (
-                        ratio
-                    )
+                        results[workload]["zipfian"][pcname]["wlat"][met] = results[workload][
+                            "uniform"
+                        ][pcname]["wlat"][met]
+                    results[workload]["zipfian"][pcname]["tput"]["mean"] *= ratio
             for pcname in ("Bodega",):
                 if workload != "c" and (
                     results[workload]["uniform"][pcname]["wlat"]["mean"]
-                    < results[workload]["uniform"]["ZooKeeperDefault"]["wlat"][
-                        "mean"
-                    ]
+                    < results[workload]["uniform"]["ZooKeeperDefault"]["wlat"]["mean"]
                 ):
                     diff = (
                         results[workload]["uniform"][pcname]["wlat"]["p99"]
                         - results[workload]["uniform"][pcname]["wlat"]["mean"]
-                        + results[workload]["uniform"]["ZooKeeperDefault"][
-                            "wlat"
-                        ]["p99"]
-                        - results[workload]["uniform"]["ZooKeeperDefault"][
-                            "wlat"
-                        ]["mean"]
+                        + results[workload]["uniform"]["ZooKeeperDefault"]["wlat"]["p99"]
+                        - results[workload]["uniform"]["ZooKeeperDefault"]["wlat"]["mean"]
                     ) / 2
                     for met in ("mean", "p50"):
-                        results[workload]["uniform"][pcname]["wlat"][met] = (
-                            results[workload]["uniform"]["ZooKeeperDefault"][
-                                "wlat"
-                            ][met]
-                        )
+                        results[workload]["uniform"][pcname]["wlat"][met] = results[workload][
+                            "uniform"
+                        ]["ZooKeeperDefault"]["wlat"][met]
                     results[workload]["uniform"][pcname]["wlat"]["p99"] = (
-                        results[workload]["uniform"][pcname]["wlat"]["mean"]
-                        + diff
+                        results[workload]["uniform"][pcname]["wlat"]["mean"] + diff
                     )
 
     return results, ymax
@@ -964,8 +893,7 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
         for pcname in PCNAMES_ORDER:
             result = results[workload][distribution][pcname]["tput"]
             norm_tput = (
-                result["mean"]
-                / results[workload][distribution]["PQRLeaderLs"]["tput"]["mean"]
+                result["mean"] / results[workload][distribution]["PQRLeaderLs"]["tput"]["mean"]
             )
 
             # if norm_tput > 5.0:  # manual y-axis break
@@ -1186,9 +1114,7 @@ def plot_distribution_results(results, distribution, plots_dir, ymax=None):
         (43.0 - 0.4, "f", "EtcdDefault"),
         (45.0 + 0.2, "f", "ZooKeeperSyncGet"),
     ):
-        norm_tput = math.floor(
-            results[workload][distribution][pcname]["rlat"]["mean"]
-        )
+        norm_tput = math.floor(results[workload][distribution][pcname]["rlat"]["mean"])
         plt.text(
             tmark_x,
             37,
@@ -1425,17 +1351,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
-        utils.proc.kill_all_distr_procs(
-            PHYS_ENV_GROUP, etcd=True, zookeeper=True
-        )
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, etcd=True, zookeeper=True)
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -1452,16 +1372,12 @@ def main():
         for workload in YCSB_WORKLOADS:
             for distribution in YCSB_DISTRIBUTIONS:
                 print(f"  workload {workload} {distribution}")
-                gen_ycsb_trace(
-                    hosts, remotes, base, repo, workload, distribution
-                )
+                gen_ycsb_trace(hosts, remotes, base, repo, workload, distribution)
 
         try:
             for workload in YCSB_WORKLOADS:
                 for distribution in YCSB_DISTRIBUTIONS:
-                    print(
-                        f"Running experiments workload {workload} {distribution}..."
-                    )
+                    print(f"Running experiments workload {workload} {distribution}...")
                     for pcname in (
                         list(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS.keys())
                         + list(ETCD_CLIENT_CONFIGS.keys())
@@ -1480,9 +1396,7 @@ def main():
                             runlog_path,
                         )
 
-                        utils.proc.kill_all_distr_procs(
-                            PHYS_ENV_GROUP, etcd=True, zookeeper=True
-                        )
+                        utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, etcd=True, zookeeper=True)
                         utils.file.remove_files_in_dir(  # to free up storage space
                             f"{base}/states/{EXPER_NAME}",
                             remotes=remotes,
@@ -1491,21 +1405,15 @@ def main():
 
         except utils.BreakingLoops:
             print("Experiment FAILED, breaking early...")
-            utils.proc.kill_all_distr_procs(
-                PHYS_ENV_GROUP, etcd=True, zookeeper=True
-            )
+            utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, etcd=True, zookeeper=True)
 
         print("Fetching client output logs...")
         for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remotes[host], f"{base}/output/{EXPER_NAME}", output_path)
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"
@@ -1544,9 +1452,7 @@ def main():
         print_results(results)
 
         for distribution in YCSB_DISTRIBUTIONS:
-            handles, labels = plot_distribution_results(
-                results, distribution, plots_dir
-            )
+            handles, labels = plot_distribution_results(results, distribution, plots_dir)
         plot_ylabels(plots_dir)
         plot_legend(handles, labels, plots_dir)
 

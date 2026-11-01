@@ -20,9 +20,7 @@ impl CrosswordReplica {
     /// Pretty-print linear regression models.
     #[inline]
     #[allow(clippy::ptr_arg)]
-    fn linreg_models_to_string(
-        models: &HashMap<ReplicaId, PerfModel>,
-    ) -> String {
+    fn linreg_models_to_string(models: &HashMap<ReplicaId, PerfModel>) -> String {
         models
             .iter()
             .map(|(r, model)| format!("{}:{}", r, model))
@@ -101,8 +99,7 @@ impl CrosswordReplica {
         fault_tolerance: u8,
         alive_cnt: u8,
     ) -> u8 {
-        (majority + fault_tolerance + 1 - alive_cnt)
-            * (rs_data_shards / majority)
+        (majority + fault_tolerance + 1 - alive_cnt) * (rs_data_shards / majority)
     }
 
     /// Get the proper assignment policy given data size and `peer_alive` count.
@@ -154,16 +151,14 @@ impl CrosswordReplica {
             // query the linear regression models and pick the best config of
             // (#shards_per_replica, quorum_size) pair along the constraint
             // boundary line if doing adaptive config choosing
-            let mut config_times =
-                Vec::<(u8, f64)>::with_capacity(majority as usize);
+            let mut config_times = Vec::<(u8, f64)>::with_capacity(majority as usize);
             #[allow(clippy::cast_possible_truncation)]
             for (spr, q) in (dj_spr..=rs_data_shards)
                 .step_by(dj_spr as usize)
                 .enumerate()
                 .map(|(i, spr)| (spr, majority + fault_tolerance - i as u8))
             {
-                let load_size =
-                    ((data_size / rs_data_shards as usize) + 1) * spr as usize;
+                let load_size = ((data_size / rs_data_shards as usize) + 1) * spr as usize;
                 let mut peer_times: Vec<f64> = linreg_model
                     .values()
                     .map(|model| model.predict(load_size))
@@ -202,9 +197,7 @@ impl CrosswordReplica {
         // pop oldest heartbeats sent timestamps out until the corresponding
         // heartbeat ID is found. Records preceding the matching record will
         // be discarded forever
-        while let Some((ts, s)) =
-            self.pending_accepts.get_mut(&peer).unwrap().pop_front()
-        {
+        while let Some((ts, s)) = self.pending_accepts.get_mut(&peer).unwrap().pop_front() {
             #[allow(clippy::comparison_chain)]
             if s == slot {
                 debug_assert!(tr >= ts);
@@ -232,18 +225,11 @@ impl CrosswordReplica {
     }
 
     /// Records a new datapoint for heartbeat RTT time.
-    pub(super) fn record_heartbeat_rtt(
-        &mut self,
-        peer: ReplicaId,
-        tr: u128,
-        hb_id: HeartbeatId,
-    ) {
+    pub(super) fn record_heartbeat_rtt(&mut self, peer: ReplicaId, tr: u128, hb_id: HeartbeatId) {
         // pop oldest heartbeats sent timestamps out until the corresponding
         // heartbeat ID is found. Records preceding the matching record will
         // be discarded forever
-        while let Some((ts, id)) =
-            self.pending_heartbeats.get_mut(&peer).unwrap().pop_front()
-        {
+        while let Some((ts, id)) = self.pending_heartbeats.get_mut(&peer).unwrap().pop_front() {
             #[allow(clippy::comparison_chain)]
             if id == hb_id {
                 debug_assert!(tr >= ts);
@@ -271,12 +257,9 @@ impl CrosswordReplica {
     /// Discards all datapoints older than some timespan ago, then updates the
     /// linear regression perf monitoring model for each replica using the
     /// remaining window of datapoints.
-    pub(super) fn update_linreg_model(
-        &mut self,
-        keep_ms: u64,
-    ) -> Result<(), SummersetError> {
+    pub(super) fn update_linreg_model(&mut self, keep_ms: u64) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
-        let keep_us = now_us - 1000 * u128::from(keep_ms);
+        let keep_us = now_us.saturating_sub(1000 * u128::from(keep_ms));
 
         for (&peer, regressor) in &mut self.regressor {
             regressor.discard_before(keep_us);

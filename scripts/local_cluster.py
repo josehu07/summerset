@@ -16,12 +16,8 @@ MANAGER_CLI_PORT = 30009  # NOTE: assuming at most 9 servers
 MANAGER_SRV_PORT = 30019
 
 
-PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}.wal"
-)
-PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}.snap"
-)
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
 
 
 class ProtoFeats:
@@ -37,24 +33,16 @@ PROTOCOL_FEATURES = {
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
     "EPaxos": ProtoFeats(True, False, lambda n, _: "optimized_quorum=true"),
-    "RSPaxos": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
-    ),
+    "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"),
     "Raft": ProtoFeats(True, True, None),
-    "CRaft": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
-    ),
-    "Crossword": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={n // 2}"
-    ),
+    "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"),
+    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n // 2}"),
     "QuorumLeases": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
     "Bodega": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
 }
 
 
-def run_process_pinned(
-    i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None
-):
+def run_process_pinned(i, cmd, capture_stderr=False, cores_per_proc=0, in_netns=None):
     cpu_list = None
     if cores_per_proc > 0:
         # get number of processors
@@ -90,18 +78,14 @@ def config_with_defaults(
         l = [k + "=" + v for k, v in d.items()]
         return "+".join(l)
 
-    backer_path = PROTOCOL_BACKER_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_path = PROTOCOL_BACKER_PATH(protocol, states_prefix, states_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files and os.path.isfile(backer_path):
         print(f"Delete: {backer_path}")
         os.remove(backer_path)
 
     if PROTOCOL_FEATURES[protocol].could_snapshot:
-        snapshot_path = PROTOCOL_SNAPSHOT_PATH(
-            protocol, states_prefix, states_midfix, replica_id
-        )
+        snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, states_prefix, states_midfix, replica_id)
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files and os.path.isfile(snapshot_path):
             print(f"Delete: {snapshot_path}")
@@ -109,11 +93,7 @@ def config_with_defaults(
 
     if PROTOCOL_FEATURES[protocol].extra_defaults is not None:
         config_dict.update(
-            config_str_to_dict(
-                PROTOCOL_FEATURES[protocol].extra_defaults(
-                    num_replicas, replica_id
-                )
-            )
+            config_str_to_dict(PROTOCOL_FEATURES[protocol].extra_defaults(num_replicas, replica_id))
         )
 
     if config is not None and len(config) > 0:
@@ -125,9 +105,7 @@ def config_with_defaults(
     return config_dict_to_str(config_dict)
 
 
-def compose_manager_cmd(
-    protocol, bind_ip, srv_port, cli_port, num_replicas, release
-):
+def compose_manager_cmd(protocol, bind_ip, srv_port, cli_port, num_replicas, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_manager"]
     cmd += [
         "-p",
@@ -178,9 +156,7 @@ def wait_manager_setup(proc):
             break
 
 
-def compose_server_cmd(
-    protocol, bind_ip, api_port, p2p_port, manager, config, release
-):
+def compose_server_cmd(protocol, bind_ip, api_port, p2p_port, manager, config, release):
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
@@ -256,9 +232,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-n",
         "--num_replicas",
@@ -266,12 +240,8 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-r", "--release", action="store_true", help="if set, run release mode"
-    )
-    parser.add_argument(
-        "-c", "--config", type=str, help="protocol-specific TOML config string"
-    )
+    parser.add_argument("-r", "--release", action="store_true", help="if set, run release mode")
+    parser.add_argument("-c", "--config", type=str, help="protocol-specific TOML config string")
     parser.add_argument(
         "--force_leader",
         type=int,
@@ -306,9 +276,7 @@ def main():
         action="store_true",
         help="if set, use netns and veth setting",
     )
-    parser.add_argument(
-        "--skip_build", action="store_true", help="if set, skip cargo build"
-    )
+    parser.add_argument("--skip_build", action="store_true", help="if set, skip cargo build")
     args = parser.parse_args()
 
     # kill all existing server and manager processes
@@ -318,9 +286,7 @@ def main():
 
     # check that number of replicas does not exceed 9
     if args.num_replicas > 9:
-        raise ValueError(
-            "#replicas > 9 not supported yet (as ports are hardcoded)"
-        )
+        raise ValueError("#replicas > 9 not supported yet (as ports are hardcoded)")
 
     # check protocol name
     if args.protocol not in PROTOCOL_FEATURES:
@@ -336,9 +302,7 @@ def main():
         utils.file.do_cargo_build(args.release)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(
-        args.protocol, args.num_replicas, args.release, args.use_veth
-    )
+    manager_proc = launch_manager(args.protocol, args.num_replicas, args.release, args.use_veth)
     wait_manager_setup(manager_proc)
 
     # create a thread that prints out captured manager stderrs

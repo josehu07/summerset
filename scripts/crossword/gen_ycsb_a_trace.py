@@ -16,9 +16,7 @@ def gen_ycsb_a_trace(base):
         "-P",
         f"{YCSB_DIR(base)}/workloads/workloada",
     ]
-    proc = utils.proc.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
-    )
+    proc = utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True, print_cmd=False)
     out, _ = proc.communicate()
     raw = out.decode()
 

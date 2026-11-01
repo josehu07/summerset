@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // MultiPaxosReplica durable WAL logging
 impl MultiPaxosReplica {
     /// Handler of `PrepareBal` logging result chan recv.
-    fn handle_logged_prepare_bal(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_prepare_bal(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -82,10 +79,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of `AcceptData` logging result chan recv.
-    fn handle_logged_accept_data(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_accept_data(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -145,10 +139,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of `CommitSlot` logging result chan recv.
-    fn handle_logged_commit_slot(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_commit_slot(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }

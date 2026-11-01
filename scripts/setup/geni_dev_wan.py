@@ -49,9 +49,7 @@ params = pc.bindParameters()
 
 # Check parameter validity.
 if params.nodeCount < 1 or params.nodeCount > 25:
-    pc.reportError(
-        portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"])
-    )
+    pc.reportError(portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"]))
 
 pc.verifyParameters()
 

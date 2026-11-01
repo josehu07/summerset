@@ -8,10 +8,7 @@ use crate::utils::SummersetError;
 // RepNothingReplica control messages handling
 impl RepNothingReplica {
     /// Handler of `ResetState` control message.
-    async fn handle_ctrl_reset_state(
-        &mut self,
-        durable: bool,
-    ) -> Result<(), SummersetError> {
+    async fn handle_ctrl_reset_state(&mut self, durable: bool) -> Result<(), SummersetError> {
         // send leave notification to manager and wait for its reply
         self.control_hub
             .do_sync_ctrl(CtrlMsg::Leave, |m| m == &CtrlMsg::LeaveReply)
@@ -39,10 +36,7 @@ impl RepNothingReplica {
     }
 
     /// Handler of Pause control message.
-    fn handle_ctrl_pause(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
+    fn handle_ctrl_pause(&mut self, paused: &mut bool) -> Result<(), SummersetError> {
         pf_warn!("server got pause req");
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
@@ -50,10 +44,7 @@ impl RepNothingReplica {
     }
 
     /// Handler of Resume control message.
-    fn handle_ctrl_resume(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
+    fn handle_ctrl_resume(&mut self, paused: &mut bool) -> Result<(), SummersetError> {
         pf_warn!("server got resume req");
         *paused = false;
         self.control_hub.send_ctrl(CtrlMsg::ResumeReply)?;

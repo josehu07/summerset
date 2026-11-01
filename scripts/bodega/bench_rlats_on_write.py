@@ -253,9 +253,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -271,13 +269,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
             responder=",".join(list(map(str, responders))),
         )
         mout, merr = proc_mess.communicate()
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb"
-        ) as fmout:
+        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb") as fmout:
             fmout.write(mout)
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb"
-        ) as fmerr:
+        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb") as fmerr:
             fmerr.write(merr)
         time.sleep(5)
 
@@ -285,9 +279,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remotec, base, repo, pcname, config=client_config
-    )
+    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
 
     # wait till time for a single-shot write
     time.sleep(WRITE_AT_SECS)
@@ -359,10 +351,7 @@ def collect_outputs(output_dir):
                             if rlat < 10.0:
                                 dip_found = True
                                 base_time = buffer[0][0]
-                                result = [
-                                    (time - base_time, rlat)
-                                    for time, rlat in buffer
-                                ]
+                                result = [(time - base_time, rlat) for time, rlat in buffer]
                         else:
                             result.append((time - base_time, rlat))
                             if len(result) >= 31:
@@ -447,9 +436,7 @@ def plot_rlats_results(results, write_time, plots_dir):
     }
 
     for pcname in PCNAMES_ORDER:
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
-            pcname
-        ]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
         times, rlats = results[pcname]["time"], results[pcname]["rlat"]
         zidx = results[pcname]["zidx"]
         times = [times[i] for i in range(len(rlats)) if rlats[i] > 0]
@@ -590,15 +577,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -641,9 +624,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

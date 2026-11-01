@@ -3,13 +3,13 @@ name = "summerset_scripts"
 version = "0.1.0"
 description = "Scripts for the Summerset project"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = ["matplotlib>=3.10.7", "numpy>=2.3.5", "toml>=0.10.2"]
+requires-python = ">=3.15"
+dependencies = ["matplotlib>=3.11.2", "numpy>=2.5.4"]
 
 [dependency-groups]
 dev = [
-    "bibtexparser>=1.4.3",
-    "isort>=8.0.1",
+    "bibtexparser>=2.1.0",
+    "isort>=9.0.2",
     "pdfcropmargins>=2.2.1",
-    "ruff>=0.15.0",
+    "ruff>=0.17.3",
 ]

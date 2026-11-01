@@ -5,7 +5,6 @@ use std::marker::Unpin;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::process::Command;
 
-use bincode::{Decode, Encode};
 use bytes::{Bytes, BytesMut};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -13,7 +12,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
 
-use crate::utils::SummersetError;
+use crate::utils::{CODEC_CONFIG, Codec, SummersetError};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
 /// using `read_buf` as buffer storage for partial reads. Returns:
@@ -32,7 +31,7 @@ pub(crate) async fn safe_tcp_read<T, Conn>(
     conn_read: &mut Conn,
 ) -> Result<T, SummersetError>
 where
-    T: DeserializeOwned + Decode<()>,
+    T: DeserializeOwned + Codec,
     Conn: AsyncReadExt + Unpin,
 {
     // read length of obj first
@@ -66,11 +65,7 @@ where
     while read_buf.len() < obj_end {
         conn_read.read_buf(read_buf).await?;
     }
-    let (obj, obj_len_read) = bincode::decode_from_slice(
-        &read_buf[8..obj_end],
-        bincode::config::standard(),
-    )?;
-    debug_assert_eq!(usize::try_from(obj_len).unwrap(), obj_len_read);
+    let obj = wincode::config::deserialize_exact(&read_buf[8..obj_end], CODEC_CONFIG)?;
 
     // if reached this point, no further cancellation to this call is
     // possible (because there are no more awaits ahead); discard bytes
@@ -109,7 +104,7 @@ pub(crate) fn safe_tcp_write<T, Conn>(
     obj: Option<&T>,
 ) -> Result<bool, SummersetError>
 where
-    T: Serialize + Encode,
+    T: Serialize + Codec,
     Conn: AsRef<TcpStream>,
 {
     // if last write was not successful, cannot send a new object
@@ -124,8 +119,7 @@ where
     } else if let Some(obj) = obj {
         // sending a new object, fill write_buf
         debug_assert_eq!(*write_buf_cursor, 0);
-        let write_bytes =
-            bincode::encode_to_vec(obj, bincode::config::standard())?;
+        let write_bytes = wincode::config::serialize(obj, CODEC_CONFIG)?;
         let write_len = write_bytes.len();
         write_buf.extend_from_slice(&write_len.to_be_bytes());
         debug_assert_eq!(write_buf.len(), 8);

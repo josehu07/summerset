@@ -64,9 +64,7 @@ def dump_profile_len_cnts(profile, pickle_path):
     for i in range(10):
         num_entries, num_bytes, repeat_cnt = sorted_profile[i]
         percentage = int(repeat_cnt / total_samples * 100)
-        print(
-            f"    {num_entries:5d}  {num_bytes:10d}  {repeat_cnt:7d}  {percentage:2d}%"
-        )
+        print(f"    {num_entries:5d}  {num_bytes:10d}  {repeat_cnt:7d}  {percentage:2d}%")
 
     len_cnts = {}
     for (_, num_bytes), repeat_cnt in profile.items():
@@ -283,18 +281,14 @@ def main():
             os.system(f"rm -rf {saved_logs_path}")
             os.system(f"mkdir -p {saved_logs_path}")
 
-            collect_profile_logs(
-                remotes, PROFILE_LOGS_DIR(db_sys), saved_logs_path
-            )
+            collect_profile_logs(remotes, PROFILE_LOGS_DIR(db_sys), saved_logs_path)
             profile = parse_profile_results(saved_logs_path)
             dump_profile_len_cnts(profile, pickle_path)
 
     else:
         # analyzing & plotting results
         if not os.path.isdir(collect_path):
-            raise RuntimeError(
-                f"collect directory {collect_path} does not exist"
-            )
+            raise RuntimeError(f"collect directory {collect_path} does not exist")
 
         all_len_cnts = {}
         for db_sys in ("tidb", "cockroach"):
@@ -306,9 +300,7 @@ def main():
             preprocess_len_cnts(len_cnts, excludes=5 if db_sys == "tidb" else 1)
             all_len_cnts[db_sys] = len_cnts
 
-        plot_len_cnts_cdfs(
-            all_len_cnts["tidb"], all_len_cnts["cockroach"], collect_path
-        )
+        plot_len_cnts_cdfs(all_len_cnts["tidb"], all_len_cnts["cockroach"], collect_path)
 
 
 if __name__ == "__main__":

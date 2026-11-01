@@ -35,10 +35,7 @@ impl CRaftReplica {
                 .do_sync_action(
                     0, // using 0 as dummy log action ID
                     LogAction::Write {
-                        entry: DurEntry::pack_meta(
-                            self.curr_term,
-                            self.voted_for,
-                        ),
+                        entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -53,9 +50,7 @@ impl CRaftReplica {
             } = result
             {
             } else {
-                return logged_err!(
-                    "unexpected log result type or failed write"
-                );
+                return logged_err!("unexpected log result type or failed write");
             }
 
             if self.role == Role::Follower {
@@ -209,20 +204,15 @@ impl CRaftReplica {
     }
 
     /// Becomes the leader after enough votes granted for me.
-    pub(super) async fn become_the_leader(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.heartbeater.set_sending(true);
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
-        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts(None)?;
-        self.bcast_heartbeats().await?;
-
-        // re-initialize next_slot and match_slot information
+        // re-initialize next_slot and match_slot information (before sending
+        // heartbeats, so that they do not carry stale prev_slots)
         for slot in self.next_slot.values_mut() {
             *slot = self.start_slot + self.log.len();
         }
@@ -232,6 +222,10 @@ impl CRaftReplica {
         for slot in self.match_slot.values_mut() {
             *slot = 0;
         }
+
+        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
+        self.heartbeater.clear_reply_cnts(None)?;
+        self.bcast_heartbeats().await?;
 
         // mark some possibly unreplied entries as external
         for slot in self
@@ -246,9 +240,7 @@ impl CRaftReplica {
     }
 
     /// Broadcasts empty `AppendEntries` messages as heartbeats to all peers.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;

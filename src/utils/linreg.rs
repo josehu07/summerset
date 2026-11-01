@@ -134,10 +134,7 @@ impl LinearRegressor {
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation
     )]
-    pub(crate) fn calc_model(
-        &mut self,
-        outliers_ratio: f32,
-    ) -> Result<PerfModel, SummersetError> {
+    pub(crate) fn calc_model(&mut self, outliers_ratio: f32) -> Result<PerfModel, SummersetError> {
         debug_assert!((0.0..1.0).contains(&outliers_ratio));
 
         if let Some(model) = self.model.as_ref() {
@@ -152,9 +149,8 @@ impl LinearRegressor {
                 .iter()
                 .min_by(|dpa, dpb| dpa.2.partial_cmp(&dpb.2).unwrap())
                 .map_or(0.0, |dp| dp.2);
-            let mut jitter = (bucket0.iter().map(|dp| dp.2).sum::<f64>()
-                / bucket0.len() as f64)
-                - delay;
+            let mut jitter =
+                (bucket0.iter().map(|dp| dp.2).sum::<f64>() / bucket0.len() as f64) - delay;
 
             if delay < 0.0 {
                 delay = 0.0;
@@ -166,9 +162,7 @@ impl LinearRegressor {
             // compute model on current window of datapoints
             let mut xys: Vec<(f64, f64)> = vec![];
             for bucket in &self.buckets {
-                xys.append(
-                    &mut bucket.iter().map(|dp| (dp.1 as f64, dp.2)).collect(),
-                );
+                xys.append(&mut bucket.iter().map(|dp| (dp.1 as f64, dp.2)).collect());
             }
             let mut slope = linear_regression_of(&xys)?.0;
             if slope < 0.0 {
@@ -178,8 +172,7 @@ impl LinearRegressor {
             // remove potential outliers, where outliers are defined as the
             // points that are furthest away from computed model (but forcing
             // delay to be previously computed)
-            if outliers_ratio > 0.0 && xys.len() as f32 * outliers_ratio >= 1.0
-            {
+            if outliers_ratio > 0.0 && xys.len() as f32 * outliers_ratio >= 1.0 {
                 let mut distances: Vec<(usize, f64)> = xys
                     .iter()
                     .map(|(x, y)| (y - (x * slope + delay)).abs())

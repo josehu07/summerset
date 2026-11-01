@@ -15,16 +15,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
     
     - name: Get apt dependencies
-      run: sudo apt-get install -y protobuf-compiler
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
     - name: Add rust stable toolchain
       uses: dtolnay/rust-toolchain@stable
 
     - name: Get uv for Python
-      uses: astral-sh/setup-uv@v7
+      uses: astral-sh/setup-uv@v10.3.3
 
     - name: Run proc tests (MultiPaxos)
       run: uv run .github/workflow_test.py -p MultiPaxos

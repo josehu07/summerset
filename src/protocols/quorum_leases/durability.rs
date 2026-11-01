@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // QuorumLeasesReplica durable WAL logging
 impl QuorumLeasesReplica {
     /// Handler of `PrepareBal` logging result chan recv.
-    fn handle_logged_prepare_bal(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_prepare_bal(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -82,10 +79,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Handler of `AcceptData` logging result chan recv.
-    async fn handle_logged_accept_data(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    async fn handle_logged_accept_data(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -167,10 +161,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Handler of `CommitSlot` logging result chan recv.
-    async fn handle_logged_commit_slot(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    async fn handle_logged_commit_slot(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -196,25 +187,17 @@ impl QuorumLeasesReplica {
                     inst.status = Status::Executed;
                 } else if inst.status == Status::Committed {
                     let mut conf_changes = vec![];
-                    for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate()
-                    {
+                    for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate() {
                         #[allow(clippy::match_wildcard_for_single_variants)]
                         match req {
                             ApiRequest::Req { cmd, .. } => {
                                 self.state_machine.submit_cmd(
-                                    Self::make_command_id(
-                                        self.commit_bar,
-                                        cmd_idx,
-                                    ),
+                                    Self::make_command_id(self.commit_bar, cmd_idx),
                                     cmd.clone(),
                                 )?;
                             }
                             ApiRequest::Conf { id: req_id, delta } => {
-                                conf_changes.push((
-                                    *client,
-                                    *req_id,
-                                    delta.clone(),
-                                ));
+                                conf_changes.push((*client, *req_id, delta.clone()));
                             }
                             _ => {} // ignore other types of requests
                         }
@@ -229,12 +212,8 @@ impl QuorumLeasesReplica {
                     // request batch, maybe apply
                     if !conf_changes.is_empty() {
                         let external = inst.external;
-                        self.commit_conf_changes(
-                            self.commit_bar,
-                            external,
-                            conf_changes,
-                        )
-                        .await?;
+                        self.commit_conf_changes(self.commit_bar, external, conf_changes)
+                            .await?;
                         conf_changed = true;
                     }
                 }

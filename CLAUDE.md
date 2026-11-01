@@ -1,21 +1,21 @@
 # Guidelines
 
-* Prefer a compact and concise style of coding
-* Never `rm` delete anything without approval -- ask first
-* Put new temporary/experimental files under `scratch/` (already created)
-* Do not write any prose `.md` doc files unless explicitly told to
+* Prefer a compact and concise style of coding; no excessive docs
+* Never permanently delete anything without approval -- ask first
+* Put temporary/experimental files under `scratch/`, organized by subfolders
+* Do not write any prose `.md` doc files unless explicitly requested
 
 ## Rust
 
 * Do not add `#[allow()]` rules without approval -- ask first
-* Run `cargo +nightly fmt --all` after your changes
+* Format and lint the codebase before presenting changes
 
 ## Python
 
-* Use `uv` to run and manage Python scripts
-* Prefer `argparse` for command line arguments management
+* Use `uv` to manage and run any Python scripts
+* Use `argparse` for command line arguments management
 * Add complete type hints in signatures with full coverage
-* Run `uv run ruff format` after your changes
+* Format the scripts with `uv run ruff` before presenting changes
 
 ## Git
 

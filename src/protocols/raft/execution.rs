@@ -26,10 +26,8 @@ impl RaftReplica {
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
             if entry.external && self.external_api.has_client(client) {
-                self.external_api.send_reply(
-                    ApiReply::normal(*req_id, Some(cmd_result)),
-                    client,
-                )?;
+                self.external_api
+                    .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), client)?;
                 pf_trace!(
                     "replied -> client {} for slot {} idx {}",
                     client,

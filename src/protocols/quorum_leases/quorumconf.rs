@@ -64,7 +64,7 @@ impl QuorumLeasesReplica {
         external: bool,
         conf_changes: Vec<(ClientId, RequestId, ConfChange)>,
     ) -> Result<(), SummersetError> {
-        debug_assert!(!conf_changes.is_empty());
+        debug_assert_ne!(conf_changes.len(), 0);
 
         // find the last valid one, if any
         let mut apply_idx = conf_changes.len();
@@ -76,15 +76,11 @@ impl QuorumLeasesReplica {
         }
 
         // reply to all of them
-        for (idx, (client, req_id, delta)) in
-            conf_changes.into_iter().enumerate()
-        {
+        for (idx, (client, req_id, delta)) in conf_changes.into_iter().enumerate() {
             if idx == apply_idx {
                 // to apply; first ensure revocation of all the existing
                 // quorum leases
-                debug_assert!(
-                    self.commit_bar > usize::try_from(self.qlease_ver)?
-                );
+                debug_assert!(self.commit_bar > usize::try_from(self.qlease_ver)?);
                 let peers = self.qlease_grantees().clone();
                 self.qlease_manager.add_notice(
                     self.qlease_num,
@@ -105,17 +101,9 @@ impl QuorumLeasesReplica {
                 self.qlease_num = self.commit_bar as LeaseNum;
 
                 if self.is_leader() {
-                    pf_info!(
-                        "qlease_cfg: v{} {:?}",
-                        self.commit_bar,
-                        self.qlease_conf
-                    );
+                    pf_info!("qlease_cfg: v{} {:?}", self.commit_bar, self.qlease_conf);
                 } else {
-                    pf_debug!(
-                        "qlease_cfg: v{} {:?}",
-                        self.commit_bar,
-                        self.qlease_conf
-                    );
+                    pf_debug!("qlease_cfg: v{} {:?}", self.commit_bar, self.qlease_conf);
                 }
                 self.control_hub.send_ctrl(CtrlMsg::RespondersConf {
                     conf_num: self.qlease_ver,
@@ -130,11 +118,7 @@ impl QuorumLeasesReplica {
                         },
                         client,
                     )?;
-                    pf_trace!(
-                        "replied -> client {} slot {} conf applied",
-                        client,
-                        slot
-                    );
+                    pf_trace!("replied -> client {} slot {} conf applied", client, slot);
                 }
             } else {
                 // not applied; directly reply to client as ignored
@@ -145,11 +129,7 @@ impl QuorumLeasesReplica {
                     },
                     client,
                 )?;
-                pf_trace!(
-                    "replied -> client {} slot {} conf ignored",
-                    client,
-                    slot
-                );
+                pf_trace!("replied -> client {} slot {} conf ignored", client, slot);
             }
         }
 
@@ -187,9 +167,7 @@ impl QuorumLeasesReplica {
         key: &String,
     ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
         if let Some(&slot) = self.highest_slot.get(key) {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.insts.len()
-            {
+            if slot < self.start_slot || slot >= self.start_slot + self.insts.len() {
                 // slot has been GCed or not locatable for some reason; we play
                 // safe and return with not-committed status
                 Ok(Some((slot, None)))

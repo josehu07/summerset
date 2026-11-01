@@ -145,9 +145,7 @@ def run_bench_clients(remote0, base, repo, protocol, midfix_str):
     )
 
 
-def bench_round(
-    remote0, base, repo, protocol, fault_tolerance, init_assignment, runlog_path
-):
+def bench_round(remote0, base, repo, protocol, fault_tolerance, init_assignment, runlog_path):
     midfix_str = round_midfix_str(fault_tolerance, init_assignment)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
@@ -161,9 +159,7 @@ def bench_round(
         config += "+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, protocol, midfix_str, config=config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, protocol, midfix_str, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -203,15 +199,12 @@ def collect_outputs(output_dir):
         )
 
         sd, sp, sj, sm = 10, 0, 0, 1
-        tput_mean_list = utils.output.list_smoothing(
-            result["tput_sum"], sd, sp, sj, sm
-        )
+        tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
         tput_stdev_list = result["tput_stdev"]
 
         results[f"{protocol}{midfix_str}"] = {
             "mean": sum(tput_mean_list) / len(tput_mean_list),
-            "stdev": (sum(s**2 for s in tput_stdev_list) / len(tput_stdev_list))
-            ** 0.5,
+            "stdev": (sum(s**2 for s in tput_stdev_list) / len(tput_stdev_list)) ** 0.5,
         }
 
     return results
@@ -362,17 +355,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -382,9 +371,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -425,9 +412,7 @@ def main():
 
         print("Fetching client output logs...")
         for remote in remotes.values():
-            utils.file.fetch_files_of_dir(
-                remote, f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remote, f"{base}/output/{EXPER_NAME}", output_path)
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

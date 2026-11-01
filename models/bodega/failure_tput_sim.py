@@ -41,9 +41,7 @@ class SimulationParams:
 
     failure_rate: float = 0.005  # Probability of failure per time unit
     recovery_rate: float = 0.01  # Probability of recovery per time unit
-    expire_duration: float = (
-        3.0  # Expiration downtime after each failure (time units)
-    )
+    expire_duration: float = 3.0  # Expiration downtime after each failure (time units)
     change_duration: float = 0.1  # Regular roster change duration (time units)
 
     dt: float = 0.01  # Time step for simulation
@@ -158,21 +156,15 @@ def run_simulations(odir: str):
         for bodega in (True, False):
             params = SimulationParams(max_coverage=max_coverage, bodega=bodega)
 
-            log_print(
-                f"\nRunning simulation for coverage = {max_coverage}, bodega = {bodega}..."
-            )
+            log_print(f"\nRunning simulation for coverage = {max_coverage}, bodega = {bodega}...")
 
             start_time = time.time()
             result = simulate(params)
             runtime = time.time() - start_time
 
             log_print(" =>")
-            log_print(
-                f"  Unavailability:      {result.unavailability_percent:.3f}%"
-            )
-            log_print(
-                f"  Throughput est.:     {result.estimated_throughput:.3f} kreqs/sec"
-            )
+            log_print(f"  Unavailability:      {result.unavailability_percent:.3f}%")
+            log_print(f"  Throughput est.:     {result.estimated_throughput:.3f} kreqs/sec")
             log_print(f"  Failure count:       {result.failure_count}")
             log_print(f"  Recovery count:      {result.recovery_count}")
             log_print(f"  Simulation runtime:  {runtime:.3f} seconds")
@@ -231,16 +223,12 @@ def plot_results(odir: str):
 
     num_servers = len(throughput_list) - 1
     results = {
-        "LeaderLeases-no-failure": [
-            throughput_list[1] for _ in range(num_servers)
-        ],
+        "LeaderLeases-no-failure": [throughput_list[1] for _ in range(num_servers)],
         "LeaderLeases-with-failure": [
             simulation_results[(i, False)] for i in range(1, num_servers + 1)
         ],
         "Bodega-no-failure": throughput_list[1 : num_servers + 1],
-        "Bodega-with-failure": [
-            simulation_results[(i, True)] for i in range(1, num_servers + 1)
-        ],
+        "Bodega-with-failure": [simulation_results[(i, True)] for i in range(1, num_servers + 1)],
     }
     print("Parsed results:")
     for case, tputs in results.items():

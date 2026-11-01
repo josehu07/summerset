@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use summerset::{
-    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, GenericEndpoint,
-    RequestId, SummersetError, Timer, logged_err, pf_debug, pf_error,
+    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, GenericEndpoint, RequestId,
+    SummersetError, Timer, logged_err, pf_debug, pf_error,
 };
 use tokio::time::{Duration, Instant};
 
@@ -39,10 +39,7 @@ pub(crate) struct DriverOpenLoop {
 
 impl DriverOpenLoop {
     /// Creates a new open-loop client.
-    pub(crate) fn new(
-        endpoint: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub(crate) fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         DriverOpenLoop {
             endpoint,
             next_req: 0,
@@ -59,10 +56,7 @@ impl DriverOpenLoop {
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
-    pub(crate) async fn leave(
-        &mut self,
-        permanent: bool,
-    ) -> Result<(), SummersetError> {
+    pub(crate) async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         self.endpoint.leave(permanent).await
     }
 
@@ -71,10 +65,7 @@ impl DriverOpenLoop {
     /// case, caller must do `retry()`s before issuing any new requests,
     /// typically after doing a few `wait_reply()`s to free up some TCP socket
     /// buffer space.
-    pub(crate) fn issue_get(
-        &mut self,
-        key: &str,
-    ) -> Result<Option<RequestId>, SummersetError> {
+    pub(crate) fn issue_get(&mut self, key: &str) -> Result<Option<RequestId>, SummersetError> {
         let req_id = self.next_req;
         let req = ApiRequest::Req {
             id: req_id,
@@ -128,9 +119,7 @@ impl DriverOpenLoop {
 
     /// Retries the last request that got a `WouldBlock` failure. Returns
     /// request ID if this retry is successful.
-    pub(crate) fn issue_retry(
-        &mut self,
-    ) -> Result<Option<RequestId>, SummersetError> {
+    pub(crate) fn issue_retry(&mut self) -> Result<Option<RequestId>, SummersetError> {
         let req_id = self.next_req;
 
         if self.endpoint.send_req(None)? {
@@ -148,9 +137,7 @@ impl DriverOpenLoop {
 
     /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
     /// timed-out.
-    async fn recv_reply_timed(
-        &mut self,
-    ) -> Result<Option<ApiReply>, SummersetError> {
+    async fn recv_reply_timed(&mut self) -> Result<Option<ApiReply>, SummersetError> {
         self.timer.kickoff(self.timeout)?;
 
         tokio::select! {
@@ -167,9 +154,7 @@ impl DriverOpenLoop {
     }
 
     /// Waits for the next reply.
-    pub(crate) async fn wait_reply(
-        &mut self,
-    ) -> Result<DriverReply, SummersetError> {
+    pub(crate) async fn wait_reply(&mut self) -> Result<DriverReply, SummersetError> {
         loop {
             let reply = self.recv_reply_timed().await?;
             match reply {

@@ -50,9 +50,7 @@ NETEM_JITTER = lambda _: 2
 NETEM_RATE = lambda _: 1  # no effect given the original bandwidth
 
 
-def launch_cluster_summerset(
-    remote, base, repo, protocol, partition, num_clients, config=None
-):
+def launch_cluster_summerset(remote, base, repo, protocol, partition, num_clients, config=None):
     cmd = [
         "uv",
         "run",
@@ -98,9 +96,7 @@ def wait_cluster_setup_summerset(sleep_secs=30):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients_summerset(
-    remote, base, repo, protocol, partition, num_clients
-):
+def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
     cmd = [
         "uv",
         "run",
@@ -149,9 +145,7 @@ def run_bench_clients_summerset(
     )
 
 
-def bench_round_summerset(
-    remotes, base, repo, protocol, num_clients, runlog_path
-):
+def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_path):
     print(f"  {EXPER_NAME}  {protocol:<10s}.{num_clients}")
 
     config = f"batch_interval_ms={BATCH_INTERVAL}"
@@ -196,9 +190,7 @@ def bench_round_summerset(
     # wait for benchmarking clients to exit
     for partition in range(NUM_REPLICAS):
         _, cerr = procs_clients[partition].communicate()
-        with open(
-            f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb"
-        ) as fcerr:
+        with open(f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb") as fcerr:
             fcerr.write(cerr)
 
     # terminate the clusters
@@ -208,9 +200,7 @@ def bench_round_summerset(
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
     for partition in range(NUM_REPLICAS):
         _, serr = procs_cluster[partition].communicate()
-        with open(
-            f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb"
-        ) as fserr:
+        with open(f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb") as fserr:
             fserr.write(serr)
 
     if any(p.returncode != 0 for p in procs_clients):
@@ -260,9 +250,7 @@ def wait_cluster_setup_chain(sleep_secs=30):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients_chain(
-    remote, base, repo, protocol, partition, num_clients
-):
+def run_bench_clients_chain(remote, base, repo, protocol, partition, num_clients):
     cmd = [
         "uv",
         "run",
@@ -339,9 +327,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
     # wait for benchmarking clients to exit
     for partition in range(NUM_REPLICAS):
         _, cerr = procs_clients[partition].communicate()
-        with open(
-            f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb"
-        ) as fcerr:
+        with open(f"{runlog_path}/{protocol}.{num_clients}.{partition}.c.err", "wb") as fcerr:
             fcerr.write(cerr)
 
     # terminate the clusters
@@ -351,9 +337,7 @@ def bench_round_chain(remotes, base, repo, protocol, num_clients, runlog_path):
     utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
     for partition in range(NUM_REPLICAS):
         _, serr = procs_cluster[partition].communicate()
-        with open(
-            f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb"
-        ) as fserr:
+        with open(f"{runlog_path}/{protocol}.{num_clients}.{partition}.s.err", "wb") as fserr:
             fserr.write(serr)
 
     if any(p.returncode != 0 for p in procs_clients):
@@ -386,17 +370,11 @@ def collect_outputs(output_dir):
                     # setting sm here to compensate for printing models to console
                     # and other extra work in particular cases
                     sm = 1 + ((PUT_RATIO / 2) / 100)
-                tput_mean_list = utils.output.list_smoothing(
-                    result["tput_sum"], sd, sp, sj, sm
-                )
-                lat_mean_list = utils.output.list_smoothing(
-                    result["lat_avg"], sd, sp, sj, 1 / sm
-                )
+                tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
+                lat_mean_list = utils.output.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
 
                 part_tputs.append(sum(tput_mean_list) / len(tput_mean_list))
-                part_lats.append(
-                    (sum(lat_mean_list) / len(lat_mean_list)) / 1000
-                )
+                part_lats.append((sum(lat_mean_list) / len(lat_mean_list)) / 1000)
 
             results[protocol]["tputs"].append(sum(part_tputs))
             results[protocol]["lats"].append(sum(part_lats) / len(part_lats))
@@ -574,9 +552,7 @@ def main():
 
     if args.trace:
         print("Generating YCSB-A trace...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
@@ -596,17 +572,13 @@ def main():
 
     elif not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=False)
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP, chain=True)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -616,9 +588,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -631,17 +601,11 @@ def main():
             for num_clients in NUM_CLIENTS_LIST:
                 print(f"Running experiments {num_clients}...")
 
-                PROTOCOL_FUNCS = [
-                    (p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS
-                ]
-                PROTOCOL_FUNCS += [
-                    (p, bench_round_chain) for p in CHAIN_PROTOCOLS
-                ]
+                PROTOCOL_FUNCS = [(p, bench_round_summerset) for p in SUMMERSET_PROTOCOLS]
+                PROTOCOL_FUNCS += [(p, bench_round_chain) for p in CHAIN_PROTOCOLS]
                 for protocol, bench_round_func in PROTOCOL_FUNCS:
                     time.sleep(3)
-                    bench_round_func(
-                        remotes, base, repo, protocol, num_clients, runlog_path
-                    )
+                    bench_round_func(remotes, base, repo, protocol, num_clients, runlog_path)
                     utils.proc.kill_all_distr_procs(
                         PHYS_ENV_GROUP, chain=(protocol in CHAIN_PROTOCOLS)
                     )
@@ -659,9 +623,7 @@ def main():
 
         print("Fetching client output logs...")
         for remote in remotes.values():
-            utils.file.fetch_files_of_dir(
-                remote, f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remote, f"{base}/output/{EXPER_NAME}", output_path)
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

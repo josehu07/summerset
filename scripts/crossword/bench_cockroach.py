@@ -202,21 +202,14 @@ def collect_outputs(output_dir):
             results[protocol][txn_type]["tput"] *= CLUSTER_SIZE / NUM_REPLICAS
 
     # normalize throughput according to #txns succeeded
-    txns_ratio = (
-        results["Raft"]["payment"]["txns"]
-        - results["Raft"]["payment"]["errors"]
-    ) / (
-        results["Crossword"]["payment"]["txns"]
-        - results["Crossword"]["payment"]["errors"]
+    txns_ratio = (results["Raft"]["payment"]["txns"] - results["Raft"]["payment"]["errors"]) / (
+        results["Crossword"]["payment"]["txns"] - results["Crossword"]["payment"]["errors"]
     )
     txns_ratio *= (
-        results["Raft"]["aggregate"]["lat_avg"]
-        / results["Crossword"]["aggregate"]["lat_avg"]
+        results["Raft"]["aggregate"]["lat_avg"] / results["Crossword"]["aggregate"]["lat_avg"]
     )
     for txn_type in results["Raft"]:
-        results["Crossword"][txn_type]["tput"] = (
-            results["Crossword"][txn_type]["tput"] * txns_ratio
-        )
+        results["Crossword"][txn_type]["tput"] = results["Crossword"][txn_type]["tput"] * txns_ratio
 
     return results
 
@@ -430,9 +423,7 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
@@ -447,9 +438,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -480,9 +469,7 @@ def main():
 
         print("Fetching workload output logs...")
         for remote in remotes.values():
-            utils.file.fetch_files_of_dir(
-                remote, f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remote, f"{base}/output/{EXPER_NAME}", output_path)
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

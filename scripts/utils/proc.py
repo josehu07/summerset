@@ -45,9 +45,7 @@ def kill_all_distr_procs(
         cmd.append("--etcd")
     if zookeeper:
         cmd.append("--zookeeper")
-    subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    ).wait()
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
 
 
 def run_process(

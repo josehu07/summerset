@@ -6,8 +6,8 @@ use std::str::SplitWhitespace;
 
 use color_print::{cprint, cprintln};
 use summerset::{
-    Bitmap, Command, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint,
-    ReplicaId, SummersetError, logged_err, pf_error,
+    Bitmap, Command, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId,
+    SummersetError, logged_err, pf_error,
 };
 use tokio::time::Duration;
 
@@ -54,10 +54,7 @@ pub(crate) struct ClientRepl {
 
 impl ClientRepl {
     /// Creates a new REPL-style client.
-    pub(crate) fn new(
-        endpoint: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub(crate) fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         ClientRepl {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
@@ -91,17 +88,13 @@ impl ClientRepl {
         println!("          pause [servers]");
         println!("          resume [servers]");
         println!("          snapshot [servers]");
-        println!(
-            "      Keys and values currently cannot contain any whitespaces"
-        );
+        println!("      Keys and values currently cannot contain any whitespaces");
         io::stdout().flush().unwrap();
     }
 
     /// Expect to get the next segment string from parsed segs.
     #[inline]
-    fn expect_next_seg<'s>(
-        segs: &mut SplitWhitespace<'s>,
-    ) -> Result<&'s str, SummersetError> {
+    fn expect_next_seg<'s>(segs: &mut SplitWhitespace<'s>) -> Result<&'s str, SummersetError> {
         if let Some(seg) = segs.next() {
             Ok(seg)
         } else {
@@ -113,9 +106,7 @@ impl ClientRepl {
 
     /// Expect the next segment to be the only one left.
     #[inline]
-    fn expect_only_seg<'s>(
-        segs: &mut SplitWhitespace<'s>,
-    ) -> Result<&'s str, SummersetError> {
+    fn expect_only_seg<'s>(segs: &mut SplitWhitespace<'s>) -> Result<&'s str, SummersetError> {
         let seg = Self::expect_next_seg(segs)?;
         if segs.next().is_some() {
             let err = SummersetError::msg("too many args");
@@ -129,9 +120,7 @@ impl ClientRepl {
     /// Drain all of the remaining segments into a hash set and interpret as
     /// replica IDs.
     #[inline]
-    fn drain_server_ids(
-        segs: &mut SplitWhitespace,
-    ) -> Result<HashSet<ReplicaId>, SummersetError> {
+    fn drain_server_ids(segs: &mut SplitWhitespace) -> Result<HashSet<ReplicaId>, SummersetError> {
         let mut servers = HashSet::new();
         for seg in segs {
             servers.insert(seg.parse::<ReplicaId>()?);
@@ -230,10 +219,7 @@ impl ClientRepl {
                         reset: false,
                         leader: None,
                         range,
-                        responders: Some(Bitmap::from((
-                            self.driver.population(),
-                            servers,
-                        ))),
+                        responders: Some(Bitmap::from((self.driver.population(), servers))),
                     }
                 } else {
                     ConfChange {
@@ -272,10 +258,8 @@ impl ClientRepl {
             "exit" => Ok(ReplCommand::Exit),
 
             _ => {
-                let err = SummersetError::msg(format!(
-                    "unrecognized command: {}",
-                    cmd_type.unwrap()
-                ));
+                let err =
+                    SummersetError::msg(format!("unrecognized command: {}", cmd_type.unwrap()));
                 Self::print_help(Some(&err));
                 Err(err)
             }
@@ -283,15 +267,10 @@ impl ClientRepl {
     }
 
     /// Issues the command to the service and wait for the reply.
-    async fn eval_command(
-        &mut self,
-        cmd: Command,
-    ) -> Result<DriverReply, SummersetError> {
+    async fn eval_command(&mut self, cmd: Command) -> Result<DriverReply, SummersetError> {
         match cmd {
             Command::Get { key } => Ok(self.driver.get(&key).await?),
-            Command::Put { key, value } => {
-                Ok(self.driver.put(&key, &value).await?)
-            }
+            Command::Put { key, value } => Ok(self.driver.put(&key, &value).await?),
         }
     }
 
@@ -349,10 +328,7 @@ impl ClientRepl {
     }
 
     /// Makes a control request to the manager and wait for the reply.
-    async fn make_ctrl_req(
-        &mut self,
-        req: CtrlRequest,
-    ) -> Result<CtrlReply, SummersetError> {
+    async fn make_ctrl_req(&mut self, req: CtrlRequest) -> Result<CtrlReply, SummersetError> {
         self.driver.ctrl_stub().send_req_insist(&req)?;
         self.driver.ctrl_stub().recv_reply().await
     }

@@ -142,9 +142,7 @@ def bench_round(remote0, base, repo, protocol, runlog_path):
         config += "+gossip_batch_size=100"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, real_protocol, config=config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, real_protocol, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -191,12 +189,8 @@ def collect_bw_utils(runlog_dir):
         # take average of middle part
         l_f_utils = l_f_utils[len(l_f_utils) // 2 : -len(l_f_utils) // 4]
         f_f_utils = f_f_utils[len(f_f_utils) // 2 : -len(f_f_utils) // 4]
-        l_f_nbytes = (
-            0 if len(l_f_utils) == 0 else sum(l_f_utils) / len(l_f_utils)
-        )
-        f_f_nbytes = (
-            0 if len(f_f_utils) == 0 else sum(f_f_utils) / len(f_f_utils)
-        )
+        l_f_nbytes = 0 if len(l_f_utils) == 0 else sum(l_f_utils) / len(l_f_utils)
+        f_f_nbytes = 0 if len(f_f_utils) == 0 else sum(f_f_utils) / len(f_f_utils)
         bw_utils[protocol] = {
             "L-F": l_f_nbytes,
             "F-F": f_f_nbytes,
@@ -226,12 +220,8 @@ def collect_bw_utils(runlog_dir):
 def print_results(bw_utils):
     for protocol in bw_utils:
         print(protocol)
-        print(
-            f"  L-F: {bw_utils[protocol]['L-F'][0]:10.0f} {bw_utils[protocol]['L-F'][1]:3.0f}%"
-        )
-        print(
-            f"  F-F: {bw_utils[protocol]['F-F'][0]:10.0f} {bw_utils[protocol]['F-F'][1]:3.0f}%"
-        )
+        print(f"  L-F: {bw_utils[protocol]['L-F'][0]:10.0f} {bw_utils[protocol]['L-F'][1]:3.0f}%")
+        print(f"  F-F: {bw_utils[protocol]['F-F'][0]:10.0f} {bw_utils[protocol]['F-F'][1]:3.0f}%")
 
 
 def plot_bw_utils(bw_utils, plots_dir):
@@ -380,17 +370,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

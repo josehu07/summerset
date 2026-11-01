@@ -4,9 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use summerset::{
-    Bitmap, CommandResult, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint,
-    ReplicaId, ServerInfo, SummersetError, logged_err, parsed_config, pf_error,
-    pf_info,
+    Bitmap, CommandResult, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId,
+    ServerInfo, SummersetError, logged_err, parsed_config, pf_error, pf_info,
 };
 use tokio::time::Duration;
 
@@ -89,10 +88,7 @@ impl ClientMess {
 
     /// Parse string into optional server ID.
     #[allow(clippy::unused_self)]
-    fn parse_optional_server(
-        &self,
-        id_str: &str,
-    ) -> Result<Option<ReplicaId>, SummersetError> {
+    fn parse_optional_server(&self, id_str: &str) -> Result<Option<ReplicaId>, SummersetError> {
         let s = id_str.trim();
         if s.is_empty() || s == "/" {
             Ok(None)
@@ -102,10 +98,7 @@ impl ClientMess {
     }
 
     /// Parse comma-separated string of server IDs.
-    fn parse_comma_separated(
-        &self,
-        list_str: &str,
-    ) -> Result<HashSet<ReplicaId>, SummersetError> {
+    fn parse_comma_separated(&self, list_str: &str) -> Result<HashSet<ReplicaId>, SummersetError> {
         let mut servers = HashSet::new();
         for s in list_str.trim().split(',') {
             if s == "l"
@@ -165,10 +158,7 @@ impl ClientMess {
     /// Parse the `write` field for a single-shot write. Returns a key-value
     /// pair on success.
     #[allow(clippy::unused_self)]
-    fn parse_write_key_value(
-        &self,
-        write_str: &str,
-    ) -> Result<(String, String), SummersetError> {
+    fn parse_write_key_value(&self, write_str: &str) -> Result<(String, String), SummersetError> {
         if let Some((key, value)) = write_str.trim().split_once(':') {
             Ok((key.to_string(), value.to_string()))
         } else {
@@ -200,10 +190,7 @@ impl ClientMess {
     }
 
     /// Pause the list of servers.
-    async fn pause_servers(
-        &mut self,
-        servers: HashSet<ReplicaId>,
-    ) -> Result<(), SummersetError> {
+    async fn pause_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::PauseServers { servers };
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -216,10 +203,7 @@ impl ClientMess {
     }
 
     /// Resume the list of servers.
-    async fn resume_servers(
-        &mut self,
-        servers: HashSet<ReplicaId>,
-    ) -> Result<(), SummersetError> {
+    async fn resume_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::ResumeServers { servers };
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -232,10 +216,7 @@ impl ClientMess {
     }
 
     /// Make a responders configuration change.
-    async fn responders_conf_change(
-        &mut self,
-        conf: ConfChange,
-    ) -> Result<(), SummersetError> {
+    async fn responders_conf_change(&mut self, conf: ConfChange) -> Result<(), SummersetError> {
         loop {
             match self.driver.conf(conf.clone()).await? {
                 DriverReply::Redirect { .. } => {
@@ -245,9 +226,7 @@ impl ClientMess {
                     if changed {
                         return Ok(());
                     }
-                    return logged_err!(
-                        "responders conf change ignored (invalid?)"
-                    );
+                    return logged_err!("responders conf change ignored (invalid?)");
                 }
                 _ => {
                     return logged_err!("unexpected driver reply type");
@@ -309,17 +288,13 @@ impl ClientMess {
         {
             let leader = self.parse_optional_server(&self.params.leader)?;
             let range = self.parse_conf_key_range(&self.params.key_range)?;
-            let responders =
-                self.parse_comma_separated(&self.params.responder)?;
+            let responders = self.parse_comma_separated(&self.params.responder)?;
             let delta = if let Some(range) = range {
                 ConfChange {
                     reset: false,
                     leader,
                     range,
-                    responders: Some(Bitmap::from((
-                        self.driver.population(),
-                        responders,
-                    ))),
+                    responders: Some(Bitmap::from((self.driver.population(), responders))),
                 }
             } else {
                 ConfChange {
@@ -335,8 +310,7 @@ impl ClientMess {
 
         // single-shot write
         if !self.params.write.is_empty() {
-            let (key, value) =
-                self.parse_write_key_value(&self.params.write)?;
+            let (key, value) = self.parse_write_key_value(&self.params.write)?;
             pf_info!("single-shot write {}:{}", key, value);
             self.single_shot_write(key, value).await?;
         }

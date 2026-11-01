@@ -50,18 +50,15 @@ impl RaftReplica {
                 || self.log[prev_slot - self.start_slot].term != prev_term)
         {
             // figure out the conflict info to send back
-            let conflict_term = if prev_slot >= self.start_slot
-                && prev_slot < self.start_slot + self.log.len()
-            {
-                self.log[prev_slot - self.start_slot].term
-            } else {
-                0
-            };
+            let conflict_term =
+                if prev_slot >= self.start_slot && prev_slot < self.start_slot + self.log.len() {
+                    self.log[prev_slot - self.start_slot].term
+                } else {
+                    0
+                };
             let mut conflict_slot = prev_slot;
             while conflict_term > 0 && conflict_slot > self.start_slot {
-                if self.log[conflict_slot - 1 - self.start_slot].term
-                    == conflict_term
-                {
+                if self.log[conflict_slot - 1 - self.start_slot].term == conflict_term {
                     conflict_slot -= 1;
                 } else {
                     break;
@@ -129,9 +126,7 @@ impl RaftReplica {
                     debug_assert_eq!(now_size, cut_offset);
                     self.log_offset = cut_offset;
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed truncate"
-                    );
+                    return logged_err!("unexpected log result type or failed truncate");
                 }
                 // truncate in-mem log as well
                 self.log.truncate(slot - self.start_slot);
@@ -152,11 +147,7 @@ impl RaftReplica {
 
             self.log.push(entry.clone());
             self.storage_hub.submit_action(
-                Self::make_log_action_id(
-                    slot,
-                    prev_slot + num_entries,
-                    Role::Follower,
-                ),
+                Self::make_log_action_id(slot, prev_slot + num_entries, Role::Follower),
                 LogAction::Append {
                     entry: DurEntry::LogEntry { entry },
                     sync: self.config.logger_sync,
@@ -183,20 +174,16 @@ impl RaftReplica {
 
         // if leader_commit is larger than my last_commit, update last_commit
         if leader_commit > self.last_commit {
-            let mut new_commit =
-                cmp::min(leader_commit, prev_slot + entries.len());
-            new_commit =
-                cmp::min(new_commit, self.start_slot + self.log.len() - 1);
+            let mut new_commit = cmp::min(leader_commit, prev_slot + entries.len());
+            new_commit = cmp::min(new_commit, self.start_slot + self.log.len() - 1);
 
             // submit newly committed entries for state machine execution
             for slot in (self.last_commit + 1)..=new_commit {
                 let entry = &self.log[slot - self.start_slot];
                 for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(slot, cmd_idx),
-                            cmd.clone(),
-                        )?;
+                        self.state_machine
+                            .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
                     }
                 }
                 pf_trace!(
@@ -254,20 +241,14 @@ impl RaftReplica {
             // since we updated some match_slot here, check if any additional
             // entries are now considered committed
             let mut new_commit = self.last_commit;
-            for slot in
-                (self.last_commit + 1)..(self.start_slot + self.log.len())
-            {
+            for slot in (self.last_commit + 1)..(self.start_slot + self.log.len()) {
                 let entry = &self.log[slot - self.start_slot];
                 if entry.term != self.curr_term {
                     continue; // cannot decide commit using non-latest term
                 }
 
                 #[allow(clippy::cast_possible_truncation)]
-                let match_cnt = 1 + self
-                    .match_slot
-                    .values()
-                    .filter(|&&s| s >= slot)
-                    .count() as u8;
+                let match_cnt = 1 + self.match_slot.values().filter(|&&s| s >= slot).count() as u8;
                 if match_cnt >= self.quorum_cnt {
                     // quorum size reached, set new_commit to here
                     new_commit = slot;
@@ -279,10 +260,8 @@ impl RaftReplica {
                 let entry = &self.log[slot - self.start_slot];
                 for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(slot, cmd_idx),
-                            cmd.clone(),
-                        )?;
+                        self.state_machine
+                            .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
                     }
                 }
                 pf_trace!(
@@ -297,11 +276,7 @@ impl RaftReplica {
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
                 #[allow(clippy::cast_possible_truncation)]
-                let match_cnt = 1 + self
-                    .match_slot
-                    .values()
-                    .filter(|&&s| s >= slot)
-                    .count() as u8;
+                let match_cnt = 1 + self.match_slot.values().filter(|&&s| s >= slot).count() as u8;
                 if match_cnt == self.population {
                     // all servers have durably stored this entry
                     self.last_snap = slot;
@@ -318,8 +293,7 @@ impl RaftReplica {
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
             if let Some((conflict_term, conflict_slot)) = conflict {
                 while self.next_slot[&peer] > self.start_slot
-                    && self.log[self.next_slot[&peer] - self.start_slot].term
-                        == conflict_term
+                    && self.log[self.next_slot[&peer] - self.start_slot].term == conflict_term
                     && self.next_slot[&peer] >= conflict_slot
                     && self.next_slot[&peer] > 1
                 {
@@ -356,8 +330,7 @@ impl RaftReplica {
                 let end = cmp::min(entries.len(), self.config.msg_chunk_size);
                 let chunk = entries.drain(0..end).collect();
 
-                let now_prev_term =
-                    self.log[now_prev_slot - self.start_slot].term;
+                let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
                 self.transport_hub.send_msg(
                     PeerMsg::AppendEntries {
                         term: self.curr_term,
@@ -453,10 +426,7 @@ impl RaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::pack_meta(
-                                self.curr_term,
-                                self.voted_for,
-                            ),
+                            entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },
@@ -471,9 +441,7 @@ impl RaftReplica {
                 } = result
                 {
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed write"
-                    );
+                    return logged_err!("unexpected log result type or failed write");
                 }
             }
         }
@@ -540,10 +508,8 @@ impl RaftReplica {
                 end_slot,
                 conflict,
             } => {
-                self.handle_msg_append_entries_reply(
-                    peer, term, end_slot, conflict,
-                )
-                .await
+                self.handle_msg_append_entries_reply(peer, term, end_slot, conflict)
+                    .await
             }
             PeerMsg::RequestVote {
                 term,

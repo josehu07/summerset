@@ -35,10 +35,7 @@ impl QuorumLeasesReplica {
                     self.llease_manager.add_notice(
                         self.bal_max_seen,
                         LeaseNotice::DoRevoke {
-                            peers: Some(Bitmap::from((
-                                self.population,
-                                vec![old_leader],
-                            ))),
+                            peers: Some(Bitmap::from((self.population, vec![old_leader]))),
                         },
                     )?;
                     self.ensure_llease_revoked(old_leader).await?;
@@ -48,10 +45,7 @@ impl QuorumLeasesReplica {
                 self.llease_manager.add_notice(
                     ballot, // use new ballot as lease_num
                     LeaseNotice::NewGrants {
-                        peers: Some(Bitmap::from((
-                            self.population,
-                            vec![peer],
-                        ))),
+                        peers: Some(Bitmap::from((self.population, vec![peer]))),
                         accept_bar: None,
                     },
                 )?;
@@ -215,17 +209,15 @@ impl QuorumLeasesReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         // check and send leader lease promise refresh to leader
         if self.config.enable_leader_leases
             && let Some(leader) = self.leader
             && leader != self.id
         {
-            let to_refresh = self.llease_manager.attempt_refresh(Some(
-                &Bitmap::from((self.population, vec![leader])),
-            ))?;
+            let to_refresh = self
+                .llease_manager
+                .attempt_refresh(Some(&Bitmap::from((self.population, vec![leader]))))?;
             if to_refresh.count() > 0 {
                 self.transport_hub.bcast_lease_msg(
                     0, // gid 0 for leader leases
@@ -321,9 +313,7 @@ impl QuorumLeasesReplica {
         if ballot < self.bal_max_seen {
             return Ok(());
         }
-        if !self.config.disable_hb_timer
-            && self.leader == Some(peer)
-            && self.bal_max_seen == ballot
+        if !self.config.disable_hb_timer && self.leader == Some(peer) && self.bal_max_seen == ballot
         {
             self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
@@ -409,11 +399,7 @@ impl QuorumLeasesReplica {
 
                 // mark this instance as committed
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -433,11 +419,7 @@ impl QuorumLeasesReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!(
-                    "advancing commit <- {} until slot {}",
-                    peer,
-                    commit_bar
-                );
+                pf_trace!("advancing commit <- {} until slot {}", peer, commit_bar);
             }
         }
 

@@ -3,12 +3,15 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::BuildHasher;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 
-use bincode::{Decode, Encode};
 use fixedbitset::FixedBitSet;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
+use wincode::config::Config;
+use wincode::io::{Reader, Writer};
+use wincode::{ReadResult, SchemaRead, SchemaWrite, WriteResult};
 
 use crate::utils::SummersetError;
 
@@ -16,35 +19,35 @@ use crate::utils::SummersetError;
 #[derive(Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bitmap(FixedBitSet);
 
-// implement `Encode` and `Decode` traits for `Bitmap`
-impl Encode for Bitmap {
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        let len = self.0.len();
-        // Encode logical bit length, then the backing word slice (no copy).
-        len.encode(encoder)?;
-        self.0.as_slice().encode(encoder)
+// implement `SchemaWrite` and `SchemaRead` traits for `Bitmap` by encoding the
+// logical bit length, then the backing word slice (no copy)
+//
+// SAFETY: `TYPE_META` is left as default `Dynamic`; `size_of` returns exactly
+// the sum of sizes of the two items `write` writes.
+unsafe impl<C: Config> SchemaWrite<C> for Bitmap {
+    type Src = Self;
+
+    fn size_of(src: &Self) -> WriteResult<usize> {
+        Ok(<usize as SchemaWrite<C>>::size_of(&src.0.len())?
+            + <[usize] as SchemaWrite<C>>::size_of(src.0.as_slice())?)
+    }
+
+    fn write(mut writer: impl Writer, src: &Self) -> WriteResult<()> {
+        <usize as SchemaWrite<C>>::write(writer.by_ref(), &src.0.len())?;
+        <[usize] as SchemaWrite<C>>::write(writer, src.0.as_slice())
     }
 }
 
-impl<Ctx> Decode<Ctx> for Bitmap {
-    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let len: usize = usize::decode(decoder)?;
-        // Decode backing words and build without extra copies.
-        let words: Vec<usize> = Vec::<usize>::decode(decoder)?;
-        Ok(Bitmap(FixedBitSet::with_capacity_and_blocks(len, words)))
-    }
-}
+// SAFETY: `TYPE_META` is left as default `Dynamic`; `dst` is initialized iff
+// returning `Ok(())`.
+unsafe impl<'de, C: Config> SchemaRead<'de, C> for Bitmap {
+    type Dst = Self;
 
-impl<'de, Ctx> bincode::BorrowDecode<'de, Ctx> for Bitmap {
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        Decode::decode(decoder)
+    fn read(mut reader: impl Reader<'de>, dst: &mut MaybeUninit<Self>) -> ReadResult<()> {
+        let len = <usize as SchemaRead<'de, C>>::get(reader.by_ref())?;
+        let words = <Vec<usize> as SchemaRead<'de, C>>::get(reader)?;
+        dst.write(Bitmap(FixedBitSet::with_capacity_and_blocks(len, words)));
+        Ok(())
     }
 }
 
@@ -75,10 +78,7 @@ impl Bitmap {
     #[inline]
     pub fn set(&mut self, idx: u8, flag: bool) -> Result<(), SummersetError> {
         if idx as usize >= self.0.len() {
-            return Err(SummersetError::msg(format!(
-                "index {} out of bound",
-                idx
-            )));
+            return Err(SummersetError::msg(format!("index {} out of bound", idx)));
         }
         self.0.set(idx as usize, flag);
         Ok(())
@@ -88,10 +88,7 @@ impl Bitmap {
     #[inline]
     pub fn get(&self, idx: u8) -> Result<bool, SummersetError> {
         if idx as usize >= self.0.len() {
-            return Err(SummersetError::msg(format!(
-                "index {} out of bound",
-                idx
-            )));
+            return Err(SummersetError::msg(format!("index {} out of bound", idx)));
         }
         Ok(self.0[idx as usize])
     }
@@ -312,6 +309,7 @@ impl fmt::Debug for Bitmap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::CODEC_CONFIG;
 
     #[test]
     #[should_panic = "invalid bitmap size 0"]
@@ -387,30 +385,27 @@ mod tests {
     }
 
     #[test]
-    fn bincode_encode_decode() -> Result<(), SummersetError> {
+    fn codec_encode_decode() -> Result<(), SummersetError> {
         let mut map = Bitmap::from((10, vec![0, 2, 3, 9]));
         map.set(5, true)?;
-        let bytes = bincode::encode_to_vec(&map, bincode::config::standard())?;
-        let (decoded, read) = bincode::decode_from_slice::<Bitmap, _>(
-            &bytes,
-            bincode::config::standard(),
-        )?;
-        assert_eq!(read, bytes.len());
+        let bytes = wincode::config::serialize(&map, CODEC_CONFIG)?;
+        assert_eq!(
+            usize::try_from(wincode::config::serialized_size(&map, CODEC_CONFIG)?)?,
+            bytes.len()
+        );
+        let decoded: Bitmap = wincode::config::deserialize_exact(&bytes, CODEC_CONFIG)?;
         assert_eq!(decoded, map);
         Ok(())
     }
 
     #[test]
-    fn bincode_length_bits() -> Result<(), SummersetError> {
+    fn codec_length_bits() -> Result<(), SummersetError> {
         let mut map = Bitmap::new(24, false);
         for i in [1u8, 5, 7, 12, 17, 23] {
             map.set(i, true)?;
         }
-        let bytes = bincode::encode_to_vec(&map, bincode::config::standard())?;
-        let (decoded, _) = bincode::decode_from_slice::<Bitmap, _>(
-            &bytes,
-            bincode::config::standard(),
-        )?;
+        let bytes = wincode::config::serialize(&map, CODEC_CONFIG)?;
+        let decoded: Bitmap = wincode::config::deserialize_exact(&bytes, CODEC_CONFIG)?;
         assert_eq!(decoded.size(), 24);
         for i in 0..24 {
             assert_eq!(decoded.get(i)?, map.get(i)?);

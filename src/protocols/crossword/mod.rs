@@ -4,7 +4,7 @@
 //! dynamically tunable shard assignment with the correct liveness constraints,
 //! plus follower gossiping for actual usability.
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod adaptive;
 mod control;
 mod durability;
@@ -34,12 +34,11 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    HeartbeatEvent, Heartbeater, LogActionId, ReplicaId, StateMachine,
-    StorageHub, TransportHub,
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
+    Heartbeater, LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{
-    Bitmap, LinearRegressor, PerfModel, QdiscInfo, RSCodeword, Stopwatch,
+    Bitmap, CODEC_CONFIG, LinearRegressor, PerfModel, QdiscInfo, RSCodeword, Stopwatch,
     SummersetError, Timer,
 };
 
@@ -196,8 +195,8 @@ type Ballot = u64;
     Copy,
     Serialize,
     Deserialize,
-    Encode,
-    Decode,
+    SchemaWrite,
+    SchemaRead,
 )]
 enum Status {
     Null = 0,
@@ -214,9 +213,7 @@ type ReqBatch = Vec<(ClientId, ApiRequest)>;
 type ValueId = u128;
 
 /// Highest accepted ballot and all retained shards of its value.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 struct AcceptedValue {
     ballot: Ballot,
     value_id: ValueId,
@@ -294,9 +291,7 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -319,9 +314,7 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -338,7 +331,7 @@ enum SnapEntry {
 type HeartbeatId = u64;
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -676,7 +669,7 @@ impl CrosswordReplica {
         rs_data_shards: u8,
         rs_total_shards: u8,
     ) -> Result<ValueId, SummersetError> {
-        let bytes = bincode::encode_to_vec(reqs, bincode::config::standard())?;
+        let bytes = wincode::config::serialize(reqs, CODEC_CONFIG)?;
         let mut hasher = Xxh3::new();
         hasher.update(b"crossword");
         hasher.update(&[rs_data_shards, rs_total_shards]);
@@ -700,9 +693,7 @@ impl CrosswordReplica {
                 current.ballot, incoming.ballot
             )));
         }
-        if incoming.ballot == current.ballot
-            && incoming.value_id != current.value_id
-        {
+        if incoming.ballot == current.ballot && incoming.value_id != current.value_id {
             return Err(SummersetError::msg(format!(
                 "different values accepted at ballot {}",
                 incoming.ballot
@@ -722,10 +713,10 @@ impl CrosswordReplica {
         values: &mut HashMap<ValueId, AcceptedValue>,
         incoming: AcceptedValue,
     ) -> Result<(), SummersetError> {
-        if values.values().any(|value| {
-            value.ballot == incoming.ballot
-                && value.value_id != incoming.value_id
-        }) {
+        if values
+            .values()
+            .any(|value| value.ballot == incoming.ballot && value.value_id != incoming.value_id)
+        {
             return Err(SummersetError::msg(format!(
                 "different values reported at ballot {}",
                 incoming.ballot
@@ -747,11 +738,7 @@ impl CrosswordReplica {
         rs_data_shards: u8,
         rs_total_shards: u8,
     ) -> Result<(), SummersetError> {
-        let actual = Self::value_id(
-            reqs_cw.get_data()?,
-            rs_data_shards,
-            rs_total_shards,
-        )?;
+        let actual = Self::value_id(reqs_cw.get_data()?, rs_data_shards, rs_total_shards)?;
         if actual != value_id {
             return Err(SummersetError::msg(format!(
                 "reconstructed value ID mismatch: expected {value_id:032x}, \
@@ -825,10 +812,7 @@ impl GenericReplica for CrosswordReplica {
             );
         }
         if config.msg_chunk_size == 0 {
-            return logged_err!(
-                "invalid config.msg_chunk_size '{}'",
-                config.msg_chunk_size
-            );
+            return logged_err!("invalid config.msg_chunk_size '{}'", config.msg_chunk_size);
         }
         if config.linreg_interval_ms == 0 {
             return logged_err!(
@@ -837,10 +821,7 @@ impl GenericReplica for CrosswordReplica {
             );
         }
         if config.linreg_keep_ms == 0 {
-            return logged_err!(
-                "invalid config.linreg_keep_ms '{}'",
-                config.linreg_keep_ms
-            );
+            return logged_err!("invalid config.linreg_keep_ms '{}'", config.linreg_keep_ms);
         }
         if !(0.0..1.0).contains(&config.linreg_outlier_ratio) {
             return logged_err!(
@@ -859,9 +840,7 @@ impl GenericReplica for CrosswordReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup heartbeat management module
         let heartbeater = Heartbeater::new_and_setup(
@@ -873,13 +852,8 @@ impl GenericReplica for CrosswordReplica {
         )?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            HashMap::new(),
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr, HashMap::new()).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -890,9 +864,7 @@ impl GenericReplica for CrosswordReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -917,13 +889,9 @@ impl GenericReplica for CrosswordReplica {
             || (config.rs_total_shards == 0 && config.rs_data_shards != 0)
             || (config.rs_data_shards % majority != 0)
             || (config.rs_data_shards != 0
-                && config.rs_data_shards / majority
-                    != rs_total_shards / population)
+                && config.rs_data_shards / majority != rs_total_shards / population)
         {
-            return logged_err!(
-                "invalid config.rs_data_shards '{}'",
-                config.rs_data_shards
-            );
+            return logged_err!("invalid config.rs_data_shards '{}'", config.rs_data_shards);
         }
         let rs_data_shards = cmp::max(config.rs_data_shards, majority);
 
@@ -952,13 +920,8 @@ impl GenericReplica for CrosswordReplica {
         }
         let assignment_adaptive = config.init_assignment.is_empty();
         let assignment_balanced = nums_assigned.len() == 1;
-        if init_assignment.len() != population as usize
-            || max_coverage.count() < rs_data_shards
-        {
-            return logged_err!(
-                "invalid init assignment parsed: {:?}",
-                init_assignment
-            );
+        if init_assignment.len() != population as usize || max_coverage.count() < rs_data_shards {
+            return logged_err!("invalid init assignment parsed: {:?}", init_assignment);
         }
         pf_debug!(
             "init asgmt {}",
@@ -999,9 +962,7 @@ impl GenericReplica for CrosswordReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
-                .await?;
+        let snapshot_hub = StorageHub::new_and_setup(id, Path::new(&config.snapshot_path)).await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
@@ -1012,17 +973,15 @@ impl GenericReplica for CrosswordReplica {
         )
         .await?;
 
-        let mut snapshot_interval = time::interval(Duration::from_secs(
-            if config.snapshot_interval_s > 0 {
+        let mut snapshot_interval =
+            time::interval(Duration::from_secs(if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
             } else {
                 60 // dummy non-zero value to make `time::interval` happy
-            },
-        ));
+            }));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        let mut linreg_interval =
-            time::interval(Duration::from_millis(config.linreg_interval_ms));
+        let mut linreg_interval = time::interval(Duration::from_millis(config.linreg_interval_ms));
         linreg_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         // [for perf breakdown only]
@@ -1110,11 +1069,7 @@ impl GenericReplica for CrosswordReplica {
                     } else {
                         Some((
                             s,
-                            PerfModel::new(
-                                config.linreg_init_a,
-                                config.linreg_init_b,
-                                0.0,
-                            ),
+                            PerfModel::new(config.linreg_init_a, config.linreg_init_b, 0.0),
                         ))
                     }
                 })
@@ -1133,10 +1088,7 @@ impl GenericReplica for CrosswordReplica {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
@@ -1397,8 +1349,7 @@ impl GenericEndpoint for CrosswordClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -1425,8 +1376,7 @@ impl GenericEndpoint for CrosswordClient {
                 .collect();
             for (&id, &server) in &self.servers {
                 pf_debug!("connecting to server {} '{}'...", id, server);
-                let api_stub =
-                    ClientApiStub::new_by_connect(self.id, server).await?;
+                let api_stub = ClientApiStub::new_by_connect(self.id, server).await?;
                 self.api_stubs.insert(id, api_stub);
             }
             Ok(())
@@ -1451,8 +1401,7 @@ impl GenericEndpoint for CrosswordClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -1464,10 +1413,7 @@ impl GenericEndpoint for CrosswordClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         if self.api_stubs.contains_key(&self.server_id) {
             self.api_stubs
                 .get_mut(&self.server_id)
@@ -1550,31 +1496,24 @@ mod tests {
             )]
         }
 
-        fn codeword(
-            reqs: ReqBatch,
-        ) -> Result<RSCodeword<ReqBatch>, SummersetError> {
+        fn codeword(reqs: ReqBatch) -> Result<RSCodeword<ReqBatch>, SummersetError> {
             let mut reqs_cw = RSCodeword::from_data(reqs, 3, 2)?;
             reqs_cw.compute_parity(Some(&ReedSolomon::new(3, 2)?))?;
             Ok(reqs_cw)
         }
 
         #[test]
-        fn value_id_covers_value_and_coding_scheme()
-        -> Result<(), SummersetError> {
+        fn value_id_covers_value_and_coding_scheme() -> Result<(), SummersetError> {
             let reqs = batch("x");
             let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
             assert_eq!(value_id, CrosswordReplica::value_id(&reqs, 3, 5)?);
-            assert_ne!(
-                value_id,
-                CrosswordReplica::value_id(&batch("y"), 3, 5)?
-            );
+            assert_ne!(value_id, CrosswordReplica::value_id(&batch("y"), 3, 5)?);
             assert_ne!(value_id, CrosswordReplica::value_id(&reqs, 4, 5)?);
             Ok(())
         }
 
         #[test]
-        fn accepted_value_retains_same_value_shards()
-        -> Result<(), SummersetError> {
+        fn accepted_value_retains_same_value_shards() -> Result<(), SummersetError> {
             let reqs = batch("x");
             let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
             let reqs_cw = codeword(reqs)?;
@@ -1585,8 +1524,7 @@ mod tests {
                 AcceptedValue {
                     ballot: 1,
                     value_id,
-                    reqs_cw: reqs_cw
-                        .subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
+                    reqs_cw: reqs_cw.subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
                 },
             )?;
             CrosswordReplica::record_acceptance(
@@ -1594,8 +1532,7 @@ mod tests {
                 AcceptedValue {
                     ballot: 2,
                     value_id,
-                    reqs_cw: reqs_cw
-                        .subset_copy(&Bitmap::from((5, vec![4])), false)?,
+                    reqs_cw: reqs_cw.subset_copy(&Bitmap::from((5, vec![4])), false)?,
                 },
             )?;
 
@@ -1606,8 +1543,7 @@ mod tests {
         }
 
         #[test]
-        fn prepare_combines_same_value_across_ballots()
-        -> Result<(), SummersetError> {
+        fn prepare_combines_same_value_across_ballots() -> Result<(), SummersetError> {
             let reqs = batch("x");
             let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
             let reqs_cw = codeword(reqs)?;
@@ -1621,8 +1557,7 @@ mod tests {
                 AcceptedValue {
                     ballot: 4,
                     value_id,
-                    reqs_cw: reqs_cw
-                        .subset_copy(&Bitmap::from((5, vec![4])), false)?,
+                    reqs_cw: reqs_cw.subset_copy(&Bitmap::from((5, vec![4])), false)?,
                 },
             )?;
             CrosswordReplica::record_prepared_value(
@@ -1630,8 +1565,7 @@ mod tests {
                 AcceptedValue {
                     ballot: 3,
                     value_id: other_id,
-                    reqs_cw: other_cw
-                        .subset_copy(&Bitmap::from((5, vec![1])), false)?,
+                    reqs_cw: other_cw.subset_copy(&Bitmap::from((5, vec![1])), false)?,
                 },
             )?;
             CrosswordReplica::record_prepared_value(
@@ -1639,13 +1573,11 @@ mod tests {
                 AcceptedValue {
                     ballot: 2,
                     value_id,
-                    reqs_cw: reqs_cw
-                        .subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
+                    reqs_cw: reqs_cw.subset_copy(&Bitmap::from((5, vec![0, 3])), false)?,
                 },
             )?;
 
-            let candidate =
-                values.values().max_by_key(|value| value.ballot).unwrap();
+            let candidate = values.values().max_by_key(|value| value.ballot).unwrap();
             assert_eq!(candidate.value_id, value_id);
             assert_eq!(candidate.reqs_cw.avail_shards(), 3);
             let mut recovered = candidate.reqs_cw.clone();

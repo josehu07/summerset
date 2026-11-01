@@ -26,15 +26,9 @@ impl CRaftReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                 }
             }
             return Ok(());
@@ -51,10 +45,7 @@ impl CRaftReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::normal(
-                            *req_id,
-                            Some(CommandResult::Get { value: None }),
-                        ),
+                        ApiReply::normal(*req_id, Some(CommandResult::Get { value: None })),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
@@ -68,11 +59,8 @@ impl CRaftReplica {
         }
 
         // compute the complete Reed-Solomon codeword for the batch data
-        let mut reqs_cw = RSCodeword::from_data(
-            req_batch,
-            self.majority,
-            self.population - self.majority,
-        )?;
+        let mut reqs_cw =
+            RSCodeword::from_data(req_batch, self.majority, self.population - self.majority)?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
         // submit logger action to make this log entry durable
@@ -85,10 +73,7 @@ impl CRaftReplica {
                         term: self.curr_term,
                         reqs_cw: if self.full_copy_mode {
                             reqs_cw.subset_copy(
-                                &Bitmap::from((
-                                    self.population,
-                                    0..self.majority,
-                                )),
+                                &Bitmap::from((self.population, 0..self.majority)),
                                 false,
                             )?
                         } else {

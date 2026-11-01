@@ -83,9 +83,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "-m",
         "--netem_asym",
@@ -94,15 +92,11 @@ def main():
     )
     args = parser.parse_args()
 
-    _, _, hosts, remotes, domains, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    _, _, hosts, remotes, domains, ipaddrs = utils.config.parse_toml_file(args.group)
 
     if args.netem_asym:
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_asym(
             PAIRS_NETEM_MEAN,
             PAIRS_NETEM_JITTER,

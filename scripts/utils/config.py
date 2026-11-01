@@ -1,6 +1,5 @@
 import sys
-
-import toml
+import tomllib
 
 from .net import lookup_dns_to_ip
 from .proc import run_process, run_process_over_ssh
@@ -30,7 +29,8 @@ def split_remote_string(remote):
 
 
 def parse_toml_file(group, filename=DEFAULT_TOML_FILENAME):
-    hosts_config = toml.load(filename)
+    with open(filename, "rb") as f:
+        hosts_config = tomllib.load(f)
     base = hosts_config["base_path"]
     repo = hosts_config["repo_name"]
 
@@ -45,12 +45,8 @@ def parse_toml_file(group, filename=DEFAULT_TOML_FILENAME):
             remotes[host] = DEFAULT_USER + "@" + remotes[host]
 
     hosts = sorted(remotes.keys(), key=lambda h: int(h[4:]))
-    domains = {
-        name: split_remote_string(remote)[1] for name, remote in remotes.items()
-    }
-    ipaddrs = {
-        name: lookup_dns_to_ip(domain) for name, domain in domains.items()
-    }
+    domains = {name: split_remote_string(remote)[1] for name, remote in remotes.items()}
+    ipaddrs = {name: lookup_dns_to_ip(domain) for name, domain in domains.items()}
 
     return base, repo, hosts, remotes, domains, ipaddrs
 
@@ -60,9 +56,7 @@ def check_remote_is_me(remote):
     out_l, _ = proc_l.communicate()
     hostname_l = out_l.decode().strip()
 
-    proc_r = run_process_over_ssh(
-        remote, ["hostname"], capture_stdout=True, print_cmd=False
-    )
+    proc_r = run_process_over_ssh(remote, ["hostname"], capture_stdout=True, print_cmd=False)
     out_r, _ = proc_r.communicate()
     hostname_r = out_r.decode().strip()
 
@@ -81,9 +75,7 @@ class PairsMap:
 
             pair = frozenset({f"host{na}", f"host{nb}"})
             if pair in self.pairs:
-                raise ValueError(
-                    f"duplicate unordered key pair found: {(na, nb)}"
-                )
+                raise ValueError(f"duplicate unordered key pair found: {(na, nb)}")
 
             self.pairs[pair] = val
 

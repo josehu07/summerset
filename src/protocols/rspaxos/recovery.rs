@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // RSPaxosReplica recovery from WAL log
 impl RSPaxosReplica {
     /// Apply a durable storage log entry for recovery.
-    async fn recover_apply_entry(
-        &mut self,
-        entry: WalEntry,
-    ) -> Result<(), SummersetError> {
+    async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         match entry {
             WalEntry::PrepareBal { slot, ballot } => {
                 if slot < self.start_slot {
@@ -78,8 +75,7 @@ impl RSPaxosReplica {
                 // state machine
                 if slot == self.commit_bar {
                     while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst =
-                            &mut self.insts[self.commit_bar - self.start_slot];
+                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed {
                             break;
                         }
@@ -87,12 +83,9 @@ impl RSPaxosReplica {
                         if inst.reqs_cw.avail_shards() < self.majority {
                             // can't execute if I don't have the complete request batch
                             break;
-                        } else if inst.reqs_cw.avail_data_shards()
-                            < self.majority
-                        {
+                        } else if inst.reqs_cw.avail_data_shards() < self.majority {
                             // have enough shards but need reconstruction
-                            inst.reqs_cw
-                                .reconstruct_data(Some(&self.rs_coder))?;
+                            inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                         }
                         // execute all commands in this instance on state machine
                         // synchronously
@@ -119,9 +112,7 @@ impl RSPaxosReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

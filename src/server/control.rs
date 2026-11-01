@@ -11,9 +11,7 @@ use tokio::task::JoinHandle;
 
 use crate::manager::CtrlMsg;
 use crate::server::ReplicaId;
-use crate::utils::{
-    ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
+use crate::utils::{ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry};
 
 /// The manager control message handler module.
 pub(crate) struct ControlHub {
@@ -40,9 +38,7 @@ impl ControlHub {
     /// task. Creates a send channel for proactively sending control messages
     /// and a recv channel for buffering incoming control messages. Returns the
     /// assigned server ID on success.
-    pub(crate) async fn new_and_setup(
-        manager: SocketAddr,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) async fn new_and_setup(manager: SocketAddr) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
         pf_debug!("connecting to manager '{}'...", manager);
         let mut stream = tcp_connect_with_retry(manager, 15).await?;
@@ -55,10 +51,8 @@ impl ControlHub {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
-        let mut messenger =
-            ControlHubMessengerTask::new(stream, tx_recv, rx_send);
-        let control_messenger_handle =
-            tokio::spawn(async move { messenger.run().await });
+        let mut messenger = ControlHubMessengerTask::new(stream, tx_recv, rx_send);
+        let control_messenger_handle = tokio::spawn(async move { messenger.run().await });
 
         Ok(ControlHub {
             me: id,
@@ -70,9 +64,7 @@ impl ControlHub {
     }
 
     /// Waits for the next control event message from cluster manager.
-    pub(crate) async fn recv_ctrl(
-        &mut self,
-    ) -> Result<CtrlMsg, SummersetError> {
+    pub(crate) async fn recv_ctrl(&mut self) -> Result<CtrlMsg, SummersetError> {
         if let Some(msg) = self.rx_recv.recv().await {
             Ok(msg)
         } else {
@@ -81,10 +73,7 @@ impl ControlHub {
     }
 
     /// Sends a control message to the cluster manager.
-    pub(crate) fn send_ctrl(
-        &mut self,
-        msg: CtrlMsg,
-    ) -> Result<(), SummersetError> {
+    pub(crate) fn send_ctrl(&mut self, msg: CtrlMsg) -> Result<(), SummersetError> {
         self.tx_send.send(msg).map_err(SummersetError::msg)?;
         Ok(())
     }

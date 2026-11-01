@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -13,19 +12,17 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
 use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
 use crate::utils::{
-    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
-    tcp_bind_with_retry,
+    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
 };
 
 /// Control event request from client.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub enum CtrlRequest {
     /// Query the set of active servers and their info.
     QueryInfo,
@@ -64,9 +61,7 @@ pub enum CtrlRequest {
 }
 
 /// Control event reply to client.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub enum CtrlReply {
     /// Reply to server info query.
     QueryInfo {
@@ -126,14 +121,11 @@ impl ClientReactor {
     /// Creates a new client-facing responder module and spawns the client
     /// acceptor task. Creates a req channel for buffering incoming control
     /// requests.
-    pub(crate) async fn new_and_setup(
-        cli_addr: SocketAddr,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) async fn new_and_setup(cli_addr: SocketAddr) -> Result<Self, SummersetError> {
         let (tx_req, rx_req) = mpsc::unbounded_channel();
 
-        let tx_replies: Arc<
-            DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>,
-        > = Arc::new(DashMap::new());
+        let tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<CtrlReply>>> =
+            Arc::new(DashMap::new());
 
         let client_responder_handles: Arc<DashMap<ClientId, JoinHandle<()>>> =
             Arc::new(DashMap::new());
@@ -145,8 +137,7 @@ impl ClientReactor {
             client_listener,
             client_responder_handles.clone(),
         );
-        let client_acceptor_handle =
-            tokio::spawn(async move { acceptor.run().await });
+        let client_acceptor_handle = tokio::spawn(async move { acceptor.run().await });
 
         Ok(ClientReactor {
             rx_req,
@@ -163,9 +154,7 @@ impl ClientReactor {
     }
 
     /// Waits for the next control event request from some client.
-    pub(crate) async fn recv_req(
-        &mut self,
-    ) -> Result<(ClientId, CtrlRequest), SummersetError> {
+    pub(crate) async fn recv_req(&mut self) -> Result<(ClientId, CtrlRequest), SummersetError> {
         if let Some((id, req)) = self.rx_req.recv().await {
             Ok((id, req))
         } else {
@@ -185,10 +174,7 @@ impl ClientReactor {
                 Ok(())
             }
             None => {
-                logged_err!(
-                    "client ID {} not found among active clients",
-                    client
-                )
+                logged_err!("client ID {} not found among active clients", client)
             }
         }
     }
@@ -270,18 +256,14 @@ impl ClientReactorAcceptorTask {
             rx_reply,
             self.tx_exit.clone(),
         );
-        let client_responder_handle =
-            tokio::spawn(async move { responder.run().await });
+        let client_responder_handle = tokio::spawn(async move { responder.run().await });
         self.client_responder_handles
             .insert(id, client_responder_handle);
         Ok(())
     }
 
     /// Removes handles of a left client connection.
-    fn remove_left_client(
-        &mut self,
-        id: ClientId,
-    ) -> Result<(), SummersetError> {
+    fn remove_left_client(&mut self, id: ClientId) -> Result<(), SummersetError> {
         if !self.tx_replies.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
@@ -536,9 +518,7 @@ mod tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // manager-side
-            let mut reactor =
-                ClientReactor::new_and_setup("127.0.0.1:30009".parse()?)
-                    .await?;
+            let mut reactor = ClientReactor::new_and_setup("127.0.0.1:30009".parse()?).await?;
             barrier2.wait().await;
             // recv request from client
             let (client, req) = reactor.recv_req().await?;
@@ -577,8 +557,7 @@ mod tests {
         });
         // client-side
         barrier.wait().await;
-        let mut ctrl_stub =
-            ClientCtrlStub::new_by_connect("127.0.0.1:30009".parse()?).await?;
+        let mut ctrl_stub = ClientCtrlStub::new_by_connect("127.0.0.1:30009".parse()?).await?;
         // send request to manager
         ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         // recv reply from manager
@@ -623,8 +602,7 @@ mod tests {
             {
                 barrier2.wait().await;
                 let mut ctrl_stub =
-                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?)
-                        .await?;
+                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?).await?;
                 // send request to manager
                 ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
                 // recv reply from manager
@@ -664,8 +642,7 @@ mod tests {
             {
                 // come back as new client
                 let mut ctrl_stub =
-                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?)
-                        .await?;
+                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?).await?;
                 // send request to manager
                 ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
                 // recv reply from manager
@@ -701,8 +678,7 @@ mod tests {
             Ok::<(), SummersetError>(())
         });
         // manager-side
-        let mut reactor =
-            ClientReactor::new_and_setup("127.0.0.1:30109".parse()?).await?;
+        let mut reactor = ClientReactor::new_and_setup("127.0.0.1:30109".parse()?).await?;
         barrier.wait().await;
         // recv request from client
         let (client, req) = reactor.recv_req().await?;

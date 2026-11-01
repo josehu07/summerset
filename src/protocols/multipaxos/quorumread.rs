@@ -34,9 +34,7 @@ impl MultiPaxosReplica {
         key: &String,
     ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
         if let Some(&slot) = self.highest_slot.get(key) {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.insts.len()
-            {
+            if slot < self.start_slot || slot >= self.start_slot + self.insts.len() {
                 // slot has been GCed or not locatable for some reason; we play
                 // safe and return with not-committed status
                 Ok(Some((slot, None)))
@@ -212,9 +210,7 @@ impl MultiPaxosReplica {
                 // update my knowledge at the highest slot seen for each key
                 debug_assert_eq!(replies.len(), rq_bk.reads.len());
                 debug_assert_eq!(replies.len(), rq_bk.max_replies.len());
-                for (reply, max_reply) in
-                    replies.into_iter().zip(rq_bk.max_replies.iter_mut())
-                {
+                for (reply, max_reply) in replies.into_iter().zip(rq_bk.max_replies.iter_mut()) {
                     match reply {
                         None => {}
                         Some((slot, None)) => match *max_reply {
@@ -236,13 +232,12 @@ impl MultiPaxosReplica {
                                     *max_reply = Some((slot, Some(value)));
                                 }
                             }
-                            Some((max_slot, Some(ref max_value))) => {
+                            Some((max_slot, Some(ref max_value))) =>
+                            {
                                 #[allow(clippy::comparison_chain)]
                                 if slot > max_slot {
                                     *max_reply = Some((slot, Some(value)));
-                                } else if slot == max_slot
-                                    && max_value != &value
-                                {
+                                } else if slot == max_slot && max_value != &value {
                                     return logged_err!(
                                         "conflicting committed value at slot {}",
                                         slot
@@ -270,9 +265,7 @@ impl MultiPaxosReplica {
         // if can safely reply to clients now:
         if can_reply {
             let rq_bk = self.quorum_reads.remove(&rq_id).unwrap();
-            for ((client, req), reply) in
-                rq_bk.reads.into_iter().zip(rq_bk.max_replies)
-            {
+            for ((client, req), reply) in rq_bk.reads.into_iter().zip(rq_bk.max_replies) {
                 if let ApiRequest::Req {
                     id: req_id,
                     cmd: Command::Get { key },
@@ -283,10 +276,7 @@ impl MultiPaxosReplica {
                             // no one in quorum knows about this key, safely
                             // reply not found
                             (
-                                ApiReply::normal(
-                                    req_id,
-                                    Some(CommandResult::Get { value: None }),
-                                ),
+                                ApiReply::normal(req_id, Some(CommandResult::Get { value: None })),
                                 false,
                             )
                         }
@@ -294,11 +284,7 @@ impl MultiPaxosReplica {
                             // highest slot for this key not committed, should
                             // fallback to slow path
                             (
-                                ApiReply::rq_retry(
-                                    req_id,
-                                    Command::Get { key },
-                                    self.leader,
-                                ),
+                                ApiReply::rq_retry(req_id, Command::Get { key }, self.leader),
                                 true,
                             )
                         }
@@ -308,9 +294,7 @@ impl MultiPaxosReplica {
                             (
                                 ApiReply::normal(
                                     req_id,
-                                    Some(CommandResult::Get {
-                                        value: Some(value),
-                                    }),
+                                    Some(CommandResult::Get { value: Some(value) }),
                                 ),
                                 false,
                             )
@@ -326,17 +310,12 @@ impl MultiPaxosReplica {
                     if self.config.record_node_cnts {
                         for (peer, flag) in rq_bk.rq_acks.iter() {
                             if peer == self.id || flag {
-                                *self
-                                    .node_cnts_stats
-                                    .get_mut(&peer)
-                                    .unwrap() += 1;
+                                *self.node_cnts_stats.get_mut(&peer).unwrap() += 1;
                             }
                         }
                     }
                 } else {
-                    return logged_err!(
-                        "non-Get request found in rq_bk reads field"
-                    );
+                    return logged_err!("non-Get request found in rq_bk reads field");
                 }
             }
         }

@@ -39,8 +39,7 @@ impl EPaxosReplica {
         // if ballot is up-to-date:
         if ballot >= inst_bal {
             // update seq and deps according to my knowledge
-            let my_deps =
-                Self::identify_deps(&reqs, self.population, &self.highest_cols);
+            let my_deps = Self::identify_deps(&reqs, self.population, &self.highest_cols);
             deps.union(&my_deps);
             seq = seq.max(1 + self.max_seq_num(&my_deps));
 
@@ -50,12 +49,7 @@ impl EPaxosReplica {
             inst.seq = seq;
             inst.deps = deps.clone();
             inst.reqs.clone_from(&reqs);
-            Self::refresh_highest_cols(
-                slot,
-                &reqs,
-                self.population,
-                &mut self.highest_cols,
-            );
+            Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
@@ -215,11 +209,7 @@ impl EPaxosReplica {
                 inst.status = Status::Accepting;
                 inst.seq = seq;
                 inst.deps = deps;
-                pf_debug!(
-                    "enter Accept phase for slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
@@ -306,12 +296,7 @@ impl EPaxosReplica {
             inst.seq = seq;
             inst.deps = deps.clone();
             inst.reqs.clone_from(&reqs);
-            Self::refresh_highest_cols(
-                slot,
-                &reqs,
-                self.population,
-                &mut self.highest_cols,
-            );
+            Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
@@ -367,10 +352,7 @@ impl EPaxosReplica {
             return Ok(());
         }
         let inst = &mut self.insts[row][col - self.start_col];
-        if inst.status != Status::Accepting
-            || inst.bal != ballot
-            || inst.leader_bk.is_none()
-        {
+        if inst.status != Status::Accepting || inst.bal != ballot || inst.leader_bk.is_none() {
             return Ok(());
         }
         let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -474,12 +456,7 @@ impl EPaxosReplica {
             inst.seq = seq;
             inst.deps = deps.clone();
             inst.reqs.clone_from(&reqs);
-            Self::refresh_highest_cols(
-                slot,
-                &reqs,
-                self.population,
-                &mut self.highest_cols,
-            );
+            Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
 
             // record commit event
             self.storage_hub.submit_action(
@@ -618,10 +595,9 @@ impl EPaxosReplica {
             leader_bk.exp_prepare_max_bal = voted_bal;
         }
         if voted_bal >= leader_bk.exp_prepare_max_bal {
-            leader_bk.exp_prepare_voteds.insert(
-                peer,
-                (voted_status, voted_seq, voted_deps, voted_reqs),
-            );
+            leader_bk
+                .exp_prepare_voteds
+                .insert(peer, (voted_status, voted_seq, voted_deps, voted_reqs));
         }
         leader_bk.exp_prepare_acks.set(peer, true)?;
 
@@ -640,12 +616,7 @@ impl EPaxosReplica {
                 inst.seq = seq;
                 inst.deps = deps;
                 inst.reqs.clone_from(&reqs);
-                Self::refresh_highest_cols(
-                    slot,
-                    &reqs,
-                    self.population,
-                    &mut self.highest_cols,
-                );
+                Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
                 pf_debug!(
                     "committed instance at slot {} bal {} by prepare",
                     slot,
@@ -701,17 +672,8 @@ impl EPaxosReplica {
                 inst.seq = seq;
                 inst.deps = deps;
                 inst.reqs.clone_from(&reqs);
-                Self::refresh_highest_cols(
-                    slot,
-                    &reqs,
-                    self.population,
-                    &mut self.highest_cols,
-                );
-                pf_debug!(
-                    "enter Accept phase for slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
+                pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
@@ -762,12 +724,7 @@ impl EPaxosReplica {
                 inst.seq = seq;
                 inst.deps = deps;
                 inst.reqs.clone_from(&reqs);
-                Self::refresh_highest_cols(
-                    slot,
-                    &reqs,
-                    self.population,
-                    &mut self.highest_cols,
-                );
+                Self::refresh_highest_cols(slot, &reqs, self.population, &mut self.highest_cols);
 
                 // explicitly avoid fast path after this PreAccept phase
                 inst.avoid_fast_path = true;
@@ -833,17 +790,13 @@ impl EPaxosReplica {
                 seq,
                 deps,
                 reqs,
-            } => {
-                self.handle_msg_pre_accept(peer, slot, ballot, seq, deps, reqs)
-            }
+            } => self.handle_msg_pre_accept(peer, slot, ballot, seq, deps, reqs),
             PeerMsg::PreAcceptReply {
                 slot,
                 ballot,
                 seq,
                 deps,
-            } => {
-                self.handle_msg_pre_accept_reply(peer, slot, ballot, seq, deps)
-            }
+            } => self.handle_msg_pre_accept_reply(peer, slot, ballot, seq, deps),
             PeerMsg::Accept {
                 slot,
                 ballot,
@@ -860,8 +813,7 @@ impl EPaxosReplica {
                 seq,
                 deps,
                 reqs,
-            } => self
-                .handle_msg_commit_notice(peer, slot, ballot, seq, deps, reqs),
+            } => self.handle_msg_commit_notice(peer, slot, ballot, seq, deps, reqs),
             PeerMsg::ExpPrepare { slot, new_ballot } => {
                 self.handle_msg_exp_prepare(peer, slot, new_ballot)
             }

@@ -54,12 +54,10 @@ impl RaftReplica {
                 //       peers heartbeated
                 let mut now_prev_slot = prev_slot;
                 while !entries.is_empty() {
-                    let end =
-                        cmp::min(entries.len(), self.config.msg_chunk_size);
+                    let end = cmp::min(entries.len(), self.config.msg_chunk_size);
                     let chunk = entries.drain(0..end).collect();
 
-                    let now_prev_term =
-                        self.log[now_prev_slot - self.start_slot].term;
+                    let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
                     self.transport_hub.send_msg(
                         PeerMsg::AppendEntries {
                             term: self.curr_term,
@@ -159,9 +157,7 @@ impl RaftReplica {
         #[allow(clippy::match_wildcard_for_single_variants)]
         match entry_type {
             Role::Follower => self.handle_logged_follower_append(slot, slot_e),
-            Role::Leader => {
-                self.handle_logged_leader_append(slot, slot_e).await
-            }
+            Role::Leader => self.handle_logged_leader_append(slot, slot_e).await,
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)
             }

@@ -180,9 +180,7 @@ def run_bench_clients(remotec, base, repo, pcname, config=None):
     )
 
 
-def run_mess_client(
-    remotec, base, repo, protocol, leader=None, key_range=None, responder=None
-):
+def run_mess_client(remotec, base, repo, protocol, leader=None, key_range=None, responder=None):
     cmd = [
         "python3",
         "./scripts/distr_clients.py",
@@ -214,9 +212,7 @@ def run_mess_client(
     )
 
 
-def bench_round(
-    remote0, remotec, base, repo, pcname, runlog_path, responders=None
-):
+def bench_round(remote0, remotec, base, repo, pcname, runlog_path, responders=None):
     protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
     midfix_str = f".{pcname}"
     print(f"  {EXPER_NAME}  {pcname:<12s}{midfix_str}")
@@ -229,9 +225,7 @@ def bench_round(
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -257,9 +251,7 @@ def bench_round(
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remotec, base, repo, pcname, config=client_config
-    )
+    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
 
     # wait for benchmarking clients to exit
     cout, cerr = proc_clients.communicate()
@@ -600,15 +592,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, _hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -651,9 +639,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

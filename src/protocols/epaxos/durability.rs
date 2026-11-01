@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // EPaxosReplica durable WAL logging
 impl EPaxosReplica {
     /// Handler of `PreAcceptSlot` logging result chan recv.
-    fn handle_logged_pre_accept_slot(
-        &mut self,
-        slot: SlotIdx,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_pre_accept_slot(&mut self, slot: SlotIdx) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
@@ -26,13 +23,7 @@ impl EPaxosReplica {
             // on command leader, finishing the logging of a PreAcceptSlot
             // entry is equivalent to receiving a PreAccept reply from myself
             // (as an acceptor role)
-            self.handle_msg_pre_accept_reply(
-                self.id,
-                slot,
-                inst.bal,
-                inst.seq,
-                inst.deps.clone(),
-            )?;
+            self.handle_msg_pre_accept_reply(self.id, slot, inst.bal, inst.seq, inst.deps.clone())?;
         } else if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
             // on follower replica, finishing the logging of a PreAcceptSlot
             // entry leads to sending back a PreAccept reply
@@ -59,10 +50,7 @@ impl EPaxosReplica {
     }
 
     /// Handler of `AcceptSlot` logging result chan recv.
-    fn handle_logged_accept_slot(
-        &mut self,
-        slot: SlotIdx,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_accept_slot(&mut self, slot: SlotIdx) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
@@ -101,10 +89,7 @@ impl EPaxosReplica {
     }
 
     /// Handler of `CommitSlot` logging result chan recv.
-    async fn handle_logged_commit_slot(
-        &mut self,
-        slot: SlotIdx,
-    ) -> Result<(), SummersetError> {
+    async fn handle_logged_commit_slot(&mut self, slot: SlotIdx) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
@@ -118,10 +103,8 @@ impl EPaxosReplica {
         // update index of the first non-committed instance in this row
         if col == self.commit_bars[row] {
             let mut advanced = false;
-            while self.commit_bars[row] < self.start_col + self.insts[row].len()
-            {
-                let inst = &mut self.insts[row]
-                    [self.commit_bars[row] - self.start_col];
+            while self.commit_bars[row] < self.start_col + self.insts[row].len() {
+                let inst = &mut self.insts[row][self.commit_bars[row] - self.start_col];
                 if inst.status < Status::Committed {
                     break;
                 } else if inst.reqs.is_empty() {
@@ -133,23 +116,16 @@ impl EPaxosReplica {
 
             // attempt the execution algorithm on the new tail at commit_bar
             if advanced {
-                let tail_slot = SlotIdx(
-                    ReplicaId::try_from(row)?,
-                    self.commit_bars[row] - 1,
-                );
+                let tail_slot = SlotIdx(ReplicaId::try_from(row)?, self.commit_bars[row] - 1);
                 if self.attempt_execution(tail_slot, false).await? {
                     // re-check each row and attempt execution of committed
                     // instances in case they were previously blocked by me
                     let mut reattempts = vec![];
                     for (row, &col) in self.commit_bars.iter().enumerate() {
                         if col > self.exec_bars[row]
-                            && self.insts[row][col - 1 - self.start_col].status
-                                == Status::Committed
+                            && self.insts[row][col - 1 - self.start_col].status == Status::Committed
                         {
-                            reattempts.push(SlotIdx(
-                                ReplicaId::try_from(row)?,
-                                col - 1,
-                            ));
+                            reattempts.push(SlotIdx(ReplicaId::try_from(row)?, col - 1));
                         }
                     }
                     for slot in reattempts {

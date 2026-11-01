@@ -77,16 +77,10 @@ impl ChainRepReplica {
                 if self.log[self.prop_bar].reqs.is_empty() {
                     self.log[self.prop_bar].status = Status::Executed;
                 } else {
-                    for (cmd_idx, (_, req)) in
-                        self.log[self.prop_bar].reqs.iter().enumerate()
-                    {
+                    for (cmd_idx, (_, req)) in self.log[self.prop_bar].reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
-                                Self::make_command_id(
-                                    self.prop_bar,
-                                    cmd_idx,
-                                    false,
-                                ),
+                                Self::make_command_id(self.prop_bar, cmd_idx, false),
                                 cmd.clone(),
                             )?;
                         }
@@ -112,12 +106,8 @@ impl ChainRepReplica {
         msg: PeerMsg,
     ) -> Result<(), SummersetError> {
         match msg {
-            PeerMsg::Propagate { slot, reqs } => {
-                self.handle_msg_propagate(peer, slot, reqs)
-            }
-            PeerMsg::PropagateReply { slot } => {
-                self.handle_msg_propagate_reply(peer, slot)
-            }
+            PeerMsg::Propagate { slot, reqs } => self.handle_msg_propagate(peer, slot, reqs),
+            PeerMsg::PropagateReply { slot } => self.handle_msg_propagate_reply(peer, slot),
         }
     }
 }

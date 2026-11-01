@@ -22,11 +22,7 @@ impl EPaxosReplica {
             // compute the dependencies set of this request batch and proper
             // sequence number
             let ballot = Self::make_default_ballot(self.id);
-            let deps = Self::identify_deps(
-                &req_batch,
-                self.population,
-                &self.highest_cols,
-            );
+            let deps = Self::identify_deps(&req_batch, self.population, &self.highest_cols);
             let seq = 1 + self.max_seq_num(&deps);
             pf_debug!(
                 "got request batch of size {} seq {} deps {}",
@@ -41,12 +37,7 @@ impl EPaxosReplica {
             inst.seq = seq;
             inst.deps = deps;
             inst.reqs.clone_from(&req_batch);
-            Self::refresh_highest_cols(
-                slot,
-                &req_batch,
-                self.population,
-                &mut self.highest_cols,
-            );
+            Self::refresh_highest_cols(slot, &req_batch, self.population, &mut self.highest_cols);
             inst.leader_bk = Some(LeaderBookkeeping {
                 pre_accept_acks: Bitmap::new(self.population, false),
                 pre_accept_replies: HashMap::new(),

@@ -200,11 +200,9 @@ impl RSPaxosReplica {
             // include the sender peer into the quorum (by updating the
             // prepare_acks field in the trigger_slot entry)
             if slot == endprep_slot {
-                let trigger_inst =
-                    &mut self.insts[trigger_slot - self.start_slot];
+                let trigger_inst = &mut self.insts[trigger_slot - self.start_slot];
                 debug_assert!(trigger_inst.leader_bk.is_some());
-                let trigger_leader_bk =
-                    trigger_inst.leader_bk.as_mut().unwrap();
+                let trigger_leader_bk = trigger_inst.leader_bk.as_mut().unwrap();
                 trigger_leader_bk.prepare_acks.set(peer, true)?;
                 let prepare_acks_cnt = trigger_leader_bk.prepare_acks.count();
 
@@ -229,11 +227,9 @@ impl RSPaxosReplica {
                             // with the highest ballot in quorum are gathered
                             // to reconstruct the original data, use the
                             // reconstructed request batch
-                            if inst.reqs_cw.avail_data_shards() < self.majority
-                            {
+                            if inst.reqs_cw.avail_data_shards() < self.majority {
                                 // have enough shards but need reconstruction
-                                inst.reqs_cw
-                                    .reconstruct_data(Some(&self.rs_coder))?;
+                                inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                             }
                         } else if prepare_acks_cnt
                             >= (self.population - self.config.fault_tolerance)
@@ -254,29 +250,20 @@ impl RSPaxosReplica {
 
                         // if parity shards not computed yet, compute them now
                         if inst.reqs_cw.avail_shards() < self.population {
-                            inst.reqs_cw
-                                .compute_parity(Some(&self.rs_coder))?;
+                            inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
                         }
 
                         inst.status = Status::Accepting;
-                        pf_debug!(
-                            "enter Accept phase for slot {} bal {}",
-                            this_slot,
-                            inst.bal
-                        );
+                        pf_debug!("enter Accept phase for slot {} bal {}", this_slot, inst.bal);
 
                         // record update to largest accepted ballot and its
                         // corresponding data
-                        let subset_copy = inst.reqs_cw.subset_copy(
-                            &Bitmap::from((self.population, vec![self.id])),
-                            false,
-                        )?;
+                        let subset_copy = inst
+                            .reqs_cw
+                            .subset_copy(&Bitmap::from((self.population, vec![self.id])), false)?;
                         inst.voted = (ballot, subset_copy.clone());
                         self.storage_hub.submit_action(
-                            Self::make_log_action_id(
-                                this_slot,
-                                Status::Accepting,
-                            ),
+                            Self::make_log_action_id(this_slot, Status::Accepting),
                             LogAction::Append {
                                 entry: WalEntry::AcceptData {
                                     slot: this_slot,
@@ -302,10 +289,7 @@ impl RSPaxosReplica {
                                     slot: this_slot,
                                     ballot,
                                     reqs_cw: inst.reqs_cw.subset_copy(
-                                        &Bitmap::from((
-                                            self.population,
-                                            vec![peer],
-                                        )),
+                                        &Bitmap::from((self.population, vec![peer])),
                                         false,
                                     )?,
                                 },
@@ -415,10 +399,7 @@ impl RSPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !is_leader
-                || (inst.status != Status::Accepting)
-                || (ballot < inst.bal)
-            {
+            if !is_leader || (inst.status != Status::Accepting) || (ballot < inst.bal) {
                 return Ok(());
             }
             debug_assert_eq!(inst.bal, ballot);
@@ -435,15 +416,9 @@ impl RSPaxosReplica {
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed; in RS-Paxos, this
             // means accept_acks.count() >= self.majority + fault_tolerance
-            if leader_bk.accept_acks.count()
-                >= self.majority + self.config.fault_tolerance
-            {
+            if leader_bk.accept_acks.count() >= self.majority + self.config.fault_tolerance {
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -492,9 +467,7 @@ impl RSPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications; also ignore if I have nothing to send back
-            if inst.status < Status::Accepting
-                || inst.reqs_cw.avail_shards() == 0
-            {
+            if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
                 continue;
             }
 
@@ -506,11 +479,7 @@ impl RSPaxosReplica {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(
-                "sent ReconstructReply -> {} for {} slots",
-                peer,
-                num_slots
-            );
+            pf_trace!("sent ReconstructReply -> {} for {} slots", peer, num_slots);
         }
         Ok(())
     }
@@ -533,9 +502,7 @@ impl RSPaxosReplica {
                 reqs_cw.avail_shards_map()
             );
             debug_assert!(slot < self.start_slot + self.insts.len());
-            debug_assert!(
-                self.insts[slot - self.start_slot].status >= Status::Committed
-            );
+            debug_assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
             let inst = &mut self.insts[slot - self.start_slot];
 
             // if reply not outdated and ballot is up-to-date
@@ -546,8 +513,7 @@ impl RSPaxosReplica {
                 // if enough shards have been gathered, can push execution forward
                 if slot == self.commit_bar {
                     while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst =
-                            &mut self.insts[self.commit_bar - self.start_slot];
+                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed
                             || inst.reqs_cw.avail_shards() < self.majority
                         {
@@ -556,8 +522,7 @@ impl RSPaxosReplica {
 
                         if inst.reqs_cw.avail_data_shards() < self.majority {
                             // have enough shards but need reconstruction
-                            inst.reqs_cw
-                                .reconstruct_data(Some(&self.rs_coder))?;
+                            inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                         }
                         let reqs = inst.reqs_cw.get_data()?;
 
@@ -569,10 +534,7 @@ impl RSPaxosReplica {
                             for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                                 if let ApiRequest::Req { cmd, .. } = req {
                                     self.state_machine.submit_cmd(
-                                        Self::make_command_id(
-                                            self.commit_bar,
-                                            cmd_idx,
-                                        ),
+                                        Self::make_command_id(self.commit_bar, cmd_idx),
                                         cmd.clone(),
                                     )?;
                                 }
@@ -610,14 +572,9 @@ impl RSPaxosReplica {
                 endprep_slot,
                 ballot,
                 voted,
-            } => self.handle_msg_prepare_reply(
-                peer,
-                slot,
-                trigger_slot,
-                endprep_slot,
-                ballot,
-                voted,
-            ),
+            } => {
+                self.handle_msg_prepare_reply(peer, slot, trigger_slot, endprep_slot, ballot, voted)
+            }
             PeerMsg::Accept {
                 slot,
                 ballot,
@@ -626,9 +583,7 @@ impl RSPaxosReplica {
             PeerMsg::AcceptReply { slot, ballot } => {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
-            PeerMsg::Reconstruct { slots } => {
-                self.handle_msg_reconstruct(peer, slots)
-            }
+            PeerMsg::Reconstruct { slots } => self.handle_msg_reconstruct(peer, slots),
             PeerMsg::ReconstructReply { slots_data } => {
                 self.handle_msg_reconstruct_reply(peer, slots_data)
             }
@@ -638,10 +593,8 @@ impl RSPaxosReplica {
                 exec_bar,
                 snap_bar,
             } => {
-                self.heard_heartbeat(
-                    peer, ballot, commit_bar, exec_bar, snap_bar,
-                )
-                .await
+                self.heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar)
+                    .await
             }
         }
     }

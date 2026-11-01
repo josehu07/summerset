@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // CrosswordReplica durable WAL logging
 impl CrosswordReplica {
     /// Handler of `PrepareBal` logging result chan recv.
-    fn handle_logged_prepare_bal(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_prepare_bal(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -75,10 +72,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of `AcceptData` logging result chan recv.
-    fn handle_logged_accept_data(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_accept_data(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -109,10 +103,8 @@ impl CrosswordReplica {
                         // compute payload size of the corresponding Accept
                         // message from leader: #shards assigned to me times
                         // size of one shard
-                        size: inst.assignment[self.id as usize].count()
-                            as usize
-                            * ((inst.reqs_cw.data_len()
-                                / inst.reqs_cw.num_data_shards() as usize)
+                        size: inst.assignment[self.id as usize].count() as usize
+                            * ((inst.reqs_cw.data_len() / inst.reqs_cw.num_data_shards() as usize)
                                 + 1),
                         reply_ts: if self.config.record_breakdown {
                             Some(SystemTime::now())
@@ -135,10 +127,7 @@ impl CrosswordReplica {
     }
 
     /// Handler of `CommitSlot` logging result chan recv.
-    fn handle_logged_commit_slot(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_commit_slot(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -156,8 +145,7 @@ impl CrosswordReplica {
                     break;
                 }
 
-                if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards()
-                {
+                if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards() {
                     // can't execute if I don't have the complete request batch
                     pf_debug!(
                         "postponing execution for slot {} (shards {}/{})",
@@ -166,9 +154,7 @@ impl CrosswordReplica {
                         inst.reqs_cw.num_data_shards()
                     );
                     break;
-                } else if inst.reqs_cw.avail_data_shards()
-                    < inst.reqs_cw.num_data_shards()
-                {
+                } else if inst.reqs_cw.avail_data_shards() < inst.reqs_cw.num_data_shards() {
                     // have enough shards but need reconstruction
                     inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                 }

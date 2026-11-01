@@ -19,10 +19,7 @@ impl CrosswordReplica {
         let mut pairs = HashMap::new();
         for slot in self.start_slot..new_start_slot {
             let inst = &mut self.insts[slot - self.start_slot];
-            debug_assert!(
-                inst.reqs_cw.avail_data_shards()
-                    >= inst.reqs_cw.num_data_shards()
-            );
+            debug_assert!(inst.reqs_cw.avail_data_shards() >= inst.reqs_cw.num_data_shards());
             for (_, req) in inst.reqs_cw.get_data()?.clone() {
                 if let ApiRequest::Req {
                     cmd: Command::Put { key, value },
@@ -93,9 +90,7 @@ impl CrosswordReplica {
                 debug_assert_eq!(self.wal_offset - cut_offset, now_size);
                 self.wal_offset = now_size;
             } else {
-                return logged_err!(
-                    "unexpected log result type or failed discard"
-                );
+                return logged_err!("unexpected log result type or failed discard");
             }
         }
 
@@ -122,9 +117,7 @@ impl CrosswordReplica {
     //       which all other peers have snapshotted); we assume here that failed
     //       Accept messages will be retried indefinitely until success before
     //       its associated data gets discarded from leader's memory.
-    pub(super) async fn take_new_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(
             "taking new snapshot: start {} exec {} snap {}",
             self.start_slot,
@@ -165,9 +158,7 @@ impl CrosswordReplica {
                 offset_ok: true, ..
             } => {}
             _ => {
-                return logged_err!(
-                    "unexpected log result type or failed write"
-                );
+                return logged_err!("unexpected log result type or failed write");
             }
         }
 
@@ -192,9 +183,7 @@ impl CrosswordReplica {
     }
 
     /// Recover initial state from durable storage snapshot file.
-    pub(super) async fn recover_from_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the

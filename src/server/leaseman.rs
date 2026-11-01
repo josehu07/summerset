@@ -3,13 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use bincode::{Decode, Encode};
 use dashmap::DashMap;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::ReplicaId;
 use crate::utils::{Bitmap, SummersetError, Timer};
@@ -24,9 +24,7 @@ pub(crate) type LeaseNum = u64;
 /// type of `TransportHub`.
 // TODO: merge promise refreshes with heartbeats after turning heartbeats into
 //       a generic server module
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Encode, Deserialize, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, SchemaWrite, Deserialize, SchemaRead, GetSize)]
 pub(crate) enum LeaseMsg {
     /// Push-based Guard phase. Optionally carries an `accept_bar` for setting
     /// safe local-read thresholds for eligible protocols.
@@ -171,17 +169,9 @@ impl LeaseManager {
         population: u8,
         expire_timeout: Duration, // serves both T_guard and T_lease
         hb_send_interval: Duration,
-    ) -> Result<
-        (Self, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>),
-        SummersetError,
-    > {
-        if expire_timeout < Duration::from_millis(100)
-            || expire_timeout > Duration::from_secs(10)
-        {
-            return logged_err!(
-                "invalid lease expire_timeout {:?}",
-                expire_timeout
-            );
+    ) -> Result<(Self, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>), SummersetError> {
+        if expire_timeout < Duration::from_millis(100) || expire_timeout > Duration::from_secs(10) {
+            return logged_err!("invalid lease expire_timeout {:?}", expire_timeout);
         }
         if 2 * hb_send_interval >= expire_timeout {
             // T_lease must be > 2 * heartbeat interval
@@ -195,10 +185,8 @@ impl LeaseManager {
         let (tx_notice, rx_notice) = mpsc::unbounded_channel();
         let (tx_action, rx_action) = mpsc::unbounded_channel();
 
-        let promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>> =
-            Arc::new(DashMap::new());
-        let promises_held: Arc<DashMap<ReplicaId, Timer>> =
-            Arc::new(DashMap::new());
+        let promises_sent: Arc<DashMap<ReplicaId, (Timer, bool)>> = Arc::new(DashMap::new());
+        let promises_held: Arc<DashMap<ReplicaId, Timer>> = Arc::new(DashMap::new());
 
         let mut manager = LeaseManagerLogicTask::new(
             me,
@@ -211,8 +199,7 @@ impl LeaseManager {
             promises_sent.clone(),
             promises_held.clone(),
         );
-        let lease_manager_handle =
-            tokio::spawn(async move { manager.run().await });
+        let lease_manager_handle = tokio::spawn(async move { manager.run().await });
 
         let tx_notice_clone = tx_notice.clone();
         Ok((
@@ -272,9 +259,7 @@ impl LeaseManager {
 
     /// Waits for a lease action to be treated by the protocol implementation,
     /// probably leading to sending some messages.
-    pub(crate) async fn get_action(
-        &mut self,
-    ) -> Result<(LeaseNum, LeaseAction), SummersetError> {
+    pub(crate) async fn get_action(&mut self) -> Result<(LeaseNum, LeaseAction), SummersetError> {
         if let Some((lease_num, action)) = self.rx_action.recv().await {
             if let LeaseAction::NextRefresh { peer } = action {
                 // bookkeep refresh_mark set internally
@@ -464,11 +449,7 @@ impl LeaseManagerLogicTask {
 
         // broadcast Revoke messages to these peers
         if bcast_peers.count() > 0 {
-            pf_debug!(
-                "leases bcast Revoke @ {} -> {:?}",
-                lease_num,
-                bcast_peers
-            );
+            pf_debug!("leases bcast Revoke @ {} -> {:?}", lease_num, bcast_peers);
             self.tx_action.send((
                 lease_num,
                 LeaseAction::BcastLeaseMsgs {
@@ -481,10 +462,7 @@ impl LeaseManagerLogicTask {
     }
 
     /// Clears all promises held forcefully.
-    fn handle_clear_held(
-        &mut self,
-        lease_num: LeaseNum,
-    ) -> Result<(), SummersetError> {
+    fn handle_clear_held(&mut self, lease_num: LeaseNum) -> Result<(), SummersetError> {
         self.guards_held.clear();
 
         for peer in (0..self.population).filter(|&p| p != self.me) {
@@ -536,10 +514,8 @@ impl LeaseManagerLogicTask {
 
         // if an accept_bar is provided, tell the protocol module about it
         if let Some(accept_bar) = accept_bar {
-            self.tx_action.send((
-                lease_num,
-                LeaseAction::GuardAcceptBar { peer, accept_bar },
-            ))?;
+            self.tx_action
+                .send((lease_num, LeaseAction::GuardAcceptBar { peer, accept_bar }))?;
         }
 
         // send GuardReply back
@@ -797,9 +773,7 @@ impl LeaseManagerLogicTask {
             LeaseNotice::NewGrants { peers, accept_bar } => {
                 self.handle_new_grants(lease_num, peers, accept_bar)
             }
-            LeaseNotice::DoRevoke { peers } => {
-                self.handle_do_revoke(lease_num, peers)
-            }
+            LeaseNotice::DoRevoke { peers } => self.handle_do_revoke(lease_num, peers),
             LeaseNotice::ClearHeld => self.handle_clear_held(lease_num),
             LeaseNotice::RecvLeaseMsg { peer, msg } => {
                 debug_assert_ne!(peer, self.me);
@@ -807,12 +781,8 @@ impl LeaseManagerLogicTask {
                     LeaseMsg::Guard { accept_bar } => {
                         self.handle_msg_guard(lease_num, peer, accept_bar)
                     }
-                    LeaseMsg::GuardReply => {
-                        self.handle_msg_guard_reply(lease_num, peer)
-                    }
-                    LeaseMsg::Promise => {
-                        self.handle_msg_promise(lease_num, peer)
-                    }
+                    LeaseMsg::GuardReply => self.handle_msg_guard_reply(lease_num, peer),
+                    LeaseMsg::Promise => self.handle_msg_promise(lease_num, peer),
                     LeaseMsg::PromiseReply { held } => {
                         self.handle_msg_promise_reply(lease_num, peer, held)
                     }
@@ -855,11 +825,7 @@ impl LeaseManagerLogicTask {
                     // special treatment for outdated Revoke message: still
                     // promptly reply to peer to prevent it from having to
                     // block on lease expiration timeout
-                    pf_trace!(
-                        "lease send RevokeReply(F) @ {} -> {}",
-                        lease_num,
-                        peer
-                    );
+                    pf_trace!("lease send RevokeReply(F) @ {} -> {}", lease_num, peer);
                     if let Err(e) = self.tx_action.send((
                         lease_num,
                         LeaseAction::SendLeaseMsg {
@@ -867,11 +833,7 @@ impl LeaseManagerLogicTask {
                             msg: LeaseMsg::RevokeReply { held: false },
                         },
                     )) {
-                        pf_error!(
-                            "error sending prompt RevokeReply @ {}: {}",
-                            lease_num,
-                            e
-                        );
+                        pf_error!("error sending prompt RevokeReply @ {}: {}", lease_num, e);
                     }
                 }
 
@@ -891,23 +853,13 @@ impl LeaseManagerLogicTask {
                 }
                 for peer in (0..self.population).filter(|&p| p != self.me) {
                     if self.promises_held.remove(&peer).is_some() {
-                        pf_debug!(
-                            "lease highnum drop @ {} <- {}",
-                            self.active_num,
-                            peer
-                        );
+                        pf_debug!("lease highnum drop @ {} <- {}", self.active_num, peer);
                     }
                 }
                 self.active_num = lease_num;
 
-                if let Err(e) =
-                    self.tx_action.send((lease_num, LeaseAction::HigherNumber))
-                {
-                    pf_error!(
-                        "error sending HigherNumber action @ {}: {}",
-                        lease_num,
-                        e
-                    );
+                if let Err(e) = self.tx_action.send((lease_num, LeaseAction::HigherNumber)) {
+                    pf_error!("error sending HigherNumber action @ {}: {}", lease_num, e);
                 }
             }
 
@@ -951,9 +903,7 @@ mod tests {
             assert!(population >= 2);
             let mut nodes = Vec::with_capacity(population as usize);
 
-            let mut conns = HashMap::with_capacity(
-                (population * (population - 1)) as usize,
-            );
+            let mut conns = HashMap::with_capacity((population * (population - 1)) as usize);
             for i in 0..(population - 1) {
                 for j in (i + 1)..population {
                     let (tx_i_j, rx_i_j) = mpsc::unbounded_channel();
@@ -974,22 +924,26 @@ mod tests {
                     let tx_recv_clone = tx_recv.clone();
                     messengers.insert(
                         p,
-                        tokio::spawn(async move {loop { tokio::select! {
-                            msg = rx_send.recv() => {
-                                if msg.is_none() {
-                                    break;
+                        tokio::spawn(async move {
+                            loop {
+                                tokio::select! {
+                                    msg = rx_send.recv() => {
+                                        if msg.is_none() {
+                                            break;
+                                        }
+                                        let (lease_num, lease_msg) = msg.unwrap();
+                                        tx_conn.send((lease_num, lease_msg)).unwrap();
+                                    }
+                                    msg = rx_conn.recv() => {
+                                        if msg.is_none() {
+                                            break;
+                                        }
+                                        let (lease_num, lease_msg) = msg.unwrap();
+                                        tx_recv_clone.send((p, lease_num, lease_msg)).unwrap();
+                                    }
                                 }
-                                let (lease_num, lease_msg) = msg.unwrap();
-                                tx_conn.send((lease_num, lease_msg)).unwrap();
                             }
-                            msg = rx_conn.recv() => {
-                                if msg.is_none() {
-                                    break;
-                                }
-                                let (lease_num, lease_msg) = msg.unwrap();
-                                tx_recv_clone.send((p, lease_num, lease_msg)).unwrap();
-                            }
-                        }}}),
+                        }),
                     );
                 }
 
@@ -1018,8 +972,7 @@ mod tests {
     /// Mock server transport struct.
     struct TestTransport {
         id: ReplicaId,
-        tx_sends:
-            HashMap<ReplicaId, mpsc::UnboundedSender<(LeaseNum, LeaseMsg)>>,
+        tx_sends: HashMap<ReplicaId, mpsc::UnboundedSender<(LeaseNum, LeaseMsg)>>,
         rx_recv: mpsc::UnboundedReceiver<(ReplicaId, LeaseNum, LeaseMsg)>,
     }
 
@@ -1053,9 +1006,7 @@ mod tests {
         }
 
         /// Receives a message from some peer node.
-        async fn recv_msg(
-            &mut self,
-        ) -> Result<(ReplicaId, LeaseNum, LeaseMsg), SummersetError> {
+        async fn recv_msg(&mut self) -> Result<(ReplicaId, LeaseNum, LeaseMsg), SummersetError> {
             self.rx_recv
                 .recv()
                 .await
@@ -1066,8 +1017,7 @@ mod tests {
         /// immediately if no ready message in channel.
         fn try_recv_msg(
             &mut self,
-        ) -> Result<Option<(ReplicaId, LeaseNum, LeaseMsg)>, SummersetError>
-        {
+        ) -> Result<Option<(ReplicaId, LeaseNum, LeaseMsg)>, SummersetError> {
             match self.rx_recv.try_recv() {
                 Ok(msg) => Ok(Some(msg)),
                 Err(TryRecvError::Empty) => Ok(None),
@@ -1078,10 +1028,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn guard_expired() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1168,10 +1117,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn promise_expired() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1205,10 +1153,7 @@ mod tests {
             );
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1268,10 +1213,7 @@ mod tests {
         n0.transport
             .send_msg(1, (7, LeaseMsg::Guard { accept_bar: None }))?;
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 7, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 7, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1313,10 +1255,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn promise_refresh() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1351,10 +1292,7 @@ mod tests {
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1376,10 +1314,7 @@ mod tests {
             n1.transport
                 .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 2);
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1401,10 +1336,7 @@ mod tests {
             n1.transport
                 .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 2);
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1465,10 +1397,7 @@ mod tests {
             .send_msg(1, (7, LeaseMsg::Guard { accept_bar: None }))?;
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 7, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 7, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1553,10 +1482,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn revoke_replied() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1590,10 +1518,7 @@ mod tests {
             );
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1616,10 +1541,7 @@ mod tests {
                 .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 2);
             // grantor decided to revoke the lease
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Revoke)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Revoke));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1672,10 +1594,7 @@ mod tests {
         n0.transport
             .send_msg(1, (7, LeaseMsg::Guard { accept_bar: None }))?;
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 7, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 7, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1763,10 +1682,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn revoke_expired() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1800,10 +1718,7 @@ mod tests {
             );
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1826,10 +1741,7 @@ mod tests {
                 .send_msg(0, (7, LeaseMsg::PromiseReply { held: true }))?;
             assert_eq!(n1.leaseman.lease_cnt(), 2);
             // grantor decided to revoke the lease
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Revoke)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Revoke));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -1880,10 +1792,7 @@ mod tests {
         n0.transport
             .send_msg(1, (7, LeaseMsg::Guard { accept_bar: None }))?;
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 7, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 7, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -1960,10 +1869,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn regrant_higher() -> Result<(), SummersetError> {
-        let nodes =
-            TestNode::new_cluster(2, Duration::from_millis(600)).await?;
-        let [mut n0, mut n1] = <[TestNode; 2]>::try_from(nodes)
-            .unwrap_or_else(|_| panic!("nodes vec unpack failed"));
+        let nodes = TestNode::new_cluster(2, Duration::from_millis(600)).await?;
+        let [mut n0, mut n1] =
+            <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
         tokio::spawn(async move {
@@ -1997,10 +1905,7 @@ mod tests {
             );
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (7, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 7, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 7, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 7,
                 LeaseNotice::RecvLeaseMsg {
@@ -2051,10 +1956,7 @@ mod tests {
             assert_eq!(n1.leaseman.lease_cnt(), 1);
             // send GuardReply and wait for Promise
             n1.transport.send_msg(0, (8, LeaseMsg::GuardReply))?;
-            assert_eq!(
-                n1.transport.recv_msg().await?,
-                (0, 8, LeaseMsg::Promise)
-            );
+            assert_eq!(n1.transport.recv_msg().await?, (0, 8, LeaseMsg::Promise));
             n1.leaseman.add_notice(
                 8,
                 LeaseNotice::RecvLeaseMsg {
@@ -2107,10 +2009,7 @@ mod tests {
         n0.transport
             .send_msg(1, (7, LeaseMsg::Guard { accept_bar: None }))?;
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 7, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 7, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             7,
             LeaseNotice::RecvLeaseMsg {
@@ -2174,10 +2073,7 @@ mod tests {
         n0.transport
             .send_msg(1, (8, LeaseMsg::Guard { accept_bar: None }))?;
         // wait for GuardReply and send Promise
-        assert_eq!(
-            n0.transport.recv_msg().await?,
-            (1, 8, LeaseMsg::GuardReply)
-        );
+        assert_eq!(n0.transport.recv_msg().await?, (1, 8, LeaseMsg::GuardReply));
         n0.leaseman.add_notice(
             8,
             LeaseNotice::RecvLeaseMsg {
@@ -2204,9 +2100,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
     async fn mutual_leases() -> Result<(), SummersetError> {
         let population = 5;
-        let nodes =
-            TestNode::new_cluster(population, Duration::from_millis(1200))
-                .await?;
+        let nodes = TestNode::new_cluster(population, Duration::from_millis(1200)).await?;
         let mut joins = JoinSet::new();
         let barrier = Arc::new(Barrier::new(population as usize));
         let abitmap = Arc::new(AtomicU8::new(0));
@@ -2216,11 +2110,13 @@ mod tests {
             let mask_i: u8 = 1 << i;
             // spawn node i's mimic event loop
             joins.spawn(async move {
-                n.leaseman
-                    .add_notice(7, LeaseNotice::NewGrants {
+                n.leaseman.add_notice(
+                    7,
+                    LeaseNotice::NewGrants {
                         peers: None,
                         accept_bar: None,
-                    })?;
+                    },
+                )?;
                 loop {
                     tokio::select! {
                         lease_action = n.leaseman.get_action() => {
@@ -2275,10 +2171,12 @@ mod tests {
                     if n.leaseman.lease_cnt() == population {
                         let old = abitmap_ref.fetch_or(mask_i, Ordering::AcqRel);
                         if old & mask_i == 0 {
-                            n.transport.bcast_msg(
-                                Bitmap::new(population, true),
-                                (0, LeaseMsg::Guard { accept_bar: None })
-                            ).unwrap();
+                            n.transport
+                                .bcast_msg(
+                                    Bitmap::new(population, true),
+                                    (0, LeaseMsg::Guard { accept_bar: None }),
+                                )
+                                .unwrap();
                         }
                     }
                     // all node should have held leases from all peers at some
@@ -2288,7 +2186,7 @@ mod tests {
                     if (abitmap.count_ones() as u8) == population {
                         break;
                     }
-                };
+                }
                 barrier_ref.wait().await;
                 Ok::<(), SummersetError>(())
             });

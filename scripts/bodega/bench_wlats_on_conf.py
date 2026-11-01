@@ -247,9 +247,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -265,13 +263,9 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
             responder=",".join(list(map(str, responders))),
         )
         mout, merr = proc_mess.communicate()
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb"
-        ) as fmout:
+        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.out", "wb") as fmout:
             fmout.write(mout)
-        with open(
-            f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb"
-        ) as fmerr:
+        with open(f"{runlog_path}/{protocol}{midfix_str}.m.k.err", "wb") as fmerr:
             fmerr.write(merr)
         time.sleep(5)
 
@@ -279,15 +273,11 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remotec, base, repo, pcname, config=client_config
-    )
+    proc_clients = run_bench_clients(remotec, base, repo, pcname, config=client_config)
 
     # wait till time for a replica failure
     time.sleep(FAILURE_AT_SECS)
-    print(
-        f"    Forcing replica {FAILURE_REPLICA} to fail (@ {FAILURE_AT_SECS}s)..."
-    )
+    print(f"    Forcing replica {FAILURE_REPLICA} to fail (@ {FAILURE_AT_SECS}s)...")
     proc_mess = run_mess_client(
         remotec,
         base,
@@ -381,10 +371,7 @@ def collect_outputs(output_dir):
                             dip_found = True
                             zeros_cnt = 0
                             base_time = buffer[0][0]
-                            result = [
-                                (time - base_time, wlat, rlat)
-                                for time, wlat, rlat in buffer
-                            ]
+                            result = [(time - base_time, wlat, rlat) for time, wlat, rlat in buffer]
                             wzidx = max(wzidx, len(result) - zeros_cnt)
                     else:
                         result.append((time - base_time, wlat, rlat))
@@ -458,10 +445,7 @@ def collect_outputs(output_dir):
                             dip_found = True
                             czeros_cnt = 0
                             base_time = buffer[0][0]
-                            result = [
-                                (time - base_time, wlat, rlat)
-                                for time, wlat, rlat in buffer
-                            ]
+                            result = [(time - base_time, wlat, rlat) for time, wlat, rlat in buffer]
                             rcidx = max(rcidx, len(result) - czeros_cnt)
                             wcidx = max(wcidx, len(result) - wzeros_cnt)
                     else:
@@ -538,27 +522,15 @@ def plot_wlats_results(results, plots_dir):
     }
 
     for series in SERIES_ORDER:
-        label, color, marker, markersize = SERIES_LABEL_COLOR_MARKER_SIZE[
-            series
-        ]
+        label, color, marker, markersize = SERIES_LABEL_COLOR_MARKER_SIZE[series]
         times, lats = results[PCNAME]["time"], results[PCNAME][series]
-        zidx = (
-            results[PCNAME]["wzidx"]
-            if series == "wlat"
-            else results[PCNAME]["rzidx"]
-        )
-        cidx = (
-            results[PCNAME]["wcidx"]
-            if series == "wlat"
-            else results[PCNAME]["rcidx"]
-        )
+        zidx = results[PCNAME]["wzidx"] if series == "wlat" else results[PCNAME]["rzidx"]
+        cidx = results[PCNAME]["wcidx"] if series == "wlat" else results[PCNAME]["rcidx"]
         times_l = [times[i] / 1000.0 for i in range(zidx) if lats[i] > 0]
         lats_l = [lat for lat in lats[:zidx] if lat > 0]
         times_m = [times[i] / 1000.0 for i in range(zidx, cidx) if lats[i] > 0]
         lats_m = [lat for lat in lats[zidx:cidx] if lat > 0]
-        times_r = [
-            times[i] / 1000.0 for i in range(cidx, len(times)) if lats[i] > 0
-        ]
+        times_r = [times[i] / 1000.0 for i in range(cidx, len(times)) if lats[i] > 0]
         lats_r = [lat for lat in lats[cidx:] if lat > 0]
 
         plt.plot(
@@ -633,9 +605,7 @@ def plot_wlats_results(results, plots_dir):
 
     # config change time
     # change_time = results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0
-    change_time = (
-        results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0
-    ) - 0.03
+    change_time = (results[PCNAME]["time"][results[PCNAME]["wcidx"]] / 1000.0) - 0.03
     plt.vlines(
         [change_time],
         ymin=0.0,
@@ -750,15 +720,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -801,9 +767,7 @@ def main():
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

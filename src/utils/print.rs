@@ -94,12 +94,11 @@ macro_rules! pf_error {
 
 /// Initialize `env_logger` to desired configuration if haven't.
 pub fn logger_init() {
-    let _ =
-        env_logger::Builder::from_env(Env::default().default_filter_or("info"))
-            .format_timestamp(None)
-            .format_module_path(false)
-            .format_target(false)
-            .try_init();
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .format_module_path(false)
+        .format_target(false)
+        .try_init();
 }
 
 /// Log an error string to logger and then return a `SummersetError`
@@ -127,9 +126,7 @@ mod tests {
     fn error_no_args() {
         assert_eq!(
             logged_err!("interesting message"),
-            Err::<(), SummersetError>(SummersetError::msg(
-                "interesting message"
-            ))
+            Err::<(), SummersetError>(SummersetError::msg("interesting message"))
         );
     }
 

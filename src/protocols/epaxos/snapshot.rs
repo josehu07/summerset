@@ -87,9 +87,7 @@ impl EPaxosReplica {
                 debug_assert_eq!(self.wal_offset - cut_offset, now_size);
                 self.wal_offset = now_size;
             } else {
-                return logged_err!(
-                    "unexpected log result type or failed discard"
-                );
+                return logged_err!("unexpected log result type or failed discard");
             }
         }
 
@@ -118,9 +116,7 @@ impl EPaxosReplica {
     //       which all other peers have snapshotted); we assume here that failed
     //       Accept messages will be retried indefinitely until success before
     //       its associated data gets discarded from peer's memory.
-    pub(super) async fn take_new_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         let exec_min = *self.exec_bars.iter().min().unwrap();
         pf_debug!(
             "taking new snapshot: start {} exec {} snap {}",
@@ -161,9 +157,7 @@ impl EPaxosReplica {
                 offset_ok: true, ..
             } => {}
             _ => {
-                return logged_err!(
-                    "unexpected log result type or failed write"
-                );
+                return logged_err!("unexpected log result type or failed write");
             }
         }
 
@@ -189,9 +183,7 @@ impl EPaxosReplica {
     }
 
     /// Recover initial state from durable storage snapshot file.
-    pub(super) async fn recover_from_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the

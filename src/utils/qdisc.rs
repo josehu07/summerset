@@ -172,11 +172,8 @@ impl QdiscInfo {
     }
 
     /// Parse the output line into (delay, jitter, rate) values.
-    fn parse_output_line(
-        line: &str,
-    ) -> Result<(f64, f64, f64), SummersetError> {
-        let (mut delay, mut jitter, mut rate) =
-            (DEFAULT_DELAY, DEFAULT_JITTER, DEFAULT_RATE);
+    fn parse_output_line(line: &str) -> Result<(f64, f64, f64), SummersetError> {
+        let (mut delay, mut jitter, mut rate) = (DEFAULT_DELAY, DEFAULT_JITTER, DEFAULT_RATE);
         let (mut stage, mut idx) = (0, 0);
         for seg in line.split_ascii_whitespace() {
             if seg == "netem" {
@@ -226,9 +223,7 @@ mod tests {
     #[ignore = "ad-hoc test for special experiments only"]
     fn qdisc_run_cmd() -> Result<(), SummersetError> {
         // just testing if command running is functional here
-        let output = String::from_utf8(
-            Command::new("echo").arg("hello").output()?.stdout,
-        )?;
+        let output = String::from_utf8(Command::new("echo").arg("hello").output()?.stdout)?;
         assert_eq!(output.trim(), "hello");
         Ok(())
     }

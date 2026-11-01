@@ -33,10 +33,7 @@ impl RaftReplica {
                 .do_sync_action(
                     0, // using 0 as dummy log action ID
                     LogAction::Write {
-                        entry: DurEntry::pack_meta(
-                            self.curr_term,
-                            self.voted_for,
-                        ),
+                        entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                         offset: 0,
                         sync: self.config.logger_sync,
                     },
@@ -51,9 +48,7 @@ impl RaftReplica {
             } = result
             {
             } else {
-                return logged_err!(
-                    "unexpected log result type or failed write"
-                );
+                return logged_err!("unexpected log result type or failed write");
             }
 
             if self.role == Role::Follower {
@@ -142,9 +137,7 @@ impl RaftReplica {
     }
 
     /// Becomes the leader after enough votes granted for me.
-    pub(super) async fn become_the_leader(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn become_the_leader(&mut self) -> Result<(), SummersetError> {
         pf_info!("elected to be leader with term {}", self.curr_term);
         self.role = Role::Leader;
         self.heartbeater.set_sending(true);
@@ -179,9 +172,7 @@ impl RaftReplica {
     }
 
     /// Broadcasts empty `AppendEntries` messages as heartbeats to all peers.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;

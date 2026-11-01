@@ -11,9 +11,7 @@ SERVER_ELECT_PORT = 20988
 SERVER_CLI_PORT = 20181
 
 
-PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}"
-)
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 
 PROTOCOLS = {"ZooKeeper"}  # not accepting other strings yet...
 
@@ -66,9 +64,7 @@ def dump_server_configs(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
     if fresh_files:
         utils.proc.run_process(
             ["sudo", "rm", "-rf", backer_dir],
@@ -115,9 +111,7 @@ def copy_server_config(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -243,9 +237,7 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -278,9 +270,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_zookeeper = f"{base}/{ZK_REPO_NAME}"
 
@@ -288,9 +278,7 @@ def main():
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(
-            f"#replicas {args.num_replicas} > #hosts in config file"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}

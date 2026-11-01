@@ -46,9 +46,7 @@ def collect_outputs(output_dir):
     for put_ratio, is_read in SETTINGS_RATIO_RW:
         results[(put_ratio, is_read)] = {}
         for pcname, protocol in PROTOCOLS_BSNAME.items():
-            results[(put_ratio, is_read)][
-                pcname
-            ] = []  # will be a list of 5 lists
+            results[(put_ratio, is_read)][pcname] = []  # will be a list of 5 lists
 
             for cgroup in range(NUM_REPLICAS):
                 result = utils.output.gather_outputs(
@@ -66,11 +64,7 @@ def collect_outputs(output_dir):
                 # setting sm here to compensate for unstabilities of printing
                 # things to console
                 lat_list = utils.output.list_smoothing(
-                    [
-                        v
-                        for v in result["rlat_avg" if is_read else "wlat_avg"]
-                        if v > 0.0
-                    ],
+                    [v for v in result["rlat_avg" if is_read else "wlat_avg"] if v > 0.0],
                     sd,
                     sp,
                     sj,
@@ -96,22 +90,12 @@ def collect_outputs(output_dir):
             results[(put_ratio, is_read)][pcname] = {
                 "sorted": merged,
                 "min": (None if len(merged) == 0 else merged[0]),
-                "p25": (
-                    None if len(merged) == 0 else np.percentile(merged, 25)
-                ),
-                "p50": (
-                    None if len(merged) == 0 else np.percentile(merged, 50)
-                ),
-                "p75": (
-                    None if len(merged) == 0 else np.percentile(merged, 75)
-                ),
-                "p99": (
-                    None if len(merged) == 0 else np.percentile(merged, 99)
-                ),
+                "p25": (None if len(merged) == 0 else np.percentile(merged, 25)),
+                "p50": (None if len(merged) == 0 else np.percentile(merged, 50)),
+                "p75": (None if len(merged) == 0 else np.percentile(merged, 75)),
+                "p99": (None if len(merged) == 0 else np.percentile(merged, 99)),
                 "max": (None if len(merged) == 0 else merged[-1]),
-                "mean": (
-                    None if len(merged) == 0 else sum(merged) / len(merged)
-                ),
+                "mean": (None if len(merged) == 0 else sum(merged) / len(merged)),
             }
 
     return results, None
@@ -167,9 +151,7 @@ def plot_latency_cdfs(results, put_ratio, is_read, plots_dir):
     NUM_MARKERS_PER_SERIES = 11
 
     for pcname in PCNAMES_ORDER:
-        label, color, linestyle, marker, markersize = (
-            PCNAMES_LABEL_COLOR_STYLE_MARKER_SIZE[pcname]
-        )
+        label, color, linestyle, marker, markersize = PCNAMES_LABEL_COLOR_STYLE_MARKER_SIZE[pcname]
         lat_list = results[(put_ratio, is_read)][pcname]["sorted"]
         assert len(lat_list) >= NUM_MARKERS_PER_SERIES
 
@@ -200,10 +182,7 @@ def plot_latency_cdfs(results, put_ratio, is_read, plots_dir):
 
     plt.tight_layout()
 
-    pdf_name = (
-        f"{plots_dir}/exper-{EXPER_NAME_PLOT}-"
-        f"w{put_ratio}-{'rd' if is_read else 'wr'}.pdf"
-    )
+    pdf_name = f"{plots_dir}/exper-{EXPER_NAME_PLOT}-w{put_ratio}-{'rd' if is_read else 'wr'}.pdf"
     plt.savefig(pdf_name, bbox_inches=0)
     plt.close()
     print(f"Plotted: {pdf_name}")
@@ -314,9 +293,7 @@ def main():
         print_results(results)
 
         for put_ratio, is_read in SETTINGS_RATIO_RW:
-            handles, labels = plot_latency_cdfs(
-                results, put_ratio, is_read, plots_dir
-            )
+            handles, labels = plot_latency_cdfs(results, put_ratio, is_read, plots_dir)
         plot_ylabel(plots_dir)
         plot_legend(handles, labels, plots_dir)
 

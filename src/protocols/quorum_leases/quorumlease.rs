@@ -42,12 +42,9 @@ impl QuorumLeasesReplica {
     }
 
     /// Wait on lease actions until I'm sure I've cleared all promises I held.
-    pub(super) async fn ensure_qlease_cleared(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn ensure_qlease_cleared(&mut self) -> Result<(), SummersetError> {
         loop {
-            let (lease_num, lease_action) =
-                self.qlease_manager.get_action().await?;
+            let (lease_num, lease_action) = self.qlease_manager.get_action().await?;
 
             let cleared = matches!(
                 lease_action,
@@ -69,8 +66,7 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         while self.qlease_manager.grant_set().get(peer)? {
             loop {
-                let (lease_num, lease_action) =
-                    self.qlease_manager.get_action().await?;
+                let (lease_num, lease_action) = self.qlease_manager.get_action().await?;
 
                 if self.handle_qlease_action(lease_num, lease_action).await? {
                     break;
@@ -121,8 +117,7 @@ impl QuorumLeasesReplica {
                 )?;
             }
 
-            LeaseAction::GrantRemoved { .. }
-            | LeaseAction::GrantTimeout { .. } => {
+            LeaseAction::GrantRemoved { .. } | LeaseAction::GrantTimeout { .. } => {
                 // promptly let leader know about my grant_set becoming empty
                 // so that it may proceed with instances that stuck during
                 // gathering AcceptReplies
@@ -134,11 +129,7 @@ impl QuorumLeasesReplica {
                     && let Some(leader) = self.leader
                 {
                     if leader == self.id {
-                        self.handle_msg_no_grants(
-                            self.id,
-                            self.bal_max_seen,
-                            lease_num,
-                        )?;
+                        self.handle_msg_no_grants(self.id, self.bal_max_seen, lease_num)?;
                     } else {
                         self.transport_hub.send_msg(
                             PeerMsg::NoGrants {

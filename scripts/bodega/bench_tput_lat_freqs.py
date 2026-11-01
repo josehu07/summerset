@@ -260,9 +260,7 @@ def run_bench_clients(remotec, base, repo, pcname, freq_target, config=None):
     )
 
 
-def run_mess_client(
-    remotec, base, repo, protocol, leader=None, key_range=None, responder=None
-):
+def run_mess_client(remotec, base, repo, protocol, leader=None, key_range=None, responder=None):
     cmd = [
         "uv",
         "run",
@@ -317,9 +315,7 @@ def bench_round(remote0, remotec, base, repo, pcname, freq_target, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, freq_target, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, pcname, freq_target, config=server_config)
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -345,9 +341,7 @@ def bench_round(remote0, remotec, base, repo, pcname, freq_target, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remotec, base, repo, pcname, freq_target, config=client_config
-    )
+    proc_clients = run_bench_clients(remotec, base, repo, pcname, freq_target, config=client_config)
 
     # wait for benchmarking clients to exit
     cout, cerr = proc_clients.communicate()
@@ -396,17 +390,13 @@ def collect_outputs(output_dir):
                         client_step=NUM_REPLICAS,
                     )
                 except FileNotFoundError:
-                    print(
-                        f"skipping {pcname} @ freq {freq_target} (cg {cgroup})..."
-                    )
+                    print(f"skipping {pcname} @ freq {freq_target} (cg {cgroup})...")
                     continue
 
                 sd, sp, sj, sm = 10, 0, 0, 1
                 # setting sm here to compensate for unstabilities of printing
                 # things to console
-                tput_list = utils.output.list_smoothing(
-                    result["tput_sum"], sd, sp, sj, sm
-                )
+                tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
                 wlat_list = utils.output.list_smoothing(
                     [v for v in result["wlat_avg"] if v > 0.0],
                     sd,
@@ -451,39 +441,15 @@ def collect_outputs(output_dir):
                     },
                     "wlat": {
                         "sorted": wlat_list,
-                        "p50": (
-                            None
-                            if len(wlat_list) == 0
-                            else wlat_list[len(wlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(wlat_list) == 0
-                            else np.percentile(wlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(wlat_list) == 0
-                            else sum(wlat_list) / len(wlat_list)
-                        ),
+                        "p50": (None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]),
+                        "p99": (None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)),
+                        "mean": (None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)),
                     },
                     "rlat": {
                         "sorted": rlat_list,
-                        "p50": (
-                            None
-                            if len(rlat_list) == 0
-                            else rlat_list[len(rlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(rlat_list) == 0
-                            else np.percentile(rlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(rlat_list) == 0
-                            else sum(rlat_list) / len(rlat_list)
-                        ),
+                        "p50": (None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]),
+                        "p99": (None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)),
+                        "mean": (None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)),
                     },
                 }
                 curr_results = results[freq_target][cgroup][pcname]
@@ -575,15 +541,11 @@ def aggregate_results(results):
             continue
 
         print("    tput", end="")
-        for freq, tput in zip(
-            agg_results[pcname]["freq"], agg_results[pcname]["tput"]
-        ):
+        for freq, tput in zip(agg_results[pcname]["freq"], agg_results[pcname]["tput"]):
             print(f"  [{freq}] {tput:7.2f}", end="")
         print()
         print("    alat", end="")
-        for freq, alat in zip(
-            agg_results[pcname]["freq"], agg_results[pcname]["alat"]
-        ):
+        for freq, alat in zip(agg_results[pcname]["freq"], agg_results[pcname]["alat"]):
             print(f"  [{freq}] {alat:7.2f}", end="")
         print()
 
@@ -628,9 +590,7 @@ def plot_curves_results(agg_results, plots_dir, ymax=None):
     for pcname in PCNAMES_ORDER:
         if pcname not in agg_results:
             continue
-        label, color, linestyle, marker, markersize = (
-            PCNAMES_LABEL_COLOR_STYLE_MARKER_SIZE[pcname]
-        )
+        label, color, linestyle, marker, markersize = PCNAMES_LABEL_COLOR_STYLE_MARKER_SIZE[pcname]
 
         tputs = agg_results[pcname]["tput"]
         lats = agg_results[pcname]["alat"]
@@ -669,11 +629,7 @@ def plot_curves_results(agg_results, plots_dir, ymax=None):
         default=0.0,
     )
     ymax_local = max(
-        (
-            max(agg_results[pc]["alat"])
-            for pc in agg_results
-            if len(agg_results[pc]["alat"]) > 0
-        ),
+        (max(agg_results[pc]["alat"]) for pc in agg_results if len(agg_results[pc]["alat"]) > 0),
         default=0.0,
     )
     if ymax is not None:
@@ -796,15 +752,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -818,19 +770,13 @@ def main():
                 for freq_target in FREQ_TARGETS:
                     print(f"Running experiments freq = {freq_target}...")
                     for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
-                        if freq_target > PROTOCOL_MAX_FREQ_TARGET.get(
-                            pcname, 99999
-                        ):
+                        if freq_target > PROTOCOL_MAX_FREQ_TARGET.get(pcname, 99999):
                             print(
                                 f"  Skipping {pcname} @ freq {freq_target} (> {PROTOCOL_MAX_FREQ_TARGET[pcname]})"
                             )
                             continue
-                        if args.skip and outputs_exist(
-                            output_path, pcname, freq_target
-                        ):
-                            print(
-                                f"  Skipping {pcname} @ freq {freq_target} (outputs exist)"
-                            )
+                        if args.skip and outputs_exist(output_path, pcname, freq_target):
+                            print(f"  Skipping {pcname} @ freq {freq_target} (outputs exist)")
                             continue
                         time.sleep(3)
 
@@ -866,15 +812,11 @@ def main():
 
         print("Fetching client output logs...")
         for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remotes[host], f"{base}/output/{EXPER_NAME}", output_path)
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

@@ -4,7 +4,6 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use get_size::GetSize;
@@ -16,20 +15,17 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration, MissedTickBehavior};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
 use crate::server::{Command, CommandResult, ReplicaId};
-use crate::utils::{
-    Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
-};
+use crate::utils::{Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry};
 
 /// External API request ID type.
 pub type RequestId = u64;
 
 /// Request received from client.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 pub enum ApiRequest {
     /// Regular request.
     Req {
@@ -93,15 +89,7 @@ impl ApiRequest {
 
 /// Configuration change delta used in request API.
 #[derive(
-    PartialEq,
-    Eq,
-    Default,
-    Clone,
-    Serialize,
-    Deserialize,
-    Encode,
-    Decode,
-    GetSize,
+    PartialEq, Eq, Default, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize,
 )]
 pub struct ConfChange {
     /// If true, indicates a conf reset to default; all the following fields
@@ -149,9 +137,7 @@ impl fmt::Debug for ConfChange {
 }
 
 /// Reply back to client.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 pub enum ApiReply {
     /// Reply to regular request.
     Reply {
@@ -210,11 +196,7 @@ impl ApiReply {
     /// Creates a reply with `rq_retry` flag.
     #[inline]
     #[must_use]
-    pub fn rq_retry(
-        id: RequestId,
-        read_cmd: Command,
-        redirect: Option<ReplicaId>,
-    ) -> Self {
+    pub fn rq_retry(id: RequestId, read_cmd: Command, redirect: Option<ReplicaId>) -> Self {
         ApiReply::Reply {
             id,
             result: None,
@@ -266,17 +248,13 @@ impl ExternalApi {
         max_batch_size: usize,
     ) -> Result<Self, SummersetError> {
         if batch_interval < Duration::from_micros(1) {
-            return logged_err!(
-                "batch_interval {} us too small",
-                batch_interval.as_micros()
-            );
+            return logged_err!("batch_interval {} us too small", batch_interval.as_micros());
         }
 
         let (tx_req, rx_req) = mpsc::unbounded_channel();
 
-        let tx_replies: Arc<
-            DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>,
-        > = Arc::new(DashMap::new());
+        let tx_replies: Arc<DashMap<ClientId, mpsc::UnboundedSender<ApiReply>>> =
+            Arc::new(DashMap::new());
 
         let client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>> =
             Arc::new(DashMap::new());
@@ -288,17 +266,12 @@ impl ExternalApi {
             tx_replies.clone(),
             client_servant_handles.clone(),
         );
-        let client_acceptor_handle =
-            tokio::spawn(async move { acceptor.run().await });
+        let client_acceptor_handle = tokio::spawn(async move { acceptor.run().await });
 
         let batch_notify = Arc::new(Notify::new());
-        let mut batch_ticker = ExternalApiBatchTickerTask::new(
-            me,
-            batch_interval,
-            batch_notify.clone(),
-        );
-        let batch_ticker_handle =
-            tokio::spawn(async move { batch_ticker.run().await });
+        let mut batch_ticker =
+            ExternalApiBatchTickerTask::new(me, batch_interval, batch_notify.clone());
+        let batch_ticker_handle = tokio::spawn(async move { batch_ticker.run().await });
 
         Ok(ExternalApi {
             _me: me,
@@ -329,8 +302,7 @@ impl ExternalApi {
         while batch.is_empty() {
             self.batch_notify.notified().await;
 
-            while self.max_batch_size == 0 || batch.len() < self.max_batch_size
-            {
+            while self.max_batch_size == 0 || batch.len() < self.max_batch_size {
                 match self.rx_req.try_recv() {
                     Ok((client, req)) => batch.push((client, req)),
                     Err(TryRecvError::Empty) => break,
@@ -339,7 +311,7 @@ impl ExternalApi {
             }
         }
 
-        debug_assert!(!batch.is_empty());
+        debug_assert_ne!(batch.len(), 0);
         Ok(batch)
     }
 
@@ -355,10 +327,7 @@ impl ExternalApi {
                 Ok(())
             }
             None => {
-                logged_err!(
-                    "client ID {} not found among active clients",
-                    client
-                )
+                logged_err!("client ID {} not found among active clients", client)
             }
         }
     }
@@ -366,10 +335,7 @@ impl ExternalApi {
     /// Broadcasts a reply to all connected clients (mostly used for testing).
     #[allow(dead_code)]
     #[allow(clippy::needless_pass_by_value)]
-    pub(crate) fn bcast_reply(
-        &mut self,
-        reply: ApiReply,
-    ) -> Result<(), SummersetError> {
+    pub(crate) fn bcast_reply(&mut self, reply: ApiReply) -> Result<(), SummersetError> {
         for tx_reply in self.tx_replies.iter() {
             tx_reply
                 .value()
@@ -449,18 +415,14 @@ impl ExternalApiAcceptorTask {
             rx_reply,
             self.tx_exit.clone(),
         );
-        let client_servant_handle =
-            tokio::spawn(async move { servant.run().await });
+        let client_servant_handle = tokio::spawn(async move { servant.run().await });
         self.client_servant_handles
             .insert(id, client_servant_handle);
         Ok(())
     }
 
     /// Removes handles of a left client connection.
-    fn remove_left_client(
-        &mut self,
-        id: ClientId,
-    ) -> Result<(), SummersetError> {
+    fn remove_left_client(&mut self, id: ClientId) -> Result<(), SummersetError> {
         if !self.tx_replies.contains_key(&id) {
             return logged_err!("client {} not found among active ones", id);
         }
@@ -703,11 +665,7 @@ struct ExternalApiBatchTickerTask {
 
 impl ExternalApiBatchTickerTask {
     /// Creates the batch ticker task.
-    fn new(
-        me: ReplicaId,
-        batch_interval: Duration,
-        batch_notify: Arc<Notify>,
-    ) -> Self {
+    fn new(me: ReplicaId, batch_interval: Duration, batch_notify: Arc<Notify>) -> Self {
         ExternalApiBatchTickerTask {
             _me: me,
             batch_interval,
@@ -786,10 +744,7 @@ mod tests {
             );
             // send replies to client
             api.send_reply(
-                ApiReply::normal(
-                    0,
-                    Some(CommandResult::Put { old_value: None }),
-                ),
+                ApiReply::normal(0, Some(CommandResult::Put { old_value: None })),
                 client,
             )?;
             api.send_reply(ApiReply::redirect(0, Some(1)), client)?;
@@ -806,9 +761,7 @@ mod tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub =
-            ClientApiStub::new_by_connect(2857, "127.0.0.1:30000".parse()?)
-                .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(2857, "127.0.0.1:30000".parse()?).await?;
         // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -830,10 +783,7 @@ mod tests {
             api_stub.recv_reply().await?,
             ApiReply::normal(0, Some(CommandResult::Put { old_value: None }))
         );
-        assert_eq!(
-            api_stub.recv_reply().await?,
-            ApiReply::redirect(0, Some(1))
-        );
+        assert_eq!(api_stub.recv_reply().await?, ApiReply::redirect(0, Some(1)));
         assert_eq!(
             api_stub.recv_reply().await?,
             ApiReply::normal(
@@ -882,10 +832,7 @@ mod tests {
             );
             // send reply to client
             api.send_reply(
-                ApiReply::normal(
-                    0,
-                    Some(CommandResult::Put { old_value: None }),
-                ),
+                ApiReply::normal(0, Some(CommandResult::Put { old_value: None })),
                 client,
             )?;
             // recv request from new client
@@ -924,8 +871,7 @@ mod tests {
         {
             barrier.wait().await;
             let mut api_stub =
-                ClientApiStub::new_by_connect(2857, "127.0.0.1:30100".parse()?)
-                    .await?;
+                ClientApiStub::new_by_connect(2857, "127.0.0.1:30100".parse()?).await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,
@@ -937,10 +883,7 @@ mod tests {
             // recv reply from server
             assert_eq!(
                 api_stub.recv_reply().await?,
-                ApiReply::normal(
-                    0,
-                    Some(CommandResult::Put { old_value: None })
-                )
+                ApiReply::normal(0, Some(CommandResult::Put { old_value: None }))
             );
             // leave
             api_stub.send_req(Some(&ApiRequest::Leave))?;
@@ -950,8 +893,7 @@ mod tests {
         {
             // come back as new client
             let mut api_stub =
-                ClientApiStub::new_by_connect(2858, "127.0.0.1:30100".parse()?)
-                    .await?;
+                ClientApiStub::new_by_connect(2858, "127.0.0.1:30100".parse()?).await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,

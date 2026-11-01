@@ -67,10 +67,7 @@ impl EtcdKvClient {
     }
 
     /// Make a get request to etcd.
-    pub(crate) async fn get(
-        &mut self,
-        key: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    pub(crate) async fn get(&mut self, key: &str) -> Result<Option<String>, SummersetError> {
         let kv_client = self
             .kv_client
             .as_mut()
@@ -109,13 +106,12 @@ impl EtcdKvClient {
         let put_opts = Some(etcdcli::PutOptions::new().with_prev_key());
 
         let mut put_resp = kv_client.put(key, value, put_opts).await?;
-        let old_value = if let Some(bytes) =
-            put_resp.take_prev_key().map(|kv| kv.into_key_value().1)
-        {
-            Some(String::from_utf8(bytes)?)
-        } else {
-            None
-        };
+        let old_value =
+            if let Some(bytes) = put_resp.take_prev_key().map(|kv| kv.into_key_value().1) {
+                Some(String::from_utf8(bytes)?)
+            } else {
+                None
+            };
         Ok(old_value)
     }
 }

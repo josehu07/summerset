@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 
-use bincode::{Decode, Encode};
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::ReplicaId;
 use crate::utils::SummersetError;
@@ -15,9 +15,7 @@ use crate::utils::SummersetError;
 pub type CommandId = u64;
 
 /// Command to the state machine.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 pub enum Command {
     /// Get the value of given key.
     Get { key: String },
@@ -51,9 +49,7 @@ impl Command {
 }
 
 /// Command execution result returned by the state machine.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 pub enum CommandResult {
     /// `Some(value)` if key is found in state machine, else `None`.
     Get { value: Option<String> },
@@ -96,9 +92,7 @@ impl StateMachine {
     /// executor task. Creates an exec channel for submitting commands to the
     /// state machine and an ack channel for getting results.
     #[allow(clippy::unused_async)]
-    pub(crate) async fn new_and_setup(
-        me: ReplicaId,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) async fn new_and_setup(me: ReplicaId) -> Result<Self, SummersetError> {
         let (tx_exec, rx_exec) = mpsc::unbounded_channel();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
@@ -114,11 +108,7 @@ impl StateMachine {
     }
 
     /// Submits a command by sending it to the exec channel.
-    pub(crate) fn submit_cmd(
-        &mut self,
-        id: CommandId,
-        cmd: Command,
-    ) -> Result<(), SummersetError> {
+    pub(crate) fn submit_cmd(&mut self, id: CommandId, cmd: Command) -> Result<(), SummersetError> {
         self.tx_exec.send((id, cmd)).map_err(SummersetError::msg)
     }
 
@@ -135,9 +125,7 @@ impl StateMachine {
 
     /// Try to get the next execution result using `try_recv()`.
     #[allow(dead_code)]
-    pub(crate) fn try_get_result(
-        &mut self,
-    ) -> Result<(CommandId, CommandResult), SummersetError> {
+    pub(crate) fn try_get_result(&mut self) -> Result<(CommandId, CommandResult), SummersetError> {
         match self.rx_ack.try_recv() {
             Ok((id, result)) => Ok((id, result)),
             Err(e) => Err(SummersetError::msg(e)),
@@ -152,8 +140,7 @@ impl StateMachine {
         &mut self,
         id: CommandId,
         cmd: Command,
-    ) -> Result<(Vec<(CommandId, CommandResult)>, CommandResult), SummersetError>
-    {
+    ) -> Result<(Vec<(CommandId, CommandResult)>, CommandResult), SummersetError> {
         self.submit_cmd(id, cmd)?;
         let mut old_results = vec![];
         loop {
@@ -230,10 +217,7 @@ mod tests {
     fn get_empty() {
         let mut state = State::new();
         assert_eq!(
-            StateMachineExecutorTask::execute(
-                &mut state,
-                &Command::Get { key: "Jose".into() }
-            ),
+            StateMachineExecutorTask::execute(&mut state, &Command::Get { key: "Jose".into() }),
             CommandResult::Get { value: None }
         );
     }
@@ -252,10 +236,7 @@ mod tests {
             CommandResult::Put { old_value: None }
         );
         assert_eq!(
-            StateMachineExecutorTask::execute(
-                &mut state,
-                &Command::Get { key: "Jose".into() }
-            ),
+            StateMachineExecutorTask::execute(&mut state, &Command::Get { key: "Jose".into() }),
             CommandResult::Get {
                 value: Some("180".into())
             }
@@ -325,10 +306,7 @@ mod tests {
                 "nonexist!".into()
             };
             assert_eq!(
-                StateMachineExecutorTask::execute(
-                    &mut state,
-                    &Command::Get { key: key.clone() }
-                ),
+                StateMachineExecutorTask::execute(&mut state, &Command::Get { key: key.clone() }),
                 CommandResult::Get {
                     value: ref_state.get(&key).cloned()
                 }

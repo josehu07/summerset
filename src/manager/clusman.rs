@@ -3,23 +3,19 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{self, Duration};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
-use crate::manager::{
-    ClientReactor, CtrlMsg, CtrlReply, CtrlRequest, ServerReigner,
-};
+use crate::manager::{ClientReactor, CtrlMsg, CtrlReply, CtrlRequest, ServerReigner};
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
 use crate::utils::{ConfNum, ME, RespondersConf, SummersetError};
 
 /// Information about an active server.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct ServerInfo {
     /// The server's client-facing API address.
     pub api_addr: SocketAddr,
@@ -94,8 +90,7 @@ impl ClusterManager {
         let (tx_id_assign, rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
         let server_reigner =
-            ServerReigner::new_and_setup(srv_addr, tx_id_assign, rx_id_result)
-                .await?;
+            ServerReigner::new_and_setup(srv_addr, tx_id_assign, rx_id_result).await?;
 
         let client_reactor = ClientReactor::new_and_setup(cli_addr).await?;
 
@@ -130,10 +125,7 @@ impl ClusterManager {
 
     /// Main event loop logic of the cluster manager. Breaks out of the loop
     /// only upon catching termination signals to the process.
-    pub async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<(), SummersetError> {
+    pub async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<(), SummersetError> {
         loop {
             tokio::select! {
                 // receiving server ID assignment request
@@ -199,10 +191,7 @@ impl ClusterManager {
             return logged_err!("NewServerJoin got duplicate ID: {}", server);
         }
         if protocol != self.protocol {
-            return logged_err!(
-                "NewServerJoin with mismatch protocol: {}",
-                protocol
-            );
+            return logged_err!("NewServerJoin with mismatch protocol: {}", protocol);
         }
 
         // gather the list of all existing known servers
@@ -318,15 +307,9 @@ impl ClusterManager {
                 p2p_addr,
             } => {
                 if id != server {
-                    return logged_err!(
-                        "NewServerJoin with mismatch ID: {} != {}",
-                        id,
-                        server
-                    );
+                    return logged_err!("NewServerJoin with mismatch ID: {} != {}", id, server);
                 }
-                self.handle_new_server_join(
-                    server, protocol, api_addr, p2p_addr,
-                )?;
+                self.handle_new_server_join(server, protocol, api_addr, p2p_addr)?;
             }
 
             CtrlMsg::LeaderStatus { step_up } => {
@@ -351,10 +334,7 @@ impl ClusterManager {
 // ClusterManager client-initiated control request handlers
 impl ClusterManager {
     /// Handler of client `QueryInfo` request.
-    fn handle_client_query_info(
-        &mut self,
-        client: ClientId,
-    ) -> Result<(), SummersetError> {
+    fn handle_client_query_info(&mut self, client: ClientId) -> Result<(), SummersetError> {
         self.client_reactor.send_reply(
             CtrlReply::QueryInfo {
                 population: self.population,
@@ -365,10 +345,7 @@ impl ClusterManager {
     }
 
     /// Handler of client `QueryConf` request.
-    fn handle_client_query_conf(
-        &mut self,
-        client: ClientId,
-    ) -> Result<(), SummersetError> {
+    fn handle_client_query_conf(&mut self, client: ClientId) -> Result<(), SummersetError> {
         self.client_reactor.send_reply(
             CtrlReply::QueryConf {
                 conf_num: self.latest_conf_num,
@@ -557,8 +534,7 @@ impl ClusterManager {
                                 self.servers_info[&s].start_slot
                             );
                         }
-                        self.servers_info.get_mut(&s).unwrap().start_slot =
-                            new_start;
+                        self.servers_info.get_mut(&s).unwrap().start_slot = new_start;
 
                         snapshot_up_to.insert(s, new_start);
                         break;

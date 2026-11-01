@@ -50,18 +50,15 @@ impl CRaftReplica {
             || self.log[prev_slot - self.start_slot].term != prev_term
         {
             // figure out the conflict info to send back
-            let conflict_term = if prev_slot >= self.start_slot
-                && prev_slot < self.start_slot + self.log.len()
-            {
-                self.log[prev_slot - self.start_slot].term
-            } else {
-                0
-            };
+            let conflict_term =
+                if prev_slot >= self.start_slot && prev_slot < self.start_slot + self.log.len() {
+                    self.log[prev_slot - self.start_slot].term
+                } else {
+                    0
+                };
             let mut conflict_slot = prev_slot;
             while conflict_term > 0 && conflict_slot > self.start_slot {
-                if self.log[conflict_slot - 1 - self.start_slot].term
-                    == conflict_term
-                {
+                if self.log[conflict_slot - 1 - self.start_slot].term == conflict_term {
                     conflict_slot -= 1;
                 } else {
                     break;
@@ -130,9 +127,7 @@ impl CRaftReplica {
                     debug_assert_eq!(now_size, cut_offset);
                     self.log_offset = cut_offset;
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed truncate"
-                    );
+                    return logged_err!("unexpected log result type or failed truncate");
                 }
                 // truncate in-mem log as well
                 self.log.truncate(slot - self.start_slot);
@@ -141,8 +136,7 @@ impl CRaftReplica {
             }
 
             // no conflict, then absorb this sent entry's shards
-            if self.log[slot - self.start_slot].reqs_cw.avail_data_shards()
-                < self.majority
+            if self.log[slot - self.start_slot].reqs_cw.avail_data_shards() < self.majority
                 && self.log[slot - self.start_slot].reqs_cw.data_len()
                     == new_entry.reqs_cw.data_len()
                 && self.log[slot - self.start_slot].reqs_cw.avail_shards_map()
@@ -166,11 +160,7 @@ impl CRaftReplica {
 
             self.log.push(entry.clone());
             self.storage_hub.submit_action(
-                Self::make_log_action_id(
-                    slot,
-                    prev_slot + num_entries,
-                    Role::Follower,
-                ),
+                Self::make_log_action_id(slot, prev_slot + num_entries, Role::Follower),
                 LogAction::Append {
                     entry: DurEntry::LogEntry { entry },
                     sync: self.config.logger_sync,
@@ -197,10 +187,8 @@ impl CRaftReplica {
 
         // if leader_commit is larger than my last_commit, update last_commit
         if leader_commit > self.last_commit {
-            let mut new_commit =
-                cmp::min(leader_commit, prev_slot + entries.len());
-            new_commit =
-                cmp::min(new_commit, self.start_slot + self.log.len() - 1);
+            let mut new_commit = cmp::min(leader_commit, prev_slot + entries.len());
+            new_commit = cmp::min(new_commit, self.start_slot + self.log.len() - 1);
 
             // submit newly committed entries for state machine execution
             for slot in (self.last_commit + 1)..=new_commit {
@@ -225,17 +213,11 @@ impl CRaftReplica {
 
                 for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                     if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine.submit_cmd(
-                            Self::make_command_id(slot, cmd_idx),
-                            cmd.clone(),
-                        )?;
+                        self.state_machine
+                            .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
                     }
                 }
-                pf_trace!(
-                    "submitted {} exec commands for slot {}",
-                    reqs.len(),
-                    slot
-                );
+                pf_trace!("submitted {} exec commands for slot {}", reqs.len(), slot);
 
                 // last_commit update stops at the last slot successfully
                 // submitted for execution
@@ -286,9 +268,7 @@ impl CRaftReplica {
             // since we updated some match_slot here, check if any additional
             // entries are now considered committed
             let mut new_commit = self.last_commit;
-            for slot in
-                (self.last_commit + 1)..(self.start_slot + self.log.len())
-            {
+            for slot in (self.last_commit + 1)..(self.start_slot + self.log.len()) {
                 let entry = &self.log[slot - self.start_slot];
                 if entry.term != self.curr_term {
                     continue; // cannot decide commit using non-latest term
@@ -299,11 +279,7 @@ impl CRaftReplica {
                 // means match_cnt >= self.majority + fault_tolerance when not
                 // in full-copy mode
                 #[allow(clippy::cast_possible_truncation)]
-                let match_cnt = 1 + self
-                    .match_slot
-                    .values()
-                    .filter(|&&s| s >= slot)
-                    .count() as u8;
+                let match_cnt = 1 + self.match_slot.values().filter(|&&s| s >= slot).count() as u8;
                 if (!self.full_copy_mode
                     && match_cnt >= self.majority + self.config.fault_tolerance)
                     || (self.full_copy_mode && match_cnt >= self.majority)
@@ -340,17 +316,11 @@ impl CRaftReplica {
                     let reqs = entry.reqs_cw.get_data()?;
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
-                            self.state_machine.submit_cmd(
-                                Self::make_command_id(slot, cmd_idx),
-                                cmd.clone(),
-                            )?;
+                            self.state_machine
+                                .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
                         }
                     }
-                    pf_trace!(
-                        "submitted {} exec commands for slot {}",
-                        reqs.len(),
-                        slot
-                    );
+                    pf_trace!("submitted {} exec commands for slot {}", reqs.len(), slot);
 
                     // last_commit update stops at the last slot successfully
                     // submitted for execution
@@ -364,20 +334,13 @@ impl CRaftReplica {
                 let num_slots = slots.len();
                 self.transport_hub
                     .bcast_msg(PeerMsg::Reconstruct { slots }, None)?;
-                pf_trace!(
-                    "broadcast Reconstruct messages for {} slots",
-                    num_slots
-                );
+                pf_trace!("broadcast Reconstruct messages for {} slots", num_slots);
             }
 
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
                 #[allow(clippy::cast_possible_truncation)]
-                let match_cnt = 1 + self
-                    .match_slot
-                    .values()
-                    .filter(|&&s| s >= slot)
-                    .count() as u8;
+                let match_cnt = 1 + self.match_slot.values().filter(|&&s| s >= slot).count() as u8;
                 if match_cnt == self.population {
                     // all servers have durably stored this entry
                     self.last_snap = slot;
@@ -394,8 +357,7 @@ impl CRaftReplica {
             *self.next_slot.get_mut(&peer).unwrap() -= 1;
             if let Some((conflict_term, conflict_slot)) = conflict {
                 while self.next_slot[&peer] > self.start_slot
-                    && self.log[self.next_slot[&peer] - self.start_slot].term
-                        == conflict_term
+                    && self.log[self.next_slot[&peer] - self.start_slot].term == conflict_term
                     && self.next_slot[&peer] >= conflict_slot
                     && self.next_slot[&peer] > 1
                 {
@@ -420,18 +382,13 @@ impl CRaftReplica {
                 .skip(self.next_slot[&peer] - self.start_slot)
                 .map(|e| {
                     if self.full_copy_mode {
-                        debug_assert!(
-                            e.reqs_cw.avail_data_shards() >= self.majority
-                        );
+                        debug_assert!(e.reqs_cw.avail_data_shards() >= self.majority);
                         LogEntry {
                             term: e.term,
                             reqs_cw: e
                                 .reqs_cw
                                 .subset_copy(
-                                    &Bitmap::from((
-                                        self.population,
-                                        0..self.majority,
-                                    )),
+                                    &Bitmap::from((self.population, 0..self.majority)),
                                     false,
                                 )
                                 .unwrap(),
@@ -443,13 +400,7 @@ impl CRaftReplica {
                             term: e.term,
                             reqs_cw: e
                                 .reqs_cw
-                                .subset_copy(
-                                    &Bitmap::from((
-                                        self.population,
-                                        vec![peer],
-                                    )),
-                                    false,
-                                )
+                                .subset_copy(&Bitmap::from((self.population, vec![peer])), false)
                                 .unwrap(),
                             external: false,
                             log_offset: e.log_offset,
@@ -465,8 +416,7 @@ impl CRaftReplica {
                 let end = cmp::min(entries.len(), self.config.msg_chunk_size);
                 let chunk = entries.drain(0..end).collect();
 
-                let now_prev_term =
-                    self.log[now_prev_slot - self.start_slot].term;
+                let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
                 self.transport_hub.send_msg(
                     PeerMsg::AppendEntries {
                         term: self.curr_term,
@@ -562,10 +512,7 @@ impl CRaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::pack_meta(
-                                self.curr_term,
-                                self.voted_for,
-                            ),
+                            entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },
@@ -580,9 +527,7 @@ impl CRaftReplica {
                 } = result
                 {
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed write"
-                    );
+                    return logged_err!("unexpected log result type or failed write");
                 }
             }
         }
@@ -644,19 +589,14 @@ impl CRaftReplica {
             }
 
             // term match, send back my available shards to requester
-            slots_data
-                .insert(slot, self.log[slot - self.start_slot].reqs_cw.clone());
+            slots_data.insert(slot, self.log[slot - self.start_slot].reqs_cw.clone());
         }
 
         if !slots_data.is_empty() {
             let num_slots = slots_data.len();
             self.transport_hub
                 .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!(
-                "sent ReconstructReply -> {} for {} slots",
-                peer,
-                num_slots
-            );
+            pf_trace!("sent ReconstructReply -> {} for {} slots", peer, num_slots);
         }
         Ok(())
     }
@@ -673,15 +613,13 @@ impl CRaftReplica {
         // shadow_last_commit is the position of where last_commit should be
         // at if without sharding issues
         let shadow_last_commit = {
-            let mut match_slots: Vec<usize> =
-                self.match_slot.values().copied().collect();
+            let mut match_slots: Vec<usize> = self.match_slot.values().copied().collect();
             match_slots.sort_unstable();
             match_slots.reverse();
             if self.full_copy_mode {
                 match_slots[(self.majority - 2) as usize]
             } else {
-                match_slots
-                    [(self.majority + self.config.fault_tolerance - 2) as usize]
+                match_slots[(self.majority + self.config.fault_tolerance - 2) as usize]
             }
         };
 
@@ -704,8 +642,7 @@ impl CRaftReplica {
             // if enough shards have been gathered, can push execution forward
             if slot == self.last_commit + 1 {
                 while self.last_commit < shadow_last_commit {
-                    let entry =
-                        &mut self.log[self.last_commit + 1 - self.start_slot];
+                    let entry = &mut self.log[self.last_commit + 1 - self.start_slot];
                     if entry.reqs_cw.avail_shards() < self.majority {
                         break;
                     }
@@ -721,10 +658,7 @@ impl CRaftReplica {
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {
                             self.state_machine.submit_cmd(
-                                Self::make_command_id(
-                                    self.last_commit + 1,
-                                    cmd_idx,
-                                ),
+                                Self::make_command_id(self.last_commit + 1, cmd_idx),
                                 cmd.clone(),
                             )?;
                         }
@@ -774,10 +708,8 @@ impl CRaftReplica {
                 end_slot,
                 conflict,
             } => {
-                self.handle_msg_append_entries_reply(
-                    peer, term, end_slot, conflict,
-                )
-                .await
+                self.handle_msg_append_entries_reply(peer, term, end_slot, conflict)
+                    .await
             }
             PeerMsg::RequestVote {
                 term,
@@ -791,9 +723,7 @@ impl CRaftReplica {
                 self.handle_msg_request_vote_reply(peer, term, granted)
                     .await
             }
-            PeerMsg::Reconstruct { slots } => {
-                self.handle_msg_reconstruct(peer, slots).await
-            }
+            PeerMsg::Reconstruct { slots } => self.handle_msg_reconstruct(peer, slots).await,
             PeerMsg::ReconstructReply { slots_data } => {
                 self.handle_msg_reconstruct_reply(peer, slots_data).await
             }

@@ -85,9 +85,7 @@ def run_tester_client(protocol, test_name):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     args = parser.parse_args()
 
     do_cargo_build()
@@ -104,9 +102,7 @@ def main():
     elif args.protocol == "Raft":
         PROTOCOL = "Raft"
     else:
-        raise ValueError(
-            f"unrecognized protocol {args.protocol} to run workflow test"
-        )
+        raise ValueError(f"unrecognized protocol {args.protocol} to run workflow test")
 
     NUM_REPLICAS = 3
     TEST_NAME = "primitive_ops"

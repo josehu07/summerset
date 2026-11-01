@@ -82,10 +82,7 @@ class Metrics:
         pprint.pprint(cells)
 
         normalized_cells = {}
-        columns = [
-            [values[i] for values in cells.values() if values[i] > 0]
-            for i in range(4)
-        ]
+        columns = [[values[i] for values in cells.values() if values[i] > 0] for i in range(4)]
         col_mins = [min(column) for column in columns]
         col_maxs = [max(column) for column in columns]
 

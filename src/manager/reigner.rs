@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -13,20 +12,18 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
 use crate::utils::{
-    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
-    tcp_bind_with_retry,
+    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
 };
 
 /// Control message from/to servers. Control traffic could be bidirectional:
 /// some initiated by the manager and some by servers.
 // TODO: later add basic lease, membership/view change, link drop, etc.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub(crate) enum CtrlMsg {
     /// Server -> Manager: new server up, requesting a list of peers' addresses
     /// to connect to.
@@ -126,8 +123,7 @@ impl ServerReigner {
             server_listener,
             server_controller_handles.clone(),
         );
-        let server_acceptor_handle =
-            tokio::spawn(async move { acceptor.run().await });
+        let server_acceptor_handle = tokio::spawn(async move { acceptor.run().await });
 
         Ok(ServerReigner {
             rx_recv,
@@ -144,9 +140,7 @@ impl ServerReigner {
     }
 
     /// Waits for the next control event message from some server.
-    pub(crate) async fn recv_ctrl(
-        &mut self,
-    ) -> Result<(ReplicaId, CtrlMsg), SummersetError> {
+    pub(crate) async fn recv_ctrl(&mut self) -> Result<(ReplicaId, CtrlMsg), SummersetError> {
         if let Some((id, msg)) = self.rx_recv.recv().await {
             Ok((id, msg))
         } else {
@@ -166,10 +160,7 @@ impl ServerReigner {
                 Ok(())
             }
             None => {
-                logged_err!(
-                    "server ID {} not found among active servers",
-                    server
-                )
+                logged_err!("server ID {} not found among active servers", server)
             }
         }
     }
@@ -226,10 +217,11 @@ impl ServerReignerAcceptorTask {
     ) -> Result<(), SummersetError> {
         // communicate with the manager's main task to get assigned server ID
         self.tx_id_assign.send(())?;
-        let (id, population) =
-            self.rx_id_result.recv().await.ok_or(SummersetError::msg(
-                "failed to get server ID assignment",
-            ))?;
+        let (id, population) = self
+            .rx_id_result
+            .recv()
+            .await
+            .ok_or(SummersetError::msg("failed to get server ID assignment"))?;
 
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
@@ -263,18 +255,14 @@ impl ServerReignerAcceptorTask {
             rx_send,
             self.tx_exit.clone(),
         );
-        let server_controller_handle =
-            tokio::spawn(async move { controller.run().await });
+        let server_controller_handle = tokio::spawn(async move { controller.run().await });
         self.server_controller_handles
             .insert(id, server_controller_handle);
         Ok(())
     }
 
     /// Removes handles of a left server connection.
-    fn remove_left_server(
-        &mut self,
-        id: ReplicaId,
-    ) -> Result<(), SummersetError> {
+    fn remove_left_server(&mut self, id: ReplicaId) -> Result<(), SummersetError> {
         if !self.tx_sends.contains_key(&id) {
             return logged_err!("server {} not found among active ones", id);
         }
@@ -558,8 +546,7 @@ mod tests {
         tokio::spawn(async move {
             // replica 0
             setup_bar0.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:30019".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup("127.0.0.1:30019".parse()?).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -583,8 +570,7 @@ mod tests {
             // replica 1
             setup_bar1.wait().await;
             server1_bar1.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:30019".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup("127.0.0.1:30019".parse()?).await?;
             assert_eq!(hub.me, 1);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -606,12 +592,9 @@ mod tests {
         // manager
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
-        let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:30019".parse()?,
-            tx_id_assign,
-            rx_id_result,
-        )
-        .await?;
+        let mut reigner =
+            ServerReigner::new_and_setup("127.0.0.1:30019".parse()?, tx_id_assign, rx_id_result)
+                .await?;
         setup_bar.wait().await;
         // recv message from server 0
         rx_id_assign.recv().await;
@@ -667,8 +650,7 @@ mod tests {
         tokio::spawn(async move {
             // replica
             barrier2.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:30119".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup("127.0.0.1:30119".parse()?).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager without waiting for its reply
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -690,12 +672,9 @@ mod tests {
         // manager
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
-        let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:30119".parse()?,
-            tx_id_assign,
-            rx_id_result,
-        )
-        .await?;
+        let mut reigner =
+            ServerReigner::new_and_setup("127.0.0.1:30119".parse()?, tx_id_assign, rx_id_result)
+                .await?;
         barrier.wait().await;
         // recv first message from server
         rx_id_assign.recv().await;
@@ -733,8 +712,7 @@ mod tests {
         tokio::spawn(async move {
             // replica 0
             barrier2.wait().await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:30219".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup("127.0.0.1:30219".parse()?).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -755,8 +733,7 @@ mod tests {
             hub.send_ctrl(CtrlMsg::Leave)?;
             assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub =
-                ControlHub::new_and_setup("127.0.0.1:30219".parse()?).await?;
+            let mut hub = ControlHub::new_and_setup("127.0.0.1:30219".parse()?).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -778,12 +755,9 @@ mod tests {
         // manager
         let (tx_id_assign, mut rx_id_assign) = mpsc::unbounded_channel();
         let (tx_id_result, rx_id_result) = mpsc::unbounded_channel();
-        let mut reigner = ServerReigner::new_and_setup(
-            "127.0.0.1:30219".parse()?,
-            tx_id_assign,
-            rx_id_result,
-        )
-        .await?;
+        let mut reigner =
+            ServerReigner::new_and_setup("127.0.0.1:30219".parse()?, tx_id_assign, rx_id_result)
+                .await?;
         barrier.wait().await;
         // recv message from server 0
         rx_id_assign.recv().await;

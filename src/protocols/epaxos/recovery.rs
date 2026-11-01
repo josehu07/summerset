@@ -8,10 +8,7 @@ use crate::utils::SummersetError;
 impl EPaxosReplica {
     /// Apply a durable storage log entry for recovery.
     #[allow(clippy::too_many_lines)]
-    async fn recover_apply_entry(
-        &mut self,
-        entry: WalEntry,
-    ) -> Result<(), SummersetError> {
+    async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         match entry {
             WalEntry::PreAcceptSlot {
                 slot,
@@ -25,7 +22,7 @@ impl EPaxosReplica {
                     return Ok(()); // ignore if slot index outdated
                 }
                 // locate instance in memory, filling in null instances if needed
-                while self.start_col + self.insts.len() <= col {
+                while self.start_col + self.insts[row].len() <= col {
                     let inst = self.null_instance();
                     self.insts[row].push(inst);
                 }
@@ -56,7 +53,7 @@ impl EPaxosReplica {
                     return Ok(()); // ignore if slot index outdated
                 }
                 // locate instance in memory, filling in null instances if needed
-                while self.start_col + self.insts.len() <= col {
+                while self.start_col + self.insts[row].len() <= col {
                     let inst = self.null_instance();
                     self.insts[row].push(inst);
                 }
@@ -87,7 +84,7 @@ impl EPaxosReplica {
                     return Ok(()); // ignore if slot index outdated
                 }
                 // locate instance in memory, filling in null instances if needed
-                while self.start_col + self.insts.len() <= col {
+                while self.start_col + self.insts[row].len() <= col {
                     let inst = self.null_instance();
                     self.insts[row].push(inst);
                 }
@@ -108,11 +105,8 @@ impl EPaxosReplica {
                 // state machine
                 if col == self.commit_bars[row] {
                     let mut advanced = false;
-                    while self.commit_bars[row]
-                        < self.start_col + self.insts[row].len()
-                    {
-                        let inst = &mut self.insts[row]
-                            [self.commit_bars[row] - self.start_col];
+                    while self.commit_bars[row] < self.start_col + self.insts[row].len() {
+                        let inst = &mut self.insts[row][self.commit_bars[row] - self.start_col];
                         if inst.status < Status::Committed {
                             break;
                         } else if inst.reqs.is_empty() {
@@ -122,26 +116,18 @@ impl EPaxosReplica {
                         advanced = true;
                     }
                     if advanced {
-                        let tail_slot = SlotIdx(
-                            ReplicaId::try_from(row)?,
-                            self.commit_bars[row] - 1,
-                        );
+                        let tail_slot =
+                            SlotIdx(ReplicaId::try_from(row)?, self.commit_bars[row] - 1);
                         if self.attempt_execution(tail_slot, true).await? {
                             // re-check each row and attempt execution of committed
                             // instances in case they were previously blocked by me
                             let mut reattempts = vec![];
-                            for (row, &col) in
-                                self.commit_bars.iter().enumerate()
-                            {
+                            for (row, &col) in self.commit_bars.iter().enumerate() {
                                 if col > self.exec_bars[row]
-                                    && self.insts[row][col - 1 - self.start_col]
-                                        .status
+                                    && self.insts[row][col - 1 - self.start_col].status
                                         == Status::Committed
                                 {
-                                    reattempts.push(SlotIdx(
-                                        ReplicaId::try_from(row)?,
-                                        col - 1,
-                                    ));
+                                    reattempts.push(SlotIdx(ReplicaId::try_from(row)?, col - 1));
                                 }
                             }
                             for slot in reattempts {
@@ -157,9 +143,7 @@ impl EPaxosReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

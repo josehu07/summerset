@@ -21,9 +21,7 @@ impl ChainRepReplica {
         if let LogResult::Append { now_size } = log_result {
             debug_assert!(now_size >= self.wal_offset);
             // update first wal_offset of slot
-            if self.log[slot].wal_offset == 0
-                || self.log[slot].wal_offset > self.wal_offset
-            {
+            if self.log[slot].wal_offset == 0 || self.log[slot].wal_offset > self.wal_offset {
                 self.log[slot].wal_offset = self.wal_offset;
             }
             debug_assert!(self.log[slot].wal_offset <= self.wal_offset);
@@ -50,16 +48,10 @@ impl ChainRepReplica {
                     if self.log[self.prop_bar].reqs.is_empty() {
                         self.log[self.prop_bar].status = Status::Executed;
                     } else {
-                        for (cmd_idx, (_, req)) in
-                            self.log[self.prop_bar].reqs.iter().enumerate()
-                        {
+                        for (cmd_idx, (_, req)) in self.log[self.prop_bar].reqs.iter().enumerate() {
                             if let ApiRequest::Req { cmd, .. } = req {
                                 self.state_machine.submit_cmd(
-                                    Self::make_command_id(
-                                        self.prop_bar,
-                                        cmd_idx,
-                                        false,
-                                    ),
+                                    Self::make_command_id(self.prop_bar, cmd_idx, false),
                                     cmd.clone(),
                                 )?;
                             }

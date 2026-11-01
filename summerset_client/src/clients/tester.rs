@@ -9,8 +9,8 @@ use rand::RngExt;
 use rand::distr::Alphanumeric;
 use serde::Deserialize;
 use summerset::{
-    CommandResult, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId,
-    SummersetError, logged_err, parsed_config, pf_debug, pf_error,
+    CommandResult, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError, logged_err,
+    parsed_config, pf_debug, pf_error,
 };
 use tokio::time::{self, Duration};
 
@@ -135,15 +135,11 @@ impl ClientTester {
                         }
                         return Ok(());
                     }
-                    return logged_err!(
-                        "CommandResult type mismatch: expect Get"
-                    );
+                    return logged_err!("CommandResult type mismatch: expect Get");
                 }
 
                 DriverReply::Conf { .. } => {
-                    return logged_err!(
-                        "DriverReply type mismatch: expect normal command"
-                    );
+                    return logged_err!("DriverReply type mismatch: expect normal command");
                 }
 
                 DriverReply::Failure => {
@@ -157,10 +153,7 @@ impl ClientTester {
 
                 DriverReply::Timeout => {
                     timeouts += 1;
-                    pf_debug!(
-                        "client-side timeout {} ms",
-                        self.timeout.as_millis()
-                    );
+                    pf_debug!("client-side timeout {} ms", self.timeout.as_millis());
                 }
             }
         }
@@ -200,15 +193,11 @@ impl ClientTester {
                         }
                         return Ok(());
                     }
-                    return logged_err!(
-                        "CommandResult type mismatch: expect Put"
-                    );
+                    return logged_err!("CommandResult type mismatch: expect Put");
                 }
 
                 DriverReply::Conf { .. } => {
-                    return logged_err!(
-                        "DriverReply type mismatch: expect normal command"
-                    );
+                    return logged_err!("DriverReply type mismatch: expect normal command");
                 }
 
                 DriverReply::Failure => {
@@ -222,10 +211,7 @@ impl ClientTester {
 
                 DriverReply::Timeout => {
                     timeouts += 1;
-                    pf_debug!(
-                        "client-side timeout {} ms",
-                        self.timeout.as_millis()
-                    );
+                    pf_debug!("client-side timeout {} ms", self.timeout.as_millis());
                 }
             }
         }
@@ -239,9 +225,7 @@ impl ClientTester {
 
     /// Query the list of servers in the cluster. Returns a map from replica ID
     /// -> `is_leader` status.
-    async fn query_servers(
-        &mut self,
-    ) -> Result<HashMap<ReplicaId, bool>, SummersetError> {
+    async fn query_servers(&mut self) -> Result<HashMap<ReplicaId, bool>, SummersetError> {
         let req = CtrlRequest::QueryInfo;
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -274,10 +258,7 @@ impl ClientTester {
     }
 
     /// Pauses some server(s) in the cluster.
-    async fn pause_servers(
-        &mut self,
-        servers: HashSet<ReplicaId>,
-    ) -> Result<(), SummersetError> {
+    async fn pause_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::PauseServers { servers };
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -290,10 +271,7 @@ impl ClientTester {
     }
 
     /// Force some server(s) to take a new snapshot.
-    async fn force_snapshot(
-        &mut self,
-        servers: HashSet<ReplicaId>,
-    ) -> Result<(), SummersetError> {
+    async fn force_snapshot(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::TakeSnapshot { servers };
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -307,10 +285,7 @@ impl ClientTester {
 
     /// Resume some server(s) in the cluster.
     #[allow(dead_code)]
-    async fn resume_servers(
-        &mut self,
-        servers: HashSet<ReplicaId>,
-    ) -> Result<(), SummersetError> {
+    async fn resume_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::ResumeServers { servers };
         self.driver.ctrl_stub().send_req_insist(&req)?;
 
@@ -323,10 +298,7 @@ impl ClientTester {
     }
 
     /// Runs the individual correctness test.
-    async fn do_test_by_name(
-        &mut self,
-        name: &str,
-    ) -> Result<(), SummersetError> {
+    async fn do_test_by_name(&mut self, name: &str) -> Result<(), SummersetError> {
         // reset everything to initial state at the start of each test
         self.reset_servers(HashSet::new(), false).await?;
         time::sleep(Duration::from_secs(1)).await;

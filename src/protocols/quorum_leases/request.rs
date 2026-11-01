@@ -42,14 +42,9 @@ impl QuorumLeasesReplica {
                         self.handle_cmd_result(old_id, old_result).await?;
                     }
 
-                    self.external_api.send_reply(
-                        ApiReply::normal(*req_id, Some(cmd_result)),
-                        *client,
-                    )?;
-                    pf_trace!(
-                        "replied -> client {} for read-only slead",
-                        client
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), *client)?;
+                    pf_trace!("replied -> client {} for read-only slead", client);
                     // [for access cnt stats only]
                     if self.config.record_node_cnts {
                         *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
@@ -67,16 +62,11 @@ impl QuorumLeasesReplica {
                     cmd: Command::Get { key },
                 } = req
                 {
-                    let (api_reply, is_retry) = match self
-                        .inspect_highest_slot(key)?
-                    {
+                    let (api_reply, is_retry) = match self.inspect_highest_slot(key)? {
                         None => {
                             // key not seen at all
                             (
-                                ApiReply::normal(
-                                    *req_id,
-                                    Some(CommandResult::Get { value: None }),
-                                ),
+                                ApiReply::normal(*req_id, Some(CommandResult::Get { value: None })),
                                 false,
                             )
                         }
@@ -98,9 +88,7 @@ impl QuorumLeasesReplica {
                             (
                                 ApiReply::normal(
                                     *req_id,
-                                    Some(CommandResult::Get {
-                                        value: Some(value),
-                                    }),
+                                    Some(CommandResult::Get { value: Some(value) }),
                                 ),
                                 false,
                             )
@@ -130,11 +118,7 @@ impl QuorumLeasesReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::rq_retry(
-                            *req_id,
-                            Command::Get { key: key.clone() },
-                            self.leader,
-                        ),
+                        ApiReply::rq_retry(*req_id, Command::Get { key: key.clone() }, self.leader),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} read-only nlead", client);
@@ -175,8 +159,9 @@ impl QuorumLeasesReplica {
             for (client, req) in req_batch {
                 #[allow(clippy::match_wildcard_for_single_variants)]
                 let req_id = match req {
-                    ApiRequest::Req { id: req_id, .. }
-                    | ApiRequest::Conf { id: req_id, .. } => Some(req_id),
+                    ApiRequest::Req { id: req_id, .. } | ApiRequest::Conf { id: req_id, .. } => {
+                        Some(req_id)
+                    }
                     _ => None,
                 };
                 if let Some(req_id) = req_id {
@@ -187,15 +172,9 @@ impl QuorumLeasesReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                     // [for access cnt stats only]
                     if self.config.record_node_cnts {
                         *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
@@ -212,11 +191,7 @@ impl QuorumLeasesReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
             inst.reqs.clone_from(&req_batch);
-            Self::refresh_highest_slot(
-                slot,
-                &req_batch,
-                &mut self.highest_slot,
-            );
+            Self::refresh_highest_slot(slot, &req_batch, &mut self.highest_slot);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,

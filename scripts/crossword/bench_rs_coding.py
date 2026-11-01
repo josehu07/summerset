@@ -1,7 +1,7 @@
 import argparse
-import multiprocessing
 import os
 import subprocess
+import threading
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -32,9 +32,7 @@ def run_criterion_group(output_dir):
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
-    printer = multiprocessing.Process(
-        target=printer_thread, args=(proc, f"{output_dir}/rs_coding.out")
-    )
+    printer = threading.Thread(target=printer_thread, args=(proc, f"{output_dir}/rs_coding.out"))
     printer.start()
 
     proc.wait()
@@ -47,9 +45,7 @@ def parse_bench_results(output_dir):
         group, config, temp = None, None, None
         for line in fout:
             line = line.strip()
-            if line.startswith("Benchmarking ") and line.endswith(
-                "EFFECTIVE STARTING"
-            ):
+            if line.startswith("Benchmarking ") and line.endswith("EFFECTIVE STARTING"):
                 group = line[line.find(" ") + 1 : line.find("/")].strip()
                 name = line[line.find("/") + 1 : line.find(")") + 1]
                 size = int(name[: name.find("@")])
@@ -76,11 +72,7 @@ def parse_bench_results(output_dir):
                     config, temp = None, None
 
             elif group == "cpu_usage":
-                if (
-                    config is not None
-                    and line.startswith("cpu: ")
-                    and line.endswith("%")
-                ):
+                if config is not None and line.startswith("cpu: ") and line.endswith("%"):
                     segs = line.split()
                     usage = float(segs[-2])
                     temp.append(usage)
@@ -92,15 +84,10 @@ def parse_bench_results(output_dir):
                     config, temp = None, None
 
             else:  # mem_usage
-                if (
-                    config is not None
-                    and line.startswith("mem: ")
-                    and line.endswith("B")
-                ):
+                if config is not None and line.startswith("mem: ") and line.endswith("B"):
                     segs = line.split()
                     usage = float(segs[-2]) + config[0] * (
-                        config[1][1]
-                        / (config[1][0] + config[1][1])  # add parity overhead
+                        config[1][1] / (config[1][0] + config[1][1])  # add parity overhead
                     )
                     temp.append(usage / 1024)
                 if config is not None and "time:" in line:
@@ -154,9 +141,7 @@ def plot_bench_results(results, plots_dir):
 
     cmap = plt.get_cmap("Reds")
     colors = cmap(np.linspace(1.0 - (vmax - vmin) / float(vmax), 0.6, cmap.N))
-    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list(
-        "Reds", colors
-    )
+    new_cmap = matplotlib.colors.LinearSegmentedColormap.from_list("Reds", colors)
 
     plt.imshow(data, cmap=new_cmap, aspect=0.6, norm="log")
     plt.colorbar(

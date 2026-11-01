@@ -32,11 +32,7 @@ impl SimplePushReplica {
             );
         }
         if inst.execed[cmd_idx] {
-            return logged_err!(
-                "duplicate command index {}|{}",
-                inst_idx,
-                cmd_idx
-            );
+            return logged_err!("duplicate command index {}|{}", inst_idx, cmd_idx);
         }
         if !inst.durable {
             return logged_err!("instance {} is not durable yet", inst_idx);
@@ -53,18 +49,12 @@ impl SimplePushReplica {
             match req {
                 ApiRequest::Req { id: req_id, .. } => {
                     if self.external_api.has_client(*client) {
-                        self.external_api.send_reply(
-                            ApiReply::normal(*req_id, Some(cmd_result)),
-                            *client,
-                        )?;
+                        self.external_api
+                            .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), *client)?;
                     }
                 }
                 _ => {
-                    return logged_err!(
-                        "unknown request type at {}|{}",
-                        inst_idx,
-                        cmd_idx
-                    );
+                    return logged_err!("unknown request type at {}|{}", inst_idx, cmd_idx);
                 }
             }
         }

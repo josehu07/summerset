@@ -184,9 +184,7 @@ def collect_bd_stats(runlog_dir):
 
         for step in raw_stats[protocol]:
             raw_stats[protocol][step][0] /= total_cnt
-            raw_stats[protocol][step][1] = (
-                raw_stats[protocol][step][1] / total_cnt
-            ) ** 0.5
+            raw_stats[protocol][step][1] = (raw_stats[protocol][step][1] / total_cnt) ** 0.5
 
     bd_stats = {}
     for protocol, stats in raw_stats.items():
@@ -397,8 +395,7 @@ def save_space_usage(space_usage, plots_dir):
     txt_name = f"{plots_dir}/exper-wal-space.txt"
     with open(txt_name, "w") as ftxt:
         ftxt.writelines(
-            f"{protocol}  {size_mb:.2f} MB\n"
-            for protocol, size_mb in space_usage.items()
+            f"{protocol}  {size_mb:.2f} MB\n" for protocol, size_mb in space_usage.items()
         )
     print(f"Saved: {txt_name}")
 
@@ -427,17 +424,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

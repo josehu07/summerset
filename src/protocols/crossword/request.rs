@@ -29,15 +29,9 @@ impl CrosswordReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                 }
             }
             return Ok(());
@@ -54,10 +48,7 @@ impl CrosswordReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::normal(
-                            *req_id,
-                            Some(CommandResult::Get { value: None }),
-                        ),
+                        ApiReply::normal(*req_id, Some(CommandResult::Get { value: None })),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
@@ -79,11 +70,7 @@ impl CrosswordReplica {
         }
 
         // identify and compute the complete Reed-Solomon codeword
-        let value_id = Self::value_id(
-            &req_batch,
-            self.rs_data_shards,
-            self.rs_total_shards,
-        )?;
+        let value_id = Self::value_id(&req_batch, self.rs_data_shards, self.rs_total_shards)?;
         let mut reqs_cw = RSCodeword::from_data(
             req_batch,
             self.rs_data_shards,

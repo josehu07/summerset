@@ -10,9 +10,7 @@ SERVER_LISTEN_PORT = 21380
 SERVER_CLIENT_PORT = 21379
 
 
-PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}"
-)
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 
 PROTOCOLS = {"Raft"}  # not accepting other strings yet...
 
@@ -65,9 +63,7 @@ def compose_server_cmd(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -133,10 +129,7 @@ def launch_servers(
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
-    join_list = [
-        f"http://{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}"
-        for r in range(num_replicas)
-    ]
+    join_list = [f"http://{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(num_replicas)]
 
     server_procs = []
     for replica in range(num_replicas):
@@ -196,9 +189,7 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -231,9 +222,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_etcd = f"{base}/{ETCD_REPO_NAME}"
 
@@ -241,9 +230,7 @@ def main():
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(
-            f"#replicas {args.num_replicas} > #hosts in config file"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}

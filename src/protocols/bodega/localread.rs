@@ -41,8 +41,7 @@ impl BodegaReplica {
 
         for (_, req) in req_batch {
             if let Some(key) = req.write_key()
-                && let Some((responders, _)) =
-                    bodega_conf.get_responders_by_key(key)
+                && let Some((responders, _)) = bodega_conf.get_responders_by_key(key)
             {
                 for (responder, flag) in responders.iter() {
                     if flag && !leader_bk.accept_acks.get(responder)? {
@@ -86,9 +85,7 @@ impl BodegaReplica {
         key: &String,
     ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
         if let Some(&slot) = self.highest_slot.get(key) {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.insts.len()
-            {
+            if slot < self.start_slot || slot >= self.start_slot + self.insts.len() {
                 // slot has been GCed or not locatable for some reason; we play
                 // safe and return with not-committed status
                 Ok(Some((slot, None)))
@@ -141,11 +138,7 @@ impl BodegaReplica {
         key: String,
     ) -> Result<(), SummersetError> {
         self.external_api.send_reply(
-            ApiReply::rq_retry(
-                req_id,
-                Command::Get { key },
-                self.bodega_conf.leader,
-            ),
+            ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
             client,
         )?;
         pf_trace!("replied -> client {} read-only nlead", client);
@@ -198,10 +191,7 @@ impl BodegaReplica {
             None => {
                 // key not seen at all
                 Some((
-                    ApiReply::normal(
-                        req_id,
-                        Some(CommandResult::Get { value: None }),
-                    ),
+                    ApiReply::normal(req_id, Some(CommandResult::Get { value: None })),
                     false,
                 ))
             }
@@ -209,15 +199,10 @@ impl BodegaReplica {
                 // highest slot not committed
                 let inst = &mut self.insts[slot - self.start_slot];
                 #[allow(clippy::unnecessary_unwrap)]
-                if inst.status != Status::Accepting || inst.replica_bk.is_none()
-                {
+                if inst.status != Status::Accepting || inst.replica_bk.is_none() {
                     // not even in Accepting status, very rare case; just reject
                     Some((
-                        ApiReply::rq_retry(
-                            req_id,
-                            Command::Get { key },
-                            self.bodega_conf.leader,
-                        ),
+                        ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
                         true,
                     ))
                 } else {
@@ -237,10 +222,7 @@ impl BodegaReplica {
             Some((_, Some(value))) => {
                 // highest slot committed, can directly reply
                 Some((
-                    ApiReply::normal(
-                        req_id,
-                        Some(CommandResult::Get { value: Some(value) }),
-                    ),
+                    ApiReply::normal(req_id, Some(CommandResult::Get { value: Some(value) })),
                     false,
                 ))
             }
@@ -266,10 +248,7 @@ impl BodegaReplica {
     /// in Committed status), commit is bound to happen (or has already happened)
     /// for an instance, so we can now reply to all holding reads. Otherwise,
     /// this function is called to trigger prompt rejections of held read reqs.
-    pub(super) fn release_held_read_reqs(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    pub(super) fn release_held_read_reqs(&mut self, slot: usize) -> Result<(), SummersetError> {
         let inst = &mut self.insts[slot - self.start_slot];
         if inst.replica_bk.is_none() {
             return Ok(());
@@ -286,11 +265,7 @@ impl BodegaReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::rq_retry(
-                            req_id,
-                            Command::Get { key },
-                            self.bodega_conf.leader,
-                        ),
+                        ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
                         client,
                     )?;
                     pf_trace!("replied -> client {} read-only hfail", client);
@@ -327,25 +302,17 @@ impl BodegaReplica {
                             ),
                             client,
                         )?;
-                        pf_trace!(
-                            "replied -> client {} read-only hgood",
-                            client
-                        );
+                        pf_trace!("replied -> client {} read-only hgood", client);
                         // [for access cnt stats only]
                         if self.config.record_node_cnts {
-                            *self.node_cnts_stats.get_mut(&self.id).unwrap() +=
-                                1;
+                            *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
                         }
                         continue 'reqs_loop;
                     }
                 }
                 // although should not reach here, playing safe...
                 self.external_api.send_reply(
-                    ApiReply::rq_retry(
-                        req_id,
-                        Command::Get { key },
-                        self.bodega_conf.leader,
-                    ),
+                    ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
                     client,
                 )?;
                 pf_trace!("replied -> client {} read-only hfail", client);

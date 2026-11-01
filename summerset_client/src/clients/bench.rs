@@ -12,8 +12,8 @@ use rand_distr::{Distribution, Normal, Uniform};
 use rangemap::RangeMap;
 use serde::Deserialize;
 use summerset::{
-    CommandResult, GenericEndpoint, RequestId, SummersetError, logged_err,
-    parsed_config, pf_debug, pf_error, pf_info, pf_warn,
+    CommandResult, GenericEndpoint, RequestId, SummersetError, logged_err, parsed_config, pf_debug,
+    pf_error, pf_info, pf_warn,
 };
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
@@ -200,28 +200,16 @@ impl ClientBench {
                                     norm_stdev_ratio, unif_interval_ms,
                                     unif_upper_bound)?;
         if params.freq_target > 1_000_000 {
-            return logged_err!(
-                "invalid params.freq_target '{}'",
-                params.freq_target
-            );
+            return logged_err!("invalid params.freq_target '{}'", params.freq_target);
         }
         if params.length_s == 0 && params.ycsb_trace.is_empty() {
-            return logged_err!(
-                "invalid params.length_s '{}'",
-                params.length_s
-            );
+            return logged_err!("invalid params.length_s '{}'", params.length_s);
         }
         if params.put_ratio > 100 {
-            return logged_err!(
-                "invalid params.put_ratio '{}'",
-                params.put_ratio
-            );
+            return logged_err!("invalid params.put_ratio '{}'", params.put_ratio);
         }
         if params.num_keys == 0 {
-            return logged_err!(
-                "invalid params.num_keys '{}'",
-                params.num_keys
-            );
+            return logged_err!("invalid params.num_keys '{}'", params.num_keys);
         }
         if params.norm_stdev_ratio < 0.0 {
             return logged_err!(
@@ -235,9 +223,7 @@ impl ClientBench {
                 params.unif_interval_ms
             );
         }
-        if params.unif_upper_bound < 1024
-            || params.unif_upper_bound > MAX_VAL_LEN
-        {
+        if params.unif_upper_bound < 1024 || params.unif_upper_bound > MAX_VAL_LEN {
             return logged_err!(
                 "invalid params.unif_upper_bound '{}'",
                 params.unif_upper_bound
@@ -249,10 +235,7 @@ impl ClientBench {
         } else {
             let output_path = Path::new(&params.output_path);
             if fs::exists(output_path)? {
-                pf_warn!(
-                    "overwriting existing output file '{}'",
-                    params.output_path
-                );
+                pf_warn!("overwriting existing output file '{}'", params.output_path);
             } else {
                 fs::create_dir_all(
                     output_path
@@ -285,8 +268,7 @@ impl ClientBench {
             Some(Self::load_trace_file(&params.ycsb_trace)?)
         };
 
-        let value_size =
-            Self::parse_value_sizes(params.length_s, &params.value_size)?;
+        let value_size = Self::parse_value_sizes(params.length_s, &params.value_size)?;
         let norm_dist = if params.norm_stdev_ratio > 0.0 {
             Some(
                 value_size
@@ -294,11 +276,7 @@ impl ClientBench {
                     .map(|(_, &vs)| {
                         (
                             vs,
-                            Normal::new(
-                                vs as f32,
-                                vs as f32 * params.norm_stdev_ratio,
-                            )
-                            .unwrap(),
+                            Normal::new(vs as f32, vs as f32 * params.norm_stdev_ratio).unwrap(),
                         )
                     })
                     .collect(),
@@ -361,10 +339,7 @@ impl ClientBench {
                         } else if seg == "UPDATE" || seg == "INSERT" {
                             false
                         } else {
-                            return logged_err!(
-                                "unrecognized trace op '{}'",
-                                seg
-                            );
+                            return logged_err!("unrecognized trace op '{}'", seg);
                         }
                     } else if seg_idx == 1 {
                         // key
@@ -423,9 +398,7 @@ impl ClientBench {
                     let time = seg[..idx].parse::<u64>()?;
                     let size = seg[idx + 1..].parse::<usize>()?;
                     if size == 0 {
-                        return logged_err!(
-                            "size 0 found in params.value_size"
-                        );
+                        return logged_err!("size 0 found in params.value_size");
                     } else if time >= length_s {
                         return logged_err!(
                             "sec {} >= length_s {} in params.value_size",
@@ -678,17 +651,13 @@ impl ClientBench {
                 loop {
                     while self.driver.issue_put(key, val)?.is_none() {}
 
-                    if let DriverReply::Success { .. } =
-                        self.driver.wait_reply().await?
-                    {
+                    if let DriverReply::Success { .. } = self.driver.wait_reply().await? {
                         break;
                     }
 
                     retries -= 1;
                     if retries == 0 {
-                        return logged_err!(
-                            "unsuccessful preload reply, no retries left"
-                        );
+                        return logged_err!("unsuccessful preload reply, no retries left");
                     }
                     time::sleep(Duration::from_millis(200)).await;
                 }
@@ -790,29 +759,23 @@ impl ClientBench {
             // || (!printed_1_100 && elapsed >= PRINT_INTERVAL / 100)
             // || (!printed_1_10 && elapsed >= PRINT_INTERVAL / 10)
             {
-                let tput =
-                    (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let tput = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
                 let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_wlats.iter().sum::<f64>()
-                        / self.chunk_wlats.len() as f64
+                    self.chunk_wlats.iter().sum::<f64>() / self.chunk_wlats.len() as f64
                 };
                 let rlat = if self.chunk_rlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_rlats.iter().sum::<f64>()
-                        / self.chunk_rlats.len() as f64
+                    self.chunk_rlats.iter().sum::<f64>() / self.chunk_rlats.len() as f64
                 };
-                let lat =
-                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
-                        0.0
-                    } else {
-                        (wlat * self.chunk_wlats.len() as f64
-                            + rlat * self.chunk_rlats.len() as f64)
-                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
-                                as f64
-                    };
+                let lat = if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                    0.0
+                } else {
+                    (wlat * self.chunk_wlats.len() as f64 + rlat * self.chunk_rlats.len() as f64)
+                        / (self.chunk_wlats.len() + self.chunk_rlats.len()) as f64
+                };
 
                 let line = format!(
                     "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",

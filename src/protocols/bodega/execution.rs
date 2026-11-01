@@ -27,10 +27,8 @@ impl BodegaReplica {
         if let ApiRequest::Req { id: req_id, .. } = req {
             if inst.external && self.external_api.has_client(client) {
                 let read_only = cmd_result.read_only();
-                self.external_api.send_reply(
-                    ApiReply::normal(*req_id, Some(cmd_result)),
-                    client,
-                )?;
+                self.external_api
+                    .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), client)?;
                 pf_trace!(
                     "replied -> client {} for slot {} idx {}",
                     client,

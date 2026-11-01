@@ -27,8 +27,7 @@ impl BodegaReplica {
                 pf_info!("no longer leader, down to filtered conf...");
             }
 
-            self.bodega_conf =
-                mem::take(&mut self.bodega_conf).into_filtered(self.id)?;
+            self.bodega_conf = mem::take(&mut self.bodega_conf).into_filtered(self.id)?;
             self.bal_max_seen = ballot;
         }
 
@@ -37,14 +36,11 @@ impl BodegaReplica {
 
     /// Basically a duplicate of how Heartbeater kicks off a heartbeat timer.
     /// Could certainly have better implementation here, but non-essential.
-    pub(super) fn refresh_volunteer_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) fn refresh_volunteer_timer(&mut self) -> Result<(), SummersetError> {
         self.volunteer_timer.cancel()?;
 
-        let timeout_ms = rand::rng().random_range(
-            self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max,
-        );
+        let timeout_ms = rand::rng()
+            .random_range(self.config.hb_hear_timeout_min..=self.config.hb_hear_timeout_max);
         // pf_trace!("kickoff volunteer_timer @ {} ms", timeout_ms);
         self.volunteer_timer
             .kickoff(Duration::from_millis(timeout_ms as u64))
@@ -151,9 +147,7 @@ impl BodegaReplica {
 
     /// Broadcasts regular heartbeats to all replicas, carrying my current
     /// ballot and config.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         // check and send lease refreshers to all peers
         let to_refresh = self.lease_manager.attempt_refresh(None)?;
         if to_refresh.count() > 0 {
@@ -242,9 +236,7 @@ impl BodegaReplica {
             if let Some(new_conf) = conf {
                 self.heard_new_conf(ballot, new_conf).await?;
             } else {
-                return logged_err!(
-                    "heartbeat contains higher ballot but no conf"
-                );
+                return logged_err!("heartbeat contains higher ballot but no conf");
             }
         }
 
@@ -329,11 +321,7 @@ impl BodegaReplica {
 
                 // mark this instance as committed
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -353,11 +341,7 @@ impl BodegaReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!(
-                    "advancing commit <- {} until slot {}",
-                    peer,
-                    commit_bar
-                );
+                pf_trace!("advancing commit <- {} until slot {}", peer, commit_bar);
             }
         }
 

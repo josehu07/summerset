@@ -40,8 +40,7 @@ impl ZooKeeperSession {
 
         let mut builder = zkcli::Client::connector();
         if config.expiry_ms > 0 {
-            builder = builder
-                .with_session_timeout(Duration::from_millis(config.expiry_ms));
+            builder = builder.with_session_timeout(Duration::from_millis(config.expiry_ms));
         }
 
         Ok(ZooKeeperSession {
@@ -65,8 +64,7 @@ impl ZooKeeperSession {
             .create(
                 PARENT_ZNODE,
                 b"",
-                &zkcli::CreateMode::Persistent
-                    .with_acls(zkcli::Acls::anyone_all()),
+                &zkcli::CreateMode::Persistent.with_acls(zkcli::Acls::anyone_all()),
             )
             .await;
         if let Err(zkcli::Error::NodeExists) = create_result {
@@ -85,10 +83,7 @@ impl ZooKeeperSession {
     }
 
     /// Make a getData request to `ZooKeeper`.
-    pub(crate) async fn get(
-        &self,
-        key: &str,
-    ) -> Result<Option<String>, SummersetError> {
+    pub(crate) async fn get(&self, key: &str) -> Result<Option<String>, SummersetError> {
         let path = format!("{}/{}", PARENT_ZNODE, key);
         let session = self
             .session
@@ -118,11 +113,7 @@ impl ZooKeeperSession {
     }
 
     /// Make a setData request to `ZooKeeper`.
-    pub(crate) async fn set(
-        &self,
-        key: &str,
-        value: &str,
-    ) -> Result<(), SummersetError> {
+    pub(crate) async fn set(&self, key: &str, value: &str) -> Result<(), SummersetError> {
         let path = format!("{}/{}", PARENT_ZNODE, key);
         let session = self
             .session
@@ -140,8 +131,7 @@ impl ZooKeeperSession {
                 .create(
                     &path,
                     value.as_bytes(),
-                    &zkcli::CreateMode::Persistent
-                        .with_acls(zkcli::Acls::anyone_all()),
+                    &zkcli::CreateMode::Persistent.with_acls(zkcli::Acls::anyone_all()),
                 )
                 .await;
             if let Err(zkcli::Error::NodeExists) = create_result {

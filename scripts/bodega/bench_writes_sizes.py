@@ -90,9 +90,7 @@ RESULT_SECS_BEGIN = 30
 RESULT_SECS_END = 100
 
 
-def launch_cluster(
-    remote0, base, repo, pcname, value_size, put_ratio, config=None
-):
+def launch_cluster(remote0, base, repo, pcname, value_size, put_ratio, config=None):
     cmd = [
         "uv",
         "run",
@@ -138,9 +136,7 @@ def wait_cluster_setup(sleep_secs=60):
     time.sleep(sleep_secs)
 
 
-def run_bench_clients(
-    remotec, base, repo, pcname, value_size, put_ratio, config=None
-):
+def run_bench_clients(remotec, base, repo, pcname, value_size, put_ratio, config=None):
     cmd = [
         "uv",
         "run",
@@ -196,9 +192,7 @@ def run_bench_clients(
     )
 
 
-def run_mess_client(
-    remotec, base, repo, protocol, leader=None, key_range=None, responder=None
-):
+def run_mess_client(remotec, base, repo, protocol, leader=None, key_range=None, responder=None):
     cmd = [
         "uv",
         "run",
@@ -233,9 +227,7 @@ def run_mess_client(
     )
 
 
-def bench_round(
-    remote0, remotec, base, repo, pcname, value_size, put_ratio, runlog_path
-):
+def bench_round(remote0, remotec, base, repo, pcname, value_size, put_ratio, runlog_path):
     protocol = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0]
     responders = PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][3]
     midfix_str = f".{pcname}.{value_size}.{put_ratio}"
@@ -330,9 +322,7 @@ def collect_outputs(output_dir):
                 sd, sp, sj, sm = 10, 0, 0, 1
                 # setting sm here to compensate for unstabilities of printing
                 # things to console
-                tput_list = utils.output.list_smoothing(
-                    result["tput_sum"], sd, sp, sj, sm
-                )
+                tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
                 wlat_list = utils.output.list_smoothing(
                     [v for v in result["wlat_avg"] if v > 0.0],
                     sd,
@@ -375,39 +365,15 @@ def collect_outputs(output_dir):
                     },
                     "wlat": {
                         "sorted": wlat_list,
-                        "p50": (
-                            None
-                            if len(wlat_list) == 0
-                            else wlat_list[len(wlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(wlat_list) == 0
-                            else np.percentile(wlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(wlat_list) == 0
-                            else sum(wlat_list) / len(wlat_list)
-                        ),
+                        "p50": (None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]),
+                        "p99": (None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)),
+                        "mean": (None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)),
                     },
                     "rlat": {
                         "sorted": rlat_list,
-                        "p50": (
-                            None
-                            if len(rlat_list) == 0
-                            else rlat_list[len(rlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(rlat_list) == 0
-                            else np.percentile(rlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(rlat_list) == 0
-                            else sum(rlat_list) / len(rlat_list)
-                        ),
+                        "p50": (None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]),
+                        "p99": (None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)),
+                        "mean": (None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)),
                     },
                 }
 
@@ -469,13 +435,8 @@ def plot_put_ratios_results(results, plots_dir):
     }
 
     for pcname in PCNAMES_ORDER:
-        result = [
-            results[128][put_ratio][pcname]["tput"]["mean"]
-            for put_ratio in PUT_RATIOS
-        ]
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
-            pcname
-        ]
+        result = [results[128][put_ratio][pcname]["tput"]["mean"] for put_ratio in PUT_RATIOS]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
 
         plt.plot(
             PUT_RATIOS,
@@ -557,13 +518,8 @@ def plot_value_sizes_results(results, plots_dir):
     VALUE_SIZE_STRS = ["32", "128", "512", "2K", "8K"]
 
     for pcname in PCNAMES_ORDER:
-        result = [
-            results[value_size][5][pcname]["tput"]["mean"]
-            for value_size in VALUE_SIZES
-        ]
-        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[
-            pcname
-        ]
+        result = [results[value_size][5][pcname]["tput"]["mean"] for value_size in VALUE_SIZES]
+        label, color, marker, markersize = PCNAMES_LABEL_COLOR_MARKER_SIZE[pcname]
 
         plt.plot(
             VALUE_SIZES,
@@ -643,15 +599,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -663,9 +615,7 @@ def main():
         try:
             fixed_value_size = 128
             for put_ratio in PUT_RATIOS:
-                print(
-                    f"Running experiments val = {fixed_value_size}, w% = {put_ratio}..."
-                )
+                print(f"Running experiments val = {fixed_value_size}, w% = {put_ratio}...")
                 for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                     time.sleep(3)
 
@@ -690,9 +640,7 @@ def main():
             for value_size in VALUE_SIZES:
                 if value_size == fixed_value_size:
                     continue
-                print(
-                    f"Running experiments val = {value_size}, w% = {fixed_put_ratio}..."
-                )
+                print(f"Running experiments val = {value_size}, w% = {fixed_put_ratio}...")
                 for pcname in PROTOCOLS_BSNAME_CONFIGS_RESPONDERS:
                     time.sleep(3)
 
@@ -719,15 +667,11 @@ def main():
 
         print("Fetching client output logs...")
         for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remotes[host], f"{base}/output/{EXPER_NAME}", output_path)
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

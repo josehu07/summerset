@@ -8,10 +8,7 @@ use crate::utils::SummersetError;
 // MultiPaxosReplica control messages handling
 impl MultiPaxosReplica {
     /// Handler of `ResetState` control message.
-    async fn handle_ctrl_reset_state(
-        &mut self,
-        durable: bool,
-    ) -> Result<(), SummersetError> {
+    async fn handle_ctrl_reset_state(&mut self, durable: bool) -> Result<(), SummersetError> {
         pf_warn!("server got restart req");
 
         // send leave notification to peers and wait for their replies
@@ -44,10 +41,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Pause control message.
-    fn handle_ctrl_pause(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
+    fn handle_ctrl_pause(&mut self, paused: &mut bool) -> Result<(), SummersetError> {
         pf_warn!("server got pause req");
         *paused = true;
         self.control_hub.send_ctrl(CtrlMsg::PauseReply)?;
@@ -55,10 +49,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of Resume control message.
-    fn handle_ctrl_resume(
-        &mut self,
-        paused: &mut bool,
-    ) -> Result<(), SummersetError> {
+    fn handle_ctrl_resume(&mut self, paused: &mut bool) -> Result<(), SummersetError> {
         pf_warn!("server got resume req");
 
         // reset heartbeat hearing timer
@@ -72,9 +63,7 @@ impl MultiPaxosReplica {
     }
 
     /// Handler of `TakeSnapshot` control message.
-    async fn handle_ctrl_take_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    async fn handle_ctrl_take_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_warn!("server told to take snapshot");
         self.take_new_snapshot().await?;
 

@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // ChainRepReplica recovery from WAL log
 impl ChainRepReplica {
     /// Apply a durable storage log entry for recovery.
-    async fn recover_apply_entry(
-        &mut self,
-        entry: WalEntry,
-    ) -> Result<(), SummersetError> {
+    async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         // locate entry in memory, filling in null entries if needed
         while self.log.len() <= entry.slot {
             self.log.push(Self::null_log_entry());
@@ -48,9 +45,7 @@ impl ChainRepReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

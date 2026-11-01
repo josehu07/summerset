@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // BodegaReplica durable WAL logging
 impl BodegaReplica {
     /// Handler of `PrepareBal` logging result chan recv.
-    fn handle_logged_prepare_bal(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_prepare_bal(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -80,10 +77,7 @@ impl BodegaReplica {
     }
 
     /// Handler of `AcceptData` logging result chan recv.
-    fn handle_logged_accept_data(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_accept_data(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
@@ -103,8 +97,7 @@ impl BodegaReplica {
             } else {
                 // on follower replica, finishing the logging of an
                 // AcceptData entry leads to sending back an Accept reply
-                if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk
-                {
+                if let Some(ReplicaBookkeeping { source, .. }) = inst.replica_bk {
                     self.transport_hub.send_msg(
                         PeerMsg::AcceptReply {
                             slot,
@@ -141,18 +134,19 @@ impl BodegaReplica {
                 && self.config.urgent_accept_notice
             {
                 let mut all_responders = Bitmap::new(self.population, false);
-                for responders in self.insts[slot - self.start_slot]
-                    .reqs
-                    .iter()
-                    .filter_map(|(_, req)| {
-                        if let Some(key) = req.write_key() {
-                            self.bodega_conf
-                                .get_responders_by_key(key)
-                                .map(|(responders, _)| responders)
-                        } else {
-                            None
-                        }
-                    })
+                for responders in
+                    self.insts[slot - self.start_slot]
+                        .reqs
+                        .iter()
+                        .filter_map(|(_, req)| {
+                            if let Some(key) = req.write_key() {
+                                self.bodega_conf
+                                    .get_responders_by_key(key)
+                                    .map(|(responders, _)| responders)
+                            } else {
+                                None
+                            }
+                        })
                 {
                     all_responders.union(responders)?;
                 }
@@ -182,10 +176,7 @@ impl BodegaReplica {
     }
 
     /// Handler of `CommitSlot` logging result chan recv.
-    fn handle_logged_commit_slot(
-        &mut self,
-        slot: usize,
-    ) -> Result<(), SummersetError> {
+    fn handle_logged_commit_slot(&mut self, slot: usize) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }

@@ -3,7 +3,7 @@
 //! Immediately logs given command and executes given command on the state
 //! machine upon receiving a client command, and does nothing else.
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod durability;
 mod execution;
@@ -23,8 +23,8 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    ReplicaId, StateMachine, StorageHub,
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, ReplicaId,
+    StateMachine, StorageHub,
 };
 use crate::utils::SummersetError;
 
@@ -57,9 +57,7 @@ impl Default for ReplicaConfigRepNothing {
 }
 
 /// WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 struct WalEntry {
     reqs: Vec<(ClientId, ApiRequest)>,
 }
@@ -155,9 +153,7 @@ impl GenericReplica for RepNothingReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // TransportHub is not needed in RepNothing
 
@@ -194,10 +190,7 @@ impl GenericReplica for RepNothingReplica {
         })
     }
 
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable storage WAL log
         self.recover_from_wal().await?;
 
@@ -344,8 +337,7 @@ impl GenericEndpoint for RepNothingClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -361,8 +353,7 @@ impl GenericEndpoint for RepNothingClient {
             // find a server to connect to, starting from provided server_id
             debug_assert!(!servers_info.is_empty());
             while !servers_info.contains_key(&self.config.server_id) {
-                self.config.server_id =
-                    (self.config.server_id + 1) % population;
+                self.config.server_id = (self.config.server_id + 1) % population;
             }
             // connect to that server
             pf_debug!(
@@ -396,8 +387,7 @@ impl GenericEndpoint for RepNothingClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -409,10 +399,7 @@ impl GenericEndpoint for RepNothingClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
             None => Err(SummersetError::msg("client not set up")),

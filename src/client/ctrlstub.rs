@@ -8,9 +8,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::client::ClientId;
 use crate::manager::{CtrlReply, CtrlRequest};
-use crate::utils::{
-    ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
+use crate::utils::{ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry};
 
 /// Client -> manager oracle control API stub.
 pub struct ClientCtrlStub {
@@ -35,9 +33,7 @@ pub struct ClientCtrlStub {
 
 impl ClientCtrlStub {
     /// Creates a new control API stub and connects to the manager.
-    pub(crate) async fn new_by_connect(
-        manager: SocketAddr,
-    ) -> Result<Self, SummersetError> {
+    pub(crate) async fn new_by_connect(manager: SocketAddr) -> Result<Self, SummersetError> {
         let mut stream = tcp_connect_with_retry(manager, 15).await?;
         let id = stream.read_u64().await?; // receive my client ID
         let (read_half, write_half) = stream.into_split();
@@ -62,10 +58,7 @@ impl ClientCtrlStub {
     ///     (typically after doing a few `recv_reply()`s to free
     ///     up some buffer space)
     ///   - `Err(err)` if any unexpected error occurs
-    pub fn send_req(
-        &mut self,
-        req: Option<&CtrlRequest>,
-    ) -> Result<bool, SummersetError> {
+    pub fn send_req(&mut self, req: Option<&CtrlRequest>) -> Result<bool, SummersetError> {
         if req.is_none() {
             pf_debug!("retrying last unsuccessful send_req");
         }
@@ -86,10 +79,7 @@ impl ClientCtrlStub {
     /// Sends a request to established manager connection, retrying immediately
     /// on `WouldBlock` failure. This shortcut should only be used in places
     /// where TCP write blocking is not expected.
-    pub fn send_req_insist(
-        &mut self,
-        req: &CtrlRequest,
-    ) -> Result<(), SummersetError> {
+    pub fn send_req_insist(&mut self, req: &CtrlRequest) -> Result<(), SummersetError> {
         let mut success = self.send_req(Some(req))?;
         while !success {
             success = self.send_req(None)?;
@@ -100,8 +90,7 @@ impl ClientCtrlStub {
 
     /// Receives a reply from established manager connection.
     pub async fn recv_reply(&mut self) -> Result<CtrlReply, SummersetError> {
-        let reply =
-            safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
+        let reply = safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
         // pf_trace!("recv reply {:?}", reply);
         Ok(reply)

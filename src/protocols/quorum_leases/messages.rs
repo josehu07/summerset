@@ -132,14 +132,10 @@ impl QuorumLeasesReplica {
                 let mut peer_accept_bars: Vec<usize> =
                     self.peer_accept_bar.values().copied().collect();
                 peer_accept_bars.sort_unstable();
-                let peer_accept_max =
-                    peer_accept_bars[self.quorum_cnt as usize - 1];
+                let peer_accept_max = peer_accept_bars[self.quorum_cnt as usize - 1];
                 if peer_accept_max < self.peer_accept_max {
                     self.peer_accept_max = peer_accept_max;
-                    pf_debug!(
-                        "peer_accept_max updated: {}",
-                        self.peer_accept_max
-                    );
+                    pf_debug!("peer_accept_max updated: {}", self.peer_accept_max);
                 }
             }
 
@@ -205,11 +201,7 @@ impl QuorumLeasesReplica {
                     if bal > leader_bk.prepare_max_bal {
                         leader_bk.prepare_max_bal = bal;
                         inst.reqs = val;
-                        Self::refresh_highest_slot(
-                            slot,
-                            &inst.reqs,
-                            &mut self.highest_slot,
-                        );
+                        Self::refresh_highest_slot(slot, &inst.reqs, &mut self.highest_slot);
                     }
                 }
             }
@@ -218,11 +210,9 @@ impl QuorumLeasesReplica {
             // include the sender peer into the quorum (by updating the
             // prepare_acks field in the trigger_slot entry)
             if slot == endprep_slot {
-                let trigger_inst =
-                    &mut self.insts[trigger_slot - self.start_slot];
+                let trigger_inst = &mut self.insts[trigger_slot - self.start_slot];
                 debug_assert!(trigger_inst.leader_bk.is_some());
-                let trigger_leader_bk =
-                    trigger_inst.leader_bk.as_mut().unwrap();
+                let trigger_leader_bk = trigger_inst.leader_bk.as_mut().unwrap();
                 trigger_leader_bk.prepare_acks.set(peer, true)?;
 
                 // if quorum size reached, enter Accept phase for all instances
@@ -242,19 +232,12 @@ impl QuorumLeasesReplica {
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
                         inst.status = Status::Accepting;
-                        pf_debug!(
-                            "enter Accept phase for slot {} bal {}",
-                            this_slot,
-                            inst.bal
-                        );
+                        pf_debug!("enter Accept phase for slot {} bal {}", this_slot, inst.bal);
 
                         // record update to largest accepted ballot and its
                         // corresponding data
                         self.storage_hub.submit_action(
-                            Self::make_log_action_id(
-                                this_slot,
-                                Status::Accepting,
-                            ),
+                            Self::make_log_action_id(this_slot, Status::Accepting),
                             LogAction::Append {
                                 entry: WalEntry::AcceptData {
                                     slot: this_slot,
@@ -384,10 +367,7 @@ impl QuorumLeasesReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications and outdated replies
-            if !is_leader
-                || (inst.status != Status::Accepting)
-                || (ballot < inst.bal)
-            {
+            if !is_leader || (inst.status != Status::Accepting) || (ballot < inst.bal) {
                 return Ok(());
             }
             debug_assert_eq!(inst.bal, ballot);
@@ -405,11 +385,7 @@ impl QuorumLeasesReplica {
             // if commit condition is reached, mark this instance as committed
             if Self::commit_condition(leader_bk, self.quorum_cnt)? {
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -467,11 +443,7 @@ impl QuorumLeasesReplica {
                     // if commit condition is now reached, proceed to commit
                     if Self::commit_condition(leader_bk, self.quorum_cnt)? {
                         inst.status = Status::Committed;
-                        pf_debug!(
-                            "committed instance at slot {} bal {}",
-                            slot,
-                            inst.bal
-                        );
+                        pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                         // record commit event
                         self.storage_hub.submit_action(
@@ -538,10 +510,8 @@ impl QuorumLeasesReplica {
                 exec_bar,
                 snap_bar,
             } => {
-                self.heard_heartbeat(
-                    peer, ballot, commit_bar, exec_bar, snap_bar,
-                )
-                .await
+                self.heard_heartbeat(peer, ballot, commit_bar, exec_bar, snap_bar)
+                    .await
             }
             PeerMsg::CommitNotice { ballot, commit_bar } => {
                 self.heard_commit_notice(peer, ballot, commit_bar)

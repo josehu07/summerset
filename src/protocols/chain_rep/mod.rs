@@ -4,7 +4,7 @@
 //!   - <https://www.cs.cornell.edu/home/rvr/papers/OSDI04.pdf>
 //!   - <https://www.usenix.org/conference/atc22/presentation/fouto>
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod durability;
 mod execution;
@@ -26,9 +26,8 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, CommandId, CommandResult, ControlHub, ExternalApi,
-    GenericReplica, LogActionId, ReplicaId, StateMachine, StorageHub,
-    TransportHub,
+    ApiReply, ApiRequest, CommandId, CommandResult, ControlHub, ExternalApi, GenericReplica,
+    LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::SummersetError;
 
@@ -62,16 +61,7 @@ impl Default for ReplicaConfigChainRep {
 
 /// Log entry status enum.
 #[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Clone,
-    Serialize,
-    Deserialize,
-    Encode,
-    Decode,
+    Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead,
 )]
 enum Status {
     Null = 0,
@@ -96,16 +86,14 @@ struct LogEntry {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 struct WalEntry {
     slot: usize,
     reqs: ReqBatch,
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PeerMsg {
     /// Propagate message from predecessor to successor.
     Propagate { slot: usize, reqs: ReqBatch },
@@ -227,8 +215,7 @@ impl ChainRepReplica {
     ) -> CommandId {
         debug_assert!(u32::try_from(slot_or_req_id).is_ok());
         debug_assert!(cmd_idx_or_client <= ((u32::MAX >> 1) as usize));
-        let mut cmd_id =
-            ((slot_or_req_id << 32) | (cmd_idx_or_client << 1)) as CommandId;
+        let mut cmd_id = ((slot_or_req_id << 32) | (cmd_idx_or_client << 1)) as CommandId;
         if read_only {
             cmd_id += 1;
         }
@@ -275,18 +262,11 @@ impl GenericReplica for ChainRepReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            HashMap::new(),
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr, HashMap::new()).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -297,9 +277,7 @@ impl GenericReplica for ChainRepReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -337,10 +315,7 @@ impl GenericReplica for ChainRepReplica {
         })
     }
 
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover the log & state from durable WAL log
         self.recover_from_wal().await?;
 
@@ -533,8 +508,7 @@ impl GenericEndpoint for ChainRepClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -549,26 +523,20 @@ impl GenericEndpoint for ChainRepClient {
 
             // shift to a new head_id/tail_id if current one not active
             debug_assert!(!servers_info.is_empty());
-            while !servers_info.contains_key(&self.head_id)
-                || servers_info[&self.head_id].is_paused
+            while !servers_info.contains_key(&self.head_id) || servers_info[&self.head_id].is_paused
             {
                 self.head_id = (self.head_id + 1) % population;
             }
-            while !servers_info.contains_key(&self.tail_id)
-                || servers_info[&self.tail_id].is_paused
+            while !servers_info.contains_key(&self.tail_id) || servers_info[&self.tail_id].is_paused
             {
-                self.tail_id =
-                    if self.tail_id == 0 || self.tail_id >= population {
-                        population - 1
-                    } else {
-                        self.tail_id - 1
-                    };
+                self.tail_id = if self.tail_id == 0 || self.tail_id >= population {
+                    population - 1
+                } else {
+                    self.tail_id - 1
+                };
             }
             if self.head_id == self.tail_id {
-                return logged_err!(
-                    "head & tail resolve to the same server {}",
-                    self.head_id
-                );
+                return logged_err!("head & tail resolve to the same server {}", self.head_id);
             }
 
             // establish connection to all servers
@@ -578,8 +546,7 @@ impl GenericEndpoint for ChainRepClient {
                 .collect();
             for (&id, &server) in &self.servers {
                 pf_debug!("connecting to server {} '{}'...", id, server);
-                let api_stub =
-                    ClientApiStub::new_by_connect(self.id, server).await?;
+                let api_stub = ClientApiStub::new_by_connect(self.id, server).await?;
 
                 if id == self.head_id {
                     self.head_api_stub = Some(api_stub);
@@ -618,8 +585,7 @@ impl GenericEndpoint for ChainRepClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -631,10 +597,7 @@ impl GenericEndpoint for ChainRepClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         let read_only = match req {
             Some(req) if req.read_only().is_some() => true,
             None if self.last_read_only => true,

@@ -45,18 +45,13 @@ impl CRaftReplica {
                 .skip(self.try_next_slot[&peer] - self.start_slot)
                 .map(|e| {
                     if self.full_copy_mode {
-                        debug_assert!(
-                            e.reqs_cw.avail_data_shards() >= self.majority
-                        );
+                        debug_assert!(e.reqs_cw.avail_data_shards() >= self.majority);
                         LogEntry {
                             term: e.term,
                             reqs_cw: e
                                 .reqs_cw
                                 .subset_copy(
-                                    &Bitmap::from((
-                                        self.population,
-                                        0..self.majority,
-                                    )),
+                                    &Bitmap::from((self.population, 0..self.majority)),
                                     false,
                                 )
                                 .unwrap(),
@@ -68,13 +63,7 @@ impl CRaftReplica {
                             term: e.term,
                             reqs_cw: e
                                 .reqs_cw
-                                .subset_copy(
-                                    &Bitmap::from((
-                                        self.population,
-                                        vec![peer],
-                                    )),
-                                    false,
-                                )
+                                .subset_copy(&Bitmap::from((self.population, vec![peer])), false)
                                 .unwrap(),
                             external: false,
                             log_offset: e.log_offset,
@@ -86,12 +75,10 @@ impl CRaftReplica {
             if slot >= self.try_next_slot[&peer] {
                 let mut now_prev_slot = prev_slot;
                 while !entries.is_empty() {
-                    let end =
-                        cmp::min(entries.len(), self.config.msg_chunk_size);
+                    let end = cmp::min(entries.len(), self.config.msg_chunk_size);
                     let chunk = entries.drain(0..end).collect();
 
-                    let now_prev_term =
-                        self.log[now_prev_slot - self.start_slot].term;
+                    let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
                     self.transport_hub.send_msg(
                         PeerMsg::AppendEntries {
                             term: self.curr_term,
@@ -191,9 +178,7 @@ impl CRaftReplica {
         #[allow(clippy::match_wildcard_for_single_variants)]
         match entry_type {
             Role::Follower => self.handle_logged_follower_append(slot, slot_e),
-            Role::Leader => {
-                self.handle_logged_leader_append(slot, slot_e).await
-            }
+            Role::Leader => self.handle_logged_leader_append(slot, slot_e).await,
             _ => {
                 logged_err!("unexpected log entry type: {:?}", entry_type)
             }

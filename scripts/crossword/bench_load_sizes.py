@@ -146,9 +146,7 @@ def bench_round(remote0, base, repo, protocol, value_size, runlog_path):
         config += "+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, protocol, value_size, config=config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, protocol, value_size, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -191,21 +189,15 @@ def collect_outputs(output_dir):
             sd, sp, sj, sm = 10, 0, 0, 1
             # setting sm here to compensate for unstabilities of printing
             # models to console and other extra work in particular cases
-            if (
-                value_size < 4 * 1024 and protocol == "MultiPaxos"
-            ) or protocol == "Crossword":
+            if (value_size < 4 * 1024 and protocol == "MultiPaxos") or protocol == "Crossword":
                 sm = 1 + PUT_RATIO / 100
             if value_size == 1024 and protocol == "MultiPaxos":
                 sm = 1 + (PUT_RATIO / 2) / 100
             if value_size > 16 * 1024 and protocol == "RSPaxos":
                 sm = 1 + (PUT_RATIO / 2) / 100
-            tput_mean_list = utils.output.list_smoothing(
-                result["tput_sum"], sd, sp, sj, sm
-            )
+            tput_mean_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
             tput_stdev_list = result["tput_stdev"]
-            lat_mean_list = utils.output.list_smoothing(
-                result["lat_avg"], sd, sp, sj, 1 / sm
-            )
+            lat_mean_list = utils.output.list_smoothing(result["lat_avg"], sd, sp, sj, 1 / sm)
             lat_stdev_list = result["lat_stdev"]
 
             results[f"{protocol}{midfix_str}"] = {
@@ -223,36 +215,19 @@ def collect_outputs(output_dir):
         midfix_str = f".{value_size}"
         for protocol in PROTOCOLS:
             if f"{protocol}{midfix_str}" in results:
-                tput_mean_list = results[f"{protocol}{midfix_str}"]["tput"][
-                    "mean"
-                ]
-                tput_stdev_list = results[f"{protocol}{midfix_str}"]["tput"][
-                    "stdev"
-                ]
-                lat_mean_list = results[f"{protocol}{midfix_str}"]["lat"][
-                    "mean"
-                ]
-                lat_stdev_list = results[f"{protocol}{midfix_str}"]["lat"][
-                    "stdev"
-                ]
+                tput_mean_list = results[f"{protocol}{midfix_str}"]["tput"]["mean"]
+                tput_stdev_list = results[f"{protocol}{midfix_str}"]["tput"]["stdev"]
+                lat_mean_list = results[f"{protocol}{midfix_str}"]["lat"]["mean"]
+                lat_stdev_list = results[f"{protocol}{midfix_str}"]["lat"]["stdev"]
 
                 results[f"{protocol}{midfix_str}"] = {
                     "tput": {
                         "mean": sum(tput_mean_list) / len(tput_mean_list),
-                        "stdev": (
-                            sum(s**2 for s in tput_stdev_list)
-                            / len(tput_stdev_list)
-                        )
-                        ** 0.5,
+                        "stdev": (sum(s**2 for s in tput_stdev_list) / len(tput_stdev_list)) ** 0.5,
                     },
                     "lat": {
-                        "mean": (sum(lat_mean_list) / len(lat_mean_list))
-                        / 1000,
-                        "stdev": (
-                            sum(s**2 for s in lat_stdev_list)
-                            / len(lat_stdev_list)
-                        )
-                        ** 0.5
+                        "mean": (sum(lat_mean_list) / len(lat_mean_list)) / 1000,
+                        "stdev": (sum(s**2 for s in lat_stdev_list) / len(lat_stdev_list)) ** 0.5
                         / (1000 * NUM_CLIENTS / CLIENT_PIN_CORES),
                     },
                 }
@@ -294,9 +269,7 @@ def plot_results(results, plots_dir):
     for protocol in PROTOCOLS_ORDER:
         for value_size in VALUE_SIZES:
             midfix_str = f".{value_size}"
-            protocol_results[protocol].append(
-                results[f"{protocol}{midfix_str}"]["tput"]["mean"]
-            )
+            protocol_results[protocol].append(results[f"{protocol}{midfix_str}"]["tput"]["mean"])
         protocol_results[protocol].sort(reverse=True)
 
     xpos = 1
@@ -397,17 +370,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -417,9 +386,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN,
             NETEM_JITTER,
@@ -456,9 +423,7 @@ def main():
 
         print("Fetching client output logs...")
         for remote in remotes.values():
-            utils.file.fetch_files_of_dir(
-                remote, f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remote, f"{base}/output/{EXPER_NAME}", output_path)
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

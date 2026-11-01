@@ -208,9 +208,7 @@ impl CrosswordReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
@@ -268,11 +266,7 @@ impl CrosswordReplica {
     ) -> Result<(), SummersetError> {
         if peer != self.id {
             if self.is_leader() {
-                self.record_heartbeat_rtt(
-                    peer,
-                    self.startup_time.elapsed().as_micros(),
-                    hb_id,
-                );
+                self.record_heartbeat_rtt(peer, self.startup_time.elapsed().as_micros(), hb_id);
             }
 
             // update the peer's reply cnt and its liveness status accordingly
@@ -326,11 +320,7 @@ impl CrosswordReplica {
 
                 // mark this instance as committed
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -350,11 +340,7 @@ impl CrosswordReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!(
-                    "heartbeat commit <- {} until slot {}",
-                    peer,
-                    commit_bar
-                );
+                pf_trace!("heartbeat commit <- {} until slot {}", peer, commit_bar);
             }
         }
 
@@ -393,10 +379,8 @@ impl CrosswordReplica {
     fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         let alive_cnt = self.heartbeater.peer_alive().count();
-        let mut new_pending_accepts: HashMap<
-            ReplicaId,
-            VecDeque<(u128, usize)>,
-        > = (0..self.population)
+        let mut new_pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize)>> = (0..self
+            .population)
             .filter_map(|s| {
                 if s == self.id {
                     None
@@ -430,10 +414,7 @@ impl CrosswordReplica {
                     for (peer, pending) in &mut self.pending_accepts {
                         while let Some(record) = pending.pop_front() {
                             if slot == record.1 {
-                                new_pending_accepts
-                                    .get_mut(peer)
-                                    .unwrap()
-                                    .push_back(record);
+                                new_pending_accepts.get_mut(peer).unwrap().push_back(record);
                             }
                         }
                     }
@@ -511,10 +492,9 @@ impl CrosswordReplica {
                             slot,
                             ballot: inst.bal,
                             value_id,
-                            reqs_cw: inst.reqs_cw.subset_copy(
-                                &assignment[peer as usize],
-                                false,
-                            )?,
+                            reqs_cw: inst
+                                .reqs_cw
+                                .subset_copy(&assignment[peer as usize], false)?,
                             assignment: assignment.clone(),
                         },
                         peer,

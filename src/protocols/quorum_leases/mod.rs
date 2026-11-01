@@ -8,7 +8,7 @@
 //!
 //! TODO: fully support internal key-range partitioned quorum leases
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod durability;
 mod execution;
@@ -36,10 +36,9 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, Command, CommandId, CommandResult, ConfChange,
-    ControlHub, ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater,
-    LeaseManager, LeaseMsg, LeaseNum, LogActionId, ReplicaId, RequestId,
-    StateMachine, StorageHub, TransportHub,
+    ApiReply, ApiRequest, Command, CommandId, CommandResult, ConfChange, ControlHub, ExternalApi,
+    GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, LeaseMsg, LeaseNum, LogActionId,
+    ReplicaId, RequestId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, ConfNum, RespondersConf, SummersetError};
 
@@ -151,8 +150,8 @@ type Ballot = u64;
     Copy,
     Serialize,
     Deserialize,
-    Encode,
-    Decode,
+    SchemaWrite,
+    SchemaRead,
 )]
 enum Status {
     Null = 0,
@@ -236,9 +235,7 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum WalEntry {
     /// Records an update to the largest prepare ballot seen.
     PrepareBal { slot: usize, ballot: Ballot },
@@ -259,9 +256,7 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -275,7 +270,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PeerMsg {
     /// Prepare message from leader to replicas.
     Prepare {
@@ -638,19 +633,14 @@ impl GenericReplica for QuorumLeasesReplica {
             );
         }
         if config.msg_chunk_size == 0 {
-            return logged_err!(
-                "invalid config.msg_chunk_size '{}'",
-                config.msg_chunk_size
-            );
+            return logged_err!("invalid config.msg_chunk_size '{}'", config.msg_chunk_size);
         }
 
         // setup state machine module
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup heartbeat management module
         let mut heartbeater = Heartbeater::new_and_setup(
@@ -711,9 +701,7 @@ impl GenericReplica for QuorumLeasesReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -725,9 +713,7 @@ impl GenericReplica for QuorumLeasesReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
-                .await?;
+        let snapshot_hub = StorageHub::new_and_setup(id, Path::new(&config.snapshot_path)).await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
@@ -738,13 +724,12 @@ impl GenericReplica for QuorumLeasesReplica {
         )
         .await?;
 
-        let mut snapshot_interval = time::interval(Duration::from_secs(
-            if config.snapshot_interval_s > 0 {
+        let mut snapshot_interval =
+            time::interval(Duration::from_secs(if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
             } else {
                 60 // dummy non-zero value to make `time::interval` happy
-            },
-        ));
+            }));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         // [for perf breakdown only]
@@ -795,10 +780,7 @@ impl GenericReplica for QuorumLeasesReplica {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
@@ -1068,8 +1050,7 @@ impl GenericEndpoint for QuorumLeasesClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -1110,8 +1091,7 @@ impl GenericEndpoint for QuorumLeasesClient {
                 .collect();
             for (&id, &server) in &self.servers {
                 pf_debug!("connecting to server {} '{}'...", id, server);
-                let api_stub =
-                    ClientApiStub::new_by_connect(self.id, server).await?;
+                let api_stub = ClientApiStub::new_by_connect(self.id, server).await?;
                 self.api_stubs.insert(id, AtomicRefCell::new(api_stub));
             }
             Ok(())
@@ -1123,8 +1103,7 @@ impl GenericEndpoint for QuorumLeasesClient {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to all servers
         for (id, api_stub) in self.api_stubs.drain() {
-            let mut sent =
-                api_stub.borrow_mut().send_req(Some(&ApiRequest::Leave))?;
+            let mut sent = api_stub.borrow_mut().send_req(Some(&ApiRequest::Leave))?;
             while !sent {
                 sent = api_stub.borrow_mut().send_req(None)?;
             }
@@ -1137,8 +1116,7 @@ impl GenericEndpoint for QuorumLeasesClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -1150,10 +1128,7 @@ impl GenericEndpoint for QuorumLeasesClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         let server_id = match req {
             None => {
                 // last send needs retry
@@ -1163,10 +1138,7 @@ impl GenericEndpoint for QuorumLeasesClient {
                     return logged_err!("last_server_id not set when retrying");
                 }
             }
-            Some(req)
-                if req.read_only().is_some()
-                    && self.near_server_id.is_some() =>
-            {
+            Some(req) if req.read_only().is_some() && self.near_server_id.is_some() => {
                 // read-only request and doing near quorum reads
                 self.near_server_id.unwrap()
             }
@@ -1265,9 +1237,7 @@ impl GenericEndpoint for QuorumLeasesClient {
             // the wait
             if let Some(read_cmd) = rq_retry.take() {
                 if read_cmd.read_only().is_none() {
-                    return logged_err!(
-                        "non-Get command found in reply rq_retry"
-                    );
+                    return logged_err!("non-Get command found in reply rq_retry");
                 }
                 while self.last_server_id.is_some() {
                     self.send_req(None)?;

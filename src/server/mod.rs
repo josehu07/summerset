@@ -14,9 +14,7 @@ pub(crate) use control::ControlHub;
 pub(crate) use external::ExternalApi;
 pub use external::{ApiReply, ApiRequest, ConfChange, RequestId};
 pub(crate) use heartbeat::{HeartbeatEvent, Heartbeater};
-pub(crate) use leaseman::{
-    LeaseAction, LeaseGid, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum,
-};
+pub(crate) use leaseman::{LeaseAction, LeaseGid, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum};
 pub use replica::{GenericReplica, ReplicaId};
 pub(crate) use statemach::StateMachine;
 pub use statemach::{Command, CommandId, CommandResult};

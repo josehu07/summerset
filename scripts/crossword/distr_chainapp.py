@@ -15,16 +15,12 @@ SERVER_LEADER_TIMEOUT = 5000
 SERVER_NOOP_INTERVAL = 100
 
 
-PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}.wal"
-)
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
 
 PROTOCOLS = {"chain_delayed", "chain_mixed", "chainrep", "epaxos"}
 
 
-def run_process_pinned(
-    cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
-):
+def run_process_pinned(cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None):
     cpu_list = None
     if cores_per_proc > 0:
         # get number of processors
@@ -62,9 +58,7 @@ def compose_server_cmd(
     states_midfix,
     fresh_files,
 ):
-    backer_file = PROTOCOL_BACKER_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_file = PROTOCOL_BACKER_PATH(protocol, states_prefix, states_midfix, replica_id)
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -158,9 +152,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-a",
         "--partition",
@@ -175,9 +167,7 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -210,9 +200,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
@@ -222,18 +210,14 @@ def main():
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
     states_midfix = (
-        args.states_midfix
-        if not partition_in_args
-        else f"{args.states_midfix}.{partition}"
+        args.states_midfix if not partition_in_args else f"{args.states_midfix}.{partition}"
     )
 
     # check that number of replicas is valid
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(
-            f"#replicas {args.num_replicas} > #hosts in config file"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -279,9 +263,7 @@ def main():
     interfaces = {}
     for host in hosts:
         print(f"  {host}: ", end="")
-        interface = utils.net.get_interface_name(
-            remote=None if host == args.me else remotes[host]
-        )
+        interface = utils.net.get_interface_name(remote=None if host == args.me else remotes[host])
         print(interface)
         interfaces[host] = interface
 

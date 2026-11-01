@@ -8,9 +8,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::client::ClientId;
 use crate::server::{ApiReply, ApiRequest};
-use crate::utils::{
-    SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
-};
+use crate::utils::{SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry};
 
 /// Client API connection stub.
 pub(crate) struct ClientApiStub {
@@ -61,10 +59,7 @@ impl ClientApiStub {
     ///     (typically after doing a few `recv_reply()`s to free
     ///     up some buffer space)
     ///   - `Err(err)` if any unexpected error occurs
-    pub(crate) fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    pub(crate) fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         if req.is_none() {
             pf_debug!("retrying last unsuccessful send_req");
         }
@@ -83,11 +78,8 @@ impl ClientApiStub {
     }
 
     /// Receives a reply from established server connection.
-    pub(crate) async fn recv_reply(
-        &mut self,
-    ) -> Result<ApiReply, SummersetError> {
-        let reply =
-            safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
+    pub(crate) async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
+        let reply = safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
 
         // pf_trace!("recv reply {:?}", reply);
         Ok(reply)

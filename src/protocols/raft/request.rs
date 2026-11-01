@@ -26,15 +26,9 @@ impl RaftReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                 }
             }
             return Ok(());
@@ -51,10 +45,7 @@ impl RaftReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::normal(
-                            *req_id,
-                            Some(CommandResult::Get { value: None }),
-                        ),
+                        ApiReply::normal(*req_id, Some(CommandResult::Get { value: None })),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);

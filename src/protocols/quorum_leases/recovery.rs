@@ -8,10 +8,7 @@ use crate::utils::SummersetError;
 impl QuorumLeasesReplica {
     /// Apply a durable storage log entry for recovery.
     #[allow(clippy::too_many_lines)]
-    async fn recover_apply_entry(
-        &mut self,
-        entry: WalEntry,
-    ) -> Result<(), SummersetError> {
+    async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         match entry {
             WalEntry::PrepareBal { slot, ballot } => {
                 if slot < self.start_slot {
@@ -66,8 +63,7 @@ impl QuorumLeasesReplica {
                 // update accept_bar
                 if slot == self.accept_bar {
                     while self.accept_bar < self.start_slot + self.insts.len() {
-                        let inst =
-                            &self.insts[self.accept_bar - self.start_slot];
+                        let inst = &self.insts[self.accept_bar - self.start_slot];
                         if inst.status < Status::Accepting {
                             break;
                         }
@@ -87,8 +83,7 @@ impl QuorumLeasesReplica {
                 // state machine
                 if slot == self.commit_bar {
                     while self.commit_bar < self.accept_bar {
-                        let inst =
-                            &mut self.insts[self.commit_bar - self.start_slot];
+                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed {
                             break;
                         }
@@ -106,19 +101,11 @@ impl QuorumLeasesReplica {
                                         .await?;
                                 }
                                 ApiRequest::Conf { delta, .. }
-                                    if Self::is_valid_delta(
-                                        &delta,
-                                        self.population,
-                                    ) =>
+                                    if Self::is_valid_delta(&delta, self.population) =>
                                 {
-                                    Self::apply_conf_delta(
-                                        delta,
-                                        &mut self.qlease_conf,
-                                    )?;
-                                    self.qlease_ver =
-                                        self.commit_bar as ConfNum;
-                                    self.qlease_num =
-                                        self.commit_bar as LeaseNum;
+                                    Self::apply_conf_delta(delta, &mut self.qlease_conf)?;
+                                    self.qlease_ver = self.commit_bar as ConfNum;
+                                    self.qlease_num = self.commit_bar as LeaseNum;
                                 }
                                 _ => {} // ignore other request types
                             }
@@ -136,9 +123,7 @@ impl QuorumLeasesReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

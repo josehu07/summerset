@@ -7,10 +7,7 @@ use crate::utils::SummersetError;
 // MultiPaxosReplica recovery from WAL log
 impl MultiPaxosReplica {
     /// Apply a durable storage log entry for recovery.
-    async fn recover_apply_entry(
-        &mut self,
-        entry: WalEntry,
-    ) -> Result<(), SummersetError> {
+    async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         match entry {
             WalEntry::PrepareBal { slot, ballot } => {
                 if slot < self.start_slot {
@@ -65,8 +62,7 @@ impl MultiPaxosReplica {
                 // update accept_bar
                 if slot == self.accept_bar {
                     while self.accept_bar < self.start_slot + self.insts.len() {
-                        let inst =
-                            &self.insts[self.accept_bar - self.start_slot];
+                        let inst = &self.insts[self.accept_bar - self.start_slot];
                         if inst.status < Status::Accepting {
                             break;
                         }
@@ -86,8 +82,7 @@ impl MultiPaxosReplica {
                 // state machine
                 if slot == self.commit_bar {
                     while self.commit_bar < self.accept_bar {
-                        let inst =
-                            &mut self.insts[self.commit_bar - self.start_slot];
+                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
                         if inst.status < Status::Committed {
                             break;
                         }
@@ -116,9 +111,7 @@ impl MultiPaxosReplica {
     }
 
     /// Recover state from durable storage WAL log.
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.wal_offset, 0);
         loop {
             match self

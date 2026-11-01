@@ -6,7 +6,7 @@
 //!   - <https://www.cs.cmu.edu/~dga/papers/epaxos-sosp2013.pdf>
 //!   - <https://www.usenix.org/system/files/nsdi21-tollman.pdf>
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod dependency;
 mod durability;
@@ -32,9 +32,9 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub,
-    ExternalApi, GenericReplica, HeartbeatEvent, Heartbeater, LogActionId,
-    ReplicaId, StateMachine, StorageHub, TransportHub,
+    ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub, ExternalApi,
+    GenericReplica, HeartbeatEvent, Heartbeater, LogActionId, ReplicaId, StateMachine, StorageHub,
+    TransportHub,
 };
 use crate::utils::{Bitmap, SummersetError};
 
@@ -110,16 +110,7 @@ type SeqNum = u64;
 /// naturally transitive, we just need to record the highest interfering column
 /// index for each row.
 #[derive(
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    Clone,
-    Serialize,
-    Deserialize,
-    Encode,
-    Decode,
-    GetSize,
+    Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize,
 )]
 struct DepSet(Vec<Option<usize>>); // length always == population
 
@@ -134,8 +125,8 @@ struct DepSet(Vec<Option<usize>>); // length always == population
     Copy,
     Serialize,
     Deserialize,
-    Encode,
-    Decode,
+    SchemaWrite,
+    SchemaRead,
     GetSize,
 )]
 enum Status {
@@ -192,8 +183,8 @@ struct ReplicaBookkeeping {
     Copy,
     Serialize,
     Deserialize,
-    Encode,
-    Decode,
+    SchemaWrite,
+    SchemaRead,
     GetSize,
 )]
 struct SlotIdx(ReplicaId, usize);
@@ -247,9 +238,7 @@ struct Instance {
 }
 
 /// Stable storage WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 #[allow(clippy::enum_variant_names)]
 enum WalEntry {
     /// Records a newly initiated `PreAccept` phase instance.
@@ -285,9 +274,7 @@ enum WalEntry {
 // NOTE: the current implementation simply appends a squashed log at the
 //       end of the snapshot file for simplicity. In production, the snapshot
 //       file should be a bounded-sized backend, e.g., an LSM-tree.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -302,7 +289,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PeerMsg {
     /// `PreAccept` message from command leader to replicas.
     PreAccept {
@@ -610,19 +597,14 @@ impl GenericReplica for EPaxosReplica {
             );
         }
         if config.msg_chunk_size == 0 {
-            return logged_err!(
-                "invalid config.msg_chunk_size '{}'",
-                config.msg_chunk_size
-            );
+            return logged_err!("invalid config.msg_chunk_size '{}'", config.msg_chunk_size);
         }
 
         // setup state machine module
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup heartbeat management module
         let mut heartbeater = Heartbeater::new_and_setup(
@@ -652,9 +634,7 @@ impl GenericReplica for EPaxosReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -666,9 +646,7 @@ impl GenericReplica for EPaxosReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
-                .await?;
+        let snapshot_hub = StorageHub::new_and_setup(id, Path::new(&config.snapshot_path)).await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
@@ -679,13 +657,12 @@ impl GenericReplica for EPaxosReplica {
         )
         .await?;
 
-        let mut snapshot_interval = time::interval(Duration::from_secs(
-            if config.snapshot_interval_s > 0 {
+        let mut snapshot_interval =
+            time::interval(Duration::from_secs(if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
             } else {
                 60 // dummy non-zero value to make `time::interval` happy
-            },
-        ));
+            }));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         Ok(EPaxosReplica {
@@ -723,10 +700,7 @@ impl GenericReplica for EPaxosReplica {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
@@ -935,8 +909,7 @@ impl GenericEndpoint for EPaxosClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -970,8 +943,7 @@ impl GenericEndpoint for EPaxosClient {
                 .collect();
             for (&id, &server) in &self.servers {
                 pf_debug!("connecting to server {} '{}'...", id, server);
-                let api_stub =
-                    ClientApiStub::new_by_connect(self.id, server).await?;
+                let api_stub = ClientApiStub::new_by_connect(self.id, server).await?;
                 self.api_stubs.insert(id, api_stub);
             }
             Ok(())
@@ -996,8 +968,7 @@ impl GenericEndpoint for EPaxosClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -1009,10 +980,7 @@ impl GenericEndpoint for EPaxosClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         if self.api_stubs.contains_key(&self.server_id) {
             self.api_stubs
                 .get_mut(&self.server_id)

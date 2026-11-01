@@ -8,9 +8,7 @@ from .. import utils
 SERVER_CLI_PORT = 21379
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: (
-    f"{prefix}/{protocol}{midfix}.{i}.out"
-)
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
 
 UTILITY_PARAM_NAMES = {
     "repl": None,
@@ -35,9 +33,7 @@ def run_process_pinned(i, cmd, cores_per_proc=0, remote=None, cd_dir=None):
         # get number of processors
         num_cpus = utils.proc.get_cpu_count(remote=remote)
         # parse cores_per_proc setting
-        if cores_per_proc != int(cores_per_proc) and (
-            cores_per_proc > 1 or cores_per_proc < -1
-        ):
+        if cores_per_proc != int(cores_per_proc) and (cores_per_proc > 1 or cores_per_proc < -1):
             raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
         if cores_per_proc < 0:
             # negative means starting from CPU 0 (instead from last)
@@ -54,9 +50,7 @@ def run_process_pinned(i, cmd, cores_per_proc=0, remote=None, cd_dir=None):
     if remote is None or len(remote) == 0:
         return utils.proc.run_process(cmd, cd_dir=cd_dir, cpu_list=cpu_list)
     else:
-        return utils.proc.run_process_over_ssh(
-            remote, cmd, cd_dir=cd_dir, cpu_list=cpu_list
-        )
+        return utils.proc.run_process_over_ssh(remote, cmd, cd_dir=cd_dir, cpu_list=cpu_list)
 
 
 def glue_params_str(cli_args, params_list):
@@ -144,9 +138,7 @@ def run_clients(
         server_pub_ip = ipaddrs[server]
         if dist_machs > 0:
             near_id = (
-                hosts.index(
-                    me if dist_machs <= 1 else td_hosts[i % len(td_hosts)]
-                )
+                hosts.index(me if dist_machs <= 1 else td_hosts[i % len(td_hosts)])
                 % num_replicas_for_near
             )
             server_pub_ip = ipaddrs[hosts[near_id]]
@@ -204,15 +196,9 @@ def main():
         default="Etcd",
         help="protocol name (unused yet)",
     )
-    parser.add_argument(
-        "-r", "--release", action="store_true", help="run release mode"
-    )
-    parser.add_argument(
-        "-c", "--config", type=str, help="protocol-specific TOML config string"
-    )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-r", "--release", action="store_true", help="run release mode")
+    parser.add_argument("-c", "--config", type=str, help="protocol-specific TOML config string")
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -232,9 +218,7 @@ def main():
         default=0,
         help="if not 0, set CPU cores affinity",
     )
-    parser.add_argument(
-        "--skip_build", action="store_true", help="if set, skip cargo build"
-    )
+    parser.add_argument("--skip_build", action="store_true", help="if set, skip cargo build")
 
     subparsers = parser.add_subparsers(
         required=True,
@@ -264,24 +248,12 @@ def main():
         default=0,
         help="if > 0, put clients round-robinly on dist_machs machines",
     )
-    parser_bench.add_argument(
-        "-f", "--freq_target", type=int, help="frequency target reqs per sec"
-    )
-    parser_bench.add_argument(
-        "-v", "--value_size", type=str, help="value sizes over time"
-    )
-    parser_bench.add_argument(
-        "-k", "--num_keys", type=int, help="number of keys to choose from"
-    )
-    parser_bench.add_argument(
-        "-w", "--put_ratio", type=int, help="percentage of puts"
-    )
-    parser_bench.add_argument(
-        "-y", "--ycsb_trace", type=str, help="YCSB trace file"
-    )
-    parser_bench.add_argument(
-        "-l", "--length_s", type=int, help="run length in secs"
-    )
+    parser_bench.add_argument("-f", "--freq_target", type=int, help="frequency target reqs per sec")
+    parser_bench.add_argument("-v", "--value_size", type=str, help="value sizes over time")
+    parser_bench.add_argument("-k", "--num_keys", type=int, help="number of keys to choose from")
+    parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
+    parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
+    parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
     parser_bench.add_argument(
         "--expect_halt",
         action="store_true",
@@ -308,9 +280,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir = f"{base}/{repo}"
 
     # check that I am indeed the "me" host
@@ -349,9 +319,7 @@ def main():
 
     # check that the utility mode is supported
     if UTILITY_PARAM_NAMES[args.utility] is None:
-        raise ValueError(
-            f"utility mode '{args.utility}' not supported for etcd"
-        )
+        raise ValueError(f"utility mode '{args.utility}' not supported for etcd")
 
     # run client executable(s)
     client_procs = run_clients(

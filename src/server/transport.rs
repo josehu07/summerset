@@ -11,7 +11,6 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bincode::{Decode, Encode};
 use bytes::BytesMut;
 use dashmap::DashMap;
 use get_size::GetSize;
@@ -23,17 +22,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
-    Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+    Bitmap, Codec, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
     tcp_connect_with_retry,
 };
 
 /// Peer-peer message wrapper type that includes leave notification variants.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Encode, Deserialize, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, SchemaWrite, Deserialize, SchemaRead, GetSize)]
 enum PeerMessage<Msg> {
     /// Normal protocol-specific message.
     Msg { msg: Msg },
@@ -88,16 +86,8 @@ pub(crate) struct TransportHub<Msg> {
 // TransportHub public API implementation
 impl<Msg> TransportHub<Msg>
 where
-    Msg: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + GetSize
-        + Send
-        + Sync
-        + 'static,
+    Msg:
+        fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + GetSize + Send + Sync + 'static,
 {
     /// Creates a new server internal TCP transport hub. Spawns the peer
     /// acceptor task. Creates a recv channel for listening on peers'
@@ -107,21 +97,16 @@ where
         population: u8,
         p2p_addr: SocketAddr,
         // if non-null, a shortcut channel to feed lease messages directly in:
-        tx_leases: HashMap<
-            LeaseGid,
-            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
-        >,
+        tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Result<Self, SummersetError> {
         if population <= me {
             return logged_err!("invalid population {}", population);
         }
 
-        let (tx_recv, rx_recv) =
-            mpsc::unbounded_channel::<(ReplicaId, PeerMessage<Msg>)>();
+        let (tx_recv, rx_recv) = mpsc::unbounded_channel::<(ReplicaId, PeerMessage<Msg>)>();
 
-        let tx_sends: Arc<
-            DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>,
-        > = Arc::new(DashMap::new());
+        let tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>> =
+            Arc::new(DashMap::new());
 
         let peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>> =
             Arc::new(DashMap::new());
@@ -142,8 +127,7 @@ where
             tx_connack,
             tx_leases,
         );
-        let peer_acceptor_handle =
-            tokio::spawn(async move { acceptor.run().await });
+        let peer_acceptor_handle = tokio::spawn(async move { acceptor.run().await });
 
         Ok(TransportHub {
             me,
@@ -178,10 +162,7 @@ where
 
     /// Waits for at least enough number of peers have been connected to me to
     /// form a group of specified size.
-    pub(crate) async fn wait_for_group(
-        &self,
-        group: u8,
-    ) -> Result<(), SummersetError> {
+    pub(crate) async fn wait_for_group(&self, group: u8) -> Result<(), SummersetError> {
         if group == 0 {
             logged_err!("invalid group size {}", group)
         } else {
@@ -255,11 +236,7 @@ where
     }
 
     /// Sends a message to a specified peer by sending to the send channel.
-    pub(crate) fn send_msg(
-        &mut self,
-        msg: Msg,
-        peer: ReplicaId,
-    ) -> Result<(), SummersetError> {
+    pub(crate) fn send_msg(&mut self, msg: Msg, peer: ReplicaId) -> Result<(), SummersetError> {
         self.send_msg_inner(PeerMessage::Msg { msg }, peer)
     }
 
@@ -313,9 +290,7 @@ where
 
     /// Receives a message from some peer by receiving from the recv channel.
     /// Returns a pair of `(peer_id, msg)` on success.
-    pub(crate) async fn recv_msg(
-        &mut self,
-    ) -> Result<(ReplicaId, Msg), SummersetError> {
+    pub(crate) async fn recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
         if let Some((id, peer_msg)) = self.rx_recv.recv().await {
             if let PeerMessage::Msg { msg } = peer_msg {
                 Ok((id, msg))
@@ -329,9 +304,7 @@ where
 
     /// Try to receive the next message using `try_recv()`.
     #[allow(dead_code)]
-    pub(crate) fn try_recv_msg(
-        &mut self,
-    ) -> Result<(ReplicaId, Msg), SummersetError> {
+    pub(crate) fn try_recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
         match self.rx_recv.try_recv() {
             Ok((id, peer_msg)) => {
                 if let PeerMessage::Msg { msg } = peer_msg {
@@ -397,8 +370,7 @@ struct TransportHubAcceptorTask<Msg> {
     rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
     tx_connack: mpsc::UnboundedSender<ReplicaId>,
 
-    tx_leases:
-        HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+    tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
     rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
@@ -406,15 +378,7 @@ struct TransportHubAcceptorTask<Msg> {
 
 impl<Msg> TransportHubAcceptorTask<Msg>
 where
-    Msg: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + Send
-        + Sync
-        + 'static,
+    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + Send + Sync + 'static,
 {
     /// Creates the peer acceptor task.
     #[allow(clippy::too_many_arguments)]
@@ -422,16 +386,11 @@ where
         me: ReplicaId,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         peer_listener: TcpListener,
-        tx_sends: Arc<
-            DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>,
-        >,
+        tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
         peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
         rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
         tx_connack: mpsc::UnboundedSender<ReplicaId>,
-        tx_leases: HashMap<
-            LeaseGid,
-            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
-        >,
+        tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
         // of peer messenger tasks
@@ -477,8 +436,7 @@ where
             self.tx_leases.clone(),
             self.tx_exit.clone(),
         );
-        let peer_messenger_handle =
-            tokio::spawn(async move { messenger.run().await });
+        let peer_messenger_handle = tokio::spawn(async move { messenger.run().await });
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
 
@@ -514,8 +472,7 @@ where
             self.tx_leases.clone(),
             self.tx_exit.clone(),
         );
-        let peer_messenger_handle =
-            tokio::spawn(async move { messenger.run().await });
+        let peer_messenger_handle = tokio::spawn(async move { messenger.run().await });
         self.peer_messenger_handles
             .insert(id, peer_messenger_handle);
 
@@ -524,10 +481,7 @@ where
     }
 
     /// Removes handles of a left peer connection.
-    fn remove_left_peer(
-        &mut self,
-        id: ReplicaId,
-    ) -> Result<(), SummersetError> {
+    fn remove_left_peer(&mut self, id: ReplicaId) -> Result<(), SummersetError> {
         if !self.tx_sends.contains_key(&id) {
             return logged_err!("peer {} not found among connected ones", id);
         }
@@ -613,8 +567,7 @@ struct TransportHubMessengerTask<Msg> {
     write_buf_cursor: usize,
     retrying: bool,
 
-    tx_leases:
-        HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
+    tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
     tx_exit: mpsc::UnboundedSender<ReplicaId>,
 }
@@ -622,15 +575,7 @@ struct TransportHubMessengerTask<Msg> {
 // TransportHub peer_messenger task implementation
 impl<Msg> TransportHubMessengerTask<Msg>
 where
-    Msg: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + Send
-        + Sync
-        + 'static,
+    Msg: fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + Send + Sync + 'static,
 {
     /// Creates a per-peer messenger task.
     fn new(
@@ -639,10 +584,7 @@ where
         conn: TcpStream,
         rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
-        tx_leases: HashMap<
-            LeaseGid,
-            mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>,
-        >,
+        tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
         tx_exit: mpsc::UnboundedSender<ReplicaId>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
@@ -856,15 +798,7 @@ mod tests {
     use super::*;
 
     #[derive(
-        Debug,
-        Clone,
-        PartialEq,
-        Eq,
-        Serialize,
-        Encode,
-        Deserialize,
-        Decode,
-        GetSize,
+        Debug, Clone, PartialEq, Eq, Serialize, SchemaWrite, Deserialize, SchemaRead, GetSize,
     )]
     struct TestMsg(String);
 
@@ -915,13 +849,9 @@ mod tests {
         });
         tokio::spawn(async move {
             // replica 2
-            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
-                2,
-                3,
-                "127.0.0.1:30012".parse()?,
-                HashMap::new(),
-            )
-            .await?;
+            let mut hub: TransportHub<TestMsg> =
+                TransportHub::new_and_setup(2, 3, "127.0.0.1:30012".parse()?, HashMap::new())
+                    .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -936,13 +866,8 @@ mod tests {
             Ok::<(), SummersetError>(())
         });
         // replica 0
-        let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
-            0,
-            3,
-            "127.0.0.1:30010".parse()?,
-            HashMap::new(),
-        )
-        .await?;
+        let mut hub: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?, HashMap::new()).await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30011".parse()?).await?;
         hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
@@ -964,12 +889,7 @@ mod tests {
         // send a lease message to 1 only
         let mut map = Bitmap::new(3, false);
         map.set(1, true)?;
-        hub.bcast_lease_msg(
-            0,
-            7,
-            LeaseMsg::Guard { accept_bar: None },
-            Some(map),
-        )?;
+        hub.bcast_lease_msg(0, 7, LeaseMsg::Guard { accept_bar: None }, Some(map))?;
         // send termination message to 1 and 2
         hub.bcast_msg(TestMsg("terminate".into()), None)?;
         Ok(())
@@ -981,13 +901,9 @@ mod tests {
         let barrier2 = barrier.clone();
         tokio::spawn(async move {
             // replica 1/2
-            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
-                1,
-                3,
-                "127.0.0.1:30111".parse()?,
-                HashMap::new(),
-            )
-            .await?;
+            let mut hub: TransportHub<TestMsg> =
+                TransportHub::new_and_setup(1, 3, "127.0.0.1:30111".parse()?, HashMap::new())
+                    .await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -997,26 +913,17 @@ mod tests {
             // leave and come back as 2
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
-                2,
-                3,
-                "127.0.0.1:30112".parse()?,
-                HashMap::new(),
-            )
-            .await?;
+            let mut hub: TransportHub<TestMsg> =
+                TransportHub::new_and_setup(2, 3, "127.0.0.1:30112".parse()?, HashMap::new())
+                    .await?;
             hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
             Ok::<(), SummersetError>(())
         });
         // replica 0
-        let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
-            0,
-            3,
-            "127.0.0.1:30110".parse()?,
-            HashMap::new(),
-        )
-        .await?;
+        let mut hub: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?, HashMap::new()).await?;
         barrier.wait().await;
         hub.connect_to_peer(1, "127.0.0.1:30111".parse()?).await?;
         assert!(hub.current_peers()?.get(1)?);

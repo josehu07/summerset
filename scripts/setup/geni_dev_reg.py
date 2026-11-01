@@ -5,9 +5,7 @@ from geni import portal  # type: ignore
 from geni.rspec import pg as rspec  # type: ignore  # noqa: F401
 
 # Primary partition's disk image.
-DISK_IMAGE = (
-    "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.reg"
-)
+DISK_IMAGE = "urn:publicid:IDN+wisc.cloudlab.us+image+advosuwmadison-PG0:smr.dev.reg"
 
 # Create a portal context, needed to defined parameters.
 pc = portal.Context()
@@ -36,19 +34,13 @@ params = pc.bindParameters()
 
 # Check parameter validity.
 if params.nodeCount < 1 or params.nodeCount > 25:
-    pc.reportError(
-        portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"])
-    )
+    pc.reportError(portal.ParameterError("#nodes must be >= 1 and <= 25", ["nodeCount"]))
 
 if params.nodeType.strip() == "":
-    pc.reportError(
-        portal.ParameterError("Physical node type is empty", ["nodeType"])
-    )
+    pc.reportError(portal.ParameterError("Physical node type is empty", ["nodeType"]))
 tokens = params.nodeType.split(",")
 if len(tokens) != 1:
-    pc.reportError(
-        portal.ParameterError("Only a single type is allowed", ["nodeType"])
-    )
+    pc.reportError(portal.ParameterError("Only a single type is allowed", ["nodeType"]))
 
 pc.verifyParameters()
 

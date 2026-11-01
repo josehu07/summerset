@@ -12,9 +12,7 @@ SERVER_LISTEN_PORT = 26257
 SERVER_HTTP_PORT = 28080
 
 
-PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}"
-)
+PROTOCOL_STORE_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}"
 
 PROTOCOLS = {"Raft", "Crossword", "CRaft"}
 
@@ -68,9 +66,7 @@ def compose_server_cmd(
     states_midfix,
     fresh_files,
 ):
-    backer_dir = PROTOCOL_STORE_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_dir = PROTOCOL_STORE_PATH(protocol, states_prefix, states_midfix, replica_id)
     if fresh_files:
         utils.proc.run_process_over_ssh(
             remote,
@@ -120,15 +116,11 @@ def launch_servers(
     if cluster_size != len(remotes):
         raise ValueError(f"invalid cluster_size: {cluster_size}")
 
-    join_list = [
-        f"{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(cluster_size)
-    ]
+    join_list = [f"{ipaddrs[hosts[r]]}:{SERVER_LISTEN_PORT}" for r in range(cluster_size)]
 
     extra_env = {"COCKROACH_RAFT_ENABLE_CHECKQUORUM": "false"}
     if value_size < 1 or value_size > 4096:
-        raise ValueError(
-            f"textScale {value_size} too large: expect in range [1, 4096]"
-        )
+        raise ValueError(f"textScale {value_size} too large: expect in range [1, 4096]")
     extra_env["COCKROACH_TPCC_TEXT_SCALE"] = str(value_size)
     if size_profiling:
         extra_env["COCKROACH_RAFT_MSG_SIZE_PROFILING"] = "true"
@@ -258,9 +250,7 @@ def compose_setting_cmds(init_sql_addr, try_force_leader):
 
 
 def compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader):
-    alter_sql = (
-        f"ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas}"
-    )
+    alter_sql = f"ALTER RANGE default CONFIGURE ZONE USING num_replicas={num_replicas}"
     if try_force_leader:
         alter_sql += ",lease_preferences ='[[+node=n0]]'"
     alter_sql += ";"
@@ -282,26 +272,20 @@ def set_proper_settings(ipaddrs, hosts, cd_dir, num_replicas, try_force_leader):
         proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
         rc = proc.wait()
         if rc != 0:
-            raise RuntimeError(
-                f"failed to set proper cluster settings: rc {rc}"
-            )
+            raise RuntimeError(f"failed to set proper cluster settings: rc {rc}")
 
     cmd = compose_alter_cmd(init_sql_addr, num_replicas, try_force_leader)
     proc = run_process_pinned(cmd, capture_stderr=False, cd_dir=cd_dir)
     rc = proc.wait()
     if rc != 0:
-        raise RuntimeError(
-            f"failed to set num_replicas to {num_replicas}: rc {rc}"
-        )
+        raise RuntimeError(f"failed to set num_replicas to {num_replicas}: rc {rc}")
 
 
 def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-c",
         "--cluster_size",
@@ -316,9 +300,7 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -391,9 +373,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_summerset = f"{base}/{repo}"
     cd_dir_cockroach = f"{base}/{COCK_REPO_NAME}"
 
@@ -405,13 +385,9 @@ def main():
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(
-            f"#replicas {args.num_replicas} > #hosts in config file"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     if args.num_replicas > args.cluster_size:
-        raise ValueError(
-            f"#replicas {args.num_replicas} > cluster size {args.cluster_size}"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > cluster size {args.cluster_size}")
     hosts = hosts[: args.cluster_size]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -456,9 +432,7 @@ def main():
     # msg size profiling assumes '/tmp/cockroach/size-profiles/' exists
     if args.size_profiling:
         if "/tmp/cockroach" not in args.states_prefix:
-            raise ValueError(
-                "msg size profiling requires '/tmp/cockroach' in `states_prefix`"
-            )
+            raise ValueError("msg size profiling requires '/tmp/cockroach' in `states_prefix`")
         print("Preparing size-profiles folder...")
         prepare_procs.clear()
         for host in hosts:

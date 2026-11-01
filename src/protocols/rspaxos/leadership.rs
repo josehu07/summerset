@@ -141,9 +141,7 @@ impl RSPaxosReplica {
 
             // do reconstruction reads for all committed instances that do not
             // hold enough available shards for reconstruction
-            if inst.status == Status::Committed
-                && inst.reqs_cw.avail_shards() < self.majority
-            {
+            if inst.status == Status::Committed && inst.reqs_cw.avail_shards() < self.majority {
                 recon_slots.push(slot);
             }
         }
@@ -185,9 +183,7 @@ impl RSPaxosReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
@@ -278,11 +274,7 @@ impl RSPaxosReplica {
 
                 // mark this instance as committed
                 inst.status = Status::Committed;
-                pf_debug!(
-                    "committed instance at slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
+                pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
 
                 // record commit event
                 self.storage_hub.submit_action(
@@ -302,11 +294,7 @@ impl RSPaxosReplica {
             }
 
             if commit_cnt > 0 {
-                pf_trace!(
-                    "heartbeat commit <- {} until slot {}",
-                    peer,
-                    commit_bar
-                );
+                pf_trace!("heartbeat commit <- {} until slot {}", peer, commit_bar);
             }
         }
 

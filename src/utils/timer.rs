@@ -36,11 +36,7 @@ impl Timer {
     /// If `allow_backwards` is true, the timer will allow kicking off to a
     /// deadline that's earlier than previously kicked off deadline (doing
     /// so adds a slight `tokio::select!` overhead).
-    pub fn new<F>(
-        use_notify: bool,
-        explode_fn: Option<F>,
-        allow_backwards: bool,
-    ) -> Self
+    pub fn new<F>(use_notify: bool, explode_fn: Option<F>, allow_backwards: bool) -> Self
     where
         F: Fn() + Send + 'static,
     {

@@ -27,15 +27,9 @@ impl RSPaxosReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                 }
             }
             return Ok(());
@@ -52,10 +46,7 @@ impl RSPaxosReplica {
                 } = req
                 {
                     self.external_api.send_reply(
-                        ApiReply::normal(
-                            *req_id,
-                            Some(CommandResult::Get { value: None }),
-                        ),
+                        ApiReply::normal(*req_id, Some(CommandResult::Get { value: None })),
                         *client,
                     )?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
@@ -69,11 +60,8 @@ impl RSPaxosReplica {
         }
 
         // compute the complete Reed-Solomon codeword for the batch data
-        let mut reqs_cw = RSCodeword::from_data(
-            req_batch,
-            self.majority,
-            self.population - self.majority,
-        )?;
+        let mut reqs_cw =
+            RSCodeword::from_data(req_batch, self.majority, self.population - self.majority)?;
         reqs_cw.compute_parity(Some(&self.rs_coder))?;
 
         // create a new instance in the first null slot (or append a new one
@@ -100,10 +88,9 @@ impl RSPaxosReplica {
         pf_debug!("enter Accept phase for slot {} bal {}", slot, inst.bal);
 
         // record update to largest accepted ballot and corresponding data
-        let subset_copy = inst.reqs_cw.subset_copy(
-            &Bitmap::from((self.population, vec![self.id])),
-            false,
-        )?;
+        let subset_copy = inst
+            .reqs_cw
+            .subset_copy(&Bitmap::from((self.population, vec![self.id])), false)?;
         inst.voted = (inst.bal, subset_copy.clone());
         self.storage_hub.submit_action(
             Self::make_log_action_id(slot, Status::Accepting),
@@ -132,10 +119,9 @@ impl RSPaxosReplica {
                 PeerMsg::Accept {
                     slot,
                     ballot: inst.bal,
-                    reqs_cw: inst.reqs_cw.subset_copy(
-                        &Bitmap::from((self.population, vec![peer])),
-                        false,
-                    )?,
+                    reqs_cw: inst
+                        .reqs_cw
+                        .subset_copy(&Bitmap::from((self.population, vec![peer])), false)?,
                 },
                 peer,
             )?;

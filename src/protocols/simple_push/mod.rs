@@ -4,7 +4,7 @@
 //! replicas. Upon receiving acknowledgement from all peers, executes the
 //! command on the state machine and replies.
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod durability;
 mod execution;
@@ -26,8 +26,8 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    ReplicaId, StateMachine, StorageHub, TransportHub,
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, ReplicaId,
+    StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, SummersetError};
 
@@ -60,9 +60,7 @@ impl Default for ReplicaConfigSimplePush {
 }
 
 /// WAL log entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum WalEntry {
     FromClient {
         reqs: Vec<(ClientId, ApiRequest)>,
@@ -75,7 +73,7 @@ enum WalEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PushMsg {
     Push {
         src_inst_idx: usize,
@@ -182,18 +180,11 @@ impl GenericReplica for SimplePushReplica {
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            HashMap::new(),
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr, HashMap::new()).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -204,9 +195,7 @@ impl GenericReplica for SimplePushReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -242,10 +231,7 @@ impl GenericReplica for SimplePushReplica {
         })
     }
 
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable storage WAL log
         self.recover_from_wal().await?;
 
@@ -416,8 +402,7 @@ impl GenericEndpoint for SimplePushClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -433,8 +418,7 @@ impl GenericEndpoint for SimplePushClient {
             // find a server to connect to, starting from provided server_id
             debug_assert!(!servers_info.is_empty());
             while !servers_info.contains_key(&self.config.server_id) {
-                self.config.server_id =
-                    (self.config.server_id + 1) % population;
+                self.config.server_id = (self.config.server_id + 1) % population;
             }
             // connect to that server
             pf_debug!(
@@ -468,8 +452,7 @@ impl GenericEndpoint for SimplePushClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -481,10 +464,7 @@ impl GenericEndpoint for SimplePushClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         match self.api_stub {
             Some(ref mut api_stub) => api_stub.send_req(req),
             None => Err(SummersetError::msg("client not set up")),

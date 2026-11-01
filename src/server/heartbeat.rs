@@ -67,10 +67,7 @@ impl Heartbeater {
         send_interval: Duration,
     ) -> Result<Heartbeater, SummersetError> {
         if hear_timeout_min < Duration::from_millis(100) {
-            return logged_err!(
-                "invalid heartbeat min hear_timeout {:?}",
-                hear_timeout_min
-            );
+            return logged_err!("invalid heartbeat min hear_timeout {:?}", hear_timeout_min);
         }
         if hear_timeout_max < hear_timeout_min + Duration::from_millis(100) {
             return logged_err!(
@@ -79,13 +76,8 @@ impl Heartbeater {
                 hear_timeout_min
             );
         }
-        if send_interval < Duration::from_millis(1)
-            || send_interval > hear_timeout_max
-        {
-            return logged_err!(
-                "invalid heartbeat send_interval {:?}",
-                send_interval
-            );
+        if send_interval < Duration::from_millis(1) || send_interval > hear_timeout_max {
+            return logged_err!("invalid heartbeat send_interval {:?}", send_interval);
         }
 
         let mut send_interval = time::interval(send_interval);
@@ -104,9 +96,9 @@ impl Heartbeater {
                         Timer::new(
                             false,
                             Some(move || {
-                                tx_timeout_ref.send(p).expect(
-                                    "sending to tx_timeout_ref should succeed",
-                                );
+                                tx_timeout_ref
+                                    .send(p)
+                                    .expect("sending to tx_timeout_ref should succeed");
                             }),
                             false,
                         ),
@@ -138,9 +130,7 @@ impl Heartbeater {
     }
 
     /// Waits for a heartbeat-related timeout event.
-    pub(crate) async fn get_event(
-        &mut self,
-    ) -> Result<HeartbeatEvent, SummersetError> {
+    pub(crate) async fn get_event(&mut self) -> Result<HeartbeatEvent, SummersetError> {
         loop {
             tokio::select! {
                 // a hearing timeout
@@ -172,10 +162,8 @@ impl Heartbeater {
     fn kickoff_timer_inner(&self, timer: &Timer) -> Result<(), SummersetError> {
         timer.cancel()?;
 
-        let timeout_ms = rand::rng().random_range(
-            self.hear_timeout_min.as_millis()
-                ..=self.hear_timeout_max.as_millis(),
-        );
+        let timeout_ms = rand::rng()
+            .random_range(self.hear_timeout_min.as_millis()..=self.hear_timeout_max.as_millis());
         // pf_trace!("kickoff hb_hear_timer @ {} ms", timeout_ms);
         #[allow(clippy::cast_possible_truncation)]
         timer.kickoff(Duration::from_millis(timeout_ms as u64))
@@ -277,10 +265,7 @@ impl Heartbeater {
 
     /// Called upon each hearing, updates a peer's heard heartbeat counter,
     /// and checks if we should speculate that the peer is back up.
-    pub(crate) fn update_heard_cnt(
-        &mut self,
-        peer: ReplicaId,
-    ) -> Result<(), SummersetError> {
+    pub(crate) fn update_heard_cnt(&mut self, peer: ReplicaId) -> Result<(), SummersetError> {
         if let Some(cnts) = self.reply_cnts.get_mut(&peer) {
             cnts.0 += 1;
 

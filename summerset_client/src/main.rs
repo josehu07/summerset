@@ -21,8 +21,7 @@ use tokio::time::Duration;
 mod clients;
 mod drivers;
 use crate::clients::{
-    ClientBench, ClientMess, ClientMode, ClientRepl, ClientTester,
-    ModeParamsBench,
+    ClientBench, ClientMess, ClientMode, ClientRepl, ClientTester, ModeParamsBench,
 };
 
 mod zookeeper;
@@ -93,9 +92,7 @@ struct CliArgs {
 impl CliArgs {
     /// Sanitize command line arguments, return `Ok(mode, protocol_or_system)`
     /// on success or `Err(SummersetError)` on any error.
-    fn sanitize(
-        &self,
-    ) -> Result<(ClientMode, SmrProtocolOrSystem), SummersetError> {
+    fn sanitize(&self) -> Result<(ClientMode, SmrProtocolOrSystem), SummersetError> {
         if self.threads < 2 {
             Err(SummersetError::msg(format!(
                 "invalid number of threads {}",
@@ -107,17 +104,12 @@ impl CliArgs {
                 self.timeout_ms
             )))
         } else {
-            let mode = ClientMode::parse_name(&self.utility).ok_or(
-                SummersetError::msg(format!(
-                    "utility mode '{}' unrecognized",
-                    self.utility
-                )),
+            let mode = ClientMode::parse_name(&self.utility).ok_or(SummersetError::msg(
+                format!("utility mode '{}' unrecognized", self.utility),
+            ))?;
+            let protocol = SmrProtocolOrSystem::parse_name(&self.protocol).ok_or(
+                SummersetError::msg(format!("protocol name '{}' unrecognized", self.protocol)),
             )?;
-            let protocol = SmrProtocolOrSystem::parse_name(&self.protocol)
-                .ok_or(SummersetError::msg(format!(
-                    "protocol name '{}' unrecognized",
-                    self.protocol
-                )))?;
             Ok((mode, protocol))
         }
     }
@@ -163,10 +155,8 @@ fn client_main() -> Result<(), SummersetError> {
                 match mode {
                     ClientMode::Repl => {
                         // run interactive REPL loop
-                        let mut repl = ClientRepl::new(
-                            endpoint,
-                            Duration::from_millis(args.timeout_ms),
-                        );
+                        let mut repl =
+                            ClientRepl::new(endpoint, Duration::from_millis(args.timeout_ms));
                         repl.run().await?;
                     }
                     ClientMode::Bench => {
@@ -205,8 +195,7 @@ fn client_main() -> Result<(), SummersetError> {
                 match mode {
                     ClientMode::Bench => {
                         // run benchmarking client
-                        let mut bench =
-                            ZooKeeperBench::new(session, params_str)?;
+                        let mut bench = ZooKeeperBench::new(session, params_str)?;
                         bench.run().await?;
                     }
                     _ => {

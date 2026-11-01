@@ -1,9 +1,8 @@
 //! Closed-loop client-side driver implementation.
 
 use summerset::{
-    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, CommandResult,
-    ConfChange, GenericEndpoint, RequestId, SummersetError, Timer, logged_err,
-    pf_debug, pf_error,
+    ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, CommandResult, ConfChange,
+    GenericEndpoint, RequestId, SummersetError, Timer, logged_err, pf_debug, pf_error,
 };
 use tokio::time::{Duration, Instant};
 
@@ -26,10 +25,7 @@ pub(crate) struct DriverClosedLoop {
 
 impl DriverClosedLoop {
     /// Creates a new closed-loop client.
-    pub(crate) fn new(
-        endpoint: Box<dyn GenericEndpoint>,
-        timeout: Duration,
-    ) -> Self {
+    pub(crate) fn new(endpoint: Box<dyn GenericEndpoint>, timeout: Duration) -> Self {
         DriverClosedLoop {
             endpoint,
             next_req: 0,
@@ -44,20 +40,14 @@ impl DriverClosedLoop {
     }
 
     /// Sends leave notification and forgets about the current TCP connections.
-    pub(crate) async fn leave(
-        &mut self,
-        permanent: bool,
-    ) -> Result<(), SummersetError> {
+    pub(crate) async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         self.endpoint.leave(permanent).await
     }
 
     /// Attempts to send a request, retrying immediately if receiving
     /// `WouldBlock` failure. This shortcut is used here because TCP write
     /// blocking is not expected with a closed-loop client.
-    fn send_req_insist(
-        &mut self,
-        req: &ApiRequest,
-    ) -> Result<(), SummersetError> {
+    fn send_req_insist(&mut self, req: &ApiRequest) -> Result<(), SummersetError> {
         let mut success = self.endpoint.send_req(Some(req))?;
         while !success {
             success = self.endpoint.send_req(None)?;
@@ -68,9 +58,7 @@ impl DriverClosedLoop {
 
     /// Waits on a reply from the service with timeout. Returns `Ok(None)` if
     /// timed-out.
-    async fn recv_reply_timed(
-        &mut self,
-    ) -> Result<Option<ApiReply>, SummersetError> {
+    async fn recv_reply_timed(&mut self) -> Result<Option<ApiReply>, SummersetError> {
         self.timer.kickoff(self.timeout)?;
 
         tokio::select! {
@@ -87,10 +75,7 @@ impl DriverClosedLoop {
     }
 
     /// Sends a Get request and waits for its reply.
-    pub(crate) async fn get(
-        &mut self,
-        key: &str,
-    ) -> Result<DriverReply, SummersetError> {
+    pub(crate) async fn get(&mut self, key: &str) -> Result<DriverReply, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 
@@ -125,8 +110,7 @@ impl DriverClosedLoop {
                         }
 
                         Some(CommandResult::Get { value }) => {
-                            let latency =
-                                Instant::now().duration_since(issue_ts);
+                            let latency = Instant::now().duration_since(issue_ts);
                             return Ok(DriverReply::Success {
                                 req_id,
                                 cmd_result: CommandResult::Get { value },
@@ -135,9 +119,7 @@ impl DriverClosedLoop {
                         }
 
                         _ => {
-                            return logged_err!(
-                                "command type mismatch: expected Get"
-                            );
+                            return logged_err!("command type mismatch: expected Get");
                         }
                     }
                 }
@@ -196,8 +178,7 @@ impl DriverClosedLoop {
                         }
 
                         Some(CommandResult::Put { old_value }) => {
-                            let latency =
-                                Instant::now().duration_since(issue_ts);
+                            let latency = Instant::now().duration_since(issue_ts);
                             return Ok(DriverReply::Success {
                                 req_id,
                                 cmd_result: CommandResult::Put { old_value },
@@ -206,9 +187,7 @@ impl DriverClosedLoop {
                         }
 
                         _ => {
-                            return logged_err!(
-                                "command type mismatch: expected Put"
-                            );
+                            return logged_err!("command type mismatch: expected Put");
                         }
                     }
                 }
@@ -225,10 +204,7 @@ impl DriverClosedLoop {
     }
 
     /// Sends a responders config change request and waits for its reply.
-    pub(crate) async fn conf(
-        &mut self,
-        delta: ConfChange,
-    ) -> Result<DriverReply, SummersetError> {
+    pub(crate) async fn conf(&mut self, delta: ConfChange) -> Result<DriverReply, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
 

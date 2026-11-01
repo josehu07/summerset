@@ -12,13 +12,11 @@ impl ChainRepReplica {
         cmd_id: CommandId,
         cmd_result: CommandResult,
     ) -> Result<(), SummersetError> {
-        let (slot_or_req_id, cmd_idx_or_client, read_only) =
-            Self::split_command_id(cmd_id);
+        let (slot_or_req_id, cmd_idx_or_client, read_only) = Self::split_command_id(cmd_id);
         if read_only {
             // tail executed read-only command
             debug_assert!(self.is_tail());
-            let (req_id, client) =
-                (slot_or_req_id as RequestId, cmd_idx_or_client as ClientId);
+            let (req_id, client) = (slot_or_req_id as RequestId, cmd_idx_or_client as ClientId);
             pf_trace!(
                 "executed read-only cmd for client {} req_id {}",
                 client,
@@ -27,15 +25,9 @@ impl ChainRepReplica {
 
             // reply back to the client
             if self.external_api.has_client(client) {
-                self.external_api.send_reply(
-                    ApiReply::normal(req_id, Some(cmd_result)),
-                    client,
-                )?;
-                pf_trace!(
-                    "replied -> client {} for read-only req {}",
-                    client,
-                    req_id
-                );
+                self.external_api
+                    .send_reply(ApiReply::normal(req_id, Some(cmd_result)), client)?;
+                pf_trace!("replied -> client {} for read-only req {}", client, req_id);
             }
         } else {
             // node executed non read-only command
@@ -56,10 +48,8 @@ impl ChainRepReplica {
                 let (client, ref req) = self.log[slot].reqs[cmd_idx];
                 if let ApiRequest::Req { id: req_id, .. } = req {
                     if self.external_api.has_client(client) {
-                        self.external_api.send_reply(
-                            ApiReply::normal(*req_id, Some(cmd_result)),
-                            client,
-                        )?;
+                        self.external_api
+                            .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), client)?;
                         pf_trace!(
                             "replied -> client {} for slot {} idx {}",
                             client,

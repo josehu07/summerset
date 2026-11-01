@@ -66,9 +66,7 @@ def run_process_pinned(
         # get number of processors
         num_cpus = utils.proc.get_cpu_count()
         # parse cores_per_proc setting
-        if cores_per_proc != int(cores_per_proc) and (
-            cores_per_proc > 1 or cores_per_proc < -1
-        ):
+        if cores_per_proc != int(cores_per_proc) and (cores_per_proc > 1 or cores_per_proc < -1):
             raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
         if cores_per_proc < 0:
             # negative means starting from CPU 0 (instead from last)
@@ -105,9 +103,7 @@ def compose_init_cmd(
         workload,
         f"--concurrency={concurrency}",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["init"](
-        concurrency, value_size, warehouses
-    )
+    cmd += WORKLOAD_SETTINGS[workload]["init"](concurrency, value_size, warehouses)
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -126,16 +122,12 @@ def init_workload(
     extra_env = None
     if workload == "tpcc" and value_size > 0:
         if value_size < 1 or value_size > 4096:
-            raise ValueError(
-                f"textScale {value_size} too large: expect in range [1, 4096]"
-            )
+            raise ValueError(f"textScale {value_size} too large: expect in range [1, 4096]")
         extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
         warehouses //= max(value_size // 8, 1)
 
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT}"
-    cmd = compose_init_cmd(
-        workload, concurrency, value_size, warehouses, sql_addr
-    )
+    cmd = compose_init_cmd(workload, concurrency, value_size, warehouses, sql_addr)
 
     client_proc = run_process_pinned(
         cmd,
@@ -163,9 +155,7 @@ def compose_run_cmd(
         f"--concurrency={concurrency}",
         f"--duration={length_s}s",
     ]
-    cmd += WORKLOAD_SETTINGS[workload]["run"](
-        concurrency, value_size, warehouses
-    )
+    cmd += WORKLOAD_SETTINGS[workload]["run"](concurrency, value_size, warehouses)
     cmd.append(f"postgresql://root@{sql_addr}?sslmode=disable")
     return cmd
 
@@ -185,16 +175,12 @@ def run_workload(
     extra_env = None
     if workload == "tpcc" and value_size > 0:
         if value_size < 1 or value_size > 4096:
-            raise ValueError(
-                f"textScale {value_size} too large: expect in range [1, 4096]"
-            )
+            raise ValueError(f"textScale {value_size} too large: expect in range [1, 4096]")
         extra_env = {"COCKROACH_TPCC_TEXT_SCALE": str(value_size)}
         warehouses //= max(value_size // 8, 1)
 
     sql_addr = f"{ipaddrs[hosts[0]]}:{SERVER_SQL_PORT}"
-    cmd = compose_run_cmd(
-        workload, concurrency, value_size, warehouses, length_s, sql_addr
-    )
+    cmd = compose_run_cmd(workload, concurrency, value_size, warehouses, length_s, sql_addr)
 
     client_proc = run_process_pinned(
         cmd,
@@ -210,21 +196,15 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
         default="host0",
         help="main script runner's host nickname",
     )
-    parser.add_argument(
-        "-w", "--workload", type=str, required=True, help="name of workload"
-    )
+    parser.add_argument("-w", "--workload", type=str, required=True, help="name of workload")
     parser.add_argument(
         "-c",
         "--concurrency",
@@ -252,9 +232,7 @@ def main():
         action="store_true",
         help="if set, do the init phase; else do the run phase",
     )
-    parser.add_argument(
-        "-l", "--length_s", type=int, default=60, help="run length in secs"
-    )
+    parser.add_argument("-l", "--length_s", type=int, default=60, help="run length in secs")
     parser.add_argument(
         "--pin_cores",
         type=float,
@@ -276,9 +254,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_cockroach = f"{base}/{COCK_REPO_NAME}"
 
     # check that I am indeed the "me" host

@@ -43,8 +43,7 @@ impl EPaxosReplica {
                 return Ok(false);
             }
             if col < self.start_col
-                || self.insts[row][col - self.start_col].status
-                    >= Status::Executing
+                || self.insts[row][col - self.start_col].status >= Status::Executing
             {
                 // already submitted for execution, can prune it and all its
                 // transitive dependencies
@@ -65,15 +64,11 @@ impl EPaxosReplica {
                     .enumerate()
                     .filter(|(_, c)| c.is_some())
                 {
-                    dep_queue.push_back(SlotIdx(
-                        ReplicaId::try_from(r)?,
-                        c.unwrap(),
-                    ));
+                    dep_queue.push_back(SlotIdx(ReplicaId::try_from(r)?, c.unwrap()));
                 }
                 if col > self.start_col {
                     // don't forget that R.c implicitly depends on R.(c-1)
-                    dep_queue
-                        .push_back(SlotIdx(ReplicaId::try_from(row)?, col - 1));
+                    dep_queue.push_back(SlotIdx(ReplicaId::try_from(row)?, col - 1));
                 }
             }
             last_slot = Some(slot);
@@ -106,31 +101,22 @@ impl EPaxosReplica {
                     .enumerate()
                 {
                     if let ApiRequest::Req { cmd, .. } = req {
-                        let cmd_id =
-                            Self::make_command_id(dep_graph[n], cmd_idx);
+                        let cmd_id = Self::make_command_id(dep_graph[n], cmd_idx);
                         if sync_exec {
-                            self.state_machine
-                                .do_sync_cmd(cmd_id, cmd.clone())
-                                .await?;
+                            self.state_machine.do_sync_cmd(cmd_id, cmd.clone()).await?;
                         } else {
-                            self.state_machine
-                                .submit_cmd(cmd_id, cmd.clone())?;
+                            self.state_machine.submit_cmd(cmd_id, cmd.clone())?;
                         }
                     }
                 }
 
                 if sync_exec {
-                    self.insts[row][col - self.start_col].status =
-                        Status::Executed;
+                    self.insts[row][col - self.start_col].status = Status::Executed;
 
                     // update index of the first non-executed instance
                     if col == self.exec_bars[row] {
-                        while self.exec_bars[row]
-                            < self.start_col + self.insts[row].len()
-                        {
-                            if self.insts[row]
-                                [self.exec_bars[row] - self.start_col]
-                                .status
+                        while self.exec_bars[row] < self.start_col + self.insts[row].len() {
+                            if self.insts[row][self.exec_bars[row] - self.start_col].status
                                 < Status::Executed
                             {
                                 break;
@@ -139,8 +125,7 @@ impl EPaxosReplica {
                         }
                     }
                 } else {
-                    self.insts[row][col - self.start_col].status =
-                        Status::Executing;
+                    self.insts[row][col - self.start_col].status = Status::Executing;
                 }
             }
         }
@@ -169,10 +154,8 @@ impl EPaxosReplica {
         // reply command result back to client
         if let ApiRequest::Req { id: req_id, .. } = req {
             if inst.external && self.external_api.has_client(client) {
-                self.external_api.send_reply(
-                    ApiReply::normal(*req_id, Some(cmd_result)),
-                    client,
-                )?;
+                self.external_api
+                    .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), client)?;
                 pf_trace!(
                     "replied -> client {} for slot {} idx {}",
                     client,
@@ -192,11 +175,8 @@ impl EPaxosReplica {
 
             // update index of the first non-executed instance
             if col == self.exec_bars[row] {
-                while self.exec_bars[row]
-                    < self.start_col + self.insts[row].len()
-                {
-                    if self.insts[row][self.exec_bars[row] - self.start_col]
-                        .status
+                while self.exec_bars[row] < self.start_col + self.insts[row].len() {
+                    if self.insts[row][self.exec_bars[row] - self.start_col].status
                         < Status::Executed
                     {
                         break;

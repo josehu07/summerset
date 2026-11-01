@@ -60,11 +60,7 @@ impl SimplePushReplica {
             return logged_err!("pending_peers already 0 for {}", inst_idx);
         }
         if !inst.pending_peers.get(peer)? {
-            return logged_err!(
-                "unexpected push reply from peer {} for {}",
-                peer,
-                inst_idx
-            );
+            return logged_err!("unexpected push reply from peer {} for {}", peer, inst_idx);
         }
         if num_reqs != inst.reqs.len() {
             return logged_err!(
@@ -80,10 +76,8 @@ impl SimplePushReplica {
         if inst.pending_peers.count() == 0 && inst.durable {
             for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
                 if let ApiRequest::Req { cmd, .. } = req {
-                    self.state_machine.submit_cmd(
-                        Self::make_command_id(inst_idx, cmd_idx),
-                        cmd.clone(),
-                    )?;
+                    self.state_machine
+                        .submit_cmd(Self::make_command_id(inst_idx, cmd_idx), cmd.clone())?;
                 }
             }
         }

@@ -5,7 +5,7 @@
 //!   - <https://web.stanford.edu/~ouster/cgi-bin/papers/OngaroPhD.pdf>
 //!   - <https://decentralizedthoughts.github.io/2020-12-12-raft-liveness-full-omission/>
 
-use bincode::{Decode, Encode};
+use wincode::{SchemaRead, SchemaWrite};
 mod control;
 mod durability;
 mod execution;
@@ -29,9 +29,8 @@ use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
-    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica,
-    HeartbeatEvent, Heartbeater, LogActionId, ReplicaId, StateMachine,
-    StorageHub, TransportHub,
+    ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
+    Heartbeater, LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::SummersetError;
 
@@ -114,9 +113,7 @@ type Term = u64;
 type ReqBatch = Vec<(ClientId, ApiRequest)>;
 
 /// In-mem + persistent entry of log, containing a term and a commands batch.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 struct LogEntry {
     /// Term number.
     term: Term,
@@ -138,9 +135,7 @@ struct LogEntry {
 // NOTE: Raft makes the persistent log exactly mirror the in-memory log, so
 //       the backer file is not a WAL log in runtime operation; it might get
 //       overwritten, etc.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum DurEntry {
     /// Durable metadata.
     Metadata {
@@ -183,9 +178,7 @@ impl DurEntry {
 }
 
 /// Snapshot file entry type.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Encode, Decode, GetSize,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum SnapEntry {
     /// Necessary slot indices to remember.
     SlotInfo {
@@ -199,7 +192,7 @@ enum SnapEntry {
 }
 
 /// Peer-peer message type.
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, GetSize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 enum PeerMsg {
     /// `AppendEntries` from leader to followers.
     AppendEntries {
@@ -244,8 +237,8 @@ enum PeerMsg {
     Copy,
     Serialize,
     Deserialize,
-    Encode,
-    Decode,
+    SchemaWrite,
+    SchemaRead,
 )]
 enum Role {
     Follower,
@@ -357,11 +350,7 @@ impl RaftReplica {
     /// Compose `LogActionId` from (slot, `end_slot`) pair & entry type.
     /// Uses the `Role` enum type to represent different entry types.
     #[inline]
-    fn make_log_action_id(
-        slot: usize,
-        slot_e: usize,
-        entry_type: Role,
-    ) -> LogActionId {
+    fn make_log_action_id(slot: usize, slot_e: usize, entry_type: Role) -> LogActionId {
         #[allow(clippy::match_wildcard_for_single_variants)]
         let type_num = match entry_type {
             Role::Follower => 1,
@@ -450,19 +439,14 @@ impl GenericReplica for RaftReplica {
             );
         }
         if config.msg_chunk_size == 0 {
-            return logged_err!(
-                "invalid config.msg_chunk_size '{}'",
-                config.msg_chunk_size
-            );
+            return logged_err!("invalid config.msg_chunk_size '{}'", config.msg_chunk_size);
         }
 
         // setup state machine module
         let state_machine = StateMachine::new_and_setup(id).await?;
 
         // setup storage hub module
-        let storage_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.backer_path))
-                .await?;
+        let storage_hub = StorageHub::new_and_setup(id, Path::new(&config.backer_path)).await?;
 
         // setup heartbeat management module
         let heartbeater = Heartbeater::new_and_setup(
@@ -474,13 +458,8 @@ impl GenericReplica for RaftReplica {
         )?;
 
         // setup transport hub module
-        let mut transport_hub = TransportHub::new_and_setup(
-            id,
-            population,
-            p2p_addr,
-            HashMap::new(),
-        )
-        .await?;
+        let mut transport_hub =
+            TransportHub::new_and_setup(id, population, p2p_addr, HashMap::new()).await?;
 
         // ask for the list of peers to proactively connect to. Do this after
         // transport hub has been set up, so that I will be able to accept
@@ -491,9 +470,7 @@ impl GenericReplica for RaftReplica {
             api_addr,
             p2p_addr,
         })?;
-        let CtrlMsg::ConnectToPeers { to_peers, .. } =
-            control_hub.recv_ctrl().await?
-        else {
+        let CtrlMsg::ConnectToPeers { to_peers, .. } = control_hub.recv_ctrl().await? else {
             return logged_err!("unexpected ctrl msg type received");
         };
 
@@ -505,9 +482,7 @@ impl GenericReplica for RaftReplica {
         transport_hub.wait_for_group(population).await?;
 
         // setup snapshot hub module
-        let snapshot_hub =
-            StorageHub::new_and_setup(id, Path::new(&config.snapshot_path))
-                .await?;
+        let snapshot_hub = StorageHub::new_and_setup(id, Path::new(&config.snapshot_path)).await?;
 
         // setup external API module, ready to take in client requests
         let external_api = ExternalApi::new_and_setup(
@@ -518,13 +493,12 @@ impl GenericReplica for RaftReplica {
         )
         .await?;
 
-        let mut snapshot_interval = time::interval(Duration::from_secs(
-            if config.snapshot_interval_s > 0 {
+        let mut snapshot_interval =
+            time::interval(Duration::from_secs(if config.snapshot_interval_s > 0 {
                 config.snapshot_interval_s
             } else {
                 60 // dummy non-zero value to make `time::interval` happy
-            },
-        ));
+            }));
         snapshot_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         Ok(RaftReplica {
@@ -567,10 +541,7 @@ impl GenericReplica for RaftReplica {
         })
     }
 
-    async fn run(
-        &mut self,
-        mut rx_term: watch::Receiver<bool>,
-    ) -> Result<bool, SummersetError> {
+    async fn run(&mut self, mut rx_term: watch::Receiver<bool>) -> Result<bool, SummersetError> {
         // recover state from durable snapshot file
         self.recover_from_snapshot().await?;
 
@@ -778,8 +749,7 @@ impl GenericEndpoint for RaftClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent =
-            self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
+        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         while !sent {
             sent = self.ctrl_stub.send_req(None)?;
         }
@@ -806,8 +776,7 @@ impl GenericEndpoint for RaftClient {
                 .collect();
             for (&id, &server) in &self.servers {
                 pf_debug!("connecting to server {} '{}'...", id, server);
-                let api_stub =
-                    ClientApiStub::new_by_connect(self.id, server).await?;
+                let api_stub = ClientApiStub::new_by_connect(self.id, server).await?;
                 self.api_stubs.insert(id, api_stub);
             }
             Ok(())
@@ -832,8 +801,7 @@ impl GenericEndpoint for RaftClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent =
-                self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
+            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
             while !sent {
                 sent = self.ctrl_stub.send_req(None)?;
             }
@@ -845,10 +813,7 @@ impl GenericEndpoint for RaftClient {
         Ok(())
     }
 
-    fn send_req(
-        &mut self,
-        req: Option<&ApiRequest>,
-    ) -> Result<bool, SummersetError> {
+    fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
         if self.api_stubs.contains_key(&self.server_id) {
             self.api_stubs
                 .get_mut(&self.server_id)

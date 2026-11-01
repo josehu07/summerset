@@ -14,9 +14,7 @@ YCSB_MAPPED = lambda w, d, p: f"/tmp/ycsb/workload{w}.{d}.{p}.rmapped.txt"
 KEY_LEN = 8  # for read_mapped option use
 
 
-def gen_ycsb_trace(
-    base, phase, workload, num_keys, ops_cnt, distribution, trace_out
-):
+def gen_ycsb_trace(base, phase, workload, num_keys, ops_cnt, distribution, trace_out):
     cmd = [
         f"{YCSB_DIR(base)}/bin/ycsb.sh",
         phase,
@@ -30,9 +28,7 @@ def gen_ycsb_trace(
         "-p",
         f"requestdistribution={distribution}",
     ]
-    proc = utils.proc.run_process(
-        cmd, capture_stdout=True, capture_stderr=True, print_cmd=False
-    )
+    proc = utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True, print_cmd=False)
     out, _ = proc.communicate()
     raw = out.decode()
 
@@ -143,11 +139,7 @@ def main():
     base, _, _, _, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
     workload = args.workload.lower()
-    if (
-        len(workload) != 1
-        or ord(workload) < ord("a")
-        or ord(workload) > ord("f")
-    ):
+    if len(workload) != 1 or ord(workload) < ord("a") or ord(workload) > ord("f"):
         raise ValueError(f"invalid workload name: {workload}")
 
     if not os.path.isdir("/tmp/ycsb"):
@@ -198,9 +190,7 @@ def main():
                     key_map,
                     args.read_mapped,
                 )
-                print(
-                    f"  {phase}: {mapped_load if phase == 'load' else mapped_run}"
-                )
+                print(f"  {phase}: {mapped_load if phase == 'load' else mapped_run}")
 
 
 if __name__ == "__main__":

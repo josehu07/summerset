@@ -22,8 +22,7 @@ impl BodegaReplica {
 
         if !changes.is_empty() {
             let last_i = changes.len() - 1;
-            for (i, (client, req_id, delta)) in changes.into_iter().enumerate()
-            {
+            for (i, (client, req_id, delta)) in changes.into_iter().enumerate() {
                 if i < last_i {
                     // not the last conf change req in batch, not applied;
                     // directly reply to client as ignored
@@ -49,22 +48,16 @@ impl BodegaReplica {
                             new_conf.set_leader(leader);
                         }
                         if let Some(responders) = delta.responders {
-                            new_conf.set_responders(
-                                delta.range.as_ref(),
-                                responders,
-                                None,
-                            )?;
+                            new_conf.set_responders(delta.range.as_ref(), responders, None)?;
                         }
                     }
 
                     if new_conf != self.bodega_conf {
                         self.announce_new_conf(new_conf.clone()).await?;
-                        self.control_hub.send_ctrl(
-                            CtrlMsg::RespondersConf {
-                                conf_num: self.bal_max_seen,
-                                new_conf,
-                            },
-                        )?;
+                        self.control_hub.send_ctrl(CtrlMsg::RespondersConf {
+                            conf_num: self.bal_max_seen,
+                            new_conf,
+                        })?;
                     }
 
                     // reply to client as successfully applied
@@ -116,9 +109,7 @@ impl BodegaReplica {
                 }
                 filtered.push((client, req));
             }
-        } else if self.lease_manager.lease_cnt() >= self.quorum_cnt
-            || self.config.sim_read_lease
-        {
+        } else if self.lease_manager.lease_cnt() >= self.quorum_cnt || self.config.sim_read_lease {
             // else if I have a majority-leased responders config, then process
             // read-only commands for keys where I'm a responder of
             for (client, req) in req_batch {
@@ -199,15 +190,9 @@ impl BodegaReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                     // [for access cnt stats only]
                     if self.config.record_node_cnts {
                         *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
@@ -224,11 +209,7 @@ impl BodegaReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
             inst.reqs.clone_from(&req_batch);
-            Self::refresh_highest_slot(
-                slot,
-                &req_batch,
-                &mut self.highest_slot,
-            );
+            Self::refresh_highest_slot(slot, &req_batch, &mut self.highest_slot);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,

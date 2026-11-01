@@ -50,10 +50,8 @@ impl BodegaReplica {
     /// Revokes leases I'm currenting granting out, wait for their confirmation
     /// replies or lease granting timeout.
     async fn revoke_conf_leases(&mut self) -> Result<(), SummersetError> {
-        self.lease_manager.add_notice(
-            self.bal_max_seen,
-            LeaseNotice::DoRevoke { peers: None },
-        )?;
+        self.lease_manager
+            .add_notice(self.bal_max_seen, LeaseNotice::DoRevoke { peers: None })?;
 
         // ensure every peer has either RevokeReplied or timed out
         while self.lease_manager.grant_set().count() > 0 {
@@ -66,10 +64,7 @@ impl BodegaReplica {
                 {
                     Ok(lease_action) => {
                         let (lease_num, lease_action) = lease_action?;
-                        if self
-                            .handle_lease_action(lease_num, lease_action)
-                            .await?
-                        {
+                        if self.handle_lease_action(lease_num, lease_action).await? {
                             break;
                         }
                     }
@@ -265,21 +260,16 @@ impl BodegaReplica {
             LeaseAction::GuardAcceptBar { peer, accept_bar } => {
                 // update this peer's accept_bar information, and then update
                 // peer_accept_max as the minimum of the maximums of majority sets
-                if let Some(old_bar) =
-                    self.peer_accept_bar.insert(peer, accept_bar)
+                if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
                     && accept_bar < old_bar
                 {
                     let mut peer_accept_bars: Vec<usize> =
                         self.peer_accept_bar.values().copied().collect();
                     peer_accept_bars.sort_unstable();
-                    let peer_accept_max =
-                        peer_accept_bars[self.quorum_cnt as usize - 1];
+                    let peer_accept_max = peer_accept_bars[self.quorum_cnt as usize - 1];
                     if peer_accept_max < self.peer_accept_max {
                         self.peer_accept_max = peer_accept_max;
-                        pf_debug!(
-                            "peer_accept_max updated: {}",
-                            self.peer_accept_max
-                        );
+                        pf_debug!("peer_accept_max updated: {}", self.peer_accept_max);
                     }
                 }
             }

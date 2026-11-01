@@ -14,14 +14,11 @@ use crate::utils::{Bitmap, SummersetError};
 impl CrosswordReplica {
     /// Chooses a random `gossip_timeout` from the min-max range and kicks off
     /// the `gossip_timer`.
-    pub(super) fn kickoff_gossip_timer(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) fn kickoff_gossip_timer(&mut self) -> Result<(), SummersetError> {
         self.gossip_timer.cancel()?;
 
-        let timeout_ms = rand::rng().random_range(
-            self.config.gossip_timeout_min..=self.config.gossip_timeout_max,
-        );
+        let timeout_ms = rand::rng()
+            .random_range(self.config.gossip_timeout_min..=self.config.gossip_timeout_max);
         // pf_trace!("kickoff gossip_timer @ {} ms", timeout_ms);
         self.gossip_timer
             .kickoff(Duration::from_millis(timeout_ms))?;
@@ -97,9 +94,7 @@ impl CrosswordReplica {
         }
 
         let mut slot_up_to = self.gossip_bar;
-        let until_slot = if self.start_slot + self.insts.len()
-            > self.config.gossip_tail_ignores
-        {
+        let until_slot = if self.start_slot + self.insts.len() > self.config.gossip_tail_ignores {
             self.start_slot + self.insts.len() - self.config.gossip_tail_ignores
         } else {
             0
@@ -143,17 +138,11 @@ impl CrosswordReplica {
                     if recon_slots[&peer].len() == batch_size {
                         self.transport_hub.send_msg(
                             PeerMsg::Reconstruct {
-                                slots_excl: mem::take(
-                                    recon_slots.get_mut(&peer).unwrap(),
-                                ),
+                                slots_excl: mem::take(recon_slots.get_mut(&peer).unwrap()),
                             },
                             peer,
                         )?;
-                        pf_trace!(
-                            "sent Reconstruct -> {} for {} slots",
-                            peer,
-                            batch_size
-                        );
+                        pf_trace!("sent Reconstruct -> {} for {} slots", peer, batch_size);
                     }
                 }
             }
@@ -165,11 +154,7 @@ impl CrosswordReplica {
                 let num_slots = slots_excl.len();
                 self.transport_hub
                     .send_msg(PeerMsg::Reconstruct { slots_excl }, peer)?;
-                pf_trace!(
-                    "sent Reconstruct -> {} for {} slots",
-                    peer,
-                    num_slots
-                );
+                pf_trace!("sent Reconstruct -> {} for {} slots", peer, num_slots);
             }
         }
 

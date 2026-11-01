@@ -40,10 +40,7 @@ impl Stopwatch {
         now: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if !self.records.contains_key(&id) && step != 0 {
-            return Err(SummersetError::msg(format!(
-                "record {} not found",
-                id
-            )));
+            return Err(SummersetError::msg(format!("record {} not found", id)));
         }
         self.records.entry(id).or_default();
         let record = self.records.get_mut(&id).unwrap();
@@ -90,8 +87,7 @@ impl Stopwatch {
     #[must_use]
     pub fn summarize(&self, steps: usize) -> (usize, Vec<(f64, f64)>) {
         debug_assert!(steps > 0);
-        let mut step_times: Vec<Vec<f64>> =
-            vec![Vec::with_capacity(self.records.len()); steps];
+        let mut step_times: Vec<Vec<f64>> = vec![Vec::with_capacity(self.records.len()); steps];
         let mut cnt = 0;
 
         for record in self.records.values() {

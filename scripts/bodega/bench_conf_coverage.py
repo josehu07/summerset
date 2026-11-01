@@ -165,9 +165,7 @@ def run_bench_clients(remotec, base, repo, confname, keyrname, config=None):
     )
 
 
-def run_mess_client(
-    remotec, base, repo, leader=None, key_range=None, responder=None
-):
+def run_mess_client(remotec, base, repo, leader=None, key_range=None, responder=None):
     cmd = [
         "uv",
         "run",
@@ -212,9 +210,7 @@ def bench_round(remote0, remotec, base, repo, confname, keyrname, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, confname, keyrname, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, confname, keyrname, config=server_config)
     wait_cluster_setup()
 
     # set responders config
@@ -240,9 +236,7 @@ def bench_round(remote0, remotec, base, repo, confname, keyrname, runlog_path):
     client_config = "+".join(CLIENT_CONFIGS)
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remotec, base, repo, confname, keyrname, config=client_config
-    )
+    proc_clients = run_bench_clients(remotec, base, repo, confname, keyrname, config=client_config)
 
     # wait for benchmarking clients to exit
     cout, cerr = proc_clients.communicate()
@@ -289,9 +283,7 @@ def collect_outputs(output_dir):
             sd, sp, sj, sm = 10, 0, 0, 1
             # setting sm here to compensate for unstabilities of printing
             # things to console
-            tput_list = utils.output.list_smoothing(
-                result["tput_sum"], sd, sp, sj, sm
-            )
+            tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
             wlat_list = utils.output.list_smoothing(
                 [v for v in result["wlat_avg"] if v > 0.0], sd, sp, sj, 1 / sm
             )
@@ -323,49 +315,17 @@ def collect_outputs(output_dir):
                 },
                 "wlat": {
                     "sorted": wlat_list,
-                    "p50": (
-                        None
-                        if len(wlat_list) == 0
-                        else wlat_list[len(wlat_list) // 2]
-                    ),
-                    "p99": (
-                        None
-                        if len(wlat_list) == 0
-                        else np.percentile(wlat_list, 99)
-                    ),
-                    "mean": (
-                        None
-                        if len(wlat_list) == 0
-                        else sum(wlat_list) / len(wlat_list)
-                    ),
-                    "stdev": (
-                        None
-                        if len(wlat_list) == 0
-                        else statistics.stdev(wlat_list)
-                    ),
+                    "p50": (None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]),
+                    "p99": (None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)),
+                    "mean": (None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)),
+                    "stdev": (None if len(wlat_list) == 0 else statistics.stdev(wlat_list)),
                 },
                 "rlat": {
                     "sorted": rlat_list,
-                    "p50": (
-                        None
-                        if len(rlat_list) == 0
-                        else rlat_list[len(rlat_list) // 2]
-                    ),
-                    "p99": (
-                        None
-                        if len(rlat_list) == 0
-                        else np.percentile(rlat_list, 99)
-                    ),
-                    "mean": (
-                        None
-                        if len(rlat_list) == 0
-                        else sum(rlat_list) / len(rlat_list)
-                    ),
-                    "stdev": (
-                        None
-                        if len(rlat_list) == 0
-                        else statistics.stdev(rlat_list)
-                    ),
+                    "p50": (None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]),
+                    "p99": (None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)),
+                    "mean": (None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)),
+                    "stdev": (None if len(rlat_list) == 0 else statistics.stdev(rlat_list)),
                 },
             }
 
@@ -512,15 +472,9 @@ def plot_key_ranges_results(results, plots_dir):
 
     key_ranges = list(map(int, KEYR_NAMES))
     for series in SERIES_ORDER:
-        mean_list = [
-            results["def"][keyr][series]["mean"] for keyr in KEYR_NAMES
-        ]
-        stdev_list = [
-            results["def"][keyr][series]["stdev"] for keyr in KEYR_NAMES
-        ]
-        label, color, ecolor, marker, markersize = (
-            SERIES_LABEL_COLORS_MARKER_SIZE[series]
-        )
+        mean_list = [results["def"][keyr][series]["mean"] for keyr in KEYR_NAMES]
+        stdev_list = [results["def"][keyr][series]["stdev"] for keyr in KEYR_NAMES]
+        label, color, ecolor, marker, markersize = SERIES_LABEL_COLORS_MARKER_SIZE[series]
 
         plt.plot(
             key_ranges,
@@ -643,15 +597,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -665,9 +615,7 @@ def main():
             for confname in RESPONDER_CONFS:
                 if confname == "def":
                     continue
-                print(
-                    f"Running experiments key% = {fixed_keyrname}, conf = {confname}..."
-                )
+                print(f"Running experiments key% = {fixed_keyrname}, conf = {confname}...")
                 time.sleep(3)
 
                 bench_round(
@@ -688,9 +636,7 @@ def main():
 
             fixed_confname = "def"
             for keyrname in KEY_RANGES:
-                print(
-                    f"Running experiments key% = {keyrname}, conf = {fixed_confname}..."
-                )
+                print(f"Running experiments key% = {keyrname}, conf = {fixed_confname}...")
                 time.sleep(3)
 
                 bench_round(
@@ -715,15 +661,11 @@ def main():
 
         print("Fetching client output logs...")
         for host in hosts[NUM_REPLICAS : 2 * NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remotes[host], f"{base}/output/{EXPER_NAME}", output_path)
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, _ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"

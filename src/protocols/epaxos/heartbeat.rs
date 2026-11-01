@@ -26,10 +26,7 @@ impl EPaxosReplica {
         if let Some(col) = self.peer_exec_min.get_mut(&timeout_source) {
             *col = 0;
         } else {
-            return logged_err!(
-                "peer {} not found in peer_exec_min",
-                timeout_source
-            );
+            return logged_err!("peer {} not found in peer_exec_min", timeout_source);
         }
 
         // re-evaluate fast quorum eligibility for all instances currently in
@@ -43,9 +40,7 @@ impl EPaxosReplica {
                 .map(|(c, i)| (self.start_col + c, i))
                 .skip(self.commit_bars[row] - self.start_col)
             {
-                if inst.status == Status::PreAccepting
-                    && inst.leader_bk.is_some()
-                {
+                if inst.status == Status::PreAccepting && inst.leader_bk.is_some() {
                     markees.push(SlotIdx(ReplicaId::try_from(row)?, col));
                 }
             }
@@ -130,9 +125,7 @@ impl EPaxosReplica {
     }
 
     /// Broadcasts heartbeats to all replicas.
-    pub(super) async fn bcast_heartbeats(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         // broadcast heartbeat to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
@@ -185,8 +178,7 @@ impl EPaxosReplica {
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
-        if exec_bars.len() != self.exec_bars.len() || exec_bars < self.exec_bars
-        {
+        if exec_bars.len() != self.exec_bars.len() || exec_bars < self.exec_bars {
             return Ok(());
         }
 

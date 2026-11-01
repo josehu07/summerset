@@ -7,6 +7,7 @@ mod print;
 mod config;
 
 mod bitmap;
+mod codec;
 mod error;
 mod keyrange;
 mod linreg;
@@ -17,6 +18,7 @@ mod stopwatch;
 mod timer;
 
 pub use bitmap::Bitmap;
+pub use codec::{CODEC_CONFIG, Codec, CodecConfig};
 pub use error::SummersetError;
 pub use keyrange::{ConfNum, RespondersConf};
 pub(crate) use linreg::{LinearRegressor, PerfModel};

@@ -146,9 +146,7 @@ def bench_round(remotes, base, repo, protocol, runlog_path):
         config += "+disable_gossip_timer=true"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remotes["host0"], base, repo, protocol, config=config
-    )
+    proc_cluster = launch_cluster(remotes["host0"], base, repo, protocol, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
@@ -237,9 +235,7 @@ def collect_outputs(output_dir):
             # setting sd here to avoid the lines to completely overlap with
             # each other
             sd = 22
-        tput_list = utils.output.list_smoothing(
-            result["tput_sum"], sd, sp, sj, sm
-        )
+        tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
 
         results[protocol] = {
             "time": result["time"],
@@ -423,17 +419,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -443,9 +435,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_main(
             NETEM_MEAN_A,
             NETEM_JITTER_A,
@@ -474,9 +464,7 @@ def main():
 
         print("Fetching client output logs...")
         for remote in remotes.values():
-            utils.file.fetch_files_of_dir(
-                remote, f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remote, f"{base}/output/{EXPER_NAME}", output_path)
 
     else:
         output_dir = f"{args.odir}/output/{EXPER_NAME}"

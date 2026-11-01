@@ -34,9 +34,7 @@ def gather_outputs(
         output_path = f"{path_prefix}/{protocol_with_midfix}.{c}.out"
         if agg_partitions is not None:
             p, local_c = c % agg_partitions, c // agg_partitions
-            output_path = (
-                f"{path_prefix}/{protocol_with_midfix}.{p}.{local_c}.out"
-            )
+            output_path = f"{path_prefix}/{protocol_with_midfix}.{p}.{local_c}.out"
         with open(output_path, "r") as fout:
             started = False
             for line in fout:
@@ -76,10 +74,7 @@ def gather_outputs(
     while t + tb < te:
         tputs, lats, wlats, rlats = [], [], [], []
         for c in clients:
-            while (
-                cidxs[c] < len(outputs[c]["time"]) - 1
-                and t + tb > outputs[c]["time"][cidxs[c]]
-            ):
+            while cidxs[c] < len(outputs[c]["time"]) - 1 and t + tb > outputs[c]["time"][cidxs[c]]:
                 cidxs[c] += 1
             if outputs[c]["time"][cidxs[c]] > t + tb + 1.0:  # conservative
                 tputs.append(0.0)
@@ -99,41 +94,25 @@ def gather_outputs(
         result["tput_min"].append(min(tputs))
         result["tput_max"].append(max(tputs))
         result["tput_avg"].append(sum(tputs) / len(tputs))
-        result["tput_stdev"].append(
-            statistics.stdev(tputs) if len(tputs) > 1 else 0.0
-        )
+        result["tput_stdev"].append(statistics.stdev(tputs) if len(tputs) > 1 else 0.0)
         result["lat_min"].append(min(lats) if len(lats) > 0 else 0.0)
         result["lat_max"].append(max(lats) if len(lats) > 0 else 0.0)
-        result["lat_avg"].append(
-            sum(lats) / len(lats) if len(lats) > 0 else 0.0
-        )
-        result["lat_stdev"].append(
-            statistics.stdev(lats) if len(lats) > 1 else 0.0
-        )
+        result["lat_avg"].append(sum(lats) / len(lats) if len(lats) > 0 else 0.0)
+        result["lat_stdev"].append(statistics.stdev(lats) if len(lats) > 1 else 0.0)
         result["wlat_min"].append(min(wlats) if len(wlats) > 0 else 0.0)
         result["wlat_max"].append(max(wlats) if len(wlats) > 0 else 0.0)
-        result["wlat_avg"].append(
-            sum(wlats) / len(wlats) if len(wlats) > 0 else 0.0
-        )
-        result["wlat_stdev"].append(
-            statistics.stdev(wlats) if len(wlats) > 1 else 0.0
-        )
+        result["wlat_avg"].append(sum(wlats) / len(wlats) if len(wlats) > 0 else 0.0)
+        result["wlat_stdev"].append(statistics.stdev(wlats) if len(wlats) > 1 else 0.0)
         result["rlat_min"].append(min(rlats) if len(rlats) > 0 else 0.0)
         result["rlat_max"].append(max(rlats) if len(rlats) > 0 else 0.0)
-        result["rlat_avg"].append(
-            sum(rlats) / len(rlats) if len(rlats) > 0 else 0.0
-        )
-        result["rlat_stdev"].append(
-            statistics.stdev(rlats) if len(rlats) > 1 else 0.0
-        )
+        result["rlat_avg"].append(sum(rlats) / len(rlats) if len(rlats) > 0 else 0.0)
+        result["rlat_stdev"].append(statistics.stdev(rlats) if len(rlats) > 1 else 0.0)
         t += tgap
 
     return result
 
 
-def gather_ycsb_outputs(
-    protocol_with_midfix, path_prefix, tb, te, partition=None
-):
+def gather_ycsb_outputs(protocol_with_midfix, path_prefix, tb, te, partition=None):
     if partition is not None:
         protocol_with_midfix += f".{partition}"
 
@@ -141,24 +120,12 @@ def gather_ycsb_outputs(
     with open(f"{path_prefix}/{protocol_with_midfix}.out", "r") as fout:
         for line in fout:
             if "current ops/sec" in line:
-                tput = float(
-                    line[
-                        line.find("operations; ") + 12 : line.find(
-                            "current ops/sec"
-                        )
-                    ]
-                )
+                tput = float(line[line.find("operations; ") + 12 : line.find("current ops/sec")])
                 tput_stdev = 0.0
 
                 line = line[line.find("[UPDATE:") :]
-                lat = (
-                    float(line[line.find("Avg=") + 4 : line.find(", 90=")])
-                    / 1000.0
-                )
-                lat_90p = (
-                    float(line[line.find("90=") + 3 : line.find(", 99=")])
-                    / 1000.0
-                )
+                lat = float(line[line.find("Avg=") + 4 : line.find(", 90=")]) / 1000.0
+                lat_90p = float(line[line.find("90=") + 3 : line.find(", 99=")]) / 1000.0
                 lat_stdev = (lat_90p - lat) / 4
 
                 tputs.append(tput)
@@ -246,9 +213,7 @@ def list_smoothing(l, d, p, j, m):
         slc = sl.copy()
         for i in range(p, len(slc) - p):
             lp = next(filter(lambda t: 2 * t < slc[i], slc[i - p : i]), None)
-            rp = next(
-                filter(lambda t: 2 * t < slc[i], slc[i + 1 : i + p + 1]), None
-            )
+            rp = next(filter(lambda t: 2 * t < slc[i], slc[i + 1 : i + p + 1]), None)
             if lp is not None and rp is not None:
                 sl[i] = min(slc[i - p : i + p + 1])
 

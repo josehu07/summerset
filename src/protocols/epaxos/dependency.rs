@@ -222,9 +222,7 @@ impl EPaxosReplica {
                 // the max_cnt
                 debug_assert!(max_cnt >= super_quorum_cnt);
                 Some((Status::Committed, *seq, deps.clone()))
-            } else if max_cnt + (population - bad_cnt - all_cnt)
-                < super_quorum_cnt
-            {
+            } else if max_cnt + (population - bad_cnt - all_cnt) < super_quorum_cnt {
                 // need slow-path Accept, take union of deps and max of seqs
                 let (mut seq, mut deps) = (0, DepSet::empty(population));
                 for (rseq, rdeps) in leader_bk.pre_accept_replies.values() {
@@ -261,8 +259,7 @@ impl EPaxosReplica {
 
         // has at least one Committed or Accepting or PreAccepting? records
         // an index into replies vec that meets each
-        let (mut has_commit, mut has_accept, mut has_pre_accept) =
-            (None, None, None);
+        let (mut has_commit, mut has_accept, mut has_pre_accept) = (None, None, None);
         for (r, (status, _, _, _)) in &leader_bk.exp_prepare_voteds {
             match status {
                 Status::Committed => has_commit = Some(r),
@@ -285,28 +282,27 @@ impl EPaxosReplica {
 
         // has at lease N/2 identical replies for row's default ballot and
         // none of those are from row peer itself
-        let has_enough_identical = if leader_bk.exp_prepare_max_bal
-            == Self::make_default_ballot(slot_row)
-        {
-            let voteds: Vec<(&SeqNum, &DepSet, &ReqBatch)> = leader_bk
-                .exp_prepare_voteds
-                .iter()
-                .filter_map(|(r, (status, seq, deps, reqs))| {
-                    if *r != slot_row && *status == Status::PreAccepting {
-                        Some((seq, deps, reqs))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if voteds.len() < (simple_quorum_cnt - 1) as usize {
-                None
+        let has_enough_identical =
+            if leader_bk.exp_prepare_max_bal == Self::make_default_ballot(slot_row) {
+                let voteds: Vec<(&SeqNum, &DepSet, &ReqBatch)> = leader_bk
+                    .exp_prepare_voteds
+                    .iter()
+                    .filter_map(|(r, (status, seq, deps, reqs))| {
+                        if *r != slot_row && *status == Status::PreAccepting {
+                            Some((seq, deps, reqs))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if voteds.len() < (simple_quorum_cnt - 1) as usize {
+                    None
+                } else {
+                    Self::get_enough_identical(voteds, simple_quorum_cnt).0
+                }
             } else {
-                Self::get_enough_identical(voteds, simple_quorum_cnt).0
-            }
-        } else {
-            None
-        };
+                None
+            };
 
         if let Some((seq, deps, reqs)) = has_enough_identical {
             // need a round of Accept
@@ -330,10 +326,7 @@ impl EPaxosReplica {
     /// of times, along with the number of times it occurs. If no element meets
     /// the threshold, returns `None` but with the max number of occurrences of
     /// an element.
-    fn get_enough_identical<T: Eq>(
-        mut v: Vec<T>,
-        thresh: u8,
-    ) -> (Option<T>, u8) {
+    fn get_enough_identical<T: Eq>(mut v: Vec<T>, thresh: u8) -> (Option<T>, u8) {
         debug_assert_ne!(thresh, 0);
 
         let mut first = 0;

@@ -4,8 +4,8 @@
 use std::fmt;
 use std::net::SocketAddr;
 
-use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::GenericEndpoint;
 use crate::manager::ClusterManager;
@@ -57,9 +57,7 @@ use bodega::{BodegaClient, BodegaReplica};
 pub use bodega::{ClientConfigBodega, ReplicaConfigBodega};
 
 /// Enum of supported replication protocol types.
-#[derive(
-    Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Encode, Decode,
-)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub enum SmrProtocol {
     RepNothing,
     SimplePush,
@@ -110,8 +108,7 @@ impl SmrProtocol {
         cli_addr: SocketAddr,
         population: u8,
     ) -> Result<ClusterManager, SummersetError> {
-        ClusterManager::new_and_setup(*self, srv_addr, cli_addr, population)
-            .await
+        ClusterManager::new_and_setup(*self, srv_addr, cli_addr, population).await
     }
 
     /// Create a server replica instance of this protocol on heap.
@@ -125,90 +122,58 @@ impl SmrProtocol {
         match self {
             Self::RepNothing => {
                 box_if_ok!(
-                    RepNothingReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    RepNothingReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::SimplePush => {
                 box_if_ok!(
-                    SimplePushReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    SimplePushReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::ChainRep => {
                 box_if_ok!(
-                    ChainRepReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    ChainRepReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::MultiPaxos => {
                 box_if_ok!(
-                    MultiPaxosReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    MultiPaxosReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::EPaxos => {
                 box_if_ok!(
-                    EPaxosReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    EPaxosReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::RSPaxos => {
                 box_if_ok!(
-                    RSPaxosReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    RSPaxosReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::Raft => {
                 box_if_ok!(
-                    RaftReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    RaftReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::CRaft => {
                 box_if_ok!(
-                    CRaftReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    CRaftReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::Crossword => {
                 box_if_ok!(
-                    CrosswordReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    CrosswordReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
             Self::QuorumLeases => {
                 box_if_ok!(
-                    QuorumLeasesReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    QuorumLeasesReplica::new_and_setup(api_addr, p2p_addr, manager, config_str)
+                        .await
                 )
             }
             Self::Bodega => {
                 box_if_ok!(
-                    BodegaReplica::new_and_setup(
-                        api_addr, p2p_addr, manager, config_str
-                    )
-                    .await
+                    BodegaReplica::new_and_setup(api_addr, p2p_addr, manager, config_str).await
                 )
             }
         }
@@ -222,58 +187,37 @@ impl SmrProtocol {
     ) -> Result<Box<dyn GenericEndpoint>, SummersetError> {
         match self {
             Self::RepNothing => {
-                box_if_ok!(
-                    RepNothingClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(RepNothingClient::new_and_setup(manager, config_str).await)
             }
             Self::SimplePush => {
-                box_if_ok!(
-                    SimplePushClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(SimplePushClient::new_and_setup(manager, config_str).await)
             }
             Self::ChainRep => {
-                box_if_ok!(
-                    ChainRepClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(ChainRepClient::new_and_setup(manager, config_str).await)
             }
             Self::MultiPaxos => {
-                box_if_ok!(
-                    MultiPaxosClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(MultiPaxosClient::new_and_setup(manager, config_str).await)
             }
             Self::EPaxos => {
-                box_if_ok!(
-                    EPaxosClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(EPaxosClient::new_and_setup(manager, config_str).await)
             }
             Self::RSPaxos => {
-                box_if_ok!(
-                    RSPaxosClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(RSPaxosClient::new_and_setup(manager, config_str).await)
             }
             Self::Raft => {
                 box_if_ok!(RaftClient::new_and_setup(manager, config_str).await)
             }
             Self::CRaft => {
-                box_if_ok!(
-                    CRaftClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(CRaftClient::new_and_setup(manager, config_str).await)
             }
             Self::Crossword => {
-                box_if_ok!(
-                    CrosswordClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(CrosswordClient::new_and_setup(manager, config_str).await)
             }
             Self::QuorumLeases => {
-                box_if_ok!(
-                    QuorumLeasesClient::new_and_setup(manager, config_str)
-                        .await
-                )
+                box_if_ok!(QuorumLeasesClient::new_and_setup(manager, config_str).await)
             }
             Self::Bodega => {
-                box_if_ok!(
-                    BodegaClient::new_and_setup(manager, config_str).await
-                )
+                box_if_ok!(BodegaClient::new_and_setup(manager, config_str).await)
             }
         }
     }

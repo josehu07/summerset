@@ -8,9 +8,7 @@ use std::sync::LazyLock;
 use rand::RngExt;
 use rand::distr::Alphanumeric;
 use rangemap::RangeMap;
-use summerset::{
-    SummersetError, logged_err, parsed_config, pf_error, pf_info, pf_warn,
-};
+use summerset::{SummersetError, logged_err, parsed_config, pf_error, pf_info, pf_warn};
 use tokio::time::{Duration, Instant};
 
 use crate::{ClientBench, EtcdKvClient, ModeParamsBench};
@@ -77,10 +75,7 @@ pub(crate) struct EtcdBench {
 
 impl EtcdBench {
     /// Create a new benchmarking client.
-    pub fn new(
-        kv_client: EtcdKvClient,
-        params_str: Option<&str>,
-    ) -> Result<Self, SummersetError> {
+    pub fn new(kv_client: EtcdKvClient, params_str: Option<&str>) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsBench;
                                     output_path, freq_target, length_s,
                                     put_ratio, ycsb_trace, value_size,
@@ -94,22 +89,13 @@ impl EtcdBench {
             );
         }
         if params.length_s == 0 && params.ycsb_trace.is_empty() {
-            return logged_err!(
-                "invalid params.length_s '{}'",
-                params.length_s
-            );
+            return logged_err!("invalid params.length_s '{}'", params.length_s);
         }
         if params.put_ratio > 100 {
-            return logged_err!(
-                "invalid params.put_ratio '{}'",
-                params.put_ratio
-            );
+            return logged_err!("invalid params.put_ratio '{}'", params.put_ratio);
         }
         if params.num_keys == 0 {
-            return logged_err!(
-                "invalid params.num_keys '{}'",
-                params.num_keys
-            );
+            return logged_err!("invalid params.num_keys '{}'", params.num_keys);
         }
 
         let output_file = if params.output_path.is_empty() {
@@ -117,10 +103,7 @@ impl EtcdBench {
         } else {
             let output_path = Path::new(&params.output_path);
             if fs::exists(output_path)? {
-                pf_warn!(
-                    "overwriting existing output file '{}'",
-                    params.output_path
-                );
+                pf_warn!("overwriting existing output file '{}'", params.output_path);
             } else {
                 fs::create_dir_all(
                     output_path
@@ -140,10 +123,7 @@ impl EtcdBench {
         let keys_pool = if params.ycsb_trace.is_empty() {
             let mut pool = Vec::with_capacity(params.num_keys);
             for i in 0..params.num_keys {
-                pool.push(ClientBench::compose_ith_key(
-                    i,
-                    params.use_random_keys,
-                ));
+                pool.push(ClientBench::compose_ith_key(i, params.use_random_keys));
             }
             Some(pool)
         } else {
@@ -156,10 +136,7 @@ impl EtcdBench {
             Some(ClientBench::load_trace_file(&params.ycsb_trace)?)
         };
 
-        let value_size = ClientBench::parse_value_sizes(
-            params.length_s,
-            &params.value_size,
-        )?;
+        let value_size = ClientBench::parse_value_sizes(params.length_s, &params.value_size)?;
 
         Ok(EtcdBench {
             kv_client,
@@ -258,8 +235,7 @@ impl EtcdBench {
         self.valid_cnt += 1;
         self.chunk_cnt += 1;
 
-        let lat_us =
-            Instant::now().duration_since(ts).as_secs_f64() * 1_000_000.0;
+        let lat_us = Instant::now().duration_since(ts).as_secs_f64() * 1_000_000.0;
         if is_read {
             self.chunk_rlats.push(lat_us);
         } else {
@@ -333,29 +309,23 @@ impl EtcdBench {
             // print statistics if print interval passed
             let print_elapsed = self.now.duration_since(last_print);
             if print_elapsed >= PRINT_INTERVAL {
-                let tput =
-                    (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
+                let tput = (self.chunk_cnt as f64) / print_elapsed.as_secs_f64();
                 let wlat = if self.chunk_wlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_wlats.iter().sum::<f64>()
-                        / self.chunk_wlats.len() as f64
+                    self.chunk_wlats.iter().sum::<f64>() / self.chunk_wlats.len() as f64
                 };
                 let rlat = if self.chunk_rlats.is_empty() {
                     0.0
                 } else {
-                    self.chunk_rlats.iter().sum::<f64>()
-                        / self.chunk_rlats.len() as f64
+                    self.chunk_rlats.iter().sum::<f64>() / self.chunk_rlats.len() as f64
                 };
-                let lat =
-                    if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
-                        0.0
-                    } else {
-                        (wlat * self.chunk_wlats.len() as f64
-                            + rlat * self.chunk_rlats.len() as f64)
-                            / (self.chunk_wlats.len() + self.chunk_rlats.len())
-                                as f64
-                    };
+                let lat = if self.chunk_wlats.len() + self.chunk_rlats.len() == 0 {
+                    0.0
+                } else {
+                    (wlat * self.chunk_wlats.len() as f64 + rlat * self.chunk_rlats.len() as f64)
+                        / (self.chunk_wlats.len() + self.chunk_rlats.len()) as f64
+                };
 
                 let line = format!(
                     "{:>11.2} | {:>12.2} | {:>12.2} : {:>12.2} ~ {:>12.2} | {:>8} : {:>8} / {:<8}",

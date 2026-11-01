@@ -247,9 +247,7 @@ def run_bench_clients(remote0, base, repo, pcname, put_ratio, config=None):
     )
 
 
-def run_mess_client(
-    remote0, base, repo, protocol, leader=None, key_range=None, responder=None
-):
+def run_mess_client(remote0, base, repo, protocol, leader=None, key_range=None, responder=None):
     cmd = [
         "uv",
         "run",
@@ -298,9 +296,7 @@ def bench_round(remote0, base, repo, pcname, put_ratio, runlog_path):
         server_config += f"+{cfg}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, pcname, put_ratio, config=server_config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, pcname, put_ratio, config=server_config)
     wait_cluster_setup()
 
     # if protocol has responders config, do it now
@@ -326,9 +322,7 @@ def bench_round(remote0, base, repo, pcname, put_ratio, runlog_path):
     client_config = "+".join(PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][2])
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remote0, base, repo, pcname, put_ratio, config=client_config
-    )
+    proc_clients = run_bench_clients(remote0, base, repo, pcname, put_ratio, config=client_config)
 
     # wait for benchmarking clients to exit
     cout, cerr = proc_clients.communicate()
@@ -377,9 +371,7 @@ def collect_outputs(output_dir):
                 sd, sp, sj, sm = 10, 0, 0, 1
                 # setting sm here to compensate for unstabilities of printing
                 # things to console
-                tput_list = utils.output.list_smoothing(
-                    result["tput_sum"], sd, sp, sj, sm
-                )
+                tput_list = utils.output.list_smoothing(result["tput_sum"], sd, sp, sj, sm)
                 wlat_list = utils.output.list_smoothing(
                     [v for v in result["wlat_avg"] if v > 0.0],
                     sd,
@@ -421,39 +413,15 @@ def collect_outputs(output_dir):
                     },
                     "wlat": {
                         "sorted": wlat_list,
-                        "p50": (
-                            None
-                            if len(wlat_list) == 0
-                            else wlat_list[len(wlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(wlat_list) == 0
-                            else np.percentile(wlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(wlat_list) == 0
-                            else sum(wlat_list) / len(wlat_list)
-                        ),
+                        "p50": (None if len(wlat_list) == 0 else wlat_list[len(wlat_list) // 2]),
+                        "p99": (None if len(wlat_list) == 0 else np.percentile(wlat_list, 99)),
+                        "mean": (None if len(wlat_list) == 0 else sum(wlat_list) / len(wlat_list)),
                     },
                     "rlat": {
                         "sorted": rlat_list,
-                        "p50": (
-                            None
-                            if len(rlat_list) == 0
-                            else rlat_list[len(rlat_list) // 2]
-                        ),
-                        "p99": (
-                            None
-                            if len(rlat_list) == 0
-                            else np.percentile(rlat_list, 99)
-                        ),
-                        "mean": (
-                            None
-                            if len(rlat_list) == 0
-                            else sum(rlat_list) / len(rlat_list)
-                        ),
+                        "p50": (None if len(rlat_list) == 0 else rlat_list[len(rlat_list) // 2]),
+                        "p99": (None if len(rlat_list) == 0 else np.percentile(rlat_list, 99)),
+                        "mean": (None if len(rlat_list) == 0 else sum(rlat_list) / len(rlat_list)),
                     },
                 }
                 curr_results = results[put_ratio][cgroup][pcname]
@@ -574,10 +542,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
 
         for pcname in PCNAMES_ORDER:
             result = results[put_ratio][cgroup][pcname]["tput"]
-            norm_tput = (
-                result["mean"]
-                / results[put_ratio][cgroup]["LeaderLs"]["tput"]["mean"]
-            )
+            norm_tput = result["mean"] / results[put_ratio][cgroup]["LeaderLs"]["tput"]["mean"]
             ymaxl = max(ymaxl, norm_tput)
 
             if put_ratio == 0 and norm_tput > 62.5:  # manual y-axis break
@@ -722,9 +687,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
     if put_ratio == 0:
         plt.xticks(xticks, xticklabels)
         for cgi, cgroup in enumerate(CLIENT_GROUPS_ORDER):
-            ax2.get_xticklabels()[cgi].set_color(
-                CLIENT_GROUPS_LABEL_COLOR[cgroup][1]
-            )
+            ax2.get_xticklabels()[cgi].set_color(CLIENT_GROUPS_LABEL_COLOR[cgroup][1])
             # ax2.get_xticklabels()[cgi].set_weight("bold")
     else:
         plt.xticks(xticks, xticklabels)
@@ -818,9 +781,7 @@ def plot_put_ratio_results(results, put_ratio, plots_dir, ymax=None):
 
         plt.xticks(xticks, xticklabels)
         for cgi, cgroup in enumerate(CLIENT_GROUPS_ORDER):
-            ax3.get_xticklabels()[cgi].set_color(
-                CLIENT_GROUPS_LABEL_COLOR[cgroup][1]
-            )
+            ax3.get_xticklabels()[cgi].set_color(CLIENT_GROUPS_LABEL_COLOR[cgroup][1])
             # ax3.get_xticklabels()[cgi].set_weight("bold")
 
         plt.ylim(0.0, 300.0)
@@ -979,15 +940,11 @@ def main():
 
     if not args.plot and len(args.fetch) == 0:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
@@ -997,9 +954,7 @@ def main():
                 os.system(f"mkdir -p {path}")
 
         print("Setting tc netem qdiscs...")
-        utils.net.clear_tc_qdisc_netems_main(
-            remotes=remotes, capture_stderr=True
-        )
+        utils.net.clear_tc_qdisc_netems_main(remotes=remotes, capture_stderr=True)
         utils.net.set_tc_qdisc_netems_asym(
             PAIRS_NETEM_MEAN,
             PAIRS_NETEM_JITTER,
@@ -1038,15 +993,11 @@ def main():
 
         print("Fetching client output logs...")
         for host in hosts[:NUM_REPLICAS]:
-            utils.file.fetch_files_of_dir(
-                remotes[host], f"{base}/output/{EXPER_NAME}", output_path
-            )
+            utils.file.fetch_files_of_dir(remotes[host], f"{base}/output/{EXPER_NAME}", output_path)
 
     elif len(args.fetch) > 0:
         print(f"Fetching outputs & runlogs (& plots) <- {args.fetch}...")
-        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, _, remotes, _, ipaddrs = utils.config.parse_toml_file(PHYS_ENV_GROUP)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"
         output_path = f"{args.odir}/output/{EXPER_NAME}"
@@ -1085,9 +1036,7 @@ def main():
         print_results(results)
 
         for put_ratio in PUT_RATIOS:
-            handles, labels = plot_put_ratio_results(
-                results, put_ratio, plots_dir
-            )
+            handles, labels = plot_put_ratio_results(results, put_ratio, plots_dir)
         plot_ylabels(plots_dir)
         plot_legend(handles, labels, plots_dir)
 

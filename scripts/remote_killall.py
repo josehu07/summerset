@@ -3,16 +3,12 @@ import argparse
 from . import utils
 
 
-def compose_kill_cmds(
-    chain=False, cockroach=False, zookeeper=False, etcd=False
-):
+def compose_kill_cmds(chain=False, cockroach=False, zookeeper=False, etcd=False):
     cmds = [["./scripts/kill_all_procs.sh", "incl_distr"]]
     if chain:
         cmds.append(["./scripts/crossword/kill_chain_procs.sh", "incl_distr"])
     if cockroach:
-        cmds.append(
-            ["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"]
-        )
+        cmds.append(["./scripts/crossword/kill_cockroach_procs.sh", "incl_distr"])
     if zookeeper:
         cmds.append(["./scripts/bodega/kill_zookeeper_procs.sh", "incl_distr"])
     if etcd:
@@ -28,9 +24,7 @@ def killall_on_targets(
     zookeeper=False,
     etcd=False,
 ):
-    cmds = compose_kill_cmds(
-        chain=chain, cockroach=cockroach, zookeeper=zookeeper, etcd=etcd
-    )
+    cmds = compose_kill_cmds(chain=chain, cockroach=cockroach, zookeeper=zookeeper, etcd=etcd)
     for cmd in cmds:
         print("Running kill commands in parallel...")
         procs = []
@@ -52,9 +46,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "-t",
         "--targets",
@@ -62,9 +54,7 @@ def main():
         default="all",
         help="comma-separated remote hosts' nicknames, or 'all'",
     )
-    parser.add_argument(
-        "--chain", action="store_true", help="if set, kill ChainPaxos processes"
-    )
+    parser.add_argument("--chain", action="store_true", help="if set, kill ChainPaxos processes")
     parser.add_argument(
         "--cockroach",
         action="store_true",
@@ -75,9 +65,7 @@ def main():
         action="store_true",
         help="if set, kill ZooKeeper processes",
     )
-    parser.add_argument(
-        "--etcd", action="store_true", help="if set, kill etcd processes"
-    )
+    parser.add_argument("--etcd", action="store_true", help="if set, kill etcd processes")
     args = parser.parse_args()
 
     base, repo, _, remotes, _, _ = utils.config.parse_toml_file(args.group)

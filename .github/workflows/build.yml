@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
 
     - name: Add rust stable toolchain with clippy
       uses: dtolnay/rust-toolchain@stable
@@ -23,7 +23,7 @@ jobs:
         components: clippy
 
     - name: Get apt dependencies
-      run: sudo apt-get install -y protobuf-compiler
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
     - name: Build
       run: cargo build --workspace --verbose --all-targets

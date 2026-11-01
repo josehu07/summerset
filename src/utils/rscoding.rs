@@ -3,17 +3,19 @@
 use std::marker::PhantomData;
 use std::{fmt, io};
 
-use bincode::{Decode, Encode};
 use bytes::{BufMut, BytesMut};
 use get_size::GetSize;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use wincode::io::std_read::ReadAdapter;
+use wincode::io::std_write::WriteAdapter;
+use wincode::{SchemaRead, SchemaWrite};
 
-use crate::utils::{Bitmap, SummersetError};
+use crate::utils::{Bitmap, CODEC_CONFIG, Codec, SummersetError};
 
 /// A Reed-Solomon codeword with original data of type `T`.
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
 pub struct RSCodeword<T> {
     /// Number of data shards.
     num_data_shards: u8,
@@ -40,106 +42,11 @@ pub struct RSCodeword<T> {
     phantom: PhantomData<T>,
 }
 
-impl<T> Encode for RSCodeword<T>
-where
-    T: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + Send
-        + Sync,
-{
-    fn encode<E: bincode::enc::Encoder>(
-        &self,
-        encoder: &mut E,
-    ) -> Result<(), bincode::error::EncodeError> {
-        self.num_data_shards.encode(encoder)?;
-        self.num_parity_shards.encode(encoder)?;
-        self.data_len.encode(encoder)?;
-        self.shard_len.encode(encoder)?;
-        // Encode shard payloads as Vec<Option<Vec<u8>>> to avoid BytesMut bounds.
-        let shards: Vec<Option<Vec<u8>>> = self
-            .shards
-            .iter()
-            .map(|opt| opt.as_ref().map(|b| b.to_vec()))
-            .collect();
-        shards.encode(encoder)?;
-        self.data_copy.encode(encoder)?;
-        Ok(())
-    }
-}
-
-impl<T, Ctx> Decode<Ctx> for RSCodeword<T>
-where
-    T: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<Ctx>
-        + Send
-        + Sync,
-{
-    fn decode<D: bincode::de::Decoder<Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        let num_data_shards = u8::decode(decoder)?;
-        let num_parity_shards = u8::decode(decoder)?;
-        let data_len = usize::decode(decoder)?;
-        let shard_len = usize::decode(decoder)?;
-        let shards_bytes: Vec<Option<Vec<u8>>> =
-            Vec::<Option<Vec<u8>>>::decode(decoder)?;
-        let shards: Vec<Option<BytesMut>> = shards_bytes
-            .into_iter()
-            .map(|opt| opt.map(|v| BytesMut::from(v.as_slice())))
-            .collect();
-        let data_copy = Option::<T>::decode(decoder)?;
-        Ok(RSCodeword {
-            num_data_shards,
-            num_parity_shards,
-            data_len,
-            shard_len,
-            shards,
-            data_copy,
-            phantom: PhantomData,
-        })
-    }
-}
-
-impl<'de, T, Ctx> bincode::BorrowDecode<'de, Ctx> for RSCodeword<T>
-where
-    T: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<Ctx>
-        + bincode::BorrowDecode<'de, Ctx>
-        + Send
-        + Sync,
-{
-    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Ctx>>(
-        decoder: &mut D,
-    ) -> Result<Self, bincode::error::DecodeError> {
-        // Fallback to owned decode; BorrowDecode for T ensures correctness.
-        RSCodeword::decode(decoder)
-    }
-}
-
 // implement `GetSize` trait for `RSCodeword`; the heap size is approximated
 // simply by the sum of sizes of present shards
 impl<T> GetSize for RSCodeword<T>
 where
-    T: fmt::Debug
-        + Clone
-        + Serialize
-        + Encode
-        + DeserializeOwned
-        + Decode<()>
-        + Send
-        + Sync,
+    T: fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + Send + Sync,
 {
     fn get_heap_size(&self) -> usize {
         self.shards
@@ -151,14 +58,7 @@ where
 
 impl<T> RSCodeword<T>
 where
-    T: fmt::Debug
-        + Clone
-        + Serialize
-        + DeserializeOwned
-        + Encode
-        + Decode<()>
-        + Send
-        + Sync,
+    T: fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + Send + Sync,
 {
     /// Internal method for creating a new `RSCodeword` from original data or
     /// empty bytes.
@@ -227,11 +127,7 @@ where
     ) -> Result<Self, SummersetError> {
         // serialize original data into bytes
         let mut data_writer = BytesMut::new().writer();
-        bincode::encode_into_std_write(
-            &data,
-            &mut data_writer,
-            bincode::config::standard(),
-        )?;
+        wincode::config::serialize_into(WriteAdapter::new(&mut data_writer), &data, CODEC_CONFIG)?;
         let data_len = data_writer.get_ref().len();
         Self::internal_new(
             Some(data),
@@ -243,20 +139,13 @@ where
     }
 
     /// Creates a new `RSCodeword` from empty bytes.
-    pub fn from_null(
-        num_data_shards: u8,
-        num_parity_shards: u8,
-    ) -> Result<Self, SummersetError> {
+    pub fn from_null(num_data_shards: u8, num_parity_shards: u8) -> Result<Self, SummersetError> {
         Self::internal_new(None, None, 0, num_data_shards, num_parity_shards)
     }
 
     /// Creates an `RSCodeword` struct that owns a copy of a subset of the
     /// shards, and a complete copy of the original data if required.
-    pub fn subset_copy(
-        &self,
-        subset: &Bitmap,
-        copy_data: bool,
-    ) -> Result<Self, SummersetError> {
+    pub fn subset_copy(&self, subset: &Bitmap, copy_data: bool) -> Result<Self, SummersetError> {
         if self.data_len == 0 {
             return Err(SummersetError::msg("codeword is null"));
         }
@@ -293,10 +182,7 @@ where
     }
 
     /// Absorbs another `RSCodeword` struct, taking its available shards.
-    pub fn absorb_other(
-        &mut self,
-        mut other: RSCodeword<T>,
-    ) -> Result<(), SummersetError> {
+    pub fn absorb_other(&mut self, mut other: RSCodeword<T>) -> Result<(), SummersetError> {
         // must have configuration parameters matching
         if self.num_data_shards != other.num_data_shards() {
             return Err(SummersetError::msg(format!(
@@ -421,10 +307,7 @@ where
 
     /// Helper checker to ensure that the given `ReedSolomon` coder has the same
     /// shard splits config as me.
-    fn shard_splits_match(
-        &self,
-        rs: &ReedSolomon,
-    ) -> Result<(), SummersetError> {
+    fn shard_splits_match(&self, rs: &ReedSolomon) -> Result<(), SummersetError> {
         if rs.data_shard_count() != self.num_data_shards as usize {
             Err(SummersetError::msg(format!(
                 "num_data_shards mismatch: expected {}, rs {}",
@@ -444,10 +327,7 @@ where
 
     /// Computes the parity shards from data shards. Must have all data shards
     /// present.
-    pub fn compute_parity(
-        &mut self,
-        rs: Option<&ReedSolomon>,
-    ) -> Result<(), SummersetError> {
+    pub fn compute_parity(&mut self, rs: Option<&ReedSolomon>) -> Result<(), SummersetError> {
         if self.data_len == 0 {
             return Err(SummersetError::msg("codeword is null"));
         }
@@ -469,8 +349,7 @@ where
         }
 
         // allocate space for parity shards if haven't
-        for shard in self.shards.iter_mut().skip(self.num_data_shards as usize)
-        {
+        for shard in self.shards.iter_mut().skip(self.num_data_shards as usize) {
             if shard.is_none() {
                 *shard = Some(BytesMut::zeroed(self.shard_len));
             }
@@ -521,28 +400,19 @@ where
 
     /// Reconstructs all shards from currently available shards.
     #[allow(dead_code)]
-    pub fn reconstruct_all(
-        &mut self,
-        rs: Option<&ReedSolomon>,
-    ) -> Result<(), SummersetError> {
+    pub fn reconstruct_all(&mut self, rs: Option<&ReedSolomon>) -> Result<(), SummersetError> {
         self.reconstruct(rs, false)
     }
 
     /// Reconstructs data shards from currently available shards.
-    pub fn reconstruct_data(
-        &mut self,
-        rs: Option<&ReedSolomon>,
-    ) -> Result<(), SummersetError> {
+    pub fn reconstruct_data(&mut self, rs: Option<&ReedSolomon>) -> Result<(), SummersetError> {
         self.reconstruct(rs, true)
     }
 
     /// Verifies if the currently parity shards are correct. Must have all data
     /// & parity shards available.
     #[allow(dead_code)]
-    pub fn verify_parity(
-        &mut self,
-        rs: Option<&ReedSolomon>,
-    ) -> Result<bool, SummersetError> {
+    pub fn verify_parity(&mut self, rs: Option<&ReedSolomon>) -> Result<bool, SummersetError> {
         if self.data_len == 0 {
             return Err(SummersetError::msg("codeword is null"));
         }
@@ -570,8 +440,7 @@ where
             )));
         }
 
-        let slices: Vec<&BytesMut> =
-            self.shards.iter().map(|s| s.as_ref().unwrap()).collect();
+        let slices: Vec<&BytesMut> = self.shards.iter().map(|s| s.as_ref().unwrap()).collect();
         Ok(rs.unwrap().verify(&slices)?)
     }
 
@@ -591,14 +460,10 @@ where
         }
 
         if self.data_copy.is_none() {
-            let mut reader = ShardsReader::new(
-                &self.shards,
-                self.num_data_shards,
-                self.shard_len,
-            )?;
-            self.data_copy = Some(bincode::decode_from_std_read(
-                &mut reader,
-                bincode::config::standard(),
+            let mut reader = ShardsReader::new(&self.shards, self.num_data_shards, self.shard_len)?;
+            self.data_copy = Some(wincode::config::deserialize_from(
+                ReadAdapter::new(&mut reader),
+                CODEC_CONFIG,
             )?);
         }
 
@@ -651,9 +516,8 @@ impl io::Read for ShardsReader<'_> {
         let mut total_nread = 0;
 
         while self.cursor.0 < self.num_data_shards {
-            let mut slice = &(self.shards[self.cursor.0 as usize]
-                .as_ref()
-                .unwrap())[self.cursor.1..];
+            let mut slice =
+                &(self.shards[self.cursor.0 as usize].as_ref().unwrap())[self.cursor.1..];
             let (_, buf_tail) = buf.split_at_mut(total_nread);
 
             let shard_nread = slice.read(buf_tail).unwrap();
@@ -688,20 +552,14 @@ mod tests {
 
     use super::*;
 
-    #[derive(
-        Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Encode, Decode,
-    )]
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, SchemaWrite, SchemaRead)]
     struct TestData(String);
 
     #[test]
     fn new_from_data() -> Result<(), SummersetError> {
         let data = TestData("interesting_value".into());
         let mut data_writer = BytesMut::new().writer();
-        bincode::encode_into_std_write(
-            &data,
-            &mut data_writer,
-            bincode::config::standard(),
-        )?;
+        wincode::config::serialize_into(WriteAdapter::new(&mut data_writer), &data, CODEC_CONFIG)?;
         let data_len = data_writer.get_ref().len();
         let shard_len = if data_len.is_multiple_of(3) {
             data_len / 3
@@ -786,6 +644,26 @@ mod tests {
     }
 
     #[test]
+    fn codec_roundtrip() -> Result<(), SummersetError> {
+        let rs32 = ReedSolomon::new(3, 2)?;
+        let mut cw = RSCodeword::from_data(TestData("interesting_value".into()), 3, 2)?;
+        cw.compute_parity(Some(&rs32))?;
+        // drop original data copy and one shard to exercise `None` encodings
+        let cw = cw.subset_copy(&Bitmap::from((5, vec![0, 2, 3, 4])), false)?;
+        let bytes = wincode::config::serialize(&cw, CODEC_CONFIG)?;
+        assert_eq!(
+            usize::try_from(wincode::config::serialized_size(&cw, CODEC_CONFIG)?)?,
+            bytes.len()
+        );
+        let mut decoded: RSCodeword<TestData> =
+            wincode::config::deserialize_exact(&bytes, CODEC_CONFIG)?;
+        assert_eq!(decoded, cw);
+        decoded.reconstruct_data(Some(&rs32))?;
+        assert_eq!(decoded.get_data()?.0, "interesting_value");
+        Ok(())
+    }
+
+    #[test]
     fn compute_verify() -> Result<(), SummersetError> {
         let rs32 = ReedSolomon::new(3, 2)?;
         let data = TestData("interesting_value".into());
@@ -793,8 +671,7 @@ mod tests {
         let mut cw_null = RSCodeword::<TestData>::from_null(3, 2)?;
         assert!(cw_null.compute_parity(Some(&rs32)).is_err());
         assert!(cw_null.verify_parity(Some(&rs32)).is_err());
-        let mut cw_part =
-            RSCodeword::<TestData>::from_data(data.clone(), 3, 2)?;
+        let mut cw_part = RSCodeword::<TestData>::from_data(data.clone(), 3, 2)?;
         cw_part.shards[1] = None;
         assert!(cw_part.compute_parity(Some(&rs32)).is_err());
         assert!(cw_part.verify_parity(Some(&rs32)).is_err());
@@ -825,8 +702,7 @@ mod tests {
         let mut cw_null = RSCodeword::<TestData>::from_null(3, 2)?;
         assert!(cw_null.reconstruct_all(Some(&rs32)).is_err());
         assert!(cw_null.reconstruct_data(Some(&rs32)).is_err());
-        let mut cw_part =
-            RSCodeword::<TestData>::from_data(data.clone(), 3, 2)?;
+        let mut cw_part = RSCodeword::<TestData>::from_data(data.clone(), 3, 2)?;
         cw_part.shards[1] = None;
         assert!(cw_part.reconstruct_all(Some(&rs32)).is_err());
         assert!(cw_part.reconstruct_data(Some(&rs32)).is_err());

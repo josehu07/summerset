@@ -25,8 +25,7 @@ impl QuorumLeasesReplica {
     ) -> Result<(), SummersetError> {
         while self.llease_manager.grant_set().get(peer)? {
             loop {
-                let (lease_num, lease_action) =
-                    self.llease_manager.get_action().await?;
+                let (lease_num, lease_action) = self.llease_manager.get_action().await?;
 
                 if self.handle_llease_action(lease_num, lease_action).await? {
                     break;

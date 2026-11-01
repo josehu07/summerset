@@ -3,7 +3,7 @@ members = ["summerset_server", "summerset_client", "summerset_manager"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 
 [package]
 name = "summerset"
@@ -14,7 +14,7 @@ rust-version = { workspace = true }
 authors = ["Guanzhou Hu <me@josehu.com>"]
 
 [workspace.dependencies]
-tokio = { version = "1.53", features = ["full"] }
+tokio = { version = "1.54", features = ["full"] }
 rand = "0.10"
 rand_distr = "0.6"
 rangemap = { version = "1.8", features = ["serde1"] }
@@ -27,7 +27,7 @@ clap = { version = "4.6", features = ["derive"] }
 ctrlc = { version = "3.5", features = ["termination"] }
 color-print = { version = "0.3", features = ["terminfo"] }
 zookeeper-client = "0.11"
-etcd-client = "0.20"
+etcd-client = "0.21"
 
 [dependencies]
 tokio = { workspace = true }
@@ -43,7 +43,7 @@ fixedbitset = { version = "0.5", features = ["serde"] }
 atomic_refcell = "0.1"
 dashmap = "6.2"
 futures = "0.3"
-bincode = "2.0"
+wincode = { version = "0.6", features = ["derive", "bytes"] }
 reed-solomon-erasure = { version = "6.0" }
 petgraph = "0.8"
 get-size = { version = "0.1", features = ["derive"] }
@@ -57,7 +57,7 @@ etcd-client = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.8"
-sysinfo = "0.39"
+sysinfo = "0.40"
 
 [features]
 rse-simd = ["reed-solomon-erasure/simd-accel"]

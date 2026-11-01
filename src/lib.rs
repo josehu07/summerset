@@ -28,12 +28,12 @@ pub use crate::manager::{ClusterManager, CtrlReply, CtrlRequest, ServerInfo};
 pub use crate::protocols::SmrProtocol;
 #[doc(inline)]
 pub use crate::server::{
-    ApiReply, ApiRequest, Command, CommandResult, ConfChange, GenericReplica,
-    ReplicaId, RequestId,
+    ApiReply, ApiRequest, Command, CommandResult, ConfChange, GenericReplica, ReplicaId, RequestId,
 };
 #[doc(inline)]
 pub use crate::utils::{
-    Bitmap, ME, RSCodeword, Stopwatch, SummersetError, Timer, logger_init,
+    Bitmap, CODEC_CONFIG, Codec, CodecConfig, ME, RSCodeword, Stopwatch, SummersetError, Timer,
+    logger_init,
 };
 
 // below are config structs exposed for users to know how to write TOML-format

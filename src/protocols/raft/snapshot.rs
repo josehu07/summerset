@@ -54,7 +54,7 @@ impl RaftReplica {
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
         // do a dummy sync read to force all previously submitted log actions
         // to be processed
-        debug_assert!(!self.log.is_empty());
+        debug_assert_ne!(self.log.len(), 0);
         let (old_results, _) = self
             .storage_hub
             .do_sync_action(0, LogAction::Read { offset: 0 })
@@ -86,15 +86,10 @@ impl RaftReplica {
                 .await?
                 .1
             {
-                debug_assert_eq!(
-                    self.log_offset - cut_offset + self.log_meta_end,
-                    now_size
-                );
+                debug_assert_eq!(self.log_offset - cut_offset + self.log_meta_end, now_size);
                 self.log_offset = now_size;
             } else {
-                return logged_err!(
-                    "unexpected log result type or failed discard"
-                );
+                return logged_err!("unexpected log result type or failed discard");
             }
         }
 
@@ -121,9 +116,7 @@ impl RaftReplica {
     //       which all other peers have snapshotted); we take the conservative
     //       approach that a snapshot is only taken when data has been durably
     //       committed on all servers.
-    pub(super) async fn take_new_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_debug!(
             "taking new snapshot: start {} exec {} snap {}",
             self.start_slot,
@@ -166,9 +159,7 @@ impl RaftReplica {
                 offset_ok: true, ..
             } => {}
             _ => {
-                return logged_err!(
-                    "unexpected log result type or failed write"
-                );
+                return logged_err!("unexpected log result type or failed write");
             }
         }
 
@@ -194,9 +185,7 @@ impl RaftReplica {
     }
 
     /// Recover initial state from durable storage snapshot file.
-    pub(super) async fn recover_from_snapshot(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.snap_offset, 0);
 
         // first, try to read the first several bytes, which should record the
@@ -269,10 +258,7 @@ impl RaftReplica {
                 })?;
 
                 if self.start_slot > 0 {
-                    pf_info!(
-                        "recovered from snapshot: start {}",
-                        self.start_slot
-                    );
+                    pf_info!("recovered from snapshot: start {}", self.start_slot);
                 }
                 Ok(())
             }

@@ -14,12 +14,8 @@ MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
 MANAGER_SRV_PORT = lambda p: 40019 + p * 20
 
 
-PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}.wal"
-)
-PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: (
-    f"{prefix}/{protocol}{midfix}.{r}.snap"
-)
+PROTOCOL_BACKER_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.wal"
+PROTOCOL_SNAPSHOT_PATH = lambda protocol, prefix, midfix, r: f"{prefix}/{protocol}{midfix}.{r}.snap"
 
 
 class ProtoFeats:
@@ -35,24 +31,16 @@ PROTOCOL_FEATURES = {
     "ChainRep": ProtoFeats(False, False, None),
     "MultiPaxos": ProtoFeats(True, True, None),
     "EPaxos": ProtoFeats(True, False, lambda n, _: "optimized_quorum=true"),
-    "RSPaxos": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
-    ),
+    "RSPaxos": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"),
     "Raft": ProtoFeats(True, True, None),
-    "CRaft": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"
-    ),
-    "Crossword": ProtoFeats(
-        True, True, lambda n, _: f"fault_tolerance={n // 2}"
-    ),
+    "CRaft": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={(n // 2) // 2}"),
+    "Crossword": ProtoFeats(True, True, lambda n, _: f"fault_tolerance={n // 2}"),
     "QuorumLeases": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
     "Bodega": ProtoFeats(True, True, lambda n, _: "sim_read_lease=false"),
 }
 
 
-def run_process_pinned(
-    cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None
-):
+def run_process_pinned(cmd, capture_stderr=False, cores_per_proc=0, remote=None, cd_dir=None):
     cpu_list = None
     if cores_per_proc > 0:
         # get number of processors
@@ -103,9 +91,7 @@ def config_with_defaults(
         l = [k + "=" + v for k, v in d.items()]
         return "+".join(l)
 
-    backer_path = PROTOCOL_BACKER_PATH(
-        protocol, states_prefix, states_midfix, replica_id
-    )
+    backer_path = PROTOCOL_BACKER_PATH(protocol, states_prefix, states_midfix, replica_id)
     config_dict = {"backer_path": f"'{backer_path}'"}
     if fresh_files:
         utils.proc.run_process_over_ssh(
@@ -115,9 +101,7 @@ def config_with_defaults(
         ).wait()
 
     if PROTOCOL_FEATURES[protocol].could_snapshot:
-        snapshot_path = PROTOCOL_SNAPSHOT_PATH(
-            protocol, states_prefix, states_midfix, replica_id
-        )
+        snapshot_path = PROTOCOL_SNAPSHOT_PATH(protocol, states_prefix, states_midfix, replica_id)
         config_dict["snapshot_path"] = f"'{snapshot_path}'"
         if fresh_files:
             utils.proc.run_process_over_ssh(
@@ -128,11 +112,7 @@ def config_with_defaults(
 
     if PROTOCOL_FEATURES[protocol].extra_defaults is not None:
         config_dict.update(
-            config_str_to_dict(
-                PROTOCOL_FEATURES[protocol].extra_defaults(
-                    num_replicas, replica_id
-                )
-            )
+            config_str_to_dict(PROTOCOL_FEATURES[protocol].extra_defaults(num_replicas, replica_id))
         )
 
     if config is not None and len(config) > 0:
@@ -287,9 +267,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-a",
         "--partition",
@@ -304,15 +282,9 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-r", "--release", action="store_true", help="if set, run release mode"
-    )
-    parser.add_argument(
-        "-c", "--config", type=str, help="protocol-specific TOML config string"
-    )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-r", "--release", action="store_true", help="if set, run release mode")
+    parser.add_argument("-c", "--config", type=str, help="protocol-specific TOML config string")
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -353,15 +325,11 @@ def main():
         action="store_true",
         help="if set, wait 3s between launches",
     )
-    parser.add_argument(
-        "--skip_build", action="store_true", help="if set, skip cargo build"
-    )
+    parser.add_argument("--skip_build", action="store_true", help="if set, skip cargo build")
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir = f"{base}/{repo}"
 
     # check that the partition index is valid
@@ -370,18 +338,14 @@ def main():
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
     states_midfix = (
-        args.states_midfix
-        if not partition_in_args
-        else f"{args.states_midfix}.{partition}"
+        args.states_midfix if not partition_in_args else f"{args.states_midfix}.{partition}"
     )
 
     # check that number of replicas is valid
     if args.num_replicas <= 0:
         raise ValueError(f"invalid number of replicas {args.num_replicas}")
     if args.num_replicas > len(remotes):
-        raise ValueError(
-            f"#replicas {args.num_replicas} > #hosts in config file"
-        )
+        raise ValueError(f"#replicas {args.num_replicas} > #hosts in config file")
     hosts = hosts[: args.num_replicas]
     remotes = {h: remotes[h] for h in hosts}
     ipaddrs = {h: ipaddrs[h] for h in hosts}
@@ -428,9 +392,7 @@ def main():
         utils.file.do_cargo_build(args.release, cd_dir=cd_dir, remotes=remotes)
 
     # launch cluster manager oracle first
-    manager_proc = launch_manager(
-        args.protocol, partition, args.num_replicas, args.release
-    )
+    manager_proc = launch_manager(args.protocol, partition, args.num_replicas, args.release)
     wait_manager_setup(manager_proc)
 
     # create a thread that prints out captured manager stderrs

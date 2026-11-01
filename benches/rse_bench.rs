@@ -43,25 +43,18 @@ static MOM_VALUE: LazyLock<String> = LazyLock::new(|| {
 });
 
 /// Reed-Solomon coder.
-static RS_CODER: LazyLock<HashMap<(u8, u8), ReedSolomon>> =
-    LazyLock::new(|| {
-        SCHEMES
-            .iter()
-            .map(|&s| {
-                (s, ReedSolomon::new(s.0 as usize, s.1 as usize).unwrap())
-            })
-            .collect()
-    });
+static RS_CODER: LazyLock<HashMap<(u8, u8), ReedSolomon>> = LazyLock::new(|| {
+    SCHEMES
+        .iter()
+        .map(|&s| (s, ReedSolomon::new(s.0 as usize, s.1 as usize).unwrap()))
+        .collect()
+});
 
 /// Placeholder formatter for criterion measurement.
 struct GarbageFormatter;
 
 impl ValueFormatter for GarbageFormatter {
-    fn scale_values(
-        &self,
-        _typical_value: f64,
-        _values: &mut [f64],
-    ) -> &'static str {
+    fn scale_values(&self, _typical_value: f64, _values: &mut [f64]) -> &'static str {
         "N/A"
     }
 
@@ -88,7 +81,7 @@ impl Measurement for CpuUsage {
     type Value = f64; // usage percent
 
     fn start(&self) -> Self::Intermediate {
-        let mut sys = System::new_all();
+        let mut sys = System::new_all().expect("failed to init sysinfo");
         sys.refresh_cpu_all();
         sys
     }
@@ -126,15 +119,15 @@ impl Measurement for MemUsage {
     type Value = u64;
 
     fn start(&self) -> Self::Intermediate {
-        let mut sys = System::new_all();
+        let mut sys = System::new_all().expect("failed to init sysinfo");
         sys.refresh_memory();
-        let used_bytes = sys.used_memory() * 1024; // sysinfo reports KiB
+        let used_bytes = sys.used_memory();
         (sys, used_bytes)
     }
 
     fn end(&self, (mut sys, used_start): Self::Intermediate) -> Self::Value {
         sys.refresh_memory();
-        let used_end = sys.used_memory() * 1024;
+        let used_end = sys.used_memory();
         used_end.saturating_sub(used_start)
     }
 
@@ -158,10 +151,7 @@ impl Measurement for MemUsage {
     }
 }
 
-fn compute_codeword(
-    size: usize,
-    scheme: (u8, u8),
-) -> Result<(), SummersetError> {
+fn compute_codeword(size: usize, scheme: (u8, u8)) -> Result<(), SummersetError> {
     let value = MOM_VALUE[..size].to_string();
     let mut cw = RSCodeword::<String>::from_data(value, scheme.0, scheme.1)?;
     cw.compute_parity(Some(RS_CODER.get(&scheme).unwrap()))?;

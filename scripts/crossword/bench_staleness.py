@@ -132,9 +132,7 @@ def run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str):
     )
 
 
-def bench_round(
-    remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path
-):
+def bench_round(remote0, base, repo, protocol, gossip_gap, num_keys, runlog_path):
     midfix_str = round_midfix_str(gossip_gap, num_keys)
     print(f"  {EXPER_NAME}  {protocol:<10s}{midfix_str}")
 
@@ -146,15 +144,11 @@ def bench_round(
         config += f"+gossip_tail_ignores={gossip_gap}"
 
     # launch service cluster
-    proc_cluster = launch_cluster(
-        remote0, base, repo, protocol, midfix_str, config=config
-    )
+    proc_cluster = launch_cluster(remote0, base, repo, protocol, midfix_str, config=config)
     wait_cluster_setup()
 
     # start benchmarking clients
-    proc_clients = run_bench_clients(
-        remote0, base, repo, protocol, num_keys, midfix_str
-    )
+    proc_clients = run_bench_clients(remote0, base, repo, protocol, num_keys, midfix_str)
 
     # wait for benchmarking clients to exit
     _, cerr = proc_clients.communicate()
@@ -189,15 +183,11 @@ def collect_ver_stats(runlog_dir):
             candidates = set(range(NUM_REPLICAS))
             leader, sec0 = None, None
             result = [{"secs": [], "vers": []} for _ in range(NUM_REPLICAS)]
-            with open(
-                f"{runlog_dir}/{protocol}{midfix_str}.s.err", "r"
-            ) as flog:
+            with open(f"{runlog_dir}/{protocol}{midfix_str}.s.err", "r") as flog:
                 for line in flog:
                     if "becoming a leader" in line:
                         if leader is not None:
-                            raise RuntimeError(
-                                "multiple leader step-up detected"
-                            )
+                            raise RuntimeError("multiple leader step-up detected")
                         leader = get_node_id(line)
                     elif "ver of" in line:
                         node = get_node_id(line)
@@ -218,9 +208,7 @@ def collect_ver_stats(runlog_dir):
 
                         if sec > RESULT_SECS_END:
                             if leader is None:
-                                raise RuntimeError(
-                                    "leader step-up not detected"
-                                )
+                                raise RuntimeError("leader step-up not detected")
                             candidates.remove(node)
                             ver_stats[f"{protocol}{midfix_str}"] = {
                                 "leader": leader,
@@ -332,9 +320,7 @@ def plot_staleness(diff_stats, plots_dir):
         ys = None
         if protocol != "RSPaxos":
             ys = [
-                diff_stats[f"{protocol}{round_midfix_str(gossip_gap, k)}"][
-                    "avg"
-                ]
+                diff_stats[f"{protocol}{round_midfix_str(gossip_gap, k)}"]["avg"]
                 for k in NUM_KEYS_LIST
             ]
             ymax = max(ymax, max(ys))
@@ -344,20 +330,14 @@ def plot_staleness(diff_stats, plots_dir):
         protocol_ys[f"{protocol}.{gossip_gap}"] = ys
 
     for protocol_with_gap in PROTOCOLS_ORDER:
-        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[
-            protocol_with_gap
-        ]
+        label, color, marker, zorder = PROTOCOLS_LABEL_COLOR_MARKER_ZORDER[protocol_with_gap]
         plt.plot(
             [k * TIME_INTERVAL_UNIT for k in NUM_KEYS_LIST],
             protocol_ys[protocol_with_gap],
             color=color,
             linewidth=1.2,
             marker=marker,
-            markersize=(
-                MARKER_SIZE
-                if ".0" not in protocol_with_gap
-                else MARKER_SIZE + 3
-            ),
+            markersize=(MARKER_SIZE if ".0" not in protocol_with_gap else MARKER_SIZE + 3),
             label=label,
             zorder=zorder,
         )
@@ -484,17 +464,13 @@ def main():
 
     if not args.plot:
         print("Doing preparation work...")
-        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(
-            PHYS_ENV_GROUP
-        )
+        base, repo, hosts, remotes, _, _ = utils.config.parse_toml_file(PHYS_ENV_GROUP)
         hosts = hosts[:NUM_REPLICAS]
         remotes = {h: remotes[h] for h in hosts}
 
         utils.proc.check_enough_cpus(MIN_HOST0_CPUS, remote=remotes["host0"])
         utils.proc.kill_all_distr_procs(PHYS_ENV_GROUP)
-        utils.file.do_cargo_build(
-            True, cd_dir=f"{base}/{repo}", remotes=remotes
-        )
+        utils.file.do_cargo_build(True, cd_dir=f"{base}/{repo}", remotes=remotes)
         utils.file.clear_fs_caches(remotes=remotes)
 
         runlog_path = f"{args.odir}/runlog/{EXPER_NAME}"

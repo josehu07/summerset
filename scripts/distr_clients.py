@@ -9,9 +9,7 @@ from . import utils
 MANAGER_CLI_PORT = lambda p: 40009 + p * 20  # NOTE: assuming at most 9 servers
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: (
-    f"{prefix}/{protocol}{midfix}.{i}.out"
-)
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix, i: f"{prefix}/{protocol}{midfix}.{i}.out"
 
 UTILITY_PARAM_NAMES = {
     "repl": [],
@@ -51,9 +49,7 @@ def run_process_pinned(i, cmd, cores_per_proc=0, remote=None, cd_dir=None):
         # get number of processors
         num_cpus = utils.proc.get_cpu_count(remote=remote)
         # parse cores_per_proc setting
-        if cores_per_proc != int(cores_per_proc) and (
-            cores_per_proc > 1 or cores_per_proc < -1
-        ):
+        if cores_per_proc != int(cores_per_proc) and (cores_per_proc > 1 or cores_per_proc < -1):
             raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
         if cores_per_proc < 0:
             # negative means starting from CPU 0 (instead from last)
@@ -70,9 +66,7 @@ def run_process_pinned(i, cmd, cores_per_proc=0, remote=None, cd_dir=None):
     if remote is None or len(remote) == 0:
         return utils.proc.run_process(cmd, cd_dir=cd_dir, cpu_list=cpu_list)
     else:
-        return utils.proc.run_process_over_ssh(
-            remote, cmd, cd_dir=cd_dir, cpu_list=cpu_list
-        )
+        return utils.proc.run_process_over_ssh(remote, cmd, cd_dir=cd_dir, cpu_list=cpu_list)
 
 
 def glue_params_str(cli_args, params_list):
@@ -191,9 +185,7 @@ def run_clients(
                 else None
             ),
             near_id=(
-                hosts.index(
-                    me if dist_machs <= 1 else td_hosts[i % len(td_hosts)]
-                )
+                hosts.index(me if dist_machs <= 1 else td_hosts[i % len(td_hosts)])
                 % num_replicas_for_near
             ),
         )
@@ -229,9 +221,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-a",
         "--partition",
@@ -239,15 +229,9 @@ def main():
         default=argparse.SUPPRESS,
         help="if doing keyspace partitioning, the partition idx",
     )
-    parser.add_argument(
-        "-r", "--release", action="store_true", help="run release mode"
-    )
-    parser.add_argument(
-        "-c", "--config", type=str, help="protocol-specific TOML config string"
-    )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-r", "--release", action="store_true", help="run release mode")
+    parser.add_argument("-c", "--config", type=str, help="protocol-specific TOML config string")
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -272,9 +256,7 @@ def main():
         default=5000,
         help="client-side request timeout",
     )
-    parser.add_argument(
-        "--skip_build", action="store_true", help="if set, skip cargo build"
-    )
+    parser.add_argument("--skip_build", action="store_true", help="if set, skip cargo build")
 
     subparsers = parser.add_subparsers(
         required=True,
@@ -306,24 +288,12 @@ def main():
         default=0,
         help="if > 0, put clients round-robinly on dist_machs machines",
     )
-    parser_bench.add_argument(
-        "-f", "--freq_target", type=int, help="frequency target reqs per sec"
-    )
-    parser_bench.add_argument(
-        "-v", "--value_size", type=str, help="value sizes over time"
-    )
-    parser_bench.add_argument(
-        "-k", "--num_keys", type=int, help="number of keys to choose from"
-    )
-    parser_bench.add_argument(
-        "-w", "--put_ratio", type=int, help="percentage of puts"
-    )
-    parser_bench.add_argument(
-        "-y", "--ycsb_trace", type=str, help="YCSB trace file"
-    )
-    parser_bench.add_argument(
-        "-l", "--length_s", type=int, help="run length in secs"
-    )
+    parser_bench.add_argument("-f", "--freq_target", type=int, help="frequency target reqs per sec")
+    parser_bench.add_argument("-v", "--value_size", type=str, help="value sizes over time")
+    parser_bench.add_argument("-k", "--num_keys", type=int, help="number of keys to choose from")
+    parser_bench.add_argument("-w", "--put_ratio", type=int, help="percentage of puts")
+    parser_bench.add_argument("-y", "--ycsb_trace", type=str, help="YCSB trace file")
+    parser_bench.add_argument("-l", "--length_s", type=int, help="run length in secs")
     parser_bench.add_argument(
         "--expect_halt",
         action="store_true",
@@ -339,15 +309,9 @@ def main():
         action="store_true",
         help="if set, skip preloading phase",
     )
-    parser_bench.add_argument(
-        "--norm_stdev_ratio", type=float, help="normal dist stdev ratio"
-    )
-    parser_bench.add_argument(
-        "--unif_interval_ms", type=int, help="uniform dist usage interval"
-    )
-    parser_bench.add_argument(
-        "--unif_upper_bound", type=int, help="uniform dist upper bound"
-    )
+    parser_bench.add_argument("--norm_stdev_ratio", type=float, help="normal dist stdev ratio")
+    parser_bench.add_argument("--unif_interval_ms", type=int, help="uniform dist usage interval")
+    parser_bench.add_argument("--unif_upper_bound", type=int, help="uniform dist upper bound")
     parser_bench.add_argument(
         "--output_prefix",
         type=str,
@@ -385,12 +349,8 @@ def main():
     )
 
     parser_mess = subparsers.add_parser("mess", help="one-shot control mode")
-    parser_mess.add_argument(
-        "--pause", type=str, help="comma-separated list of servers to pause"
-    )
-    parser_mess.add_argument(
-        "--resume", type=str, help="comma-separated list of servers to resume"
-    )
+    parser_mess.add_argument("--pause", type=str, help="comma-separated list of servers to pause")
+    parser_mess.add_argument("--resume", type=str, help="comma-separated list of servers to resume")
     parser_mess.add_argument(
         "--leader",
         type=str,
@@ -415,9 +375,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, repo, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir = f"{base}/{repo}"
 
     # check that I am indeed the "me" host
@@ -489,11 +447,7 @@ def main():
 
     # if running bench client, add proper timeout on wait
     timeout = None
-    is_timed_bench = (
-        args.utility == "bench"
-        and args.length_s is not None
-        and args.length_s > 0
-    )
+    is_timed_bench = args.utility == "bench" and args.length_s is not None and args.length_s > 0
     if args.utility == "bench":
         if is_timed_bench:
             timeout = args.length_s + 30

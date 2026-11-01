@@ -40,10 +40,8 @@ impl MultiPaxosReplica {
                         self.handle_cmd_result(old_id, old_result).await?;
                     }
 
-                    self.external_api.send_reply(
-                        ApiReply::normal(*req_id, Some(cmd_result)),
-                        *client,
-                    )?;
+                    self.external_api
+                        .send_reply(ApiReply::normal(*req_id, Some(cmd_result)), *client)?;
                     pf_trace!("replied -> client {} for read-only cmd", client);
                     // [for access cnt stats only]
                     if self.config.record_node_cnts {
@@ -53,9 +51,7 @@ impl MultiPaxosReplica {
                     strip_read_only = true;
                 }
             }
-        } else if (!self.is_leader() || self.bal_prepared == 0)
-            && self.config.enable_quorum_reads
-        {
+        } else if (!self.is_leader() || self.bal_prepared == 0) && self.config.enable_quorum_reads {
             // if near quorum read optimization is on, broadcast ReadQueries
             // for reads. Reference:
             //   https://www.usenix.org/system/files/hotstorage19-paper-charapko.pdf
@@ -135,15 +131,9 @@ impl MultiPaxosReplica {
                     } else {
                         (self.id + 1) % self.population
                     };
-                    self.external_api.send_reply(
-                        ApiReply::redirect(req_id, Some(target)),
-                        client,
-                    )?;
-                    pf_trace!(
-                        "redirected client {} to replica {}",
-                        client,
-                        target
-                    );
+                    self.external_api
+                        .send_reply(ApiReply::redirect(req_id, Some(target)), client)?;
+                    pf_trace!("redirected client {} to replica {}", client, target);
                     // [for access cnt stats only]
                     if self.config.record_node_cnts {
                         *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
@@ -160,11 +150,7 @@ impl MultiPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
             inst.reqs.clone_from(&req_batch);
-            Self::refresh_highest_slot(
-                slot,
-                &req_batch,
-                &mut self.highest_slot,
-            );
+            Self::refresh_highest_slot(slot, &req_batch, &mut self.highest_slot);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,

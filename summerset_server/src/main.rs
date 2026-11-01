@@ -78,9 +78,10 @@ impl CliArgs {
                 self.threads
             )))
         } else {
-            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(
-                format!("protocol name '{}' unrecognized", self.protocol),
-            ))
+            SmrProtocol::parse_name(&self.protocol).ok_or(SummersetError::msg(format!(
+                "protocol name '{}' unrecognized",
+                self.protocol
+            )))
         }
     }
 }
@@ -146,12 +147,7 @@ fn server_main() -> Result<(), SummersetError> {
         // event loop logic
         runtime.block_on(async move {
             let mut replica = protocol
-                .new_server_replica_setup(
-                    api_addr,
-                    p2p_addr,
-                    args.manager,
-                    config_str,
-                )
+                .new_server_replica_setup(api_addr, p2p_addr, args.manager, config_str)
                 .await?;
 
             if replica.run(rx_term_clone).await? {

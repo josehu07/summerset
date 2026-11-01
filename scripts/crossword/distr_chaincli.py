@@ -13,14 +13,10 @@ CHAIN_JAR_FOLDER = "deploy/client"
 SERVER_APP_PORT = lambda p: 40020 + p
 
 
-CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix: (
-    f"{prefix}/{protocol}{midfix}.out"
-)
+CLIENT_OUTPUT_PATH = lambda protocol, prefix, midfix: f"{prefix}/{protocol}{midfix}.out"
 
 
-def run_process_pinned(
-    num_clients, cmd, capture_stdout=False, cores_per_proc=0, cd_dir=None
-):
+def run_process_pinned(num_clients, cmd, capture_stdout=False, cores_per_proc=0, cd_dir=None):
     # their implementation used a single process client with threading only
     # so `cores_per_proc` should be multiplied by the number of threads
     cpu_list = None
@@ -28,9 +24,7 @@ def run_process_pinned(
         # get number of processors
         num_cpus = utils.proc.get_cpu_count()
         # parse cores_per_proc setting
-        if cores_per_proc != int(cores_per_proc) and (
-            cores_per_proc > 1 or cores_per_proc < -1
-        ):
+        if cores_per_proc != int(cores_per_proc) and (cores_per_proc > 1 or cores_per_proc < -1):
             raise ValueError(f"invalid cores_per_proc {cores_per_proc}")
         cores = cores_per_proc * num_clients
         if cores < 0:
@@ -126,9 +120,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-p", "--protocol", type=str, required=True, help="protocol name"
-    )
+    parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
     parser.add_argument(
         "-a",
         "--partition",
@@ -143,9 +135,7 @@ def main():
         required=True,
         help="number of replicas",
     )
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "--me",
         type=str,
@@ -159,15 +149,9 @@ def main():
         required=True,
         help="number of threads",
     )
-    parser.add_argument(
-        "-v", "--value_size", type=int, required=True, help="value size"
-    )
-    parser.add_argument(
-        "-w", "--put_ratio", type=int, required=True, help="percentage of puts"
-    )
-    parser.add_argument(
-        "-l", "--length_s", type=int, required=True, help="run length in secs"
-    )
+    parser.add_argument("-v", "--value_size", type=int, required=True, help="value size")
+    parser.add_argument("-w", "--put_ratio", type=int, required=True, help="percentage of puts")
+    parser.add_argument("-l", "--length_s", type=int, required=True, help="run length in secs")
     parser.add_argument(
         "--pin_cores",
         type=float,
@@ -189,9 +173,7 @@ def main():
     args = parser.parse_args()
 
     # parse hosts config file
-    base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(
-        args.group
-    )
+    base, _, hosts, remotes, _, ipaddrs = utils.config.parse_toml_file(args.group)
     cd_dir_chain = f"{base}/{CHAIN_REPO_NAME}/{CHAIN_JAR_FOLDER}"
 
     # check that number of replicas is valid
@@ -213,9 +195,7 @@ def main():
         raise ValueError("currently only supports <= 5 partitions")
     partition = 0 if not partition_in_args else args.partition
     output_midfix = (
-        args.output_midfix
-        if not partition_in_args
-        else f"{args.output_midfix}.{partition}"
+        args.output_midfix if not partition_in_args else f"{args.output_midfix}.{partition}"
     )
 
     # check that number of clients is valid
@@ -250,9 +230,7 @@ def main():
             # doing automated experiments, so capture output
             out, _ = client_proc.communicate(timeout=timeout)
             with open(
-                CLIENT_OUTPUT_PATH(
-                    args.protocol, args.output_prefix, output_midfix
-                ),
+                CLIENT_OUTPUT_PATH(args.protocol, args.output_prefix, output_midfix),
                 "w+",
             ) as fout:
                 fout.write(out.decode())

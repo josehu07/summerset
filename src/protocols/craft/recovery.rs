@@ -8,9 +8,7 @@ use crate::utils::{RSCodeword, SummersetError};
 impl CRaftReplica {
     /// Recover state from durable storage WAL log.
     #[allow(clippy::too_many_lines)]
-    pub(super) async fn recover_from_wal(
-        &mut self,
-    ) -> Result<(), SummersetError> {
+    pub(super) async fn recover_from_wal(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.log_offset, 0);
 
         // first, try to read the first several bytes, which should record
@@ -77,10 +75,7 @@ impl CRaftReplica {
                     .do_sync_action(
                         0, // using 0 as dummy log action ID
                         LogAction::Write {
-                            entry: DurEntry::pack_meta(
-                                self.curr_term,
-                                self.voted_for,
-                            ),
+                            entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
                             offset: 0,
                             sync: self.config.logger_sync,
                         },
@@ -91,17 +86,12 @@ impl CRaftReplica {
                     self.log_offset = now_size;
                     self.log_meta_end = now_size;
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed write"
-                    );
+                    return logged_err!("unexpected log result type or failed write");
                 }
                 // ... and push a 0-th dummy entry into in-mem log
                 let null_entry = LogEntry {
                     term: 0,
-                    reqs_cw: RSCodeword::from_null(
-                        self.majority,
-                        self.population - self.majority,
-                    )?,
+                    reqs_cw: RSCodeword::from_null(self.majority, self.population - self.majority)?,
                     external: false,
                     log_offset: 0,
                 };
@@ -126,9 +116,7 @@ impl CRaftReplica {
                     self.log[0].log_offset = self.log_offset;
                     self.log_offset = now_size;
                 } else {
-                    return logged_err!(
-                        "unexpected log result type or failed write"
-                    );
+                    return logged_err!("unexpected log result type or failed write");
                 }
             }
 

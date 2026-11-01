@@ -52,15 +52,11 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
     """WARNING: this deletes all unmatched files on remote!"""
     # source path must exist, end with the correct folder name, followed by a trailing '/'
     if not os.path.isdir(src_path):
-        raise ValueError(
-            f"source path '{src_path}' is not an existing directory"
-        )
+        raise ValueError(f"source path '{src_path}' is not an existing directory")
     src_path = os.path.realpath(src_path)
     src_seg = utils.file.path_get_last_segment(src_path)
     if repo_name not in src_seg:
-        raise ValueError(
-            f"source folder '{src_seg}' does not contain project name '{repo_name}'"
-        )
+        raise ValueError(f"source folder '{src_seg}' does not contain project name '{repo_name}'")
     if not src_path.endswith("/"):
         src_path += "/"
 
@@ -70,18 +66,14 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
         raise ValueError(f"target path '{dst_path}' is not an absolute path")
     dst_seg = utils.file.path_get_last_segment(dst_path)
     if dst_seg != repo_name:
-        raise ValueError(
-            f"target folder '{dst_seg}' does not match project name '{repo_name}'"
-        )
+        raise ValueError(f"target folder '{dst_seg}' does not match project name '{repo_name}'")
     if not dst_path.endswith("/"):
         dst_path += "/"
 
     # compose rsync commands
     cmds = []
     for remote in remotes:
-        cmd = compose_rsync_cmd(
-            src_path, dst_path, remote, is_summerset="summerset" in repo_name
-        )
+        cmd = compose_rsync_cmd(src_path, dst_path, remote, is_summerset="summerset" in repo_name)
         cmds.append(cmd)
 
     # execute
@@ -93,11 +85,7 @@ def mirror_folder(remotes, src_path, dst_path, repo_name, sequential):
         print("Running rsync commands in parallel...")
         procs = []
         for cmd in cmds:
-            procs.append(
-                utils.proc.run_process(
-                    cmd, capture_stdout=True, capture_stderr=True
-                )
-            )
+            procs.append(utils.proc.run_process(cmd, capture_stdout=True, capture_stderr=True))
         print("Waiting for command results...")
         utils.proc.wait_parallel_procs(procs)
 
@@ -133,9 +121,7 @@ def build_on_targets(destinations, dst_path, release, sequential):
         print("Using build command for: summerset")
         cmd = compose_summerset_build_cmd(release)
     else:
-        raise RuntimeError(
-            f"don't know what build command to use for '{dst_path}'"
-        )
+        raise RuntimeError(f"don't know what build command to use for '{dst_path}'")
 
     # execute over SSH
     if sequential:
@@ -146,9 +132,7 @@ def build_on_targets(destinations, dst_path, release, sequential):
             if "summerset" in dst_path and "mass" in remote:
                 build_cmd = cmd[:-2]
 
-            proc = utils.proc.run_process_over_ssh(
-                remote, build_cmd, cd_dir=dst_path
-            )
+            proc = utils.proc.run_process_over_ssh(remote, build_cmd, cd_dir=dst_path)
             proc.wait()
     else:
         print("Running build commands in parallel...")
@@ -178,9 +162,7 @@ def main():
     utils.file.check_proper_cwd()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument(
-        "-g", "--group", type=str, default="reg", help="hosts group to run on"
-    )
+    parser.add_argument("-g", "--group", type=str, default="reg", help="hosts group to run on")
     parser.add_argument(
         "-t",
         "--targets",
