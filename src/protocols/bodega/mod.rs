@@ -229,6 +229,10 @@ struct Instance {
 
     /// Offset of first durable WAL log entry related to this instance.
     wal_offset: usize,
+
+    /// Number of in-flight (not yet durable) `PrepareBal` WAL writes; a
+    /// Prepare reply is only valid once the latest one is durable.
+    prep_inflight: u32,
 }
 
 /// Stable storage WAL log entry type.
@@ -473,6 +477,7 @@ impl BodegaReplica {
             replica_bk: None,
             external: false,
             wal_offset: 0,
+            prep_inflight: 0,
         }
     }
 
@@ -1169,151 +1174,155 @@ impl GenericEndpoint for BodegaClient {
 
     #[allow(clippy::too_many_lines)]
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        if !self.api_stubs.contains_key(&self.curr_server_id) {
-            return Err(SummersetError::msg(format!(
-                "server_id {} not in api_stubs",
-                self.curr_server_id
-            )));
-        }
-        if let Some(near_server_id) = self.near_server_id
-            && near_server_id != self.curr_server_id
-            && !self.api_stubs.contains_key(&near_server_id)
-        {
-            return Err(SummersetError::msg(format!(
-                "server_id {} not in api_stubs",
-                near_server_id
-            )));
-        }
+        // loop instead of recursing on read-only retries, which could repeat
+        // many times under leader churn and overflow the stack
+        loop {
+            if !self.api_stubs.contains_key(&self.curr_server_id) {
+                return Err(SummersetError::msg(format!(
+                    "server_id {} not in api_stubs",
+                    self.curr_server_id
+                )));
+            }
+            if let Some(near_server_id) = self.near_server_id
+                && near_server_id != self.curr_server_id
+                && !self.api_stubs.contains_key(&near_server_id)
+            {
+                return Err(SummersetError::msg(format!(
+                    "server_id {} not in api_stubs",
+                    near_server_id
+                )));
+            }
 
-        let mut reply = if self
-            .near_server_id
-            .as_ref()
-            .is_none_or(|&s| s == self.curr_server_id)
-        {
-            // curr is the same as near, so just wait on that stub
-            let reply = self
-                .api_stubs
-                .get(&self.curr_server_id)
-                .unwrap()
-                .borrow_mut()
-                .recv_reply()
-                .await?;
+            let mut reply = if self
+                .near_server_id
+                .as_ref()
+                .is_none_or(|&s| s == self.curr_server_id)
+            {
+                // curr is the same as near, so just wait on that stub
+                let reply = self
+                    .api_stubs
+                    .get(&self.curr_server_id)
+                    .unwrap()
+                    .borrow_mut()
+                    .recv_reply()
+                    .await?;
 
-            self.try_leader_streak = 0;
-            reply
-        } else {
-            // don't know which one would have reply come in first, so need to do
-            // a `tokio::select!` here
-            let mut curr_stub = self
-                .api_stubs
-                .get(&self.curr_server_id)
-                .unwrap()
-                .borrow_mut();
-            let mut near_stub = self
-                .api_stubs
-                .get(&self.near_server_id.unwrap())
-                .unwrap()
-                .borrow_mut();
+                self.try_leader_streak = 0;
+                reply
+            } else {
+                // don't know which one would have reply come in first, so need to do
+                // a `tokio::select!` here
+                let mut curr_stub = self
+                    .api_stubs
+                    .get(&self.curr_server_id)
+                    .unwrap()
+                    .borrow_mut();
+                let mut near_stub = self
+                    .api_stubs
+                    .get(&self.near_server_id.unwrap())
+                    .unwrap()
+                    .borrow_mut();
 
-            loop {
-                tokio::select! {
-                    // recv from currently believed leader server
-                    reply = curr_stub.recv_reply() => {
-                        break reply?;
-                    },
+                loop {
+                    tokio::select! {
+                        // recv from currently believed leader server
+                        reply = curr_stub.recv_reply() => {
+                            break reply?;
+                        },
 
-                    // recv from preferred near server
-                    reply = near_stub.recv_reply() => {
-                        self.try_leader_streak = 0;
-                        break reply?;
-                    },
+                        // recv from preferred near server
+                        reply = near_stub.recv_reply() => {
+                            self.try_leader_streak = 0;
+                            break reply?;
+                        },
 
-                    // checking for try-leader timeout events
-                    req_id = self.rx_try_leader.recv() => {
-                        let req_id = req_id.unwrap();
-                        if let Some((key, _)) =
-                            self.pending_reads.get(&req_id)
-                        {
-                            if self.last_server_id.is_some() {
-                                // during msg send retry, just put this event
-                                // back and will handle it later
-                                self.tx_try_leader.send(req_id)?;
-                            } else {
-                                self.try_leader_streak += 1;
-                                if self.try_leader_streak >= 10 { // hardcoded
-                                    // too many try-leader timeouts in a row;
-                                    // return a "failure" reply
-                                    break ApiReply::Reply {
-                                        id: req_id,
-                                        result: None,
-                                        redirect: None,
-                                        rq_retry: None,
+                        // checking for try-leader timeout events
+                        req_id = self.rx_try_leader.recv() => {
+                            let req_id = req_id.unwrap();
+                            if let Some((key, _)) =
+                                self.pending_reads.get(&req_id)
+                            {
+                                if self.last_server_id.is_some() {
+                                    // during msg send retry, just put this event
+                                    // back and will handle it later
+                                    self.tx_try_leader.send(req_id)?;
+                                } else {
+                                    self.try_leader_streak += 1;
+                                    if self.try_leader_streak >= 10 { // hardcoded
+                                        // too many try-leader timeouts in a row;
+                                        // return a "failure" reply
+                                        break ApiReply::Reply {
+                                            id: req_id,
+                                            result: None,
+                                            redirect: None,
+                                            rq_retry: None,
+                                        }
                                     }
+
+                                    curr_stub.send_req(Some(&ApiRequest::Req {
+                                        id: req_id,
+                                        cmd: Command::Get { key: key.clone() }
+                                    }))?;
+
                                 }
-
-                                curr_stub.send_req(Some(&ApiRequest::Req {
-                                    id: req_id,
-                                    cmd: Command::Get { key: key.clone() }
-                                }))?;
-
                             }
                         }
                     }
                 }
-            }
-        };
+            };
 
-        if let ApiReply::Reply {
-            id: req_id,
-            ref result,
-            ref redirect,
-            ref mut rq_retry,
-        } = reply
-        {
-            // if the current server redirects me to a different server
-            if result.is_none() && redirect.is_some() {
-                let redirect_id = redirect.unwrap();
-                debug_assert!(self.servers.contains_key(&redirect_id));
-                self.curr_server_id = redirect_id;
-                pf_debug!(
-                    "redirected to replica {} '{}'",
-                    redirect_id,
-                    self.servers[&redirect_id]
-                );
-            }
-
-            // if this request is in pending_reads, this is the first reply we
-            // got for it from whichever source, so remove from pending_reads;
-            // this should also drop the associated timer and thus its timeout
-            // event won't fire
-            self.pending_reads.remove(&req_id);
-
-            // if to retry a failed read-only optimization, just fallback to
-            // sending the request to (believed) current leader and continue
-            // the wait
-            if let Some(read_cmd) = rq_retry.take() {
-                if read_cmd.read_only().is_none() {
-                    return logged_err!("non-Get command found in reply rq_retry");
+            if let ApiReply::Reply {
+                id: req_id,
+                ref result,
+                ref redirect,
+                ref mut rq_retry,
+            } = reply
+            {
+                // if the current server redirects me to a different server
+                if result.is_none() && redirect.is_some() {
+                    let redirect_id = redirect.unwrap();
+                    debug_assert!(self.servers.contains_key(&redirect_id));
+                    self.curr_server_id = redirect_id;
+                    pf_debug!(
+                        "redirected to replica {} '{}'",
+                        redirect_id,
+                        self.servers[&redirect_id]
+                    );
                 }
-                while self.last_server_id.is_some() {
-                    self.send_req(None)?;
-                    if self.last_server_id.is_some() {
-                        time::sleep(Duration::from_millis(5)).await; // slack
+
+                // if this request is in pending_reads, this is the first reply we
+                // got for it from whichever source, so remove from pending_reads;
+                // this should also drop the associated timer and thus its timeout
+                // event won't fire
+                self.pending_reads.remove(&req_id);
+
+                // if to retry a failed read-only optimization, just fallback to
+                // sending the request to (believed) current leader and continue
+                // the wait
+                if let Some(read_cmd) = rq_retry.take() {
+                    if read_cmd.read_only().is_none() {
+                        return logged_err!("non-Get command found in reply rq_retry");
                     }
+                    while self.last_server_id.is_some() {
+                        self.send_req(None)?;
+                        if self.last_server_id.is_some() {
+                            time::sleep(Duration::from_millis(5)).await; // slack
+                        }
+                    }
+                    self.api_stubs
+                        .get(&self.curr_server_id)
+                        .unwrap()
+                        .borrow_mut()
+                        .send_req(Some(&ApiRequest::Req {
+                            id: req_id,
+                            cmd: read_cmd,
+                        }))?;
+                    continue;
                 }
-                self.api_stubs
-                    .get(&self.curr_server_id)
-                    .unwrap()
-                    .borrow_mut()
-                    .send_req(Some(&ApiRequest::Req {
-                        id: req_id,
-                        cmd: read_cmd,
-                    }))?;
-                return self.recv_reply().await;
             }
-        }
 
-        Ok(reply)
+            return Ok(reply);
+        }
     }
 
     fn id(&self) -> ClientId {

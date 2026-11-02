@@ -54,10 +54,13 @@ impl RaftReplica {
             if self.role == Role::Follower {
                 Ok(false)
             } else {
+                // only a leader (not a candidate) has a step-down to notify
+                if self.role == Role::Leader {
+                    self.control_hub
+                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                }
                 self.role = Role::Follower;
                 self.heartbeater.set_sending(false);
-                self.control_hub
-                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                 pf_info!("converted back to follower");
                 Ok(true)
             }
@@ -144,11 +147,8 @@ impl RaftReplica {
         self.control_hub
             .send_ctrl(CtrlMsg::LeaderStatus { step_up: true })?;
 
-        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
-        self.heartbeater.clear_reply_cnts(None)?;
-        self.bcast_heartbeats().await?;
-
-        // re-initialize next_slot and match_slot information
+        // re-initialize next_slot and match_slot information (before sending
+        // heartbeats, so that they do not carry stale prev_slots)
         for slot in self.next_slot.values_mut() {
             *slot = self.start_slot + self.log.len();
         }
@@ -158,6 +158,10 @@ impl RaftReplica {
         for slot in self.match_slot.values_mut() {
             *slot = 0;
         }
+
+        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
+        self.heartbeater.clear_reply_cnts(None)?;
+        self.bcast_heartbeats().await?;
 
         // mark some possibly unreplied entries as external
         for slot in self

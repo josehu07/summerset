@@ -103,7 +103,7 @@ impl RSPaxosReplica {
             .iter_mut()
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
-            .skip(self.exec_bar - self.start_slot)
+            .skip(self.exec_bar.min(trigger_slot) - self.start_slot)
         {
             if inst.status == Status::Executed {
                 continue;
@@ -122,6 +122,7 @@ impl RSPaxosReplica {
                 });
 
                 // record update to largest prepare ballot
+                inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
@@ -184,6 +185,8 @@ impl RSPaxosReplica {
 
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        self.retrigger_prepares()?;
+
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {
                 ballot: self.bal_max_seen,
@@ -209,6 +212,37 @@ impl RSPaxosReplica {
         .await?;
 
         // pf_trace!("broadcast heartbeats bal {}", self.bal_prep_sent);
+        Ok(())
+    }
+
+    /// If my Prepare phase is not fully resolved yet (e.g., Prepares got lost
+    /// to peers that were down at the time), re-sends it to peers that have
+    /// not replied, as otherwise nothing would re-trigger it.
+    fn retrigger_prepares(&mut self) -> Result<(), SummersetError> {
+        if self.is_leader()
+            && self.bal_prep_sent == self.bal_max_seen
+            && let Some(trigger_slot) = self.insts[self.commit_bar - self.start_slot..]
+                .iter()
+                .filter(|i| i.status == Status::Preparing && i.bal == self.bal_prep_sent)
+                .find_map(|i| i.leader_bk.as_ref().map(|bk| bk.trigger_slot))
+            && trigger_slot >= self.start_slot
+            && let Some(leader_bk) = self.insts[trigger_slot - self.start_slot]
+                .leader_bk
+                .as_ref()
+        {
+            let targets: Vec<ReplicaId> = leader_bk
+                .prepare_acks
+                .iter()
+                .filter_map(|(peer, acked)| (!acked).then_some(peer))
+                .collect();
+            self.transport_hub.bcast_msg(
+                PeerMsg::Prepare {
+                    trigger_slot,
+                    ballot: self.bal_prep_sent,
+                },
+                Some(Bitmap::from((self.population, targets))),
+            )?;
+        }
         Ok(())
     }
 

@@ -440,7 +440,7 @@ pub(crate) struct ChainRepClient {
     population: u8,
 
     /// Configuration parameters struct.
-    _config: ClientConfigChainRep,
+    config: ClientConfigChainRep,
 
     /// List of active servers information.
     servers: HashMap<ReplicaId, SocketAddr>,
@@ -489,7 +489,7 @@ impl GenericEndpoint for ChainRepClient {
         Ok(ChainRepClient {
             id,
             population: 0,
-            _config: config,
+            config,
             servers: HashMap::new(),
             head_id: init_head_id,
             tail_id: init_tail_id,
@@ -521,8 +521,12 @@ impl GenericEndpoint for ChainRepClient {
         {
             self.population = population;
 
-            // shift to a new head_id/tail_id if current one not active
+            // shift to a new head_id/tail_id if configured one not active;
+            // always start from the configured ones as paused servers may
+            // have resumed since last connection
             debug_assert!(!servers_info.is_empty());
+            self.head_id = self.config.init_head_id;
+            self.tail_id = self.config.init_tail_id;
             while !servers_info.contains_key(&self.head_id) || servers_info[&self.head_id].is_paused
             {
                 self.head_id = (self.head_id + 1) % population;
@@ -566,11 +570,13 @@ impl GenericEndpoint for ChainRepClient {
     }
 
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
-        // send leave notification to all servers
-        self.mid_api_stubs
-            .insert(self.head_id, self.head_api_stub.take().unwrap());
-        self.mid_api_stubs
-            .insert(self.tail_id, self.tail_api_stub.take().unwrap());
+        // send leave notification to all servers (if currently connected)
+        if let Some(api_stub) = self.head_api_stub.take() {
+            self.mid_api_stubs.insert(self.head_id, api_stub);
+        }
+        if let Some(api_stub) = self.tail_api_stub.take() {
+            self.mid_api_stubs.insert(self.tail_id, api_stub);
+        }
         for (id, mut api_stub) in self.mid_api_stubs.drain() {
             let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
             while !sent {

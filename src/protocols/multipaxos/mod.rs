@@ -251,6 +251,10 @@ struct Instance {
 
     /// Offset of first durable WAL log entry related to this instance.
     wal_offset: usize,
+
+    /// Number of in-flight (not yet durable) `PrepareBal` WAL writes; a
+    /// Prepare reply is only valid once the latest one is durable.
+    prep_inflight: u32,
 }
 
 /// Stable storage WAL log entry type.
@@ -529,6 +533,7 @@ impl MultiPaxosReplica {
             replica_bk: None,
             external: false,
             wal_offset: 0,
+            prep_inflight: 0,
         }
     }
 
@@ -1205,98 +1210,102 @@ impl GenericEndpoint for MultiPaxosClient {
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
-        if !self.api_stubs.contains_key(&self.curr_server_id) {
-            return Err(SummersetError::msg(format!(
-                "server_id {} not in api_stubs",
-                self.curr_server_id
-            )));
-        }
-        if let Some(near_server_id) = self.near_server_id
-            && near_server_id != self.curr_server_id
-            && !self.api_stubs.contains_key(&near_server_id)
-        {
-            return Err(SummersetError::msg(format!(
-                "server_id {} not in api_stubs",
-                near_server_id
-            )));
-        }
-
-        let mut reply = if self
-            .near_server_id
-            .as_ref()
-            .is_none_or(|&s| s == self.curr_server_id)
-        {
-            // curr is the same as near, so just wait on that stub
-            self.api_stubs
-                .get(&self.curr_server_id)
-                .unwrap()
-                .borrow_mut()
-                .recv_reply()
-                .await?
-        } else {
-            // don't know which one would have reply come in first, so need to do
-            // a `tokio::select!` here
-            let mut curr_stub = self
-                .api_stubs
-                .get(&self.curr_server_id)
-                .unwrap()
-                .borrow_mut();
-            let mut near_stub = self
-                .api_stubs
-                .get(&self.near_server_id.unwrap())
-                .unwrap()
-                .borrow_mut();
-            tokio::select! {
-                reply = curr_stub.recv_reply() => reply?,
-                reply = near_stub.recv_reply() => reply?,
+        // loop instead of recursing on read-only retries, which could repeat
+        // many times under leader churn and overflow the stack
+        loop {
+            if !self.api_stubs.contains_key(&self.curr_server_id) {
+                return Err(SummersetError::msg(format!(
+                    "server_id {} not in api_stubs",
+                    self.curr_server_id
+                )));
             }
-        };
-
-        if let ApiReply::Reply {
-            id: req_id,
-            ref result,
-            ref redirect,
-            ref mut rq_retry,
-        } = reply
-        {
-            // if the current server redirects me to a different server
-            if result.is_none() && redirect.is_some() {
-                let redirect_id = redirect.unwrap();
-                debug_assert!(self.servers.contains_key(&redirect_id));
-                self.curr_server_id = redirect_id;
-                pf_debug!(
-                    "redirected to replica {} '{}'",
-                    redirect_id,
-                    self.servers[&redirect_id]
-                );
+            if let Some(near_server_id) = self.near_server_id
+                && near_server_id != self.curr_server_id
+                && !self.api_stubs.contains_key(&near_server_id)
+            {
+                return Err(SummersetError::msg(format!(
+                    "server_id {} not in api_stubs",
+                    near_server_id
+                )));
             }
 
-            // if to retry a failed read-only optimization, just fallback to
-            // sending the request to (believed) current leader and continue
-            // the wait
-            if let Some(read_cmd) = rq_retry.take() {
-                if read_cmd.read_only().is_none() {
-                    return logged_err!("non-Get command found in reply rq_retry");
-                }
-                while self.last_server_id.is_some() {
-                    self.send_req(None)?;
-                    if self.last_server_id.is_some() {
-                        time::sleep(Duration::from_millis(5)).await; // slack
-                    }
-                }
+            let mut reply = if self
+                .near_server_id
+                .as_ref()
+                .is_none_or(|&s| s == self.curr_server_id)
+            {
+                // curr is the same as near, so just wait on that stub
                 self.api_stubs
                     .get(&self.curr_server_id)
                     .unwrap()
                     .borrow_mut()
-                    .send_req(Some(&ApiRequest::Req {
-                        id: req_id,
-                        cmd: read_cmd,
-                    }))?;
-                return self.recv_reply().await;
-            }
-        }
+                    .recv_reply()
+                    .await?
+            } else {
+                // don't know which one would have reply come in first, so need to do
+                // a `tokio::select!` here
+                let mut curr_stub = self
+                    .api_stubs
+                    .get(&self.curr_server_id)
+                    .unwrap()
+                    .borrow_mut();
+                let mut near_stub = self
+                    .api_stubs
+                    .get(&self.near_server_id.unwrap())
+                    .unwrap()
+                    .borrow_mut();
+                tokio::select! {
+                    reply = curr_stub.recv_reply() => reply?,
+                    reply = near_stub.recv_reply() => reply?,
+                }
+            };
 
-        Ok(reply)
+            if let ApiReply::Reply {
+                id: req_id,
+                ref result,
+                ref redirect,
+                ref mut rq_retry,
+            } = reply
+            {
+                // if the current server redirects me to a different server
+                if result.is_none() && redirect.is_some() {
+                    let redirect_id = redirect.unwrap();
+                    debug_assert!(self.servers.contains_key(&redirect_id));
+                    self.curr_server_id = redirect_id;
+                    pf_debug!(
+                        "redirected to replica {} '{}'",
+                        redirect_id,
+                        self.servers[&redirect_id]
+                    );
+                }
+
+                // if to retry a failed read-only optimization, just fallback to
+                // sending the request to (believed) current leader and continue
+                // the wait
+                if let Some(read_cmd) = rq_retry.take() {
+                    if read_cmd.read_only().is_none() {
+                        return logged_err!("non-Get command found in reply rq_retry");
+                    }
+                    while self.last_server_id.is_some() {
+                        self.send_req(None)?;
+                        if self.last_server_id.is_some() {
+                            time::sleep(Duration::from_millis(5)).await; // slack
+                        }
+                    }
+                    self.api_stubs
+                        .get(&self.curr_server_id)
+                        .unwrap()
+                        .borrow_mut()
+                        .send_req(Some(&ApiRequest::Req {
+                            id: req_id,
+                            cmd: read_cmd,
+                        }))?;
+                    continue;
+                }
+            }
+
+            return Ok(reply);
+        }
     }
 
     fn id(&self) -> ClientId {

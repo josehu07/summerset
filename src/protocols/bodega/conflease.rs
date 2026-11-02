@@ -166,7 +166,7 @@ impl BodegaReplica {
             .iter_mut()
             .enumerate()
             .map(|(s, i)| (self.start_slot + s, i))
-            .skip(self.exec_bar - self.start_slot)
+            .skip(self.exec_bar.min(trigger_slot) - self.start_slot)
         {
             if inst.status == Status::Executed {
                 continue;
@@ -187,6 +187,7 @@ impl BodegaReplica {
             });
 
             // record update to largest prepare ballot
+            inst.prep_inflight += 1;
             self.storage_hub.submit_action(
                 Self::make_log_action_id(slot, Status::Preparing),
                 LogAction::Append {

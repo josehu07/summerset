@@ -14,9 +14,17 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    strategy:
+      fail-fast: false
+      matrix:
+        protocol: [
+          RepNothing, SimplePush, ChainRep, MultiPaxos, EPaxos, RSPaxos,
+          Raft, CRaft, Crossword, QuorumLeases, Bodega,
+        ]
+
     steps:
     - uses: actions/checkout@v7
-    
+
     - name: Get apt dependencies
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
@@ -26,8 +34,5 @@ jobs:
     - name: Get uv for Python
       uses: astral-sh/setup-uv@v10.3.3
 
-    - name: Run proc tests (MultiPaxos)
-      run: uv run .github/workflow_test.py -p MultiPaxos
-
-    - name: Run proc tests (Raft)
-      run: uv run .github/workflow_test.py -p Raft
+    - name: Run proc tests (${{ matrix.protocol }})
+      run: uv run .github/workflow_test.py -p ${{ matrix.protocol }}

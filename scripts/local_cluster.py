@@ -2,6 +2,7 @@ import argparse
 import os
 import signal
 import sys
+import threading
 
 from . import utils
 
@@ -305,14 +306,13 @@ def main():
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release, args.use_veth)
     wait_manager_setup(manager_proc)
 
-    # create a thread that prints out captured manager stderrs
-    # def print_manager_stderr():
-    #     for line in iter(manager_proc.stderr.readline, b""):
-    #         l = line.decode()
-    #         print(l, end="", file=sys.stderr)
+    # create a thread that keeps printing out captured manager stderrs; the
+    # pipe must be drained, otherwise the manager blocks once it fills up
+    def print_manager_stderr() -> None:
+        for line in iter(manager_proc.stderr.readline, b""):
+            print(line.decode(), end="", file=sys.stderr)
 
-    # print_manager_t = threading.Thread(target=print_manager_stderr)
-    # print_manager_t.start()
+    threading.Thread(target=print_manager_stderr, daemon=True).start()
 
     # then launch server replicas
     server_procs = launch_servers(

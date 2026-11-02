@@ -16,6 +16,16 @@ impl RSPaxosReplica {
             slot,
             self.insts[slot - self.start_slot].bal
         );
+
+        let inst = &mut self.insts[slot - self.start_slot];
+        debug_assert!(inst.prep_inflight > 0);
+        inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
+        if inst.status != Status::Preparing || inst.prep_inflight > 0 {
+            // ignore if instance has moved on, or if a newer PrepareBal (whose
+            // ballot is what a reply would claim) is not yet durable
+            return Ok(());
+        }
+
         let inst = &self.insts[slot - self.start_slot];
         let voted = if inst.voted.0 > 0 {
             Some(inst.voted.clone())

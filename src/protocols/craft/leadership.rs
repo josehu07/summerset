@@ -56,10 +56,13 @@ impl CRaftReplica {
             if self.role == Role::Follower {
                 Ok(false)
             } else {
+                // only a leader (not a candidate) has a step-down to notify
+                if self.role == Role::Leader {
+                    self.control_hub
+                        .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
+                }
                 self.role = Role::Follower;
                 self.heartbeater.set_sending(false);
-                self.control_hub
-                    .send_ctrl(CtrlMsg::LeaderStatus { step_up: false })?;
                 pf_info!("converted back to follower");
                 Ok(true)
             }

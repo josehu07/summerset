@@ -288,6 +288,10 @@ struct Instance {
 
     /// Offset of first durable WAL log entry related to this instance.
     wal_offset: usize,
+
+    /// Number of in-flight (not yet durable) `PrepareBal` WAL writes; a
+    /// Prepare reply is only valid once the latest one is durable.
+    prep_inflight: u32,
 }
 
 /// Stable storage WAL log entry type.
@@ -594,6 +598,7 @@ impl CrosswordReplica {
             replica_bk: None,
             external: false,
             wal_offset: 0,
+            prep_inflight: 0,
         })
     }
 

@@ -52,6 +52,12 @@ impl BodegaReplica {
             for slot in trigger_slot..=endprep_slot {
                 let inst = &mut self.insts[slot - self.start_slot];
                 debug_assert!(inst.bal <= ballot);
+                if inst.bal == ballot && (inst.status > Status::Preparing || inst.prep_inflight > 0)
+                {
+                    // duplicate (re-sent) Prepare of what I've moved past or am already
+                    // logging; will reply when that in-flight PrepareBal becomes durable
+                    continue;
+                }
 
                 inst.bal = ballot;
                 inst.status = Status::Preparing;
@@ -65,6 +71,7 @@ impl BodegaReplica {
                 });
 
                 // record update to largest prepare ballot
+                inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(slot, Status::Preparing),
                     LogAction::Append {
@@ -94,7 +101,7 @@ impl BodegaReplica {
         ballot: Ballot,
         voted: Option<(Ballot, ReqBatch)>,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot {
+        if trigger_slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
@@ -152,6 +159,7 @@ impl BodegaReplica {
                 });
 
                 // record update to largest prepare ballot
+                inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
                     Self::make_log_action_id(this_slot, Status::Preparing),
                     LogAction::Append {
@@ -327,6 +335,40 @@ impl BodegaReplica {
         Ok(())
     }
 
+    /// Re-sends Accepts that `peer` seems to have missed (e.g., when it was
+    /// briefly down): as its replies come in order, those are the Accepting
+    /// slots right before the acked `slot` that it has not acked yet.
+    fn resend_missed_accepts(
+        &mut self,
+        peer: ReplicaId,
+        slot: usize,
+    ) -> Result<(), SummersetError> {
+        for s in (self.commit_bar..slot).rev() {
+            let inst = &self.insts[s - self.start_slot];
+            if inst.status != Status::Accepting {
+                continue;
+            }
+            let Some(leader_bk) = inst.leader_bk.as_ref() else {
+                continue;
+            };
+            if leader_bk.accept_acks.get(peer)? {
+                break;
+            }
+            if inst.bal == self.bal_prepared {
+                self.transport_hub.send_msg(
+                    PeerMsg::Accept {
+                        slot: s,
+                        ballot: inst.bal,
+                        reqs: inst.reqs.clone(),
+                    },
+                    peer,
+                )?;
+                pf_debug!("re-sent Accept -> {} for slot {} bal {}", peer, s, inst.bal);
+            }
+        }
+        Ok(())
+    }
+
     /// Handler of Accept reply from replica.
     pub(super) fn handle_msg_accept_reply(
         &mut self,
@@ -347,6 +389,9 @@ impl BodegaReplica {
         // if ballot is what I'm currently waiting on for Accept replies:
         if ballot == self.bal_prepared {
             debug_assert!(slot < self.start_slot + self.insts.len());
+            if self.is_leader() && peer != self.id {
+                self.resend_missed_accepts(peer, slot)?;
+            }
             self.refresh_heartbeat_timer(Some(peer))?;
 
             let is_leader = self.is_leader();

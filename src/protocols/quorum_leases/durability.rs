@@ -16,6 +16,16 @@ impl QuorumLeasesReplica {
             slot,
             self.insts[slot - self.start_slot].bal
         );
+
+        let inst = &mut self.insts[slot - self.start_slot];
+        debug_assert!(inst.prep_inflight > 0);
+        inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
+        if inst.status != Status::Preparing || inst.prep_inflight > 0 {
+            // ignore if instance has moved on, or if a newer PrepareBal (whose
+            // ballot is what a reply would claim) is not yet durable
+            return Ok(());
+        }
+
         let inst = &self.insts[slot - self.start_slot];
         let voted = if inst.voted.0 > 0 {
             Some(inst.voted.clone())
@@ -90,7 +100,6 @@ impl QuorumLeasesReplica {
         );
 
         // revoke read leases I've been granted and am granting to
-        debug_assert!(slot > usize::try_from(self.qlease_ver)?);
         let grant_set = self.qlease_manager.grant_set();
         if !self.config.no_lease_retraction {
             if slot == usize::try_from(self.qlease_num)? + 1 // first Accept after qleased
@@ -223,7 +232,7 @@ impl QuorumLeasesReplica {
                 // if the end of my log has been committed
                 if self.commit_bar == self.start_slot + self.insts.len() {
                     // it's time to re-initiate granting read leases
-                    debug_assert!(self.commit_bar > 1);
+                    debug_assert!(self.commit_bar > 0);
                     if conf_changed || !self.config.no_lease_retraction {
                         self.qlease_num = self.commit_bar as LeaseNum - 1;
                         self.qlease_manager.add_notice(

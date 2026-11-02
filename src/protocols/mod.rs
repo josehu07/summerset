@@ -101,6 +101,15 @@ impl SmrProtocol {
         }
     }
 
+    /// Whether node pause tests should be skipped for this protocol, as it
+    /// does not stay available while a replica is paused: `RepNothing` has no
+    /// replication, `SimplePush` waits for all peers, and `ChainRep` has a
+    /// static chain (no reconfiguration master).
+    #[must_use]
+    pub fn skips_pause_tests(&self) -> bool {
+        matches!(self, Self::RepNothing | Self::SimplePush | Self::ChainRep)
+    }
+
     /// Create the cluster manager for this protocol.
     pub async fn new_cluster_manager_setup(
         &self,

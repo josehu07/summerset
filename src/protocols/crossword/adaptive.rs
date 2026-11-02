@@ -99,7 +99,13 @@ impl CrosswordReplica {
         fault_tolerance: u8,
         alive_cnt: u8,
     ) -> u8 {
-        (majority + fault_tolerance + 1 - alive_cnt) * (rs_data_shards / majority)
+        // saturate at both ends: with many nodes alive, any assignment works;
+        // with too few alive, full-copy is the most conservative one
+        cmp::min(
+            (majority + fault_tolerance + 1).saturating_sub(alive_cnt)
+                * (rs_data_shards / majority),
+            rs_data_shards,
+        )
     }
 
     /// Get the proper assignment policy given data size and `peer_alive` count.

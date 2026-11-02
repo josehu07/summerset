@@ -231,7 +231,9 @@ impl ClusterManager {
         step_up: bool,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("manager got unknown server ID: {}", server);
+            // possibly a stale message from a server that is being reset
+            pf_warn!("ignoring ctrl msg from unknown server ID: {}", server);
+            return Ok(());
         }
 
         // update this server's info
@@ -252,9 +254,11 @@ impl ClusterManager {
         server: ReplicaId,
         conf_num: ConfNum,
         new_conf: RespondersConf<()>,
-    ) -> Result<(), SummersetError> {
+    ) {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("manager got unknown server ID: {}", server);
+            // possibly a stale message from a server that is being reset
+            pf_warn!("ignoring ctrl msg from unknown server ID: {}", server);
+            return;
         }
 
         // update current responders config if number up-to-date
@@ -264,7 +268,6 @@ impl ClusterManager {
         } else {
             pf_warn!("outdated responders config number {} ignored", conf_num);
         }
-        Ok(())
     }
 
     /// Handler of autonomous `SnapshotUpTo` message.
@@ -274,7 +277,9 @@ impl ClusterManager {
         new_start: usize,
     ) -> Result<(), SummersetError> {
         if !self.servers_info.contains_key(&server) {
-            return logged_err!("manager got unknown server ID: {}", server);
+            // possibly a stale message from a server that is being reset
+            pf_warn!("ignoring ctrl msg from unknown server ID: {}", server);
+            return Ok(());
         }
 
         // update this server's info
@@ -317,7 +322,7 @@ impl ClusterManager {
             }
 
             CtrlMsg::RespondersConf { conf_num, new_conf } => {
-                self.handle_responders_conf(server, conf_num, new_conf)?;
+                self.handle_responders_conf(server, conf_num, new_conf);
             }
 
             CtrlMsg::SnapshotUpTo { new_start } => {
@@ -369,6 +374,13 @@ impl ClusterManager {
         } else {
             servers.into_iter().collect()
         };
+
+        // if resetting all servers to fresh states, forget their responders
+        // config, as their ballot numbers (used as config numbers) restart low
+        if !durable && servers.len() == num_replicas {
+            self.responders_conf = RespondersConf::empty(self.population);
+            self.latest_conf_num = 0;
+        }
 
         // reset specified server(s)
         let mut reset_done = HashSet::new();

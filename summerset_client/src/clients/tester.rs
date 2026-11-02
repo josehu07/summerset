@@ -69,6 +69,9 @@ pub(crate) struct ClientTester {
 
     /// Mode parameters struct.
     params: ModeParamsTester,
+
+    /// Whether to skip node pause tests for the protocol under test.
+    skips_pause_tests: bool,
 }
 
 impl ClientTester {
@@ -77,6 +80,7 @@ impl ClientTester {
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
+        skips_pause_tests: bool,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsTester;
                                     test_name, keep_going, logger_on)?;
@@ -90,6 +94,7 @@ impl ClientTester {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
             params,
+            skips_pause_tests,
         })
     }
 
@@ -299,6 +304,17 @@ impl ClientTester {
 
     /// Runs the individual correctness test.
     async fn do_test_by_name(&mut self, name: &str) -> Result<(), SummersetError> {
+        const NODE_PAUSE_TESTS: [&str; 3] =
+            ["non_leader_pause", "leader_node_pause", "node_pause_resume"];
+        if self.skips_pause_tests && NODE_PAUSE_TESTS.contains(&name) {
+            cprintln!(
+                "{:>20} | <yellow>{:^6}</> | protocol can't handle pause tests",
+                name,
+                "SKIP"
+            );
+            return Ok(());
+        }
+
         // reset everything to initial state at the start of each test
         self.reset_servers(HashSet::new(), false).await?;
         time::sleep(Duration::from_secs(1)).await;

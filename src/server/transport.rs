@@ -212,6 +212,7 @@ where
         msg: PeerMessage<Msg>,
         target: Option<Bitmap>,
     ) -> Result<(), SummersetError> {
+        let (mut attempted, mut failed) = (0, 0);
         for entry in self.tx_sends.iter() {
             let peer = *entry.key();
             if peer == self.me {
@@ -223,15 +224,29 @@ where
                 continue;
             }
 
-            // not skipped
-            self.tx_sends
+            // not skipped; a closed channel means this peer's connection is
+            // being torn down, which must not fail the rest of the broadcast
+            attempted += 1;
+            if self
+                .tx_sends
                 .get(&peer)
                 .unwrap()
                 .value()
                 .send(msg.clone())
-                .map_err(SummersetError::msg)?;
+                .is_err()
+            {
+                pf_debug!("peer {} connection closing, msg dropped", peer);
+                failed += 1;
+            }
         }
 
+        // error if the broadcast reached none of the target peers
+        if attempted > 0 && failed == attempted {
+            return Err(SummersetError::msg(format!(
+                "broadcast failed on all {} target peers",
+                attempted
+            )));
+        }
         Ok(())
     }
 
@@ -783,6 +798,11 @@ where
 
         if let Err(e) = self.tx_exit.send(self.id) {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
+        } else {
+            // keep the send channel open (discarding messages to the departed
+            // peer) until the hub removes its sender, so that sends to this
+            // peer in the meantime do not fail with a closed channel
+            while self.rx_send.recv().await.is_some() {}
         }
         pf_debug!("peer_messenger task for {} '{}' exited", self.id, self.addr);
     }
