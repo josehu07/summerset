@@ -2,37 +2,87 @@ name: Proc tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # builds the executables once for all protocols below; the job id differs
+  # from build.yml's so that their caches don't collide
+  build_bins:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Get apt dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build executables
+        # same features as the launcher scripts' own builds
+        run: cargo build --workspace --features rse-simd
+
+      - name: Pack executables
+        # tar keeps the executable bits, which artifacts would drop
+        run: tar -cf bins.tar target/debug/summerset_{server,manager,client}
+
+      - name: Upload executables
+        uses: actions/upload-artifact@v7
+        with:
+          name: summerset-bins
+          path: bins.tar
+          retention-days: 1
+
   tests_proc:
+    needs: build_bins
 
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        protocol: [
-          RepNothing, SimplePush, ChainRep, MultiPaxos, EPaxos, RSPaxos,
-          Raft, CRaft, Crossword, QuorumLeases, Bodega,
-        ]
+        protocol:
+          [
+            RepNothing,
+            SimplePush,
+            ChainRep,
+            MultiPaxos,
+            EPaxos,
+            RSPaxos,
+            Raft,
+            CRaft,
+            Crossword,
+            QuorumLeases,
+            Bodega,
+          ]
 
     steps:
-    - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Get apt dependencies
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Download executables
+        uses: actions/download-artifact@v8
+        with:
+          name: summerset-bins
 
-    - name: Add rust stable toolchain
-      uses: dtolnay/rust-toolchain@stable
+      - name: Unpack executables
+        run: tar -xf bins.tar
 
-    - name: Get uv for Python
-      uses: astral-sh/setup-uv@v10.3.3
+      - name: Get uv for Python
+        uses: astral-sh/setup-uv@v10.3.3
 
-    - name: Run proc tests (${{ matrix.protocol }})
-      run: uv run .github/workflow_test.py -p ${{ matrix.protocol }}
+      - name: Run proc tests (${{ matrix.protocol }})
+        run: uv run .github/workflow_test.py -p ${{ matrix.protocol }} --skip_build

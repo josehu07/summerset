@@ -25,9 +25,10 @@ PROTOCOLS_NUM_REPLICAS = {
 
 def do_cargo_build() -> None:
     print("Building everything...")
-    cmd = ["cargo", "build", "--workspace"]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
+    # same features as the launcher scripts' own builds, which are skipped
+    cmd = ["cargo", "build", "--workspace", "--features", "rse-simd"]
+    if subprocess.run(cmd, check=False).returncode != 0:
+        sys.exit("cargo build failed")
 
 
 def run_process(cmd: list[str]) -> subprocess.Popen[bytes]:
@@ -46,6 +47,7 @@ def launch_cluster(protocol: str, num_replicas: int, config: str | None) -> subp
         protocol,
         "-n",
         str(num_replicas),
+        "--skip_build",
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
@@ -95,6 +97,7 @@ def run_tester_client(protocol: str, test_name: str) -> subprocess.Popen[bytes]:
         "scripts.local_clients",
         "-p",
         protocol,
+        "--skip_build",
         "tester",
         "-t",
         test_name,
@@ -105,9 +108,13 @@ def run_tester_client(protocol: str, test_name: str) -> subprocess.Popen[bytes]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
+    parser.add_argument(
+        "--skip_build", action="store_true", help="if set, use executables already built"
+    )
     args = parser.parse_args()
 
-    do_cargo_build()
+    if not args.skip_build:
+        do_cargo_build()
 
     # kill any leftover summerset processes
     subprocess.run(["./scripts/kill_all_procs.sh"], check=False)

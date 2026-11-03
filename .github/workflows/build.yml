@@ -2,31 +2,38 @@ name: Build
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Add rust stable toolchain with clippy
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: clippy
+      - name: Add rust stable toolchain with clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
-    - name: Get apt dependencies
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Get apt dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-    - name: Build
-      run: cargo build --workspace --verbose --all-targets
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
 
-    - name: Clippy check
-      run: cargo clippy --workspace --verbose --all-targets -- -D warnings
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build
+        run: cargo build --workspace --verbose --all-targets
+
+      - name: Clippy check
+        run: cargo clippy --workspace --verbose --all-targets -- -D warnings

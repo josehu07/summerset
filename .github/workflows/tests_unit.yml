@@ -2,26 +2,33 @@ name: Unit tests
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   tests_unit:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Add rust stable toolchain
-      uses: dtolnay/rust-toolchain@stable
+      - name: Add rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Get apt dependencies
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Get apt dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-    - name: Run all unit and integration tests
-      run: cargo test --workspace --verbose
+      - name: Resolve dependencies
+        run: cargo generate-lockfile
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run all unit and integration tests
+        run: cargo test --workspace --verbose

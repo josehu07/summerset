@@ -2,36 +2,35 @@ name: Format
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   format:
-
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-    - name: Add rust nightly toolchain with rustfmt
-      uses: dtolnay/rust-toolchain@nightly
-      with:
-        components: rustfmt
+      - name: Add rust nightly toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
 
-    - name: Format check (Rust)
-      run: cargo +nightly fmt --all -- --check
+      - name: Format check (Rust)
+        run: cargo +nightly fmt --all -- --check
 
-    - name: Add ruff tooling
-      uses: astral-sh/ruff-action@v4.1.0
-      with:
-        args: "--version"
+      - name: Add ruff tooling
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          args: "--version"
 
-    - name: Format check (Python)
-      run: ruff format --check --diff --verbose
+      - name: Format check (Python)
+        run: ruff format --check --diff --verbose
 
-    - name: Python lint check
-      run: ruff check
+      - name: Python lint check
+        run: ruff check
