@@ -194,6 +194,10 @@ impl QuorumLeasesReplica {
                 // for execution
                 if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
+                    // nothing to execute, so advance `exec_bar` here if at it
+                    if self.exec_bar == self.commit_bar {
+                        self.exec_bar += 1;
+                    }
                 } else if inst.status == Status::Committed {
                     let mut conf_changes = vec![];
                     for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate() {

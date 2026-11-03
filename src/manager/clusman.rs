@@ -5,7 +5,6 @@ use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
-use tokio::time::{self, Duration};
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
@@ -400,9 +399,6 @@ impl ClusterManager {
             if let Err(e) = self.assign_server_id() {
                 return logged_err!("error assigning new server ID: {}", e);
             }
-
-            // wait a while to ensure the server's transport hub is setup
-            time::sleep(Duration::from_millis(500)).await;
 
             reset_done.insert(s);
         }

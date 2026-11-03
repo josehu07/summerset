@@ -32,13 +32,15 @@ const PRINT_INTERVAL: Duration = Duration::from_millis(100);
 /// Finer-grained statistics printing interval.
 const FINE_PRINT_INTERVAL: Duration = Duration::from_millis(5);
 
-/// A very long pre-generated value string to get values from.
+/// A very long pre-generated value string to get values from; made of a
+/// repeated random block; no compression is in play so this is accurate.
 static MOM_VALUE: LazyLock<String> = LazyLock::new(|| {
-    rand::rng()
+    let block: String = rand::rng()
         .sample_iter(&Alphanumeric)
-        .take(MAX_VAL_LEN)
+        .take(64 * 1024)
         .map(char::from)
-        .collect()
+        .collect();
+    block.repeat(MAX_VAL_LEN / block.len())
 });
 
 /// Mode parameters struct.
@@ -700,6 +702,9 @@ impl ClientBench {
         // if not using trace, preload values for all keys
         if self.trace_vec.is_none() && !self.params.skip_preloading {
             self.do_preload().await?;
+            // only start timing the benchmark after preloading
+            self.start = Instant::now();
+            self.now = self.start;
         }
 
         if self.params.freq_target > 0 {

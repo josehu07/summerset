@@ -167,7 +167,7 @@ where
             logged_err!("invalid group size {}", group)
         } else {
             while self.current_peers()?.count() + 1 < group {
-                time::sleep(Duration::from_millis(500)).await;
+                time::sleep(Duration::from_millis(100)).await;
             }
             Ok(())
         }
@@ -432,7 +432,7 @@ where
         conn_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         pf_debug!("connecting to peer {} '{}'...", id, conn_addr);
-        let mut stream = tcp_connect_with_retry(conn_addr, 15).await?;
+        let mut stream = tcp_connect_with_retry(conn_addr, 150).await?;
         stream.write_u8(self.me).await?; // send my ID
 
         if self.peer_messenger_handles.contains_key(&id) {
@@ -939,6 +939,8 @@ mod tests {
             hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
+            // stay connected until 0 has checked
+            barrier2.wait().await;
             Ok::<(), SummersetError>(())
         });
         // replica 0
@@ -956,6 +958,7 @@ mod tests {
         assert_eq!(msg, TestMsg("hello".into()));
         assert!(!hub.current_peers()?.get(1)?);
         assert!(hub.current_peers()?.get(2)?);
+        barrier.wait().await;
         Ok(())
     }
 }

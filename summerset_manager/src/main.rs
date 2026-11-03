@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use log::{self, LevelFilter};
-use summerset::{SmrProtocol, SummersetError, logger_init, pf_error};
+use summerset::{SmrProtocol, SummersetError, exit_with_parent, logger_init, pf_error};
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 
@@ -151,6 +151,7 @@ fn manager_main() -> Result<(), SummersetError> {
 /// Main function of Summerset manager oracle.
 fn main() -> ExitCode {
     logger_init();
+    exit_with_parent();
 
     if let Err(ref e) = manager_main() {
         pf_error!("manager_main exited: {}", e);

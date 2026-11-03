@@ -1,24 +1,12 @@
 #! /bin/bash
 
+. "$(dirname "${BASH_SOURCE[0]}")/utils/kill_match.sh"
 
-kill_all_matching () {
-    for pid in $(pgrep -f $1)
-    do
-        sudo kill -9 $pid > /dev/null 2>&1
-    done
-}
-
-
-kill_all_matching summerset_server
-kill_all_matching summerset_client
-kill_all_matching summerset_manager
-
-kill_all_matching local_cluster.py
-kill_all_matching local_clients.py
-
-
-if [ $# -ge 1 ] && [ "$1" = "incl_distr" ];
-then
-    kill_all_matching distr_cluster.py
-    kill_all_matching distr_clients.py
+pattern='/summerset_(server|manager|client)( |$)'
+pattern+='|-m scripts\.local_(cluster|clients)( |$)'
+pattern+='|target/[^ ]*deps/(summerset(_server|_manager|_client)?|(cluster|server|manager|client)_tests)-[0-9a-f]+( |$)'
+if [ "$1" = "incl_distr" ]; then
+    pattern+='|-m scripts\.distr_(cluster|clients)( |$)'
 fi
+
+kill_match "$pattern"

@@ -14,7 +14,7 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 
 use clap::Parser;
-use summerset::{SmrProtocol, SummersetError, logger_init, pf_error, pf_warn};
+use summerset::{SmrProtocol, SummersetError, exit_with_parent, logger_init, pf_error, pf_warn};
 use tokio::runtime::Builder;
 use tokio::time::Duration;
 
@@ -236,6 +236,7 @@ fn client_main() -> Result<(), SummersetError> {
 /// Main function of Summerset client executable.
 fn main() -> ExitCode {
     logger_init();
+    exit_with_parent();
 
     if let Err(ref e) = client_main() {
         pf_error!("client_main exited: {}", e);

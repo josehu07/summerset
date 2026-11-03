@@ -1,6 +1,5 @@
 import argparse
 import os
-import signal
 import sys
 import threading
 
@@ -231,6 +230,7 @@ def launch_servers(
 
 def main():
     utils.file.check_proper_cwd()
+    utils.proc.cleanup_on_exit()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
@@ -280,10 +280,9 @@ def main():
     parser.add_argument("--skip_build", action="store_true", help="if set, skip cargo build")
     args = parser.parse_args()
 
-    # kill all existing server and manager processes
+    # kill all existing summerset processes
     if args.pin_cores == 0:
-        utils.proc.kill_all_matching("summerset_server")
-        utils.proc.kill_all_matching("summerset_manager")
+        utils.proc.kill_all_local_procs()
 
     # check that number of replicas does not exceed 9
     if args.num_replicas > 9:
@@ -315,7 +314,7 @@ def main():
     threading.Thread(target=print_manager_stderr, daemon=True).start()
 
     # then launch server replicas
-    server_procs = launch_servers(
+    launch_servers(
         args.protocol,
         args.num_replicas,
         args.release,
@@ -327,20 +326,6 @@ def main():
         args.pin_cores,
         args.use_veth,
     )
-
-    # register termination signals handler
-    def kill_spawned_procs(*args):
-        for proc in server_procs:
-            proc.terminate()
-        for proc in server_procs:
-            proc.wait()
-        manager_proc.terminate()
-        # utils.proc.kill_all_matching("summerset_server")
-        # utils.proc.kill_all_matching("summerset_manager")
-
-    signal.signal(signal.SIGINT, kill_spawned_procs)
-    signal.signal(signal.SIGTERM, kill_spawned_procs)
-    signal.signal(signal.SIGHUP, kill_spawned_procs)
 
     # reaches here after manager proc has terminated
     rc = manager_proc.wait()

@@ -1,19 +1,10 @@
 #! /bin/bash
 
+. "$(dirname "${BASH_SOURCE[0]}")/../utils/kill_match.sh"
 
-kill_all_matching () {
-    for pid in $(pgrep -f $1)
-    do
-        sudo kill -9 $pid > /dev/null 2>&1
-    done
-}
-
-
-kill_all_matching ./bin/etcd
-
-
-if [ $# -ge 1 ] && [ "$1" = "incl_distr" ];
-then
-    kill_all_matching distr_etcdclus.py
-    kill_all_matching distr_etcdclis.py
+pattern='(^|[ /])bin/etcd( |$)'
+if [ "$1" = "incl_distr" ]; then
+    pattern+='|-m scripts\.bodega\.distr_etcd(cluster|clients)( |$)'
 fi
+
+kill_match "$pattern"

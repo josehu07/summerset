@@ -1,19 +1,10 @@
 #! /bin/bash
 
+. "$(dirname "${BASH_SOURCE[0]}")/../utils/kill_match.sh"
 
-kill_all_matching () {
-    for pid in $(pgrep -f $1)
-    do
-        sudo kill -9 $pid > /dev/null 2>&1
-    done
-}
-
-
-kill_all_matching java
-
-
-if [ $# -ge 1 ] && [ "$1" = "incl_distr" ];
-then
-    kill_all_matching distr_zookeeper.py
-    kill_all_matching distr_clients.py
+pattern='zkServer\.sh start-foreground|org\.apache\.zookeeper\.server\.quorum\.QuorumPeerMain'
+if [ "$1" = "incl_distr" ]; then
+    pattern+='|-m scripts\.bodega\.distr_zk(cluster|clients)( |$)'
 fi
+
+kill_match "$pattern"

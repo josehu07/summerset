@@ -11,6 +11,7 @@ mod codec;
 mod error;
 mod keyrange;
 mod linreg;
+mod process;
 mod qdisc;
 mod rscoding;
 mod safetcp;
@@ -23,6 +24,8 @@ pub use error::SummersetError;
 pub use keyrange::{ConfNum, RespondersConf};
 pub(crate) use linreg::{LinearRegressor, PerfModel};
 pub use print::{ME, logger_init};
+pub use process::exit_with_parent;
+pub(crate) use process::raise_fd_limit;
 pub(crate) use qdisc::QdiscInfo;
 pub use rscoding::RSCodeword;
 pub(crate) use safetcp::{

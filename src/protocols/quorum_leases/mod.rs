@@ -928,11 +928,9 @@ impl GenericReplica for QuorumLeasesReplica {
 
                 // manager control message
                 ctrl_msg = self.control_hub.recv_ctrl() => {
-                    if let Err(e) = ctrl_msg {
-                        pf_error!("error getting ctrl msg: {}", e);
-                        continue;
-                    }
-                    let ctrl_msg = ctrl_msg.unwrap();
+                    // fails only if the manager connection is lost, in which
+                    // case exit as there is no way to rejoin
+                    let ctrl_msg = ctrl_msg?;
                     match self.handle_ctrl_msg(ctrl_msg, &mut paused).await {
                         Ok(terminate) => {
                             if let Some(restart) = terminate {

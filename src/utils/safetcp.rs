@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::{self, Duration};
 
-use crate::utils::{CODEC_CONFIG, Codec, SummersetError};
+use crate::utils::{CODEC_CONFIG, Codec, SummersetError, raise_fd_limit};
 
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
 /// using `read_buf` as buffer storage for partial reads. Returns:
@@ -40,7 +40,9 @@ where
     }
     while read_buf.len() < 8 {
         // obj_len not wholesomely read from socket before last cancellation
-        conn_read.read_buf(read_buf).await?;
+        if conn_read.read_buf(read_buf).await? == 0 {
+            return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
+        }
     }
     let obj_len = u64::from_be_bytes(read_buf[..8].try_into().unwrap());
 
@@ -63,7 +65,9 @@ where
         read_buf.reserve(obj_end - read_buf.capacity());
     }
     while read_buf.len() < obj_end {
-        conn_read.read_buf(read_buf).await?;
+        if conn_read.read_buf(read_buf).await? == 0 {
+            return Err(std::io::Error::from(ErrorKind::UnexpectedEof).into());
+        }
     }
     let obj = wincode::config::deserialize_exact(&read_buf[8..obj_end], CODEC_CONFIG)?;
 
@@ -157,6 +161,7 @@ pub(crate) async fn tcp_bind_with_retry(
     bind_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
+    raise_fd_limit();
     loop {
         let socket = TcpSocket::new_v4()?;
         #[allow(
@@ -172,7 +177,7 @@ pub(crate) async fn tcp_bind_with_retry(
         if let Err(e) = socket.bind(bind_addr) {
             eprintln!("Binding {} failed!", bind_addr);
             eprintln!("Output of `ss` command:");
-            eprintln!("{}", get_ss_cmd_output()?);
+            eprintln!("{}", get_ss_cmd_output().unwrap_or_else(|e| e.to_string()));
             return Err(SummersetError::from(e));
         }
 
@@ -194,6 +199,7 @@ pub(crate) async fn tcp_connect_with_retry(
     conn_addr: SocketAddr,
     mut retries: u8,
 ) -> Result<TcpStream, SummersetError> {
+    raise_fd_limit();
     loop {
         let socket = TcpSocket::new_v4()?;
         #[allow(
@@ -212,7 +218,7 @@ pub(crate) async fn tcp_connect_with_retry(
                     return Err(err.into());
                 }
                 retries -= 1;
-                time::sleep(Duration::from_secs(1)).await;
+                time::sleep(Duration::from_millis(100)).await;
             }
         }
     }

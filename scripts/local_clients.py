@@ -166,6 +166,7 @@ def run_clients(
 
 def main():
     utils.file.check_proper_cwd()
+    utils.proc.cleanup_on_exit()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")

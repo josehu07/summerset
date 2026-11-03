@@ -37,7 +37,7 @@ impl ClientApiStub {
         id: ClientId,
         server: SocketAddr,
     ) -> Result<Self, SummersetError> {
-        let mut stream = tcp_connect_with_retry(server, 15).await?;
+        let mut stream = tcp_connect_with_retry(server, 150).await?;
         stream.write_u64(id).await?; // send my client ID
         let (read_half, write_half) = stream.into_split();
 

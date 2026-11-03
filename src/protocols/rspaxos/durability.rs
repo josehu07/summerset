@@ -163,6 +163,10 @@ impl RSPaxosReplica {
                 // for execution
                 if reqs.is_empty() {
                     inst.status = Status::Executed;
+                    // nothing to execute, so advance `exec_bar` here if at it
+                    if self.exec_bar == self.commit_bar {
+                        self.exec_bar += 1;
+                    }
                 } else if inst.status == Status::Committed {
                     for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
                         if let ApiRequest::Req { cmd, .. } = req {

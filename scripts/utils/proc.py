@@ -1,15 +1,55 @@
+import atexit
 import multiprocessing
 import os
+import signal
 import subprocess
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from types import FrameType
+
+# every process launched through `run_process()`, for `terminate_spawned()`
+SPAWNED: list[subprocess.Popen[bytes]] = []
 
 
-def kill_all_matching(name):
-    print("Kill all:", name)
-    assert name.count(" ") == 0
-    cmd = f"sudo killall -9 {name} > /dev/null 2>&1"
-    os.system(cmd)
+def cleanup_on_exit() -> None:
+    """Makes sure processes launched through `run_process()` get terminated
+    whenever this script exits: normally, upon errors, upon termination
+    signals, or when its parent process (e.g., a `uv run` wrapper) dies."""
+    atexit.register(terminate_spawned)
+
+    def handler(signum: int, _frame: FrameType | None) -> None:
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, handler)
+
+    ppid = os.getppid()
+
+    def watch_parent() -> None:
+        while os.getppid() == ppid:
+            time.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=watch_parent, daemon=True).start()
+
+
+def terminate_spawned(timeout: float = 5) -> None:
+    """Terminates all processes launched through `run_process()`, killing any
+    that has not exited within `timeout` secs."""
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_IGN)  # do not get interrupted midway
+    for proc in SPAWNED:
+        if proc.poll() is None:
+            proc.terminate()
+    deadline = time.monotonic() + timeout
+    for proc in SPAWNED:
+        try:
+            proc.wait(timeout=max(deadline - time.monotonic(), 0))
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
 
 def kill_all_local_procs():
@@ -73,6 +113,8 @@ def run_process(
         cmd = ["sudo", "ip", "netns", "exec", in_netns] + cmd
 
     env_vars = os.environ.copy()
+    # summerset executables exit by themselves should this script die
+    env_vars["SUMMERSET_EXIT_WITH_PARENT"] = str(os.getpid())
     if extra_env is not None:
         env_vars.update(extra_env)
 
@@ -82,6 +124,7 @@ def run_process(
     proc = subprocess.Popen(
         cmd, cwd=cd_dir, stdout=stdout, stderr=stderr, env=env_vars, shell=shell
     )
+    SPAWNED.append(proc)
     return proc
 
 

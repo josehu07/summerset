@@ -15,5 +15,8 @@ env_logger = { workspace = true }
 clap = { workspace = true }
 ctrlc = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true
