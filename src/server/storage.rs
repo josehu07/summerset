@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::io::SeekFrom;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use get_size::GetSize;
 use serde::de::DeserializeOwned;
@@ -11,10 +11,11 @@ use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio::time;
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::ReplicaId;
-use crate::utils::{CODEC_CONFIG, Codec, SummersetError};
+use crate::utils::{CODEC_CONFIG, Codec, SummersetError, faults};
 
 /// Log action ID type.
 pub(crate) type LogActionId = u64;
@@ -103,12 +104,23 @@ where
             pf_info!("created backer file '{}'", path.display());
         }
         let mut backer_file = OpenOptions::new().read(true).write(true).open(path).await?;
+
+        // after a power loss, the file loses what it had not synced
+        let len = usize::try_from(backer_file.metadata().await?.len())?;
+        if let Some(size) = faults::take_crash_size(path).filter(|&size| size < len) {
+            pf_warn!(
+                "power loss lost {} unsynced bytes of '{}'",
+                len - size,
+                path.display()
+            );
+            backer_file.set_len(size as u64).await?;
+        }
         backer_file.seek(SeekFrom::End(0)).await?; // seek to EOF
 
         let (tx_log, rx_log) = mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
-        let mut logger = StorageHubLoggerTask::new(rx_log, tx_ack, backer_file).await?;
+        let mut logger = StorageHubLoggerTask::new(rx_log, tx_ack, backer_file, path).await?;
         let logger_handle = tokio::spawn(async move { logger.run().await });
 
         Ok(StorageHub {
@@ -117,6 +129,25 @@ where
             rx_ack,
             _logger_handle: logger_handle,
         })
+    }
+
+    /// Truncates the backing file to empty, as a synchronous action.
+    pub(crate) async fn truncate_all(&mut self) -> Result<(), SummersetError> {
+        // using 0 as dummy log action ID
+        let (_, result) = self
+            .do_sync_action(0, LogAction::Truncate { offset: 0 })
+            .await?;
+        if matches!(
+            result,
+            LogResult::Truncate {
+                offset_ok: true,
+                now_size: 0
+            }
+        ) {
+            Ok(())
+        } else {
+            logged_err!("failed to truncate log to 0")
+        }
     }
 
     /// Submits an action by sending it to the log channel.
@@ -179,6 +210,10 @@ struct StorageHubLoggerTask<Ent> {
     backer_file: File,
     /// Backer file size is maintained by the logger.
     file_size: usize,
+
+    /// Backer file path, and the size up to which it has been synced.
+    path: PathBuf,
+    synced_size: usize,
 }
 
 impl<Ent> StorageHubLoggerTask<Ent>
@@ -190,6 +225,7 @@ where
         rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
         tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
         backer_file: File,
+        path: &Path,
     ) -> Result<Self, SummersetError> {
         // load initial file size
         let metadata = backer_file.metadata().await;
@@ -199,11 +235,15 @@ where
         #[allow(clippy::cast_possible_truncation)]
         let file_size: usize = metadata.unwrap().len() as usize;
 
+        // whatever the file already holds is considered synced
+        faults::record_file_synced(path, file_size);
         Ok(StorageHubLoggerTask {
             rx_log,
             tx_ack,
             backer_file,
             file_size,
+            path: path.into(),
+            synced_size: file_size,
         })
     }
 
@@ -433,10 +473,35 @@ where
 
         while let Some((id, action)) = self.rx_log.recv().await {
             // pf_trace!("log action {:?}", action);
-            let res = self.handle_action(action).await;
+            let syncs = match action {
+                LogAction::Read { .. } => false,
+                LogAction::Write { sync, .. } | LogAction::Append { sync, .. } => sync,
+                LogAction::Truncate { .. } | LogAction::Discard { .. } => true,
+            };
+            let write = !matches!(action, LogAction::Read { .. });
+            let fault = faults::disk_delay_fail(write);
+            if let Some((delay, _)) = fault {
+                time::sleep(delay).await;
+            }
+            let res = if fault.is_some_and(|(_, fail)| fail) {
+                Err(SummersetError::msg("injected disk failure"))
+            } else {
+                self.handle_action(action).await
+            };
             if let Err(e) = res {
                 pf_error!("error during logging: {}", e);
                 continue;
+            }
+
+            // track how much of the file is synced, for crash injection
+            let synced_size = if syncs {
+                self.file_size
+            } else {
+                self.synced_size.min(self.file_size)
+            };
+            if synced_size != self.synced_size {
+                self.synced_size = synced_size;
+                faults::record_file_synced(&self.path, synced_size);
             }
 
             if let Err(e) = self.tx_ack.send((id, res.unwrap())) {
@@ -458,20 +523,14 @@ mod tests {
     )]
     struct TestEntry(String);
 
-    async fn prepare_test_file(path: &str) -> Result<File, SummersetError> {
-        if fs::try_exists(path).await? {
-            let file = OpenOptions::new().write(true).open(path).await?;
-            file.set_len(0).await?;
-        } else {
-            File::create(path).await?;
-        }
-        let file = OpenOptions::new().read(true).write(true).open(path).await?;
-        Ok(file)
+    /// Creates an anonymous file that is deleted once closed.
+    fn test_temp_file() -> Result<File, SummersetError> {
+        Ok(File::from_std(tempfile::tempfile()?))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn write_entries() -> Result<(), SummersetError> {
-        let mut backer_file = prepare_test_file("/tmp/test-backer-0.log").await?;
+        let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let (offset_ok, now_size) =
             StorageHubLoggerTask::write_entry(&mut backer_file, 0, &entry, 0, false).await?;
@@ -497,7 +556,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn append_entries() -> Result<(), SummersetError> {
-        let mut backer_file = prepare_test_file("/tmp/test-backer-1.log").await?;
+        let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let entry_bytes = wincode::config::serialize(&entry, CODEC_CONFIG)?;
         let mid_size =
@@ -511,7 +570,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn read_entries() -> Result<(), SummersetError> {
-        let mut backer_file = prepare_test_file("/tmp/test-backer-2.log").await?;
+        let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let mid_size =
             StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
@@ -543,8 +602,42 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn read_cut_points() -> Result<(), SummersetError> {
+        // a log cut at any byte (e.g., by a crash) reads back as exactly its
+        // complete records
+        let entry = TestEntry("test-entry-dummy-string".into());
+        let mut backer_file = test_temp_file()?;
+        let mut ends = vec![0];
+        for _ in 0..3 {
+            let end = *ends.last().unwrap();
+            ends.push(
+                StorageHubLoggerTask::append_entry(&mut backer_file, end, &entry, false).await?,
+            );
+        }
+        let mut image = vec![];
+        backer_file.seek(SeekFrom::Start(0)).await?;
+        backer_file.read_to_end(&mut image).await?;
+        for cut in 0..=image.len() {
+            let mut cut_file = test_temp_file()?;
+            cut_file.write_all(&image[..cut]).await?;
+            let (mut offset, mut num_read) = (0, 0);
+            while let (Some(read), end) =
+                StorageHubLoggerTask::<TestEntry>::read_entry(&mut cut_file, cut, offset).await?
+            {
+                assert_eq!(read, entry);
+                (offset, num_read) = (end, num_read + 1);
+            }
+            assert_eq!(
+                num_read,
+                ends[1..].iter().filter(|&&end| end <= cut).count()
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn truncate_log() -> Result<(), SummersetError> {
-        let mut backer_file = prepare_test_file("/tmp/test-backer-3.log").await?;
+        let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let mid_offset =
             StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
@@ -578,7 +671,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn discard_log() -> Result<(), SummersetError> {
-        let mut backer_file = prepare_test_file("/tmp/test-backer-4.log").await?;
+        let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let mid1_offset =
             StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
@@ -643,8 +736,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_log_ack() -> Result<(), SummersetError> {
-        let path = Path::new("/tmp/test-backer-6.log");
-        let mut hub = StorageHub::new_and_setup(0, path).await?;
+        let dir = tempfile::tempdir()?;
+        let mut hub = StorageHub::new_and_setup(0, &dir.path().join("backer.log")).await?;
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = wincode::config::serialize(&entry, CODEC_CONFIG)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
@@ -684,8 +777,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn api_do_sync() -> Result<(), SummersetError> {
-        let path = Path::new("/tmp/test-backer-7.log");
-        let mut hub = StorageHub::new_and_setup(0, path).await?;
+        let dir = tempfile::tempdir()?;
+        let mut hub = StorageHub::new_and_setup(0, &dir.path().join("backer.log")).await?;
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = wincode::config::serialize(&entry, CODEC_CONFIG)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;

@@ -32,8 +32,8 @@ pub use crate::server::{
 };
 #[doc(inline)]
 pub use crate::utils::{
-    Bitmap, CODEC_CONFIG, Codec, CodecConfig, ME, RSCodeword, Stopwatch, SummersetError, Timer,
-    exit_with_parent, logger_init,
+    Bitmap, CODEC_CONFIG, Codec, CodecConfig, Faults, ME, RSCodeword, Stopwatch, SummersetError,
+    Timer, exit_with_parent, logger_init,
 };
 
 // below are config structs exposed for users to know how to write TOML-format

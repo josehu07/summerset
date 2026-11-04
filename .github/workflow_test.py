@@ -101,6 +101,7 @@ def run_tester_client(protocol: str, test_name: str) -> subprocess.Popen[bytes]:
         "tester",
         "-t",
         test_name,
+        "--keep_going",
     ]
     return run_process(cmd)
 
@@ -108,6 +109,7 @@ def run_tester_client(protocol: str, test_name: str) -> subprocess.Popen[bytes]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
+    parser.add_argument("-t", "--test_name", type=str, default="all", help="tester test name")
     parser.add_argument(
         "--skip_build", action="store_true", help="if set, use executables already built"
     )
@@ -123,8 +125,8 @@ def main() -> None:
         raise ValueError(f"unrecognized protocol {args.protocol} to run workflow test")
     PROTOCOL = args.protocol
     NUM_REPLICAS = PROTOCOLS_NUM_REPLICAS[PROTOCOL]
-    TEST_NAME = "primitive_ops"
-    TIMEOUT = 300
+    TEST_NAME = args.test_name
+    TIMEOUT = 600
 
     # turn termination signals into exits, so that the cleanup below runs
     def exit_on_signal(signum: int, _frame: FrameType | None) -> None:

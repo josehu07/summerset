@@ -9,8 +9,8 @@ use rand::RngExt;
 use rand::distr::Alphanumeric;
 use serde::Deserialize;
 use summerset::{
-    CommandResult, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId, SummersetError, logged_err,
-    parsed_config, pf_debug, pf_error,
+    CommandResult, CtrlReply, CtrlRequest, Faults, GenericEndpoint, ReplicaId, SmrProtocol,
+    SummersetError, logged_err, parsed_config, pf_debug, pf_error,
 };
 use tokio::time::{self, Duration};
 
@@ -28,9 +28,13 @@ static ALL_TESTS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|| {
         ("non_leader_pause", false),
         ("leader_node_pause", false),
         ("node_pause_resume", false),
-        // NOTE: our current snapshotting implementation does not
-        //       guarantee to pass this
-        // ("snapshot_reset", false),
+        ("snapshot_reset", false),
+        ("lossy_network", false),
+        ("minority_partition", false),
+        ("leader_partition", false),
+        ("non_leader_crash", false),
+        ("leader_node_crash", false),
+        ("clock_drift", false),
     ]
 });
 
@@ -46,6 +50,9 @@ pub struct ModeParamsTester {
 
     /// Do not suppress logger output.
     pub logger_on: bool,
+
+    /// Seed of injected faults, to replay a run; random per test if 0.
+    pub fault_seed: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -55,6 +62,7 @@ impl Default for ModeParamsTester {
             test_name: "basic".into(),
             keep_going: false,
             logger_on: false,
+            fault_seed: 0,
         }
     }
 }
@@ -70,8 +78,11 @@ pub(crate) struct ClientTester {
     /// Mode parameters struct.
     params: ModeParamsTester,
 
-    /// Whether to skip node pause tests for the protocol under test.
-    skips_pause_tests: bool,
+    /// Protocol under test.
+    protocol: SmrProtocol,
+
+    /// Seed of the faults injected by the current test, if any.
+    fault_seed: Option<u64>,
 }
 
 impl ClientTester {
@@ -80,10 +91,10 @@ impl ClientTester {
         endpoint: Box<dyn GenericEndpoint>,
         timeout: Duration,
         params_str: Option<&str>,
-        skips_pause_tests: bool,
+        protocol: SmrProtocol,
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsTester;
-                                    test_name, keep_going, logger_on)?;
+                                    test_name, keep_going, logger_on, fault_seed)?;
 
         // suppress all logger levels if not logger_on
         if !params.logger_on {
@@ -94,7 +105,8 @@ impl ClientTester {
             driver: DriverClosedLoop::new(endpoint, timeout),
             timeout,
             params,
-            skips_pause_tests,
+            protocol,
+            fault_seed: None,
         })
     }
 
@@ -228,13 +240,23 @@ impl ClientTester {
         )
     }
 
+    /// Sends a control request to the manager and waits for its reply, failing
+    /// if there is none within a generous bound (e.g., as a server died).
+    async fn ctrl(&mut self, req: CtrlRequest) -> Result<CtrlReply, SummersetError> {
+        self.driver.ctrl_stub().send_req_insist(&req)?;
+        time::timeout(
+            Duration::from_secs(30),
+            self.driver.ctrl_stub().recv_reply(),
+        )
+        .await
+        .map_err(|_| SummersetError::msg(format!("no reply to {req:?}")))?
+    }
+
     /// Query the list of servers in the cluster. Returns a map from replica ID
     /// -> `is_leader` status.
     async fn query_servers(&mut self) -> Result<HashMap<ReplicaId, bool>, SummersetError> {
         let req = CtrlRequest::QueryInfo;
-        self.driver.ctrl_stub().send_req_insist(&req)?;
-
-        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        let reply = self.ctrl(req).await?;
         if let CtrlReply::QueryInfo { servers_info, .. } = reply {
             Ok(servers_info
                 .into_iter()
@@ -252,9 +274,7 @@ impl ClientTester {
         durable: bool,
     ) -> Result<(), SummersetError> {
         let req = CtrlRequest::ResetServers { servers, durable };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
-
-        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        let reply = self.ctrl(req).await?;
         if let CtrlReply::ResetServers { .. } = reply {
             Ok(())
         } else {
@@ -265,9 +285,7 @@ impl ClientTester {
     /// Pauses some server(s) in the cluster.
     async fn pause_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::PauseServers { servers };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
-
-        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        let reply = self.ctrl(req).await?;
         if let CtrlReply::PauseServers { .. } = reply {
             Ok(())
         } else {
@@ -278,9 +296,7 @@ impl ClientTester {
     /// Force some server(s) to take a new snapshot.
     async fn force_snapshot(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::TakeSnapshot { servers };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
-
-        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        let reply = self.ctrl(req).await?;
         if let CtrlReply::TakeSnapshot { .. } = reply {
             Ok(())
         } else {
@@ -292,9 +308,7 @@ impl ClientTester {
     #[allow(dead_code)]
     async fn resume_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::ResumeServers { servers };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
-
-        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        let reply = self.ctrl(req).await?;
         if let CtrlReply::ResumeServers { .. } = reply {
             Ok(())
         } else {
@@ -302,11 +316,108 @@ impl ClientTester {
         }
     }
 
+    /// Injects faults into some server(s) in the cluster, replacing any
+    /// injected before.
+    async fn inject_faults(
+        &mut self,
+        servers: HashSet<ReplicaId>,
+        faults: Faults,
+    ) -> Result<(), SummersetError> {
+        let req = CtrlRequest::InjectFaults { servers, faults };
+        let reply = self.ctrl(req).await?;
+        if let CtrlReply::InjectFaults { .. } = reply {
+            Ok(())
+        } else {
+            logged_err!("unexpected control reply type")
+        }
+    }
+
+    /// Crashes some server(s) in the cluster as a process crash, which skips
+    /// the graceful leave but keeps all storage writes.
+    async fn crash_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
+        let req = CtrlRequest::CrashServers {
+            servers,
+            power_loss: false,
+        };
+        let reply = self.ctrl(req).await?;
+        if let CtrlReply::CrashServers { .. } = reply {
+            Ok(())
+        } else {
+            logged_err!("unexpected control reply type")
+        }
+    }
+
+    /// Returns empty faults seeded for the current test.
+    fn seeded_faults(&mut self) -> Faults {
+        let param = self.params.fault_seed;
+        let seed = *self.fault_seed.get_or_insert_with(|| {
+            if param == 0 {
+                rand::rng().random()
+            } else {
+                param
+            }
+        });
+        Faults {
+            seed,
+            ..Faults::default()
+        }
+    }
+
+    /// Cuts off all links between a server and the rest of the cluster.
+    async fn cut_off_links(&mut self, server: ReplicaId) -> Result<(), SummersetError> {
+        let others: HashSet<ReplicaId> = self
+            .query_servers()
+            .await?
+            .into_keys()
+            .filter(|&s| s != server)
+            .collect();
+        let faults = self.seeded_faults();
+        self.inject_faults(
+            HashSet::from([server]),
+            Faults {
+                cut_peers: others.clone(),
+                ..faults.clone()
+            },
+        )
+        .await?;
+        self.inject_faults(
+            others,
+            Faults {
+                cut_peers: HashSet::from([server]),
+                ..faults
+            },
+        )
+        .await
+    }
+
+    /// Picks the leader replica (server 0 if there is none), or else the
+    /// non-leader with the highest ID, which clients connect to the least.
+    async fn pick_server(&mut self, leader: bool) -> Result<ReplicaId, SummersetError> {
+        let servers = self.query_servers().await?;
+        let pick = if leader {
+            servers
+                .iter()
+                .find(|&(_, &l)| l)
+                .map_or(Some(0), |(&s, _)| Some(s))
+        } else {
+            servers.iter().filter(|&(_, &l)| !l).map(|(&s, _)| s).max()
+        };
+        pick.ok_or_else(|| SummersetError::msg("no server to pick"))
+    }
+
     /// Runs the individual correctness test.
     async fn do_test_by_name(&mut self, name: &str) -> Result<(), SummersetError> {
         const NODE_PAUSE_TESTS: [&str; 3] =
             ["non_leader_pause", "leader_node_pause", "node_pause_resume"];
-        if self.skips_pause_tests && NODE_PAUSE_TESTS.contains(&name) {
+        const NODE_FAULT_TESTS: [&str; 6] = [
+            "lossy_network",
+            "minority_partition",
+            "leader_partition",
+            "non_leader_crash",
+            "leader_node_crash",
+            "clock_drift",
+        ];
+        if self.protocol.skips_faulty_tests() && NODE_PAUSE_TESTS.contains(&name) {
             cprintln!(
                 "{:>20} | <yellow>{:^6}</> | protocol can't handle pause tests",
                 name,
@@ -314,33 +425,64 @@ impl ClientTester {
             );
             return Ok(());
         }
+        if self.protocol.skips_faulty_tests() && NODE_FAULT_TESTS.contains(&name) {
+            cprintln!(
+                "{:>20} | <yellow>{:^6}</> | protocol can't handle faults",
+                name,
+                "SKIP"
+            );
+            return Ok(());
+        }
 
-        // reset everything to initial state at the start of each test
+        // reset everything to initial state at the start of each test, with
+        // no faults injected
+        self.fault_seed = None;
+        self.inject_faults(HashSet::new(), Faults::default())
+            .await?;
         self.reset_servers(HashSet::new(), false).await?;
         time::sleep(Duration::from_secs(1)).await;
-        self.driver.connect().await?;
 
-        let result = match name {
-            "primitive_ops" => self.test_primitive_ops().await,
-            "client_reconnect" => self.test_client_reconnect().await,
-            "non_leader_reset" => self.test_non_leader_reset().await,
-            "leader_node_reset" => self.test_leader_node_reset().await,
-            "two_nodes_reset" => self.test_two_nodes_reset().await,
-            "all_nodes_reset" => self.test_all_nodes_reset().await,
-            "non_leader_pause" => self.test_non_leader_pause().await,
-            "leader_node_pause" => self.test_leader_node_pause().await,
-            "node_pause_resume" => self.test_node_pause_resume().await,
-            "snapshot_reset" => self.test_snapshot_reset().await,
-            _ => {
-                return logged_err!("unrecognized test name '{}'", name);
+        // bound each test, as a stuck service could stall it forever (e.g.,
+        // with requests redirected endlessly)
+        let test = async {
+            self.driver.connect().await?;
+            match name {
+                "primitive_ops" => self.test_primitive_ops().await,
+                "client_reconnect" => self.test_client_reconnect().await,
+                "non_leader_reset" => self.test_non_leader_reset().await,
+                "leader_node_reset" => self.test_leader_node_reset().await,
+                "two_nodes_reset" => self.test_two_nodes_reset().await,
+                "all_nodes_reset" => self.test_all_nodes_reset().await,
+                "non_leader_pause" => self.test_non_leader_pause().await,
+                "leader_node_pause" => self.test_leader_node_pause().await,
+                "node_pause_resume" => self.test_node_pause_resume().await,
+                "snapshot_reset" => self.test_snapshot_reset().await,
+                "lossy_network" => self.test_lossy_network().await,
+                "minority_partition" => self.test_minority_partition().await,
+                "leader_partition" => self.test_leader_partition().await,
+                "non_leader_crash" => self.test_non_leader_crash().await,
+                "leader_node_crash" => self.test_leader_node_crash().await,
+                "clock_drift" => self.test_clock_drift().await,
+                _ => logged_err!("unrecognized test name '{}'", name),
             }
         };
+        let result = time::timeout(Duration::from_secs(60), test)
+            .await
+            .unwrap_or_else(|_| logged_err!("test timed out"));
 
+        // the seed of injected faults, if any, allows replaying the test
+        let seed = self.fault_seed.map(|seed| format!("seed {seed}"));
         if let Err(ref e) = result {
-            cprintln!("{:>20} | <red>{:^6}</> | {}", name, "FAIL", e);
+            let seed = seed.map(|seed| format!(" ({seed})")).unwrap_or_default();
+            cprintln!("{:>20} | <red>{:^6}</> | {}{}", name, "FAIL", e, seed);
         } else {
-            cprintln!("{:>20} | <green>{:^6}</> | --", name, "PASS");
+            let note = seed.unwrap_or_else(|| "--".into());
+            cprintln!("{:>20} | <green>{:^6}</> | {}", name, "PASS", note);
         }
+
+        // never leave faults injected beyond a test
+        self.inject_faults(HashSet::new(), Faults::default())
+            .await?;
 
         // send leave notification and forget about the TCP connections at the
         // end of each test
@@ -354,32 +496,23 @@ impl ClientTester {
         let mut all_pass = true;
 
         println!("{:^20} | {:^6} | Notes", "Test Case", "Result");
-        match &test_name[..] {
-            "basic" => {
-                for (name, basic) in ALL_TESTS.iter() {
-                    if *basic {
-                        let result = self.do_test_by_name(name).await;
-                        if result.is_err() {
-                            all_pass = false;
-                            if !self.params.keep_going {
-                                return result;
-                            }
-                        }
-                    }
-                }
-            }
-            "all" => {
-                for (name, _) in ALL_TESTS.iter() {
-                    let result = self.do_test_by_name(name).await;
-                    if result.is_err() {
-                        all_pass = false;
-                        if !self.params.keep_going {
-                            return result;
-                        }
-                    }
-                }
-            }
+        let names: Vec<&str> = match &test_name[..] {
+            "basic" => ALL_TESTS
+                .iter()
+                .filter(|(_, basic)| *basic)
+                .map(|(name, _)| *name)
+                .collect(),
+            "all" => ALL_TESTS.iter().map(|(name, _)| *name).collect(),
             _ => return self.do_test_by_name(&test_name).await,
+        };
+        for name in names {
+            let result = self.do_test_by_name(name).await;
+            if result.is_err() {
+                all_pass = false;
+                if !self.params.keep_going {
+                    return result;
+                }
+            }
         }
 
         self.driver.leave(true).await?;
@@ -603,6 +736,108 @@ impl ClientTester {
         self.driver.connect().await?;
         self.checked_get("Shawn", Some(Some(&v1)), 0).await?;
         self.checked_get("Jose", Some(Some(&v1)), 0).await?;
+        Ok(())
+    }
+
+    /// Puts and gets keys while all replicas drop, duplicate, delay, and
+    /// reorder peer messages.
+    async fn test_lossy_network(&mut self) -> Result<(), SummersetError> {
+        let faults = Faults {
+            msg_drop_pct: 5,
+            msg_dup_pct: 5,
+            msg_delay_ms: 1,
+            msg_jitter_ms: 4,
+            ..self.seeded_faults()
+        };
+        self.inject_faults(HashSet::new(), faults).await?;
+        for i in 0..10 {
+            // old values are not checked, as a timed-out put may be retried
+            let (key, v) = (format!("Key{i}"), Self::gen_rand_string(8));
+            self.checked_put(&key, &v, None, 2).await?;
+            self.checked_get(&key, Some(Some(&v)), 2).await?;
+        }
+        Ok(())
+    }
+
+    /// Single non-leader replica gets cut off from the others, then heals.
+    async fn test_minority_partition(&mut self) -> Result<(), SummersetError> {
+        let v0 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v0, Some(None), 0).await?;
+        let s = self.pick_server(false).await?;
+        self.cut_off_links(s).await?;
+        let v1 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v1, Some(Some(&v0)), 0).await?;
+        self.checked_get("Jose", Some(Some(&v1)), 0).await?;
+        // heal and give the replica time to catch up
+        self.inject_faults(HashSet::new(), Faults::default())
+            .await?;
+        time::sleep(Duration::from_secs(1)).await;
+        self.checked_get("Jose", Some(Some(&v1)), 1).await?;
+        Ok(())
+    }
+
+    /// Leader replica gets cut off from the others for long enough for them to
+    /// pick a new leader, then heals.
+    async fn test_leader_partition(&mut self) -> Result<(), SummersetError> {
+        let v0 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v0, Some(None), 0).await?;
+        time::sleep(Duration::from_millis(500)).await;
+        let s = self.pick_server(true).await?;
+        self.driver.leave(false).await?;
+        self.cut_off_links(s).await?;
+        time::sleep(Duration::from_secs(3)).await;
+        self.inject_faults(HashSet::new(), Faults::default())
+            .await?;
+        time::sleep(Duration::from_secs(1)).await;
+        self.driver.connect().await?;
+        self.checked_get("Jose", Some(Some(&v0)), 1).await?;
+        let v1 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v1, Some(Some(&v0)), 1).await?;
+        Ok(())
+    }
+
+    /// Crashes a replica and checks that the cluster still serves the right
+    /// values once it restarts.
+    async fn crash_and_check(&mut self, leader: bool) -> Result<(), SummersetError> {
+        let v0 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v0, Some(None), 0).await?;
+        let s = self.pick_server(leader).await?;
+        self.driver.leave(false).await?;
+        self.crash_servers(HashSet::from([s])).await?;
+        time::sleep(Duration::from_secs(if leader { 3 } else { 1 })).await;
+        self.driver.connect().await?;
+        self.checked_get("Jose", Some(Some(&v0)), 1).await?;
+        let v1 = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v1, Some(Some(&v0)), 1).await?;
+        Ok(())
+    }
+
+    /// Single non-leader replica crashes and restarts.
+    async fn test_non_leader_crash(&mut self) -> Result<(), SummersetError> {
+        self.crash_and_check(false).await
+    }
+
+    /// Leader replica crashes and restarts.
+    async fn test_leader_node_crash(&mut self) -> Result<(), SummersetError> {
+        self.crash_and_check(true).await
+    }
+
+    /// Puts and gets keys while replicas' clocks run fast or slow.
+    async fn test_clock_drift(&mut self) -> Result<(), SummersetError> {
+        let faults = self.seeded_faults();
+        for s in self.query_servers().await?.into_keys() {
+            let drift = if s % 2 == 0 { -40 } else { 40 };
+            let faults = Faults {
+                clock_drift_pct: drift,
+                ..faults.clone()
+            };
+            self.inject_faults(HashSet::from([s]), faults).await?;
+        }
+        for i in 0..5 {
+            let (key, v) = (format!("Key{i}"), Self::gen_rand_string(8));
+            self.checked_put(&key, &v, Some(None), 1).await?;
+            self.checked_get(&key, Some(Some(&v)), 1).await?;
+        }
         Ok(())
     }
 }

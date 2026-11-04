@@ -12,7 +12,7 @@ impl BodegaReplica {
         new_bal: Ballot,
         new_conf: RespondersConf<()>,
     ) -> Result<(), SummersetError> {
-        debug_assert!(new_bal > self.bal_max_seen);
+        debug_assert!(new_bal >= self.bal_max_seen);
         pf_debug!(
             "discovered higher bal {} new conf {:?}...",
             new_bal,

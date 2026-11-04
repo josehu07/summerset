@@ -174,7 +174,7 @@ fn client_main() -> Result<(), SummersetError> {
                             endpoint,
                             Duration::from_millis(args.timeout_ms),
                             params_str,
-                            protocol.skips_pause_tests(),
+                            protocol,
                         )?;
                         tester.run().await?;
                     }

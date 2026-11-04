@@ -256,9 +256,14 @@ impl CRaftReplica {
         }
         self.heard_heartbeat(peer, term).await?;
 
+        // ignore stale replies (e.g., reordered or duplicated ones), which a
+        // later success has moved past
+        if self.next_slot[&peer] > end_slot + 1 {
+            return Ok(());
+        }
+
         if conflict.is_none() {
             // success: update next_slot and match_slot for follower
-            debug_assert!(self.next_slot[&peer] <= end_slot + 1);
             *self.next_slot.get_mut(&peer).unwrap() = end_slot + 1;
             if self.try_next_slot[&peer] < end_slot + 1 {
                 *self.try_next_slot.get_mut(&peer).unwrap() = end_slot + 1;

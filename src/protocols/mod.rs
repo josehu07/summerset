@@ -106,7 +106,7 @@ impl SmrProtocol {
     /// replication, `SimplePush` waits for all peers, and `ChainRep` has a
     /// static chain (no reconfiguration master).
     #[must_use]
-    pub fn skips_pause_tests(&self) -> bool {
+    pub fn skips_faulty_tests(&self) -> bool {
         matches!(self, Self::RepNothing | Self::SimplePush | Self::ChainRep)
     }
 

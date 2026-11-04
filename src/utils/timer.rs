@@ -11,7 +11,7 @@ use futures::future::FutureExt;
 use tokio::sync::{Notify, watch};
 use tokio::time::{self, Duration, Instant};
 
-use crate::utils::SummersetError;
+use crate::utils::{SummersetError, faults};
 
 /// Timer utility for signalling after a given timeout.
 ///
@@ -78,6 +78,7 @@ impl Timer {
             )));
         }
 
+        let dur = faults::clock_drifted(dur);
         self.deadline_tx.send(Some(Instant::now() + dur))?;
 
         self.exploded.store(false, Ordering::Release);
@@ -95,6 +96,7 @@ impl Timer {
             )));
         }
 
+        let dur = faults::clock_drifted(dur);
         self.deadline_tx.send_modify(|ddl| {
             if let Some(ddl) = ddl.as_mut() {
                 if *ddl < Instant::now() {
@@ -283,7 +285,7 @@ mod tests {
         let timer = Arc::new(Timer::default());
         let timer_ref = timer.clone();
         let start = Instant::now();
-        tokio::spawn(async move {
+        let setter_side = tokio::spawn(async move {
             // setter-side
             timer_ref.kickoff(Duration::from_millis(400))?;
             time::sleep(Duration::from_millis(100)).await;
@@ -298,6 +300,7 @@ mod tests {
                 assert!(finish.duration_since(start) < Duration::from_millis(800));
             }
         }
+        setter_side.await??;
         Ok(())
     }
 

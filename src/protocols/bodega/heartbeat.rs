@@ -180,6 +180,7 @@ impl BodegaReplica {
     /// ballot and config.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
+        self.retrigger_accepts()?;
 
         // check and send lease refreshers to all peers
         let to_refresh = self.lease_manager.attempt_refresh(None)?;
@@ -263,8 +264,13 @@ impl BodegaReplica {
         }
 
         // if seeing a higher ballot, then the heartbeat must be carrying a new
-        // config; do the config update procedure
-        if ballot > self.bal_max_seen {
+        // config; do the config update procedure. So does one from the proposer
+        // of my current ballot if I lack its config, having learned the ballot
+        // from other messages that outran the heartbeat announcing it
+        let from_proposer = (ballot & 0xff) == u64::from(peer) + 1;
+        if ballot > self.bal_max_seen
+            || (from_proposer && conf.as_ref().is_some_and(|c| *c != self.bodega_conf))
+        {
             debug_assert!(conf.is_some());
             if let Some(new_conf) = conf {
                 self.heard_new_conf(ballot, new_conf).await?;

@@ -11,7 +11,7 @@ use crate::client::ClientId;
 use crate::manager::{ClientReactor, CtrlMsg, CtrlReply, CtrlRequest, ServerReigner};
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
-use crate::utils::{ConfNum, ME, RespondersConf, SummersetError};
+use crate::utils::{ConfNum, Faults, ME, RespondersConf, SummersetError};
 
 /// Information about an active server.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
@@ -359,13 +359,13 @@ impl ClusterManager {
         )
     }
 
-    /// Handler of client `ResetServers` request.
-    async fn handle_client_reset_servers(
+    /// Resets the specified server(s) (all active if empty), returning once
+    /// they have all re-joined.
+    async fn reset_servers(
         &mut self,
-        client: ClientId,
         servers: HashSet<ReplicaId>,
         durable: bool,
-    ) -> Result<(), SummersetError> {
+    ) -> Result<HashSet<ReplicaId>, SummersetError> {
         let num_replicas = self.servers_info.len();
         let mut servers: Vec<ReplicaId> = if servers.is_empty() {
             // all active servers
@@ -412,9 +412,85 @@ impl ClusterManager {
             }
         }
 
+        Ok(reset_done)
+    }
+
+    /// Handler of client `ResetServers` request.
+    async fn handle_client_reset_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+        durable: bool,
+    ) -> Result<(), SummersetError> {
+        let servers = self.reset_servers(servers, durable).await?;
+        self.client_reactor
+            .send_reply(CtrlReply::ResetServers { servers }, client)
+    }
+
+    /// Handler of client `CrashServers` request.
+    async fn handle_client_crash_servers(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+        power_loss: bool,
+    ) -> Result<(), SummersetError> {
+        let servers: HashSet<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.servers_info.keys().copied().collect()
+        } else {
+            servers
+        };
+
+        // a crash takes effect at the server's next reset, which keeps its files
+        for &s in &servers {
+            self.server_reigner
+                .send_ctrl(CtrlMsg::Crash { power_loss }, s)?;
+        }
+        let servers = self.reset_servers(servers, true).await?;
+        self.client_reactor
+            .send_reply(CtrlReply::CrashServers { servers }, client)
+    }
+
+    /// Handler of client `InjectFaults` request.
+    async fn handle_client_inject_faults(
+        &mut self,
+        client: ClientId,
+        servers: HashSet<ReplicaId>,
+        faults: Faults,
+    ) -> Result<(), SummersetError> {
+        let mut servers: Vec<ReplicaId> = if servers.is_empty() {
+            // all active servers
+            self.servers_info.keys().copied().collect()
+        } else {
+            servers.into_iter().collect()
+        };
+
+        // inject into specified server(s)
+        let mut inject_done = HashSet::new();
+        while let Some(s) = servers.pop() {
+            self.server_reigner.send_ctrl(
+                CtrlMsg::InjectFaults {
+                    faults: faults.clone(),
+                },
+                s,
+            )?;
+
+            // wait for dummy reply
+            loop {
+                let (server, reply) = self.server_reigner.recv_ctrl().await?;
+                if server != s || reply != CtrlMsg::InjectFaultsReply {
+                    self.handle_ctrl_msg(server, reply).await?;
+                } else {
+                    break;
+                }
+            }
+
+            inject_done.insert(s);
+        }
+
         self.client_reactor.send_reply(
-            CtrlReply::ResetServers {
-                servers: reset_done,
+            CtrlReply::InjectFaults {
+                servers: inject_done,
             },
             client,
         )
@@ -588,6 +664,19 @@ impl ClusterManager {
 
             CtrlRequest::TakeSnapshot { servers } => {
                 self.handle_client_take_snapshot(client, servers).await?;
+            }
+
+            CtrlRequest::InjectFaults { servers, faults } => {
+                self.handle_client_inject_faults(client, servers, faults)
+                    .await?;
+            }
+
+            CtrlRequest::CrashServers {
+                servers,
+                power_loss,
+            } => {
+                self.handle_client_crash_servers(client, servers, power_loss)
+                    .await?;
             }
 
             _ => {} // ignore all other types

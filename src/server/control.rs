@@ -11,7 +11,9 @@ use tokio::task::JoinHandle;
 
 use crate::manager::CtrlMsg;
 use crate::server::ReplicaId;
-use crate::utils::{ME, SummersetError, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry};
+use crate::utils::{
+    ME, SummersetError, faults, safe_tcp_read, safe_tcp_write, tcp_connect_with_retry,
+};
 
 /// The manager control message handler module.
 pub(crate) struct ControlHub {
@@ -63,12 +65,19 @@ impl ControlHub {
         })
     }
 
-    /// Waits for the next control event message from cluster manager.
+    /// Waits for the next control event message from cluster manager. Fault
+    /// injection messages are applied right here instead.
     pub(crate) async fn recv_ctrl(&mut self) -> Result<CtrlMsg, SummersetError> {
-        if let Some(msg) = self.rx_recv.recv().await {
-            Ok(msg)
-        } else {
-            logged_err!("recv channel has been closed")
+        loop {
+            match self.rx_recv.recv().await {
+                Some(CtrlMsg::InjectFaults { faults }) => {
+                    faults::inject_faults(faults);
+                    self.send_ctrl(CtrlMsg::InjectFaultsReply)?;
+                }
+                Some(CtrlMsg::Crash { power_loss }) => faults::crash_server(power_loss),
+                Some(msg) => return Ok(msg),
+                None => return logged_err!("recv channel has been closed"),
+            }
         }
     }
 

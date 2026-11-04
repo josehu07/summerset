@@ -1033,7 +1033,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -1111,6 +1111,7 @@ mod tests {
         assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 
@@ -1122,7 +1123,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -1249,6 +1250,7 @@ mod tests {
         assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 
@@ -1260,7 +1262,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -1476,6 +1478,7 @@ mod tests {
         assert_eq!(n0.transport.try_recv_msg(), Ok(None));
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 
@@ -1487,7 +1490,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -1676,6 +1679,7 @@ mod tests {
         );
         assert_eq!(n0.leaseman.grant_set(), Bitmap::new(2, false));
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 
@@ -1687,7 +1691,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -1863,6 +1867,7 @@ mod tests {
             Bitmap::new(2, false)
         );
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 
@@ -1874,7 +1879,7 @@ mod tests {
             <[TestNode; 2]>::try_from(nodes).unwrap_or_else(|_| panic!("nodes vec unpack failed"));
         let barrier0 = Arc::new(Barrier::new(2));
         let barrier1 = barrier0.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             barrier1.wait().await;
             // wait for granting from 0
@@ -2094,6 +2099,7 @@ mod tests {
         n0.transport.send_msg(1, (8, LeaseMsg::Promise))?;
         assert_eq!(n0.leaseman.grant_set(), peers);
         barrier0.wait().await;
+        replica1.await??;
         Ok(())
     }
 

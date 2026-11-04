@@ -26,7 +26,7 @@ use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
-    Bitmap, Codec, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+    Bitmap, Codec, SummersetError, faults, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
     tcp_connect_with_retry,
 };
 
@@ -185,6 +185,30 @@ where
         Ok(peers)
     }
 
+    /// Sends a message into a peer's send channel, subject to injected faults
+    /// that may drop, duplicate, or delay it.
+    fn send_faulty(
+        tx_send: &mpsc::UnboundedSender<PeerMessage<Msg>>,
+        msg: PeerMessage<Msg>,
+        peer: ReplicaId,
+    ) -> Result<(), SummersetError> {
+        let Some(delays) = faults::msg_copies_delays(peer) else {
+            return tx_send.send(msg).map_err(SummersetError::msg);
+        };
+        for delay in delays {
+            let (tx_send, msg) = (tx_send.clone(), msg.clone());
+            if delay.is_zero() {
+                tx_send.send(msg).map_err(SummersetError::msg)?;
+            } else {
+                tokio::spawn(async move {
+                    time::sleep(delay).await;
+                    let _ = tx_send.send(msg);
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Sends a message to a specified peer by sending to the send channel.
     fn send_msg_inner(
         &mut self,
@@ -192,7 +216,7 @@ where
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
         if let Some(tx_send) = self.tx_sends.get(&peer) {
-            tx_send.value().send(msg).map_err(SummersetError::msg)?;
+            Self::send_faulty(tx_send.value(), msg, peer)?;
         } else {
             // NOTE: commented out to avoid spurious error messages
             // pf_error!(
@@ -227,12 +251,7 @@ where
             // not skipped; a closed channel means this peer's connection is
             // being torn down, which must not fail the rest of the broadcast
             attempted += 1;
-            if self
-                .tx_sends
-                .get(&peer)
-                .unwrap()
-                .value()
-                .send(msg.clone())
+            if Self::send_faulty(self.tx_sends.get(&peer).unwrap().value(), msg.clone(), peer)
                 .is_err()
             {
                 pf_debug!("peer {} connection closing, msg dropped", peer);
@@ -335,6 +354,10 @@ where
     /// Broadcasts leave notifications to all peers and waits for replies.
     #[allow(unused_assignments, clippy::unused_async)]
     pub(crate) async fn leave(&mut self) -> Result<(), SummersetError> {
+        if faults::take_crash_leave() {
+            return Ok(()); // a crashing server leaves without notice
+        }
+
         #[allow(unused_variables)]
         let mut num_peers = 0;
         for entry in self.tx_sends.iter() {
@@ -816,6 +839,7 @@ mod tests {
     use tokio::sync::Barrier;
 
     use super::*;
+    use crate::utils::test_addr_at_offset;
 
     #[derive(
         Debug, Clone, PartialEq, Eq, Serialize, SchemaWrite, Deserialize, SchemaRead, GetSize,
@@ -827,18 +851,18 @@ mod tests {
         let barrier = Arc::new(Barrier::new(3));
         let barrier1 = barrier.clone();
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1
             let (tx_lease, mut rx_lease) = mpsc::unbounded_channel();
             let mut hub: TransportHub<TestMsg> = TransportHub::new_and_setup(
                 1,
                 3,
-                "127.0.0.1:30011".parse()?,
+                test_addr_at_offset(11),
                 HashMap::from([(0, tx_lease)]),
             )
             .await?;
             barrier1.wait().await;
-            hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
+            hub.connect_to_peer(2, test_addr_at_offset(12)).await?;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
             assert_eq!(id, 0);
@@ -867,11 +891,10 @@ mod tests {
             assert_eq!(msg, TestMsg("terminate".into()));
             Ok::<(), SummersetError>(())
         });
-        tokio::spawn(async move {
+        let replica2 = tokio::spawn(async move {
             // replica 2
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30012".parse()?, HashMap::new())
-                    .await?;
+                TransportHub::new_and_setup(2, 3, test_addr_at_offset(12), HashMap::new()).await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -887,10 +910,10 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30010".parse()?, HashMap::new()).await?;
+            TransportHub::new_and_setup(0, 3, test_addr_at_offset(10), HashMap::new()).await?;
         barrier.wait().await;
-        hub.connect_to_peer(1, "127.0.0.1:30011".parse()?).await?;
-        hub.connect_to_peer(2, "127.0.0.1:30012".parse()?).await?;
+        hub.connect_to_peer(1, test_addr_at_offset(11)).await?;
+        hub.connect_to_peer(2, test_addr_at_offset(12)).await?;
         // send a message to 1 and 2
         hub.bcast_msg(TestMsg("hello".into()), None)?;
         // recv a message from both 1 and 2
@@ -912,6 +935,8 @@ mod tests {
         hub.bcast_lease_msg(0, 7, LeaseMsg::Guard { accept_bar: None }, Some(map))?;
         // send termination message to 1 and 2
         hub.bcast_msg(TestMsg("terminate".into()), None)?;
+        replica1.await??;
+        replica2.await??;
         Ok(())
     }
 
@@ -919,11 +944,10 @@ mod tests {
     async fn api_server_leave() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let replica1 = tokio::spawn(async move {
             // replica 1/2
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(1, 3, "127.0.0.1:30111".parse()?, HashMap::new())
-                    .await?;
+                TransportHub::new_and_setup(1, 3, test_addr_at_offset(111), HashMap::new()).await?;
             barrier2.wait().await;
             // recv a message from 0
             let (id, msg) = hub.recv_msg().await?;
@@ -934,9 +958,8 @@ mod tests {
             hub.leave().await?;
             time::sleep(Duration::from_millis(100)).await;
             let mut hub: TransportHub<TestMsg> =
-                TransportHub::new_and_setup(2, 3, "127.0.0.1:30112".parse()?, HashMap::new())
-                    .await?;
-            hub.connect_to_peer(0, "127.0.0.1:30110".parse()?).await?;
+                TransportHub::new_and_setup(2, 3, test_addr_at_offset(112), HashMap::new()).await?;
+            hub.connect_to_peer(0, test_addr_at_offset(110)).await?;
             // send a message to 0
             hub.send_msg(TestMsg("hello".into()), 0)?;
             // stay connected until 0 has checked
@@ -945,9 +968,9 @@ mod tests {
         });
         // replica 0
         let mut hub: TransportHub<TestMsg> =
-            TransportHub::new_and_setup(0, 3, "127.0.0.1:30110".parse()?, HashMap::new()).await?;
+            TransportHub::new_and_setup(0, 3, test_addr_at_offset(110), HashMap::new()).await?;
         barrier.wait().await;
-        hub.connect_to_peer(1, "127.0.0.1:30111".parse()?).await?;
+        hub.connect_to_peer(1, test_addr_at_offset(111)).await?;
         assert!(hub.current_peers()?.get(1)?);
         assert!(!hub.current_peers()?.get(2)?);
         // send a message to 1
@@ -959,6 +982,7 @@ mod tests {
         assert!(!hub.current_peers()?.get(1)?);
         assert!(hub.current_peers()?.get(2)?);
         barrier.wait().await;
+        replica1.await??;
         Ok(())
     }
 }

@@ -242,6 +242,7 @@ impl MultiPaxosReplica {
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
+        self.retrigger_accepts()?;
 
         // check and send lease promise refresh to leader
         if self.config.enable_leader_leases

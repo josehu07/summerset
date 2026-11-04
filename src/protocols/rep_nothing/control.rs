@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::manager::CtrlMsg;
-use crate::server::{LogAction, LogResult};
 use crate::utils::SummersetError;
 
 // RepNothingReplica control messages handling
@@ -15,21 +14,8 @@ impl RepNothingReplica {
             .await?;
 
         // if `durable` is false, truncate backer file
-        if !durable
-            && self
-                .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Truncate { offset: 0 },
-                )
-                .await?
-                .1
-                != (LogResult::Truncate {
-                    offset_ok: true,
-                    now_size: 0,
-                })
-        {
-            return logged_err!("failed to truncate log to 0");
+        if !durable {
+            self.storage_hub.truncate_all().await?;
         }
 
         Ok(())
@@ -72,6 +58,13 @@ impl RepNothingReplica {
 
             CtrlMsg::Resume => {
                 self.handle_ctrl_resume(paused)?;
+                Ok(None)
+            }
+
+            CtrlMsg::TakeSnapshot => {
+                // no log compaction here; reply so the manager does not wait
+                self.control_hub
+                    .send_ctrl(CtrlMsg::SnapshotUpTo { new_start: 0 })?;
                 Ok(None)
             }
 

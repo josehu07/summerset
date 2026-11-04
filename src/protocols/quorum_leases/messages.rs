@@ -350,12 +350,14 @@ impl QuorumLeasesReplica {
     }
 
     /// Re-sends Accepts that `peer` seems to have missed (e.g., when it was
-    /// briefly down): as its replies come in order, those are the Accepting
-    /// slots right before the acked `slot` that it has not acked yet.
+    /// briefly down or they got lost): the Accepting slots below `slot` that
+    /// it has not acked yet. If `adjacent`, as upon its reply to `slot`, only
+    /// those right before `slot` count, since its replies come in order.
     fn resend_missed_accepts(
         &mut self,
         peer: ReplicaId,
         slot: usize,
+        adjacent: bool,
     ) -> Result<(), SummersetError> {
         for s in (self.commit_bar..slot).rev() {
             let inst = &self.insts[s - self.start_slot];
@@ -366,7 +368,10 @@ impl QuorumLeasesReplica {
                 continue;
             };
             if leader_bk.accept_acks.get(peer)? {
-                break;
+                if adjacent {
+                    break;
+                }
+                continue;
             }
             if inst.bal == self.bal_prepared {
                 self.transport_hub.send_msg(
@@ -380,6 +385,28 @@ impl QuorumLeasesReplica {
                 pf_debug!("re-sent Accept -> {} for slot {} bal {}", peer, s, inst.bal);
             }
         }
+
+        Ok(())
+    }
+
+    /// Re-sends Accepts that peers have left unacked for a whole hearing
+    /// timeout, as no later replies may come to re-trigger them (e.g., with a
+    /// closed-loop client).
+    pub(super) fn retrigger_accepts(&mut self) -> Result<(), SummersetError> {
+        let (since, bar) = self.accept_retry;
+        if since.elapsed() < Duration::from_millis(self.config.hb_hear_timeout_min) {
+            return Ok(());
+        }
+
+        let end = self.start_slot + self.insts.len();
+        self.accept_retry = (Instant::now(), end);
+        if self.is_leader() {
+            let me = self.id;
+            for peer in (0..self.population).filter(|&p| p != me) {
+                self.resend_missed_accepts(peer, bar.min(end), false)?;
+            }
+        }
+
         Ok(())
     }
 
@@ -406,7 +433,7 @@ impl QuorumLeasesReplica {
         if ballot == self.bal_prepared {
             debug_assert!(slot < self.start_slot + self.insts.len());
             if self.is_leader() && peer != self.id {
-                self.resend_missed_accepts(peer, slot)?;
+                self.resend_missed_accepts(peer, slot, true)?;
             }
             let is_leader = self.is_leader();
             let inst = &mut self.insts[slot - self.start_slot];

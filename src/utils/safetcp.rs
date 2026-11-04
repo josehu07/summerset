@@ -224,6 +224,39 @@ pub(crate) async fn tcp_connect_with_retry(
     }
 }
 
+/// Returns the local address at `offset` within a window of ports reserved for
+/// this test process: below the OS ephemeral range, at a random start, and
+/// probed to be unused, so that concurrent test runs and local clusters do not
+/// collide.
+#[cfg(test)]
+pub(crate) fn test_addr_at_offset(offset: u16) -> SocketAddr {
+    use std::sync::LazyLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const WINDOW: u16 = 256;
+    const NUM_WINDOWS: u16 = 12000 / WINDOW; // from port 20000 up
+    static BASE: LazyLock<u16> = LazyLock::new(|| {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let start = now.subsec_nanos() ^ std::process::id();
+        (0..u32::from(NUM_WINDOWS))
+            .map(|i| {
+                let idx = start.wrapping_add(i) % u32::from(NUM_WINDOWS);
+                20000 + WINDOW * u16::try_from(idx).unwrap()
+            })
+            .find(|&base| {
+                // without SO_REUSEADDR, binding fails if a port is in any use
+                (base..base + WINDOW).all(|port| {
+                    TcpSocket::new_v4()
+                        .and_then(|socket| socket.bind(([0, 0, 0, 0], port).into()))
+                        .is_ok()
+                })
+            })
+            .expect("no free window of test ports")
+    });
+    assert!(offset < WINDOW, "test port offset {offset} out of window");
+    ([127, 0, 0, 1], *BASE + offset).into()
+}
+
 fn get_ss_cmd_output() -> Result<String, SummersetError> {
     Ok(String::from_utf8(
         Command::new("ss").arg("-tnap").output()?.stdout,

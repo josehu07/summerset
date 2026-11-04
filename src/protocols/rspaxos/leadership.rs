@@ -186,6 +186,7 @@ impl RSPaxosReplica {
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
+        self.retrigger_accepts()?;
 
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {

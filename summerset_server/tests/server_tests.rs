@@ -7,10 +7,10 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use summerset::{
-    ApiReply, ApiRequest, Command, CommandResult, CtrlReply, CtrlRequest, GenericEndpoint,
+    ApiReply, ApiRequest, Command, CommandResult, CtrlReply, CtrlRequest, Faults, GenericEndpoint,
     SmrProtocol,
 };
 use tempfile::TempDir;
@@ -107,9 +107,10 @@ async fn request(ep: &mut dyn GenericEndpoint, id: u64, cmd: Command) -> Command
     }
 }
 
-/// Starts an in-process manager and the server executable, returning the
-/// server and a client endpoint connected to it once it has joined.
-async fn start(dir: &Path) -> (Child, Box<dyn GenericEndpoint>) {
+/// Starts an in-process manager and the server executable with given extra
+/// config (`+`-prefixed), returning the server and a client endpoint connected
+/// to it once it has joined.
+async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
     let (srv_addr, cli_addr) = (free_addr(), free_addr());
     let mut manager =
         within(SmrProtocol::RepNothing.new_cluster_manager_setup(srv_addr, cli_addr, 1))
@@ -122,7 +123,7 @@ async fn start(dir: &Path) -> (Child, Box<dyn GenericEndpoint>) {
     });
 
     let server = spawn(&mut exe(&format!(
-        "-p RepNothing -b 127.0.0.1 -a {} -i {} -m {srv_addr} --threads 2 --config backer_path='{}'",
+        "-p RepNothing -b 127.0.0.1 -a {} -i {} -m {srv_addr} --threads 2 --config backer_path='{}'{config}",
         free_addr().port(),
         free_addr().port(),
         dir.join("wal").display()
@@ -160,7 +161,7 @@ async fn rejects_bad_args() {
 #[tokio::test]
 async fn reset_restarts_in_place() {
     let dir = TempDir::new().unwrap();
-    let (mut server, mut ep) = start(dir.path()).await;
+    let (mut server, mut ep) = start(dir.path(), "").await;
     let put = Command::Put {
         key: "k".into(),
         value: "v".into(),
@@ -189,8 +190,63 @@ async fn reset_restarts_in_place() {
 #[tokio::test]
 async fn sigterm_exits_cleanly() {
     let dir = TempDir::new().unwrap();
-    let (mut server, _ep) = start(dir.path()).await;
+    let (mut server, _ep) = start(dir.path(), "").await;
     let pid = server.id().unwrap().to_string();
     let mut kill = spawn(process::Command::new("kill").args(["-TERM", &pid]));
     assert!(exits_ok(&mut kill).await && exits_ok(&mut server).await);
+}
+
+#[tokio::test]
+async fn crashes_keep_expected_writes() {
+    // a process crash keeps all writes; a power loss keeps only synced ones
+    for (power_loss, sync, kept) in [
+        (false, false, Some("v")),
+        (true, false, None),
+        (true, true, Some("v")),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let (_server, mut ep) = start(dir.path(), &format!("+logger_sync={sync}")).await;
+        let put = Command::Put {
+            key: "k".into(),
+            value: "v".into(),
+        };
+        request(ep.as_mut(), 0, put).await;
+        within(ep.leave(false)).await.unwrap();
+        let crash = CtrlRequest::CrashServers {
+            servers: HashSet::from([0]),
+            power_loss,
+        };
+        ctrl(ep.as_mut(), crash).await;
+        within(ep.connect()).await.unwrap();
+        let get = Command::Get { key: "k".into() };
+        assert_eq!(
+            request(ep.as_mut(), 1, get).await,
+            CommandResult::Get {
+                value: kept.map(Into::into)
+            },
+            "power_loss={power_loss} logger_sync={sync}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn injected_disk_delay_applies() {
+    let dir = TempDir::new().unwrap();
+    let (_server, mut ep) = start(dir.path(), "").await;
+    let faults = Faults {
+        disk_delay_ms: 200,
+        ..Faults::default()
+    };
+    let inject = CtrlRequest::InjectFaults {
+        servers: HashSet::new(),
+        faults,
+    };
+    ctrl(ep.as_mut(), inject).await;
+    let begin = Instant::now();
+    let put = Command::Put {
+        key: "k".into(),
+        value: "v".into(),
+    };
+    request(ep.as_mut(), 0, put).await;
+    assert!(begin.elapsed() >= Duration::from_millis(200));
 }

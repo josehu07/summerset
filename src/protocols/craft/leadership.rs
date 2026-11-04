@@ -137,15 +137,15 @@ impl CRaftReplica {
     }
 
     /// If current leader is not me but times out, becomes a candidate and
-    /// starts the election procedure.
+    /// starts the election procedure. A candidate whose election times out
+    /// (e.g., on a split vote) starts another one.
     pub(super) async fn become_a_candidate(
         &mut self,
         timeout_source: ReplicaId,
     ) -> Result<(), SummersetError> {
-        if self.role != Role::Follower
-            || self.leader.as_ref().is_some_and(|&l| l != timeout_source)
-            || self.config.disallow_step_up
-        {
+        let leader_timeout =
+            self.role == Role::Follower && self.leader.is_none_or(|l| l == timeout_source);
+        if !(leader_timeout || self.role == Role::Candidate) || self.config.disallow_step_up {
             return Ok(());
         }
 
@@ -157,8 +157,11 @@ impl CRaftReplica {
         self.votes_granted = HashSet::from([self.id]);
         pf_info!("starting election with term {}...", self.curr_term);
 
-        // reset election timeout timer
-        self.heard_heartbeat(self.id, self.curr_term).await?;
+        // reset election timeout timers, any of which firing before I win means
+        // the election timed out
+        if !self.config.disable_hb_timer {
+            self.heartbeater.kickoff_hear_timer(None)?;
+        }
 
         // send RequestVote messages to all other peers
         let last_slot = self.start_slot + self.log.len() - 1;

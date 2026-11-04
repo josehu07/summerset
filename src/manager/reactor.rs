@@ -11,14 +11,15 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
 use crate::manager::ServerInfo;
 use crate::server::ReplicaId;
 use crate::utils::{
-    ConfNum, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+    ConfNum, Faults, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
+    tcp_bind_with_retry,
 };
 
 /// Control event request from client.
@@ -54,6 +55,26 @@ pub enum CtrlRequest {
     TakeSnapshot {
         /// IDs of servers to take snapshot. If empty, tells all servers.
         servers: HashSet<ReplicaId>,
+    },
+
+    /// Inject faults into the specified server(s), replacing any injected
+    /// before.
+    InjectFaults {
+        /// IDs of servers to inject into. If empty, injects into all active
+        /// servers.
+        servers: HashSet<ReplicaId>,
+        /// Faults to inject.
+        faults: Faults,
+    },
+
+    /// Crash and restart the specified server(s), without the graceful leave
+    /// of a reset.
+    CrashServers {
+        /// IDs of servers to crash. If empty, crashes all active servers.
+        servers: HashSet<ReplicaId>,
+        /// If true, also lose storage writes not yet synced, as on a power loss
+        /// (a process crash keeps them in the OS page cache).
+        power_loss: bool,
     },
 
     /// Client leave notification.
@@ -94,6 +115,12 @@ pub enum CtrlReply {
         /// Map from replica ID -> new log start index.
         snapshot_up_to: HashMap<ReplicaId, usize>,
     },
+
+    /// Reply to fault injection request.
+    InjectFaults { servers: HashSet<ReplicaId> },
+
+    /// Reply to crash servers request.
+    CrashServers { servers: HashSet<ReplicaId> },
 
     /// Reply to client leave notification.
     Leave,
@@ -190,8 +217,8 @@ struct ClientReactorAcceptorTask {
 
     next_client_id: ClientId,
 
-    tx_exit: mpsc::UnboundedSender<ClientId>,
-    rx_exit: mpsc::UnboundedReceiver<ClientId>,
+    tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
+    rx_exit: mpsc::UnboundedReceiver<(ClientId, task::Id)>,
 }
 
 impl ClientReactorAcceptorTask {
@@ -234,14 +261,10 @@ impl ClientReactorAcceptorTask {
             return logged_err!("error assigning new client ID: {}", e);
         }
 
-        if let Some(sender) = self.tx_replies.get(&id) {
-            if sender.is_closed() {
-                // if this client ID has left before, garbage collect it now
-                self.client_responder_handles.remove(&id);
-                self.tx_replies.remove(&id);
-            } else {
-                return logged_err!("duplicate client ID listened: {}", id);
-            }
+        // a client connecting under the same ID supersedes its previous
+        // connection, whose responder may still be winding down
+        if let Some((_, responder)) = self.client_responder_handles.remove(&id) {
+            responder.abort();
         }
         pf_debug!("accepted new client {}", id);
 
@@ -262,16 +285,16 @@ impl ClientReactorAcceptorTask {
         Ok(())
     }
 
-    /// Removes handles of a left client connection.
-    fn remove_left_client(&mut self, id: ClientId) -> Result<(), SummersetError> {
-        if !self.tx_replies.contains_key(&id) {
-            return logged_err!("client {} not found among active ones", id);
+    /// Removes handles of a left client connection, unless a newer connection
+    /// of the same client has superseded it.
+    fn remove_left_client(&mut self, id: ClientId, responder: task::Id) {
+        if self
+            .client_responder_handles
+            .remove_if(&id, |_, handle| handle.id() == responder)
+            .is_some()
+        {
+            self.tx_replies.remove(&id);
         }
-        self.tx_replies.remove(&id);
-
-        self.client_responder_handles.remove(&id);
-
-        Ok(())
     }
 
     /// Starts the client acceptor task loop.
@@ -302,13 +325,9 @@ impl ClientReactorAcceptorTask {
                 },
 
                 // a client responder task exits
-                id = self.rx_exit.recv() => {
-                    let id = id.unwrap();
-                    if let Err(e) = self.remove_left_client(
-                        id,
-                    ) {
-                        pf_error!("error removing left client {}: {}", id, e);
-                    }
+                exited = self.rx_exit.recv() => {
+                    let (id, responder) = exited.unwrap();
+                    self.remove_left_client(id, responder);
                 },
             }
         }
@@ -333,7 +352,7 @@ struct ClientReactorResponderTask {
     reply_buf_cursor: usize,
     retrying: bool,
 
-    tx_exit: mpsc::UnboundedSender<ClientId>,
+    tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
 }
 
 impl ClientReactorResponderTask {
@@ -344,7 +363,7 @@ impl ClientReactorResponderTask {
         conn: TcpStream,
         tx_req: mpsc::UnboundedSender<(ClientId, CtrlRequest)>,
         rx_reply: mpsc::UnboundedReceiver<CtrlReply>,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
+        tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
 
@@ -490,7 +509,7 @@ impl ClientReactorResponderTask {
             }
         }
 
-        if let Err(e) = self.tx_exit.send(self.id) {
+        if let Err(e) = self.tx_exit.send((self.id, task::id())) {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
         pf_debug!(
@@ -511,14 +530,15 @@ mod tests {
     use super::*;
     use crate::client::ClientCtrlStub;
     use crate::manager::ServerInfo;
+    use crate::utils::test_addr_at_offset;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let manager_side = tokio::spawn(async move {
             // manager-side
-            let mut reactor = ClientReactor::new_and_setup("127.0.0.1:30009".parse()?).await?;
+            let mut reactor = ClientReactor::new_and_setup(test_addr_at_offset(9)).await?;
             barrier2.wait().await;
             // recv request from client
             let (client, req) = reactor.recv_req().await?;
@@ -532,8 +552,8 @@ mod tests {
                         (
                             0,
                             ServerInfo {
-                                api_addr: "127.0.0.1:30000".parse()?,
-                                p2p_addr: "127.0.0.1:30010".parse()?,
+                                api_addr: test_addr_at_offset(0),
+                                p2p_addr: test_addr_at_offset(10),
                                 is_leader: true,
                                 is_paused: false,
                                 start_slot: 0,
@@ -542,8 +562,8 @@ mod tests {
                         (
                             1,
                             ServerInfo {
-                                api_addr: "127.0.0.1:30001".parse()?,
-                                p2p_addr: "127.0.0.1:30011".parse()?,
+                                api_addr: test_addr_at_offset(1),
+                                p2p_addr: test_addr_at_offset(11),
                                 is_leader: false,
                                 is_paused: false,
                                 start_slot: 0,
@@ -557,7 +577,7 @@ mod tests {
         });
         // client-side
         barrier.wait().await;
-        let mut ctrl_stub = ClientCtrlStub::new_by_connect("127.0.0.1:30009".parse()?).await?;
+        let mut ctrl_stub = ClientCtrlStub::new_by_connect(test_addr_at_offset(9)).await?;
         // send request to manager
         ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
         // recv reply from manager
@@ -569,8 +589,8 @@ mod tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30000".parse()?,
-                            p2p_addr: "127.0.0.1:30010".parse()?,
+                            api_addr: test_addr_at_offset(0),
+                            p2p_addr: test_addr_at_offset(10),
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -579,8 +599,8 @@ mod tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30001".parse()?,
-                            p2p_addr: "127.0.0.1:30011".parse()?,
+                            api_addr: test_addr_at_offset(1),
+                            p2p_addr: test_addr_at_offset(11),
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,
@@ -589,6 +609,7 @@ mod tests {
                 ]),
             }
         );
+        manager_side.await??;
         Ok(())
     }
 
@@ -597,12 +618,12 @@ mod tests {
     async fn api_client_leave() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let client_side = tokio::spawn(async move {
             // client-side
             {
                 barrier2.wait().await;
                 let mut ctrl_stub =
-                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?).await?;
+                    ClientCtrlStub::new_by_connect(test_addr_at_offset(109)).await?;
                 // send request to manager
                 ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
                 // recv reply from manager
@@ -614,8 +635,8 @@ mod tests {
                             (
                                 0,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:30100".parse()?,
-                                    p2p_addr: "127.0.0.1:30110".parse()?,
+                                    api_addr: test_addr_at_offset(100),
+                                    p2p_addr: test_addr_at_offset(110),
                                     is_leader: true,
                                     is_paused: false,
                                     start_slot: 0,
@@ -624,8 +645,8 @@ mod tests {
                             (
                                 1,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:30101".parse()?,
-                                    p2p_addr: "127.0.0.1:30111".parse()?,
+                                    api_addr: test_addr_at_offset(101),
+                                    p2p_addr: test_addr_at_offset(111),
                                     is_leader: false,
                                     is_paused: false,
                                     start_slot: 0,
@@ -642,7 +663,7 @@ mod tests {
             {
                 // come back as new client
                 let mut ctrl_stub =
-                    ClientCtrlStub::new_by_connect("127.0.0.1:30109".parse()?).await?;
+                    ClientCtrlStub::new_by_connect(test_addr_at_offset(109)).await?;
                 // send request to manager
                 ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
                 // recv reply from manager
@@ -654,8 +675,8 @@ mod tests {
                             (
                                 0,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:30100".parse()?,
-                                    p2p_addr: "127.0.0.1:30110".parse()?,
+                                    api_addr: test_addr_at_offset(100),
+                                    p2p_addr: test_addr_at_offset(110),
                                     is_leader: true,
                                     is_paused: false,
                                     start_slot: 0,
@@ -664,8 +685,8 @@ mod tests {
                             (
                                 1,
                                 ServerInfo {
-                                    api_addr: "127.0.0.1:30101".parse()?,
-                                    p2p_addr: "127.0.0.1:30111".parse()?,
+                                    api_addr: test_addr_at_offset(101),
+                                    p2p_addr: test_addr_at_offset(111),
                                     is_leader: false,
                                     is_paused: false,
                                     start_slot: 0,
@@ -678,7 +699,7 @@ mod tests {
             Ok::<(), SummersetError>(())
         });
         // manager-side
-        let mut reactor = ClientReactor::new_and_setup("127.0.0.1:30109".parse()?).await?;
+        let mut reactor = ClientReactor::new_and_setup(test_addr_at_offset(109)).await?;
         barrier.wait().await;
         // recv request from client
         let (client, req) = reactor.recv_req().await?;
@@ -692,8 +713,8 @@ mod tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30100".parse()?,
-                            p2p_addr: "127.0.0.1:30110".parse()?,
+                            api_addr: test_addr_at_offset(100),
+                            p2p_addr: test_addr_at_offset(110),
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -702,8 +723,8 @@ mod tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30101".parse()?,
-                            p2p_addr: "127.0.0.1:30111".parse()?,
+                            api_addr: test_addr_at_offset(101),
+                            p2p_addr: test_addr_at_offset(111),
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,
@@ -726,8 +747,8 @@ mod tests {
                     (
                         0,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30100".parse()?,
-                            p2p_addr: "127.0.0.1:30110".parse()?,
+                            api_addr: test_addr_at_offset(100),
+                            p2p_addr: test_addr_at_offset(110),
                             is_leader: true,
                             is_paused: false,
                             start_slot: 0,
@@ -736,8 +757,8 @@ mod tests {
                     (
                         1,
                         ServerInfo {
-                            api_addr: "127.0.0.1:30101".parse()?,
-                            p2p_addr: "127.0.0.1:30111".parse()?,
+                            api_addr: test_addr_at_offset(101),
+                            p2p_addr: test_addr_at_offset(111),
                             is_leader: false,
                             is_paused: false,
                             start_slot: 0,
@@ -747,6 +768,7 @@ mod tests {
             },
             client2,
         )?;
+        client_side.await??;
         Ok(())
     }
 }

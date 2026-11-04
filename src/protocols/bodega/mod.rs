@@ -27,7 +27,7 @@ use atomic_refcell::AtomicRefCell;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -420,6 +420,10 @@ pub(crate) struct BodegaReplica {
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
+    /// When unacked Accepts were last re-sent, and the end of the log then;
+    /// Accepts below it still unacked by the next round are re-sent.
+    accept_retry: (Instant, usize),
+
     /// Index of the first non-executed instance.
     /// It is always true that
     ///   `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
@@ -722,6 +726,7 @@ impl GenericReplica for BodegaReplica {
             peer_accept_bar: (0..population).map(|s| (s, usize::MAX)).collect(),
             peer_accept_max: usize::MAX,
             commit_bar: 0,
+            accept_retry: (Instant::now(), 0),
             exec_bar: 0,
             peer_exec_bar: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })

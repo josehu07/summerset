@@ -461,6 +461,10 @@ pub(crate) struct MultiPaxosReplica {
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
+    /// When unacked Accepts were last re-sent, and the end of the log then;
+    /// Accepts below it still unacked by the next round are re-sent.
+    accept_retry: (Instant, usize),
+
     /// Index of the first non-executed instance.
     /// It is always true that
     ///   `exec_bar` <= `commit_bar` <= `accept_bar` <= `start_slot` + `insts.len()`
@@ -784,6 +788,7 @@ impl GenericReplica for MultiPaxosReplica {
             peer_accept_bar: (0..population).map(|s| (s, usize::MAX)).collect(),
             peer_accept_max: usize::MAX,
             commit_bar: 0,
+            accept_retry: (Instant::now(), 0),
             exec_bar: 0,
             peer_exec_bar: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })

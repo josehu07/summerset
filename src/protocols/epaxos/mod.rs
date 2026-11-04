@@ -26,7 +26,7 @@ use async_trait::async_trait;
 use get_size::GetSize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
@@ -419,6 +419,11 @@ pub(crate) struct EPaxosReplica {
     /// Column index of the first non-committed instance of each row.
     commit_bars: Vec<usize>, // length always == population
 
+    /// When my unacked `PreAccept`s and Accepts were last re-sent, and the end
+    /// of my row then; those below it still unacked by the next round are
+    /// re-sent.
+    accept_retry: (Instant, usize),
+
     /// Column index of the first non-executed instance of each row.
     /// It is always true that
     ///   `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
@@ -688,6 +693,7 @@ impl GenericReplica for EPaxosReplica {
             start_col: 0,
             snapshot_interval,
             commit_bars: vec![0; population as usize],
+            accept_retry: (Instant::now(), 0),
             exec_bars: vec![0; population as usize],
             peer_exec_min: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })

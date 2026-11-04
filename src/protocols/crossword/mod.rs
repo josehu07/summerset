@@ -506,6 +506,10 @@ pub(crate) struct CrosswordReplica {
     /// Index of the first non-committed instance.
     commit_bar: usize,
 
+    /// When unacked Accepts were last re-sent, and the end of the log then;
+    /// Accepts below it still unacked by the next round are re-sent.
+    accept_retry: (Instant, usize),
+
     /// Index of the first instance starting from which gossiping might be needed.
     /// The "Gossiped" status is captured by this variable implicitly.
     gossip_bar: usize,
@@ -1028,6 +1032,7 @@ impl GenericReplica for CrosswordReplica {
             bal_prepared: 0,
             bal_max_seen: 0,
             commit_bar: 0,
+            accept_retry: (Instant::now(), 0),
             gossip_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)

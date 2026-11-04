@@ -124,8 +124,71 @@ impl EPaxosReplica {
         Ok(())
     }
 
+    /// Re-sends `PreAccept`s or Accepts of my instances that peers have left
+    /// unacked for a whole hearing timeout, as nothing else would re-trigger
+    /// them (e.g., when they got lost).
+    fn retrigger_accepts(&mut self) -> Result<(), SummersetError> {
+        let (since, bar) = self.accept_retry;
+        if since.elapsed() < Duration::from_millis(self.config.hb_hear_timeout_min) {
+            return Ok(());
+        }
+
+        let row = self.id as usize;
+        let end = self.start_col + self.insts[row].len();
+        self.accept_retry = (Instant::now(), end);
+        for col in self.commit_bars[row]..bar.min(end) {
+            let inst = &self.insts[row][col - self.start_col];
+            let Some(leader_bk) = inst.leader_bk.as_ref() else {
+                continue;
+            };
+
+            let slot = SlotIdx(self.id, col);
+            let (seq, deps, reqs) = (inst.seq, inst.deps.clone(), inst.reqs.clone());
+            let (msg, acks) = match inst.status {
+                Status::PreAccepting => (
+                    PeerMsg::PreAccept {
+                        slot,
+                        ballot: inst.bal,
+                        seq,
+                        deps,
+                        reqs,
+                    },
+                    &leader_bk.pre_accept_acks,
+                ),
+                Status::Accepting => (
+                    PeerMsg::Accept {
+                        slot,
+                        ballot: inst.bal,
+                        seq,
+                        deps,
+                        reqs,
+                    },
+                    &leader_bk.accept_acks,
+                ),
+                _ => continue,
+            };
+
+            let targets: Vec<ReplicaId> = acks
+                .iter()
+                .filter_map(|(peer, acked)| (!acked && peer != self.id).then_some(peer))
+                .collect();
+            self.transport_hub
+                .bcast_msg(msg, Some(Bitmap::from((self.population, targets))))?;
+            pf_debug!(
+                "re-sent {:?} for slot {} bal {}",
+                inst.status,
+                slot,
+                inst.bal
+            );
+        }
+
+        Ok(())
+    }
+
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        self.retrigger_accepts()?;
+
         // broadcast heartbeat to all peers
         self.transport_hub.bcast_msg(
             PeerMsg::Heartbeat {

@@ -13,7 +13,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Notify, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, MissedTickBehavior};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -354,8 +354,8 @@ struct ExternalApiAcceptorTask {
     client_listener: TcpListener,
     client_servant_handles: Arc<DashMap<ClientId, JoinHandle<()>>>,
 
-    tx_exit: mpsc::UnboundedSender<ClientId>,
-    rx_exit: mpsc::UnboundedReceiver<ClientId>,
+    tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
+    rx_exit: mpsc::UnboundedReceiver<(ClientId, task::Id)>,
 }
 
 impl ExternalApiAcceptorTask {
@@ -393,14 +393,10 @@ impl ExternalApiAcceptorTask {
             }
         };
 
-        if let Some(sender) = self.tx_replies.get(&id) {
-            if sender.is_closed() {
-                // if this client ID has left before, garbage collect it now
-                self.client_servant_handles.remove(&id);
-                self.tx_replies.remove(&id);
-            } else {
-                return logged_err!("duplicate client ID listened: {}", id);
-            }
+        // a client reconnecting under the same ID supersedes its previous
+        // connection, whose servant may still be winding down after a leave
+        if let Some((_, servant)) = self.client_servant_handles.remove(&id) {
+            servant.abort();
         }
         pf_debug!("accepted new client {}", id);
 
@@ -421,16 +417,16 @@ impl ExternalApiAcceptorTask {
         Ok(())
     }
 
-    /// Removes handles of a left client connection.
-    fn remove_left_client(&mut self, id: ClientId) -> Result<(), SummersetError> {
-        if !self.tx_replies.contains_key(&id) {
-            return logged_err!("client {} not found among active ones", id);
+    /// Removes handles of a left client connection, unless a newer connection
+    /// of the same client has superseded it.
+    fn remove_left_client(&mut self, id: ClientId, servant: task::Id) {
+        if self
+            .client_servant_handles
+            .remove_if(&id, |_, handle| handle.id() == servant)
+            .is_some()
+        {
+            self.tx_replies.remove(&id);
         }
-        self.tx_replies.remove(&id);
-
-        self.client_servant_handles.remove(&id);
-
-        Ok(())
     }
 
     /// Starts the client acceptor task loop.
@@ -458,13 +454,9 @@ impl ExternalApiAcceptorTask {
                 },
 
                 // a client servant task exits
-                id = self.rx_exit.recv() => {
-                    let id = id.unwrap();
-                    if let Err(e) = self.remove_left_client(
-                        id
-                    ) {
-                        pf_error!("error removing left client {}: {}", id, e);
-                    }
+                exited = self.rx_exit.recv() => {
+                    let (id, servant) = exited.unwrap();
+                    self.remove_left_client(id, servant);
                 }
             }
         }
@@ -489,7 +481,7 @@ struct ExternalApiServantTask {
     reply_buf_cursor: usize,
     retrying: bool,
 
-    tx_exit: mpsc::UnboundedSender<ClientId>,
+    tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
 }
 
 impl ExternalApiServantTask {
@@ -500,7 +492,7 @@ impl ExternalApiServantTask {
         conn: TcpStream,
         tx_req: mpsc::UnboundedSender<(ClientId, ApiRequest)>,
         rx_reply: mpsc::UnboundedReceiver<ApiReply>,
-        tx_exit: mpsc::UnboundedSender<ClientId>,
+        tx_exit: mpsc::UnboundedSender<(ClientId, task::Id)>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
 
@@ -648,7 +640,7 @@ impl ExternalApiServantTask {
             }
         }
 
-        if let Err(e) = self.tx_exit.send(self.id) {
+        if let Err(e) = self.tx_exit.send((self.id, task::id())) {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         }
         pf_debug!("client_servant task for {} '{}' exited", self.id, self.addr);
@@ -694,20 +686,17 @@ mod tests {
     use super::*;
     use crate::client::{ClientApiStub, ClientId};
     use crate::server::{Command, CommandResult};
+    use crate::utils::test_addr_at_offset;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let server_side = tokio::spawn(async move {
             // server-side
-            let mut api = ExternalApi::new_and_setup(
-                0,
-                "127.0.0.1:30000".parse()?,
-                Duration::from_millis(1),
-                0,
-            )
-            .await?;
+            let mut api =
+                ExternalApi::new_and_setup(0, test_addr_at_offset(0), Duration::from_millis(1), 0)
+                    .await?;
             barrier2.wait().await;
             // recv requests from client
             let mut reqs: Vec<(ClientId, ApiRequest)> = vec![];
@@ -761,7 +750,7 @@ mod tests {
         });
         // client-side
         barrier.wait().await;
-        let mut api_stub = ClientApiStub::new_by_connect(2857, "127.0.0.1:30000".parse()?).await?;
+        let mut api_stub = ClientApiStub::new_by_connect(2857, test_addr_at_offset(0)).await?;
         // send requests to server
         api_stub.send_req(Some(&ApiRequest::Req {
             id: 0,
@@ -793,6 +782,7 @@ mod tests {
                 }),
             )
         );
+        server_side.await??;
         Ok(())
     }
 
@@ -801,11 +791,11 @@ mod tests {
     async fn api_client_leave() -> Result<(), SummersetError> {
         let barrier = Arc::new(Barrier::new(2));
         let barrier2 = barrier.clone();
-        tokio::spawn(async move {
+        let server_side = tokio::spawn(async move {
             // server-side
             let mut api = ExternalApi::new_and_setup(
                 0,
-                "127.0.0.1:30100".parse()?,
+                test_addr_at_offset(100),
                 Duration::from_millis(1),
                 0,
             )
@@ -871,7 +861,7 @@ mod tests {
         {
             barrier.wait().await;
             let mut api_stub =
-                ClientApiStub::new_by_connect(2857, "127.0.0.1:30100".parse()?).await?;
+                ClientApiStub::new_by_connect(2857, test_addr_at_offset(100)).await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,
@@ -893,7 +883,7 @@ mod tests {
         {
             // come back as new client
             let mut api_stub =
-                ClientApiStub::new_by_connect(2858, "127.0.0.1:30100".parse()?).await?;
+                ClientApiStub::new_by_connect(2858, test_addr_at_offset(100)).await?;
             // send request to server
             api_stub.send_req(Some(&ApiRequest::Req {
                 id: 0,
@@ -913,6 +903,7 @@ mod tests {
                 )
             );
         }
+        server_side.await??;
         Ok(())
     }
 }
