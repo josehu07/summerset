@@ -136,6 +136,7 @@ impl RSPaxosReplica {
             .do_sync_action(LogAction::Write {
                 entry: SnapEntry::SlotInfo {
                     start_slot: new_start_slot,
+                    bal_max_seen: self.bal_max_seen,
                 },
                 offset: 0,
                 sync: self.config.logger_sync,
@@ -185,7 +186,11 @@ impl RSPaxosReplica {
             .1
         {
             LogResult::Read {
-                entry: Some(SnapEntry::SlotInfo { start_slot }),
+                entry:
+                    Some(SnapEntry::SlotInfo {
+                        start_slot,
+                        bal_max_seen,
+                    }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
@@ -195,6 +200,7 @@ impl RSPaxosReplica {
                 self.commit_bar = start_slot;
                 self.exec_bar = start_slot;
                 self.snap_bar = start_slot;
+                self.bal_max_seen = bal_max_seen;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -256,7 +262,10 @@ impl RSPaxosReplica {
                 } = self
                     .snapshot_hub
                     .do_sync_action(LogAction::Write {
-                        entry: SnapEntry::SlotInfo { start_slot: 0 },
+                        entry: SnapEntry::SlotInfo {
+                            start_slot: 0,
+                            bal_max_seen: 0,
+                        },
                         offset: 0,
                         sync: self.config.logger_sync,
                     })

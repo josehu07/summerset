@@ -298,10 +298,20 @@ enum SnapEntry {
         /// First entry at the start of file: number of log instances covered
         /// by this snapshot file == the start slot index of in-mem log.
         start_slot: usize,
+        /// Highest ballot seen (and possibly promised), as the WAL entries
+        /// recording it may be discarded.
+        bal_max_seen: Ballot,
     },
 
     /// Set of key-value pairs to apply to the state.
     KVPairSet { pairs: HashMap<String, String> },
+
+    /// Read leaseholders config, as the WAL entries of its changes may be
+    /// discarded.
+    QleaseConf {
+        conf_num: ConfNum,
+        conf: RespondersConf<()>,
+    },
 }
 
 /// Peer-peer message type.

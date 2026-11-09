@@ -10,8 +10,8 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use summerset::{
-    ApiReply, ApiRequest, Command, CommandResult, CtrlReply, CtrlRequest, Faults, GenericEndpoint,
-    SmrProtocol,
+    ApiReply, ApiRequest, Bitmap, Command, CommandResult, ConfChange, CtrlReply, CtrlRequest,
+    Faults, GenericEndpoint, SmrProtocol,
 };
 use tempfile::TempDir;
 use tokio::net::TcpSocket;
@@ -107,14 +107,13 @@ async fn request(ep: &mut dyn GenericEndpoint, id: u64, cmd: Command) -> Command
     }
 }
 
-/// Starts an in-process manager of a single-server cluster, returning its
-/// server-facing and client-facing addresses.
-async fn start_manager() -> (SocketAddr, SocketAddr) {
+/// Starts an in-process manager of a cluster of `population` servers,
+/// returning its server-facing and client-facing addresses.
+async fn start_manager(protocol: SmrProtocol, population: u8) -> (SocketAddr, SocketAddr) {
     let (srv_addr, cli_addr) = (free_addr(), free_addr());
-    let mut manager =
-        within(SmrProtocol::RepNothing.new_cluster_manager_setup(srv_addr, cli_addr, 1))
-            .await
-            .unwrap();
+    let mut manager = within(protocol.new_cluster_manager_setup(srv_addr, cli_addr, population))
+        .await
+        .unwrap();
     let (tx_term, rx_term) = watch::channel(false);
     tokio::spawn(async move {
         let _tx_term = tx_term; // run until the test ends
@@ -124,14 +123,20 @@ async fn start_manager() -> (SocketAddr, SocketAddr) {
 }
 
 /// Composes args for the server executable to join the manager at `srv_addr`
-/// as server `id`, with fresh ports, its files under `dir`, and given extra
+/// as server `id`, with fresh ports, its WAL file under `dir`, and given extra
 /// config (`+`-prefixed).
-fn server_args(dir: &Path, srv_addr: SocketAddr, id: u8, config: &str) -> String {
+fn server_args(
+    protocol: SmrProtocol,
+    dir: &Path,
+    srv_addr: SocketAddr,
+    id: u8,
+    config: &str,
+) -> String {
     format!(
-        "-p RepNothing -b 127.0.0.1 -a {} -i {} -m {srv_addr} --id {id} --threads 2 --config backer_path='{}'{config}",
+        "-p {protocol} -b 127.0.0.1 -a {} -i {} -m {srv_addr} --id {id} --threads 2 --config backer_path='{}'{config}",
         free_addr().port(),
         free_addr().port(),
-        dir.join("wal").display()
+        dir.join(format!("wal{id}")).display()
     )
 }
 
@@ -139,20 +144,25 @@ fn server_args(dir: &Path, srv_addr: SocketAddr, id: u8, config: &str) -> String
 /// config (`+`-prefixed), returning the server and a client endpoint connected
 /// to it once it has joined.
 async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
-    let (srv_addr, cli_addr) = start_manager().await;
-    let server = spawn(&mut exe(&server_args(dir, srv_addr, 0, config)));
-    (server, connect_client(cli_addr).await)
+    let protocol = SmrProtocol::RepNothing;
+    let (srv_addr, cli_addr) = start_manager(protocol, 1).await;
+    let server = spawn(&mut exe(&server_args(protocol, dir, srv_addr, 0, config)));
+    (server, connect_client(protocol, cli_addr, 1).await)
 }
 
 /// Returns a client endpoint of the manager at `cli_addr`, connected to the
-/// server once it has joined.
-async fn connect_client(cli_addr: SocketAddr) -> Box<dyn GenericEndpoint> {
-    let mut ep = within(SmrProtocol::RepNothing.new_client_endpoint(cli_addr, None))
+/// servers once all `population` of them have joined.
+async fn connect_client(
+    protocol: SmrProtocol,
+    cli_addr: SocketAddr,
+    population: usize,
+) -> Box<dyn GenericEndpoint> {
+    let mut ep = within(protocol.new_client_endpoint(cli_addr, None))
         .await
         .unwrap();
     within(async {
         while matches!(ctrl(ep.as_mut(), CtrlRequest::QueryInfo).await,
-            CtrlReply::QueryInfo { servers_info, .. } if servers_info.is_empty())
+            CtrlReply::QueryInfo { servers_info, .. } if servers_info.len() < population)
         {
             time::sleep(Duration::from_millis(10)).await;
         }
@@ -209,10 +219,11 @@ async fn reset_restarts_in_place() {
 #[tokio::test]
 async fn killed_server_rejoins() {
     let dir = TempDir::new().unwrap();
-    let (srv_addr, cli_addr) = start_manager().await;
-    let args = server_args(dir.path(), srv_addr, 0, "");
+    let protocol = SmrProtocol::RepNothing;
+    let (srv_addr, cli_addr) = start_manager(protocol, 1).await;
+    let args = server_args(protocol, dir.path(), srv_addr, 0, "");
     let mut server = spawn(&mut exe(&args));
-    let mut ep = connect_client(cli_addr).await;
+    let mut ep = connect_client(protocol, cli_addr, 1).await;
     request(ep.as_mut(), 0, put_command("k", "v")).await;
     within(ep.leave(false)).await.unwrap();
 
@@ -233,9 +244,10 @@ async fn killed_server_rejoins() {
 #[tokio::test]
 async fn unavailable_id_rejected() {
     let dir = TempDir::new().unwrap();
-    let (srv_addr, _) = start_manager().await;
+    let protocol = SmrProtocol::RepNothing;
+    let (srv_addr, _) = start_manager(protocol, 1).await;
     // the manager replies to the request instead of leaving it waiting
-    let args = server_args(dir.path(), srv_addr, 1, "");
+    let args = server_args(protocol, dir.path(), srv_addr, 1, "");
     assert!(!exits_ok(&mut spawn(&mut exe(&args))).await);
 }
 
@@ -301,6 +313,87 @@ async fn injected_disk_delay_applies() {
     };
     request(ep.as_mut(), 0, put).await;
     assert!(begin.elapsed() >= Duration::from_millis(200));
+}
+
+/// Issues a request to the leader, retrying until it gets a non-redirect
+/// reply (the endpoint follows redirects), and returns that reply.
+async fn request_leader(ep: &mut dyn GenericEndpoint, req: ApiRequest) -> ApiReply {
+    within(async {
+        loop {
+            assert!(ep.send_req(Some(&req)).unwrap());
+            match ep.recv_reply().await.unwrap() {
+                ApiReply::Reply { result: None, .. } => {
+                    time::sleep(Duration::from_millis(100)).await;
+                }
+                reply => return reply,
+            }
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn snapshot_keeps_lease_conf() {
+    // a cluster with fast elections, each server with its own files
+    let dir = TempDir::new().unwrap();
+    let protocol = SmrProtocol::QuorumLeases;
+    let args = |srv_addr, id: u8| {
+        let snapshot = dir.path().join(format!("snap{id}"));
+        let config = format!(
+            "+snapshot_path='{}'+hb_hear_timeout_min=300+hb_hear_timeout_max=400",
+            snapshot.display()
+        );
+        server_args(protocol, dir.path(), srv_addr, id, &config)
+    };
+    let (srv_addr, cli_addr) = start_manager(protocol, 3).await;
+    let mut servers: Vec<_> = (0..3)
+        .map(|id| spawn(&mut exe(&args(srv_addr, id))))
+        .collect();
+    let mut ep = connect_client(protocol, cli_addr, 3).await;
+
+    // change the read leaseholders config, then snapshot past its slot
+    let delta = ConfChange {
+        responders: Some(Bitmap::new(3, true)),
+        ..ConfChange::default()
+    };
+    let conf = request_leader(ep.as_mut(), ApiRequest::Conf { id: 0, delta }).await;
+    assert!(matches!(conf, ApiReply::Conf { success: true, .. }));
+    let put = ApiRequest::Req {
+        id: 1,
+        cmd: put_command("k", "v"),
+    };
+    request_leader(ep.as_mut(), put).await;
+    let known = ctrl(ep.as_mut(), CtrlRequest::QueryConf).await;
+    let CtrlReply::QueryConf { conf_num: slot, .. } = known else {
+        panic!("unexpected reply {known:?}");
+    };
+    assert!(slot > 0); // the config number is the slot of its change
+    within(async {
+        while !matches!(ctrl(ep.as_mut(), CtrlRequest::TakeSnapshot { servers: HashSet::new() }).await,
+            CtrlReply::TakeSnapshot { snapshot_up_to }
+                if snapshot_up_to.values().all(|&s| s as u64 > slot))
+        {
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    // restarted for a fresh manager, the servers tell it the config kept in
+    // their snapshots
+    for server in &mut servers {
+        within(server.kill()).await.unwrap();
+    }
+    let (srv_addr, cli_addr) = start_manager(protocol, 3).await;
+    let _servers: Vec<_> = (0..3)
+        .map(|id| spawn(&mut exe(&args(srv_addr, id))))
+        .collect();
+    let mut ep = connect_client(protocol, cli_addr, 3).await;
+    within(async {
+        while ctrl(ep.as_mut(), CtrlRequest::QueryConf).await != known {
+            time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
 }
 
 /// Composes a command that puts a key-value pair.

@@ -10,7 +10,8 @@ use crate::utils::SummersetError;
 
 // QuorumLeasesReplica snapshotting & GC logic
 impl QuorumLeasesReplica {
-    /// Dump new key-value pairs to snapshot file.
+    /// Dump new key-value pairs, and the read leaseholders config if ever
+    /// changed, to snapshot file.
     async fn snapshot_dump_kv_pairs(
         &mut self,
         new_start_slot: usize,
@@ -30,21 +31,32 @@ impl QuorumLeasesReplica {
             }
         }
 
-        // write the collection to snapshot file
-        if let LogResult::Append { now_size, .. } = self
-            .snapshot_hub
-            .do_sync_action(LogAction::Append {
-                entry: SnapEntry::KVPairSet { pairs },
-                sync: self.config.logger_sync,
-            })
-            .await?
-            .1
-        {
-            self.snap_offset = now_size;
-            Ok(())
-        } else {
-            logged_err!("unexpected log result type")
+        // write the collection to snapshot file, followed by the current
+        // config; it may already include changes in WAL entries kept, which is
+        // fine as their replay re-applies them in order
+        let mut entries = vec![SnapEntry::KVPairSet { pairs }];
+        if self.qlease_ver > 0 {
+            entries.push(SnapEntry::QleaseConf {
+                conf_num: self.qlease_ver,
+                conf: self.qlease_conf.clone(),
+            });
         }
+        for entry in entries {
+            if let LogResult::Append { now_size, .. } = self
+                .snapshot_hub
+                .do_sync_action(LogAction::Append {
+                    entry,
+                    sync: self.config.logger_sync,
+                })
+                .await?
+                .1
+            {
+                self.snap_offset = now_size;
+            } else {
+                return logged_err!("unexpected log result type");
+            }
+        }
+        Ok(())
     }
 
     /// Discard everything older than `start_slot` in durable WAL log.
@@ -134,6 +146,7 @@ impl QuorumLeasesReplica {
             .do_sync_action(LogAction::Write {
                 entry: SnapEntry::SlotInfo {
                     start_slot: new_start_slot,
+                    bal_max_seen: self.bal_max_seen,
                 },
                 offset: 0,
                 sync: self.config.logger_sync,
@@ -168,6 +181,31 @@ impl QuorumLeasesReplica {
         Ok(())
     }
 
+    /// Applies an entry following the slot info in the snapshot file.
+    async fn apply_snapshot_entry(&mut self, entry: SnapEntry) -> Result<(), SummersetError> {
+        match entry {
+            SnapEntry::KVPairSet { pairs } => {
+                // execute Put commands on state machine
+                for (key, value) in pairs {
+                    self.state_machine
+                        .do_sync_cmd(
+                            0, // using 0 as dummy command ID
+                            Command::Put { key, value },
+                        )
+                        .await?;
+                }
+            }
+            SnapEntry::QleaseConf { conf_num, conf } => {
+                // restore the read leaseholders config
+                self.qlease_conf = conf;
+                self.qlease_ver = conf_num;
+                self.qlease_num = conf_num;
+            }
+            SnapEntry::SlotInfo { .. } => return logged_err!("unexpected slot info entry"),
+        }
+        Ok(())
+    }
+
     /// Recover initial state from durable storage snapshot file.
     pub(super) async fn recover_from_snapshot(&mut self) -> Result<(), SummersetError> {
         debug_assert_eq!(self.snap_offset, 0);
@@ -181,7 +219,11 @@ impl QuorumLeasesReplica {
             .1
         {
             LogResult::Read {
-                entry: Some(SnapEntry::SlotInfo { start_slot }),
+                entry:
+                    Some(SnapEntry::SlotInfo {
+                        start_slot,
+                        bal_max_seen,
+                    }),
                 end_offset,
             } => {
                 self.snap_offset = end_offset;
@@ -192,6 +234,7 @@ impl QuorumLeasesReplica {
                 self.commit_bar = start_slot;
                 self.exec_bar = start_slot;
                 self.snap_bar = start_slot;
+                self.bal_max_seen = bal_max_seen;
 
                 // repeatedly apply key-value pairs
                 loop {
@@ -204,18 +247,10 @@ impl QuorumLeasesReplica {
                         .1
                     {
                         LogResult::Read {
-                            entry: Some(SnapEntry::KVPairSet { pairs }),
+                            entry: Some(entry),
                             end_offset,
                         } => {
-                            // execute Put commands on state machine
-                            for (key, value) in pairs {
-                                self.state_machine
-                                    .do_sync_cmd(
-                                        0, // using 0 as dummy command ID
-                                        Command::Put { key, value },
-                                    )
-                                    .await?;
-                            }
+                            self.apply_snapshot_entry(entry).await?;
                             // update snapshot file offset
                             self.snap_offset = end_offset;
                         }
@@ -253,7 +288,10 @@ impl QuorumLeasesReplica {
                 } = self
                     .snapshot_hub
                     .do_sync_action(LogAction::Write {
-                        entry: SnapEntry::SlotInfo { start_slot: 0 },
+                        entry: SnapEntry::SlotInfo {
+                            start_slot: 0,
+                            bal_max_seen: 0,
+                        },
                         offset: 0,
                         sync: self.config.logger_sync,
                     })
