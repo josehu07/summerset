@@ -20,6 +20,7 @@ mod stopwatch;
 mod timer;
 
 pub use bitmap::Bitmap;
+pub(crate) use codec::DECODE_SIZE_LIMIT;
 pub use codec::{CODEC_CONFIG, Codec, CodecConfig};
 pub use error::SummersetError;
 pub use faults::Faults;
