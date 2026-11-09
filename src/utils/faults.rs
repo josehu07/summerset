@@ -4,6 +4,8 @@
 //! the transport hub, the storage hub, and timers.
 
 use std::collections::{HashMap, HashSet};
+use std::io::SeekFrom;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
@@ -12,9 +14,12 @@ use std::time::Duration;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::ReplicaId;
+use crate::utils::SummersetError;
 
 /// Faults to inject into a server; the default injects none.
 #[derive(Debug, Default, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead)]
@@ -44,9 +49,28 @@ pub struct Faults {
     /// Percentage of storage writes that fail with an I/O error.
     pub disk_fail_pct: u8,
 
+    /// Percentage of storage appends that fail after writing only part of the
+    /// record.
+    pub disk_torn_pct: u8,
+
+    /// Percentage of storage appends that silently flip a bit of the record.
+    pub disk_flip_pct: u8,
+
     /// Percentage by which this server's clock runs fast (or slow if
     /// negative), which scales all timer durations.
     pub clock_drift_pct: i8,
+}
+
+/// How an injected fault makes a storage write go wrong.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum DiskFail {
+    /// Fails with an I/O error, writing nothing.
+    Error,
+    /// Fails after writing only part of an appended record.
+    Torn,
+    /// Succeeds but flips the given bit (modulo its size) of an appended
+    /// record.
+    Flip(u64),
 }
 
 /// Process-wide fault injection state.
@@ -119,19 +143,52 @@ pub(crate) fn msg_copies_delays(peer: ReplicaId) -> Option<Vec<Duration>> {
     )
 }
 
-/// Decides the fault of a storage operation: its delay, and whether it fails
+/// Decides the fault of a storage operation: its delay, and how it fails
 /// (writes only). Returns `None` if no faults are active.
-pub(crate) fn disk_delay_fail(write: bool) -> Option<(Duration, bool)> {
+pub(crate) fn disk_delay_fail(write: bool) -> Option<(Duration, Option<DiskFail>)> {
     if !ACTIVE.load(Ordering::Acquire) {
         return None;
     }
     let mut st = fault_state();
     let FaultState { faults, rng, .. } = &mut *st;
-    let fail = write && roll_pct_dice(rng.as_mut()?, faults.disk_fail_pct);
-    if fail {
-        pf_debug!("fault: failed disk write");
+    let rng = rng.as_mut()?;
+    let fail = if !write {
+        None
+    } else if roll_pct_dice(rng, faults.disk_fail_pct) {
+        Some(DiskFail::Error)
+    } else if roll_pct_dice(rng, faults.disk_torn_pct) {
+        Some(DiskFail::Torn)
+    } else if roll_pct_dice(rng, faults.disk_flip_pct) {
+        Some(DiskFail::Flip(rng.random()))
+    } else {
+        None
+    };
+    if let Some(fail) = fail {
+        pf_debug!("fault: disk write {:?}", fail);
     }
     Some((Duration::from_millis(faults.disk_delay_ms), fail))
+}
+
+/// Flips one bit, chosen by `bit`, of the bytes in `range` of a file, as for
+/// an injected `DiskFail::Flip`; leaves the cursor at the end of the file.
+pub(crate) async fn flip_file_bit(
+    file: &mut File,
+    range: Range<usize>,
+    bit: u64,
+) -> Result<(), SummersetError> {
+    let bits = 8 * range.len() as u64;
+    if bits > 0 {
+        let bit = bit % bits;
+        let pos = range.start as u64 + bit / 8;
+        let mut byte = [0; 1];
+        file.seek(SeekFrom::Start(pos)).await?;
+        file.read_exact(&mut byte).await?;
+        byte[0] ^= 1 << (bit % 8);
+        file.seek(SeekFrom::Start(pos)).await?;
+        file.write_all(&byte).await?;
+    }
+    file.seek(SeekFrom::End(0)).await?;
+    Ok(())
 }
 
 /// Scales a timer duration by the injected clock drift.

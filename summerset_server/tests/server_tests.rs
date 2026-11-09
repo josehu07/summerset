@@ -250,3 +250,86 @@ async fn injected_disk_delay_applies() {
     request(ep.as_mut(), 0, put).await;
     assert!(begin.elapsed() >= Duration::from_millis(200));
 }
+
+/// Composes a command that puts a key-value pair.
+fn put_command(key: &str, value: &str) -> Command {
+    Command::Put {
+        key: key.into(),
+        value: value.into(),
+    }
+}
+
+/// Injects given faults into the server.
+async fn inject_faults(ep: &mut dyn GenericEndpoint, faults: Faults) {
+    let inject = CtrlRequest::InjectFaults {
+        servers: HashSet::new(),
+        faults,
+    };
+    ctrl(ep, inject).await;
+}
+
+#[tokio::test]
+async fn torn_writes_keep_log_recoverable() {
+    let dir = TempDir::new().unwrap();
+    let (_server, mut ep) = start(dir.path(), "").await;
+    request(ep.as_mut(), 0, put_command("k0", "v0")).await;
+    let faults = Faults {
+        disk_torn_pct: 100,
+        ..Faults::default()
+    };
+    inject_faults(ep.as_mut(), faults).await;
+    // the torn write fails, so this put gets no reply
+    let req = ApiRequest::Req {
+        id: 1,
+        cmd: put_command("k1", "v1"),
+    };
+    assert!(ep.send_req(Some(&req)).unwrap());
+    time::sleep(Duration::from_millis(200)).await;
+    inject_faults(ep.as_mut(), Faults::default()).await;
+    request(ep.as_mut(), 2, put_command("k2", "v2")).await;
+
+    // the log recovers to exactly the good writes
+    within(ep.leave(false)).await.unwrap();
+    let crash = CtrlRequest::CrashServers {
+        servers: HashSet::from([0]),
+        power_loss: false,
+    };
+    ctrl(ep.as_mut(), crash).await;
+    within(ep.connect()).await.unwrap();
+    for (id, (key, value)) in [("k0", Some("v0")), ("k1", None), ("k2", Some("v2"))]
+        .into_iter()
+        .enumerate()
+    {
+        let get = Command::Get { key: key.into() };
+        assert_eq!(
+            request(ep.as_mut(), 3 + id as u64, get).await,
+            CommandResult::Get {
+                value: value.map(Into::into)
+            },
+            "key {key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn bit_flips_fail_recovery() {
+    let dir = TempDir::new().unwrap();
+    let (mut server, mut ep) = start(dir.path(), "").await;
+    let faults = Faults {
+        disk_flip_pct: 100,
+        ..Faults::default()
+    };
+    inject_faults(ep.as_mut(), faults).await;
+    request(ep.as_mut(), 0, put_command("k0", "v0")).await;
+    request(ep.as_mut(), 1, put_command("k1", "v1")).await;
+    inject_faults(ep.as_mut(), Faults::default()).await;
+
+    // recovery finds a corrupted record amid the log and refuses to go on
+    within(ep.leave(false)).await.unwrap();
+    let crash = CtrlRequest::CrashServers {
+        servers: HashSet::from([0]),
+        power_loss: false,
+    };
+    ep.ctrl_stub().send_req_insist(&crash).unwrap();
+    assert!(!exits_ok(&mut server).await);
+}
