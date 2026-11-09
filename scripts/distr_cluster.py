@@ -1,7 +1,6 @@
 import argparse
-import signal
+import atexit
 import sys
-import threading
 import time
 
 from . import utils
@@ -150,26 +149,15 @@ def launch_manager(protocol, partition, num_replicas, release):
         num_replicas,
         release,
     )
-    return run_process_pinned(cmd, capture_stderr=True)
+    # its stderr keeps being drained and printed
+    return utils.proc.run_process(cmd, capture_stderr=True, forward=sys.stderr.buffer)
 
 
-def wait_manager_setup(proc):
+def wait_manager_setup(proc: utils.proc.DrainedPopen) -> None:
     # print("Waiting for manager setup...")
-    accepting_servers, accepting_clients = False, False
-
-    for line in iter(proc.stderr.readline, b""):
-        l = line.decode()
-        print(l, end="", file=sys.stderr)
-
-        if "(m) accepting servers" in l:
-            assert not accepting_servers
-            accepting_servers = True
-        if "(m) accepting clients" in l:
-            assert not accepting_clients
-            accepting_clients = True
-
-        if accepting_servers and accepting_clients:
-            break
+    proc.wait_output(
+        lambda err: "(m) accepting servers" in err and "(m) accepting clients" in err, 60
+    )
 
 
 def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
@@ -192,23 +180,24 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
 
 
 def launch_servers(
-    remotes,
-    ipaddrs,
-    hosts,
-    me,
-    cd_dir,
-    protocol,
-    partition,
-    num_replicas,
-    release,
-    config,
-    force_leader,
-    states_prefix,
-    states_midfix,
-    fresh_files,
-    pin_cores,
-    launch_wait,
-):
+    manager_proc: utils.proc.DrainedPopen,
+    remotes: dict[str, str],
+    ipaddrs: dict[str, str],
+    hosts: list[str],
+    me: str,
+    cd_dir: str,
+    protocol: str,
+    partition: int,
+    num_replicas: int,
+    release: bool,
+    config: str | None,
+    force_leader: int,
+    states_prefix: str,
+    states_midfix: str,
+    fresh_files: bool,
+    pin_cores: int,
+    launch_wait: bool,
+) -> list[utils.proc.DrainedPopen]:
     if num_replicas != len(remotes):
         raise ValueError(f"invalid num_replicas: {num_replicas}")
 
@@ -259,13 +248,15 @@ def launch_servers(
         server_procs.append(proc)
 
         if launch_wait:
-            time.sleep(3)  # NOTE: helps enforce server ID assignment
+            # let it join before the next one, to enforce server ID assignment
+            manager_proc.wait_output(lambda err, r=replica: f"accepted new server {r}" in err, 60)
 
     return server_procs
 
 
 def main():
     utils.file.check_proper_cwd()
+    utils.proc.cleanup_on_exit()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
@@ -396,17 +387,30 @@ def main():
     manager_proc = launch_manager(args.protocol, partition, args.num_replicas, args.release)
     wait_manager_setup(manager_proc)
 
-    # create a thread that keeps printing out captured manager stderrs; the
-    # pipe must be drained, otherwise the manager blocks once it fills up
-    def print_manager_stderr() -> None:
-        for line in iter(manager_proc.stderr.readline, b""):
-            print(line.decode(), end="", file=sys.stderr)
+    # on exit, also kill server processes on remote hosts, which outlive the
+    # SSH sessions they were launched through
+    # NOTE: this also terminates other partitions' processes if doing
+    #       keyspace partitioning
+    def kill_remote_procs() -> None:
+        print("Killing related processes...")
+        kill_procs = []
+        for host in hosts:
+            kill_procs.append(
+                utils.proc.run_process_over_ssh(
+                    remotes[host],
+                    ["./scripts/kill_all_procs.sh"],
+                    cd_dir=cd_dir,
+                    print_cmd=False,
+                )
+            )
+        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
 
-    threading.Thread(target=print_manager_stderr, daemon=True).start()
+    atexit.register(kill_remote_procs)
 
     # then launch server replicas
     print("Launching server processes...")
     server_procs = launch_servers(
+        manager_proc,
         remotes,
         ipaddrs,
         hosts,
@@ -425,35 +429,16 @@ def main():
         args.launch_wait,
     )
 
-    # register termination signals handler
-    # NOTE: this also terminates other partitions' processes if doing
-    #       keyspace partitioning
-    def kill_spawned_procs(*args):
-        print("Killing related processes...")
-        kill_procs = []
-        for host in hosts:
-            kill_procs.append(
-                utils.proc.run_process_over_ssh(
-                    remotes[host],
-                    ["./scripts/kill_all_procs.sh"],
-                    cd_dir=cd_dir,
-                    print_cmd=False,
-                )
-            )
-        utils.proc.wait_parallel_procs(kill_procs, names=hosts)
-
-        for proc in server_procs:
-            proc.terminate()
-        for proc in server_procs:
-            proc.wait()
-        manager_proc.terminate()
-
-    signal.signal(signal.SIGINT, kill_spawned_procs)
-    signal.signal(signal.SIGTERM, kill_spawned_procs)
-    signal.signal(signal.SIGHUP, kill_spawned_procs)
-
-    # reaches here after manager proc has terminated
-    rc = manager_proc.wait()
+    # serve until the manager or any server exits, e.g., upon a failure
+    procs = {"manager": manager_proc} | {f"server {r}": p for r, p in enumerate(server_procs)}
+    while all(proc.poll() is None for proc in procs.values()):
+        time.sleep(0.5)
+    rc = 0
+    for name, proc in procs.items():
+        if proc.returncode is not None:
+            print(f"{name} exited with {proc.returncode}", file=sys.stderr)
+            # as shells do for processes killed by signals
+            rc = rc or (proc.returncode if proc.returncode >= 0 else 128 - proc.returncode)
     sys.exit(rc)
 
 

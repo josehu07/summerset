@@ -90,10 +90,9 @@ def launch_cluster_summerset(remote, base, repo, protocol, partition, num_client
     )
 
 
-def wait_cluster_setup_summerset(sleep_secs=30):
-    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
-    # not relying on SSH-piped outputs here as it could be unreliable
-    time.sleep(sleep_secs)
+def wait_cluster_setup_summerset(procs_cluster: list[utils.proc.DrainedPopen]) -> None:
+    print("    Waiting for cluster setup...")
+    utils.proc.wait_cluster_ready(procs_cluster, NUM_REPLICAS)
 
 
 def run_bench_clients_summerset(remote, base, repo, protocol, partition, num_clients):
@@ -171,7 +170,7 @@ def bench_round_summerset(remotes, base, repo, protocol, num_clients, runlog_pat
                 config=config,
             )
         )
-    wait_cluster_setup_summerset()
+    wait_cluster_setup_summerset(procs_cluster)
 
     # start benchmarking clients for each partition
     procs_clients = []

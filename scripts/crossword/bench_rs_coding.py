@@ -35,8 +35,10 @@ def run_criterion_group(output_dir):
     printer = threading.Thread(target=printer_thread, args=(proc, f"{output_dir}/rs_coding.out"))
     printer.start()
 
-    proc.wait()
+    rc = proc.wait()
     printer.join()
+    if rc != 0:
+        raise RuntimeError(f"cargo bench failed with {rc}")
 
 
 def parse_bench_results(output_dir):

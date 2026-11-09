@@ -84,8 +84,10 @@ RESULT_SECS_END = 100
 
 def launch_cluster(remote0, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_cluster.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_cluster",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-n",
@@ -120,16 +122,17 @@ def launch_cluster(remote0, base, repo, pcname, config=None):
     )
 
 
-def wait_cluster_setup(sleep_secs=60):
-    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
-    # not relying on SSH-piped outputs here as it could be unreliable
-    time.sleep(sleep_secs)
+def wait_cluster_setup(proc_cluster: utils.proc.DrainedPopen, num_replicas: int) -> None:
+    print("    Waiting for cluster setup...")
+    utils.proc.wait_cluster_ready([proc_cluster], num_replicas)
 
 
 def run_bench_clients(remotec, base, repo, pcname, config=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         PROTOCOLS_BSNAME_CONFIGS_RESPONDERS[pcname][0],
         "-r",
@@ -182,8 +185,10 @@ def run_bench_clients(remotec, base, repo, pcname, config=None):
 
 def run_mess_client(remotec, base, repo, protocol, leader=None, key_range=None, responder=None):
     cmd = [
-        "python3",
-        "./scripts/distr_clients.py",
+        "uv",
+        "run",
+        "-m",
+        "scripts.distr_clients",
         "-p",
         protocol,
         "-r",
@@ -226,7 +231,7 @@ def bench_round(remote0, remotec, base, repo, pcname, runlog_path, responders=No
 
     # launch service cluster
     proc_cluster = launch_cluster(remote0, base, repo, pcname, config=server_config)
-    wait_cluster_setup()
+    wait_cluster_setup(proc_cluster, NUM_REPLICAS)
 
     # if protocol has responders config, do it now
     if responders is not None:

@@ -198,10 +198,9 @@ def launch_cluster(remote0, base, repo, pcname, freq_target, config=None):
     )
 
 
-def wait_cluster_setup(sleep_secs=60):
-    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
-    # not relying on SSH-piped outputs here as it could be unreliable
-    time.sleep(sleep_secs)
+def wait_cluster_setup(proc_cluster: utils.proc.DrainedPopen, num_replicas: int) -> None:
+    print("    Waiting for cluster setup...")
+    utils.proc.wait_cluster_ready([proc_cluster], num_replicas)
 
 
 def run_bench_clients(remotec, base, repo, pcname, freq_target, config=None):
@@ -316,7 +315,7 @@ def bench_round(remote0, remotec, base, repo, pcname, freq_target, runlog_path):
 
     # launch service cluster
     proc_cluster = launch_cluster(remote0, base, repo, pcname, freq_target, config=server_config)
-    wait_cluster_setup()
+    wait_cluster_setup(proc_cluster, NUM_REPLICAS)
 
     # if protocol has responders config, do it now
     if responders is not None:

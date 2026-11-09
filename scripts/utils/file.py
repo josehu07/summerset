@@ -52,7 +52,7 @@ def do_cargo_build(release, cd_dir=None, remotes=None):
 
 
 def clear_fs_caches(remotes=None):
-    cmd = ["sudo", "bash", "-c", '"echo 3 > /proc/sys/vm/drop_caches"']
+    cmd = ["sudo", "bash", "-c", "echo 3 > /proc/sys/vm/drop_caches"]
     if remotes is None:
         run_process(cmd).wait()
     else:

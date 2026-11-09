@@ -4,8 +4,8 @@ from . import utils
 
 
 def execute_on_targets(destinations, dst_path, cmd, sequential):
-    # convert cmd string to list
-    cmd = cmd.strip().split()
+    # run the cmd string with a remote shell, so that shell syntax works
+    cmd = ["bash", "-c", cmd]
 
     # execute over SSH
     if sequential:
@@ -47,8 +47,7 @@ def main():
         "--cmd",
         type=str,
         required=True,
-        help="command to execute on remote hosts; for now,"
-        " only supports a static string without quoted spaces",
+        help="shell command to execute on remote hosts",
     )
     parser.add_argument(
         "-s",

@@ -205,3 +205,22 @@ async fn sigterm_exits_cleanly() {
     let mut kill = spawn(process::Command::new("kill").args(["-TERM", &pid]));
     assert!(exits_ok(&mut kill).await && exits_ok(&mut manager).await);
 }
+
+#[tokio::test]
+async fn exits_with_watched_ancestor() {
+    // as when launched through `sudo`, the watched process is not its parent
+    let mut ancestor = spawn(process::Command::new("sleep").arg("30").kill_on_drop(true));
+    let watched = ancestor.id().unwrap().to_string();
+    let mut manager = spawn(
+        exe(&format!(
+            "-p RepNothing -b 127.0.0.1 -s {} -c {} -n 1 --threads 2",
+            free_addr().port(),
+            free_addr().port()
+        ))
+        .env("SUMMERSET_EXIT_WITH_PARENT", watched),
+    );
+    time::sleep(Duration::from_millis(500)).await;
+    assert!(manager.try_wait().unwrap().is_none(), "exited too early");
+    within(ancestor.kill()).await.unwrap();
+    assert!(!exits_ok(&mut manager).await);
+}

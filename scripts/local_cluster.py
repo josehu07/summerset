@@ -1,7 +1,6 @@
 import argparse
 import os
 import sys
-import threading
 
 from . import utils
 
@@ -134,26 +133,15 @@ def launch_manager(protocol, num_replicas, release, use_veth):
         num_replicas,
         release,
     )
-    return run_process_pinned(-1, cmd, capture_stderr=True)
+    # its stderr keeps being drained and printed
+    return utils.proc.run_process(cmd, capture_stderr=True, forward=sys.stderr.buffer)
 
 
-def wait_manager_setup(proc):
+def wait_manager_setup(proc: utils.proc.DrainedPopen) -> None:
     # print("Waiting for manager setup...")
-    accepting_servers, accepting_clients = False, False
-
-    for line in iter(proc.stderr.readline, b""):
-        l = line.decode()
-        print(l, end="", file=sys.stderr)
-
-        if "(m) accepting servers" in l:
-            assert not accepting_servers
-            accepting_servers = True
-        if "(m) accepting clients" in l:
-            assert not accepting_clients
-            accepting_clients = True
-
-        if accepting_servers and accepting_clients:
-            break
+    proc.wait_output(
+        lambda err: "(m) accepting servers" in err and "(m) accepting clients" in err, 60
+    )
 
 
 def compose_server_cmd(protocol, bind_ip, api_port, p2p_port, manager, config, release):
@@ -304,14 +292,6 @@ def main():
     # launch cluster manager oracle first
     manager_proc = launch_manager(args.protocol, args.num_replicas, args.release, args.use_veth)
     wait_manager_setup(manager_proc)
-
-    # create a thread that keeps printing out captured manager stderrs; the
-    # pipe must be drained, otherwise the manager blocks once it fills up
-    def print_manager_stderr() -> None:
-        for line in iter(manager_proc.stderr.readline, b""):
-            print(line.decode(), end="", file=sys.stderr)
-
-    threading.Thread(target=print_manager_stderr, daemon=True).start()
 
     # then launch server replicas
     launch_servers(

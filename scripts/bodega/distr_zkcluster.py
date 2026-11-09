@@ -123,14 +123,12 @@ def copy_server_config(
     utils.proc.run_process_over_ssh(
         remote,
         [
-            "mkdir",
-            "-p",
+            "sh",
+            "-c",
+            'mkdir -p "$1" && echo "$2" > "$1/myid"',
+            "sh",
             f"{backer_dir}/data",
-            ";",
-            "echo",
             str(replica_id),
-            ">",
-            f"{backer_dir}/data/myid",
         ],
         print_cmd=False,
     ).wait()

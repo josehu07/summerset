@@ -248,7 +248,7 @@ impl ServerReignerAcceptorTask {
         if let Some((_, controller)) = self.server_controller_handles.remove(&id) {
             controller.abort();
         }
-        pf_debug!("accepted new server {}", id);
+        pf_info!("accepted new server {}", id);
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         self.tx_sends.insert(id, tx_send);

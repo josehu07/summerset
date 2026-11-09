@@ -83,10 +83,9 @@ def launch_cluster(remote0, base, repo, protocol, config=None):
     )
 
 
-def wait_cluster_setup(sleep_secs=20):
-    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
-    # not relying on SSH-piped outputs here as it could be unreliable
-    time.sleep(sleep_secs)
+def wait_cluster_setup(proc_cluster: utils.proc.DrainedPopen, num_replicas: int) -> None:
+    print("    Waiting for cluster setup...")
+    utils.proc.wait_cluster_ready([proc_cluster], num_replicas)
 
 
 def run_bench_clients(remote0, base, repo, protocol):
@@ -147,7 +146,7 @@ def bench_round(remotes, base, repo, protocol, runlog_path):
 
     # launch service cluster
     proc_cluster = launch_cluster(remotes["host0"], base, repo, protocol, config=config)
-    wait_cluster_setup()
+    wait_cluster_setup(proc_cluster, NUM_REPLICAS)
 
     # start benchmarking clients
     proc_clients = run_bench_clients(remotes["host0"], base, repo, protocol)

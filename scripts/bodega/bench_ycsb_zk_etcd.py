@@ -253,10 +253,16 @@ def launch_zookeeper_cluster(remote0, base, repo, pcname, workload, distribution
     )
 
 
-def wait_cluster_setup(sleep_secs=75):
-    print(f"    Waiting for cluster setup ({sleep_secs}s)...")
-    # not relying on SSH-piped outputs here as it could be unreliable
-    time.sleep(sleep_secs)
+def wait_cluster_setup(
+    procs_cluster: list[utils.proc.DrainedPopen], protocol: str, sleep_secs: int = 75
+) -> None:
+    if protocol in ("Etcd", "ZooKeeper"):
+        # their outputs show no Summerset readiness signs
+        print(f"    Waiting for cluster setup ({sleep_secs}s)...")
+        time.sleep(sleep_secs)
+    else:
+        print("    Waiting for cluster setup...")
+        utils.proc.wait_cluster_ready(procs_cluster, NUM_REPLICAS)
 
 
 def run_bench_clients(
@@ -539,7 +545,7 @@ def bench_round(
                 )
                 time.sleep(3)
 
-    wait_cluster_setup()
+    wait_cluster_setup(procs_cluster, protocol)
 
     # if protocol has responders config, assign proper ranges now
     if has_responders:

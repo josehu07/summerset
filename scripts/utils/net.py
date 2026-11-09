@@ -30,9 +30,9 @@ def get_interface_name(remote=None):
 
 def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto", remote=None):
     QLEN_LIMIT = 500000000
-    delay_args = f"delay {mean}ms" if mean > 0 else ""
-    jitter_args = f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
-    rate_args = f"rate {rate}gibit" if rate > 0 else ""
+    delay_args = ["delay", f"{mean}ms"] if mean > 0 else []
+    jitter_args = [f"{jitter}ms", "distribution", distribution] if mean > 0 and jitter > 0 else []
+    rate_args = ["rate", f"{rate}gibit"] if rate > 0 else []
     cmd = [
         "tc",
         "qdisc",
@@ -41,9 +41,9 @@ def set_tc_qdisc_netem(netns, dev, mean, jitter, rate, distribution="pareto", re
         dev,
         "root",
         "netem",
-        delay_args,
-        jitter_args,
-        rate_args,
+        *delay_args,
+        *jitter_args,
+        *rate_args,
     ]
     if netns is not None and len(netns) > 0:
         cmd = ["sudo", "ip", "netns", "exec", netns] + cmd + ["limit", str(QLEN_LIMIT)]
@@ -171,9 +171,9 @@ def add_tc_qdisc_band_netem(
     assert flowid.count(":") == 1 and flowid[-1] != ":"
     child = flowid.split(":")[-1] + "0:"
 
-    delay_args = f"delay {mean}ms" if mean > 0 else ""
-    jitter_args = f"{jitter}ms distribution {distribution}" if mean > 0 and jitter > 0 else ""
-    rate_args = f"rate {rate}gibit" if rate > 0 else ""
+    delay_args = ["delay", f"{mean}ms"] if mean > 0 else []
+    jitter_args = [f"{jitter}ms", "distribution", distribution] if mean > 0 and jitter > 0 else []
+    rate_args = ["rate", f"{rate}gibit"] if rate > 0 else []
     cmd = [
         "tc",
         "qdisc",
@@ -185,9 +185,9 @@ def add_tc_qdisc_band_netem(
         "handle",
         child,
         "netem",
-        delay_args,
-        jitter_args,
-        rate_args,
+        *delay_args,
+        *jitter_args,
+        *rate_args,
     ]
     cmd = ["sudo"] + cmd
 

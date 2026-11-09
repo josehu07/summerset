@@ -219,6 +219,7 @@ def run_clients(
 
 def main():
     utils.file.check_proper_cwd()
+    utils.proc.cleanup_on_exit()
 
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("-p", "--protocol", type=str, required=True, help="protocol name")
@@ -471,12 +472,7 @@ def main():
         all(rc != 0 for rc in rcs)
         or (
             is_timed_bench
-            and any(
-                map(
-                    lambda rc, sec: rc != 0 and sec < args.length_s * 0.9,
-                    zip(rcs, secs),
-                )
-            )
+            and any(rc != 0 and sec < args.length_s * 0.9 for rc, sec in zip(rcs, secs))
         )
         or ((not is_timed_bench) and any(rc != 0 for rc in rcs))
     ):
