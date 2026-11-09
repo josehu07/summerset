@@ -55,7 +55,8 @@ impl EtcdKvClient {
             [&self.server_addr.to_string()],
             Some(self.connect_opts.clone()),
         )
-        .await?;
+        .await
+        .map_err(SummersetError::msg)?;
 
         self.kv_client = Some(client.kv_client());
         Ok(())
@@ -80,7 +81,10 @@ impl EtcdKvClient {
             None
         };
 
-        let mut get_resp = kv_client.get(key, get_opts).await?;
+        let mut get_resp = kv_client
+            .get(key, get_opts)
+            .await
+            .map_err(SummersetError::msg)?;
         let value = if get_resp.count() == 0 {
             None
         } else {
@@ -105,7 +109,10 @@ impl EtcdKvClient {
         // always return previous value (as this is the behavior of Summerset)
         let put_opts = Some(etcdcli::PutOptions::new().with_prev_key());
 
-        let mut put_resp = kv_client.put(key, value, put_opts).await?;
+        let mut put_resp = kv_client
+            .put(key, value, put_opts)
+            .await
+            .map_err(SummersetError::msg)?;
         let old_value =
             if let Some(bytes) = put_resp.take_prev_key().map(|kv| kv.into_key_value().1) {
                 Some(String::from_utf8(bytes)?)

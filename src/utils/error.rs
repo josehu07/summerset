@@ -62,8 +62,6 @@ impl_from_error!(linreg::Error);
 impl_from_error!(tokio::task::JoinError);
 impl_from_error!(tokio::time::error::Elapsed);
 impl_from_error!(tokio::sync::mpsc::error::TryRecvError);
-impl_from_error!(zookeeper_client::Error);
-impl_from_error!(etcd_client::Error);
 impl_from_error!(rand::distr::uniform::Error);
 
 impl_from_error_generic!(tokio::sync::SetError<T>);

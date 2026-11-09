@@ -57,7 +57,8 @@ impl ZooKeeperSession {
             .builder
             .clone()
             .connect(&self.server_addr.to_string()[..])
-            .await?;
+            .await
+            .map_err(SummersetError::msg)?;
 
         // create Summerset Znode if not present
         let create_result = zk
@@ -70,7 +71,7 @@ impl ZooKeeperSession {
         if let Err(zkcli::Error::NodeExists) = create_result {
             // if it already exists, all good
         } else {
-            create_result?;
+            create_result.map_err(SummersetError::msg)?;
         }
 
         self.session = Some(zk);
@@ -98,7 +99,7 @@ impl ZooKeeperSession {
                 // node does not exist
                 return Ok(None);
             }
-            sync_result?;
+            sync_result.map_err(SummersetError::msg)?;
         }
 
         let get_result = session.get_data(&path).await;
@@ -108,7 +109,7 @@ impl ZooKeeperSession {
             // node does not exist
             Err(zkcli::Error::NoNode) => Ok(None),
             // error
-            Err(err) => Err(err.into()),
+            Err(err) => Err(SummersetError::msg(err)),
         }
     }
 
@@ -138,11 +139,11 @@ impl ZooKeeperSession {
                 // it could be that a concurrent client has created the Znode
                 // before my call, so consider it a success
             } else {
-                create_result?;
+                create_result.map_err(SummersetError::msg)?;
             }
         } else {
             // other errors are returned directly
-            set_result?;
+            set_result.map_err(SummersetError::msg)?;
         }
         Ok(())
     }
