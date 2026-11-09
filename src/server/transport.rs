@@ -26,8 +26,8 @@ use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
-    Bitmap, Codec, SummersetError, faults, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
-    tcp_connect_with_retry,
+    Bitmap, Codec, HANDSHAKE_TIMEOUT, SummersetError, faults, safe_tcp_read, safe_tcp_write,
+    tcp_bind_with_retry, tcp_connect_with_retry,
 };
 
 /// Peer-peer message wrapper type that includes leave notification variants.
@@ -75,8 +75,8 @@ pub(crate) struct TransportHub<Msg> {
     tx_connect: mpsc::UnboundedSender<(ReplicaId, SocketAddr)>,
 
     /// Receiver side of the connack channel, used when proactively connecting
-    /// to some peer.
-    rx_connack: mpsc::UnboundedReceiver<ReplicaId>,
+    /// to some peer, carrying the result of connecting.
+    rx_connack: mpsc::UnboundedReceiver<(ReplicaId, Result<(), SummersetError>)>,
 
     /// Map from peer ID -> peer messenger task join handles, shared with
     /// the peer acceptor task.
@@ -149,14 +149,12 @@ where
         peer_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
         self.tx_connect.send((id, peer_addr))?;
-        if let Some(ack_id) = self.rx_connack.recv().await {
-            if ack_id == id {
-                Ok(())
-            } else {
+        match self.rx_connack.recv().await {
+            Some((ack_id, result)) if ack_id == id => result,
+            Some((ack_id, _)) => {
                 logged_err!("peer ID mismatch: expected {}, got {}", id, ack_id)
             }
-        } else {
-            logged_err!("connack channel closed")
+            None => logged_err!("connack channel closed"),
         }
     }
 
@@ -325,14 +323,14 @@ where
     /// Receives a message from some peer by receiving from the recv channel.
     /// Returns a pair of `(peer_id, msg)` on success.
     pub(crate) async fn recv_msg(&mut self) -> Result<(ReplicaId, Msg), SummersetError> {
-        if let Some((id, peer_msg)) = self.rx_recv.recv().await {
-            if let PeerMessage::Msg { msg } = peer_msg {
-                Ok((id, msg))
-            } else {
-                logged_err!("unexpected peer message type")
+        loop {
+            match self.rx_recv.recv().await {
+                Some((id, PeerMessage::Msg { msg })) => return Ok((id, msg)),
+                // e.g., replies to my leave notifications, which are not
+                // waited for
+                Some((id, _)) => pf_debug!("ignoring non-Msg peer message <- {}", id),
+                None => return logged_err!("recv channel has been closed"),
             }
-        } else {
-            logged_err!("recv channel has been closed")
         }
     }
 
@@ -361,15 +359,13 @@ where
         #[allow(unused_variables)]
         let mut num_peers = 0;
         for entry in self.tx_sends.iter() {
-            let peer = *entry.key();
-            if peer == self.me {
+            if *entry.key() == self.me {
                 continue;
             }
 
-            // not skipped
-            self.tx_sends
-                .get(&peer)
-                .unwrap()
+            // not skipped; sends via the entry itself, as looking up the map
+            // again while iterating it may deadlock
+            entry
                 .value()
                 .send(PeerMessage::Leave)
                 .map_err(SummersetError::msg)?;
@@ -406,7 +402,7 @@ struct TransportHubAcceptorTask<Msg> {
     peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
 
     rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
-    tx_connack: mpsc::UnboundedSender<ReplicaId>,
+    tx_connack: mpsc::UnboundedSender<(ReplicaId, Result<(), SummersetError>)>,
 
     tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
@@ -427,7 +423,7 @@ where
         tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
         peer_messenger_handles: Arc<DashMap<ReplicaId, JoinHandle<()>>>,
         rx_connect: mpsc::UnboundedReceiver<(ReplicaId, SocketAddr)>,
-        tx_connack: mpsc::UnboundedSender<ReplicaId>,
+        tx_connack: mpsc::UnboundedSender<(ReplicaId, Result<(), SummersetError>)>,
         tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
     ) -> Self {
         // create an exit mpsc channel for getting notified about termination
@@ -454,13 +450,13 @@ where
         id: ReplicaId,
         conn_addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        pf_debug!("connecting to peer {} '{}'...", id, conn_addr);
-        let mut stream = tcp_connect_with_retry(conn_addr, 150).await?;
-        stream.write_u8(self.me).await?; // send my ID
-
         if self.peer_messenger_handles.contains_key(&id) {
             return logged_err!("duplicate peer ID to connect: {}", id);
         }
+
+        pf_debug!("connecting to peer {} '{}'...", id, conn_addr);
+        let mut stream = tcp_connect_with_retry(conn_addr, 150).await?;
+        stream.write_u8(self.me).await?; // send my ID
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
         self.tx_sends.insert(id, tx_send);
@@ -488,7 +484,7 @@ where
         mut stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        let id = stream.read_u8().await; // receive peer's ID
+        let id = time::timeout(HANDSHAKE_TIMEOUT, stream.read_u8()).await?; // receive peer's ID
         if let Err(e) = id {
             return logged_err!("error receiving new peer ID: {}", e);
         }
@@ -546,12 +542,10 @@ where
                         break; // channel gets closed and no messages remain
                     }
                     let (peer, conn_addr) = to_connect.unwrap();
-                    if let Err(e) = self.connect_new_peer(
-                        peer,
-                        conn_addr,
-                    ).await {
-                        pf_error!("error connecting to new peer: {}", e);
-                    } else if let Err(e) = self.tx_connack.send(peer) {
+                    // always acks with the result, so that the requester never
+                    // hangs waiting
+                    let result = self.connect_new_peer(peer, conn_addr).await;
+                    if let Err(e) = self.tx_connack.send((peer, result)) {
                         pf_error!("error sending to tx_connack: {}", e);
                     }
                 },
@@ -983,6 +977,35 @@ mod tests {
         assert!(hub.current_peers()?.get(2)?);
         barrier.wait().await;
         replica1.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_failure_acked() -> Result<(), SummersetError> {
+        let _hub1: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(1, 2, test_addr_at_offset(131), HashMap::new()).await?;
+        let mut hub0: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 2, test_addr_at_offset(130), HashMap::new()).await?;
+        hub0.connect_to_peer(1, test_addr_at_offset(131)).await?;
+        // connecting to the same peer again fails, instead of hanging
+        let connect = hub0.connect_to_peer(1, test_addr_at_offset(131));
+        let res = time::timeout(Duration::from_secs(5), connect).await;
+        assert!(res.map_err(SummersetError::msg)?.is_err());
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stalled_handshake_times_out() -> Result<(), SummersetError> {
+        let hub: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 2, test_addr_at_offset(132), HashMap::new()).await?;
+        // a connection that never sends its ID stalls accepting others only
+        // until the handshake deadline
+        let _stalled = TcpStream::connect(test_addr_at_offset(132)).await?;
+        let mut peer = TcpStream::connect(test_addr_at_offset(132)).await?;
+        peer.write_u8(1).await?;
+        time::timeout(Duration::from_secs(60), hub.wait_for_group(2))
+            .await
+            .map_err(SummersetError::msg)??;
         Ok(())
     }
 }

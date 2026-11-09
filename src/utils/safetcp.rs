@@ -14,6 +14,10 @@ use tokio::time::{self, Duration};
 
 use crate::utils::{CODEC_CONFIG, Codec, DECODE_SIZE_LIMIT, SummersetError, raise_fd_limit};
 
+/// Deadline for a new connection to finish its handshake, so that a stalled
+/// connection cannot block accepting others for long.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Receives an object of type `T` from TCP readable connection `conn_read`,
 /// using `read_buf` as buffer storage for partial reads. Returns:
 ///   - `Ok(obj)` if successful; upon returning, the read buffer is cleared
@@ -171,6 +175,7 @@ pub(crate) async fn tcp_bind_with_retry(
     mut retries: u8,
 ) -> Result<TcpListener, SummersetError> {
     raise_fd_limit();
+    let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
     loop {
         let socket = TcpSocket::new_v4()?;
         #[allow(
@@ -182,18 +187,13 @@ pub(crate) async fn tcp_bind_with_retry(
         socket.set_reuseport(true)?;
         socket.set_nodelay(true)?;
 
-        let bind_addr = (Ipv4Addr::UNSPECIFIED, bind_addr.port()).into();
-        if let Err(e) = socket.bind(bind_addr) {
-            eprintln!("Binding {} failed!", bind_addr);
-            eprintln!("Output of `ss` command:");
-            eprintln!("{}", get_ss_cmd_output().unwrap_or_else(|e| e.to_string()));
-            return Err(SummersetError::from(e));
-        }
-
-        match socket.listen(1024) {
+        match socket.bind(bind_addr).and_then(|()| socket.listen(1024)) {
             Ok(listener) => return Ok(listener),
             Err(err) => {
                 if retries == 0 {
+                    eprintln!("Binding {} failed!", bind_addr);
+                    eprintln!("Output of `ss` command:");
+                    eprintln!("{}", get_ss_cmd_output().unwrap_or_else(|e| e.to_string()));
                     return Err(err.into());
                 }
                 retries -= 1;

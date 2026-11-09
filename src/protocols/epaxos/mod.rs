@@ -728,17 +728,14 @@ impl GenericReplica for EPaxosReplica {
             self.heartbeater.kickoff_hear_timer(None)?;
         }
 
-        // main event loop
+        // main event loop; getting an event fails only if the task behind it
+        // is gone, in which case exit
         let mut paused = false;
         loop {
             tokio::select! {
                 // client request batch
                 req_batch = self.external_api.get_req_batch(), if !paused => {
-                    if let Err(e) = req_batch {
-                        pf_error!("error getting req batch: {}", e);
-                        continue;
-                    }
-                    let req_batch = req_batch.unwrap();
+                    let req_batch = req_batch?;
                     if let Err(e) = self.handle_req_batch(req_batch).await {
                         pf_error!("error handling req batch: {}", e);
                     }
@@ -746,11 +743,7 @@ impl GenericReplica for EPaxosReplica {
 
                 // durable logging result
                 log_result = self.storage_hub.get_result(), if !paused => {
-                    if let Err(e) = log_result {
-                        pf_error!("error getting log result: {}", e);
-                        continue;
-                    }
-                    let (log_ctx, log_result) = log_result.unwrap();
+                    let (log_ctx, log_result) = log_result?;
                     let slot = log_ctx.slot();
                     if let Err(e) = self.handle_log_result(log_ctx, log_result).await {
                         pf_error!("error handling log result for slot {}: {}", slot, e);
@@ -759,13 +752,7 @@ impl GenericReplica for EPaxosReplica {
 
                 // message from peer
                 msg = self.transport_hub.recv_msg(), if !paused => {
-                    if let Err(_e) = msg {
-                        // NOTE: commented out to prevent console lags
-                        //       during benchmarking
-                        // pf_error!("error receiving peer msg: {}", e);
-                        continue;
-                    }
-                    let (peer, msg) = msg.unwrap();
+                    let (peer, msg) = msg?;
                     if let Err(e) = self.handle_msg_recv(peer, msg).await {
                         pf_error!("error handling msg recv <- {}: {}", peer, e);
                     }
@@ -773,11 +760,7 @@ impl GenericReplica for EPaxosReplica {
 
                 // state machine execution result
                 cmd_result = self.state_machine.get_result(), if !paused => {
-                    if let Err(e) = cmd_result {
-                        pf_error!("error getting cmd result: {}", e);
-                        continue;
-                    }
-                    let (cmd_id, cmd_result) = cmd_result.unwrap();
+                    let (cmd_id, cmd_result) = cmd_result?;
                     if let Err(e) = self.handle_cmd_result(cmd_id, cmd_result).await {
                         pf_error!("error handling cmd result {}: {}", cmd_id, e);
                     }
@@ -785,11 +768,7 @@ impl GenericReplica for EPaxosReplica {
 
                 // heartbeat-related event
                 hb_event = self.heartbeater.get_event(), if !paused => {
-                    if let Err(e) = hb_event {
-                        pf_error!("error getting heartbeat event: {}", e);
-                        continue;
-                    }
-                    match hb_event.unwrap() {
+                    match hb_event? {
                         HeartbeatEvent::HearTimeout { peer } => {
                             if let Err(e) = self.heartbeat_timeout(peer).await {
                                 pf_error!("error taking care of hb_hear timeout: {}", e);

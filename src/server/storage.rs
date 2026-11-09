@@ -198,12 +198,15 @@ where
     }
 
     /// Waits for the next logging result by receiving from the ack channel.
-    /// Returns an error if the action failed.
+    /// Failed actions, already logged by the logger, are skipped.
     pub(crate) async fn get_result(&mut self) -> Result<(Ctx, LogResult<Ent>), SummersetError> {
-        match self.rx_ack.recv().await {
-            Some((Some(ctx), result)) => Ok((ctx, result?)),
-            Some((None, _)) => logged_err!("unexpected result of a synchronous action"),
-            None => logged_err!("ack channel has been closed"),
+        loop {
+            match self.rx_ack.recv().await {
+                Some((Some(ctx), Ok(result))) => return Ok((ctx, result)),
+                Some((Some(_), Err(_))) => {}
+                Some((None, _)) => pf_error!("unexpected result of a synchronous action"),
+                None => return logged_err!("ack channel has been closed"),
+            }
         }
     }
 
@@ -851,6 +854,7 @@ mod tests {
         let entry = TestEntry("abcdefgh".into());
         let entry_bytes = wincode::config::serialize(&entry, CODEC_CONFIG)?;
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
+        hub.submit_action(9, LogAction::Read { offset: 1 })?; // fails, skipped
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         hub.submit_action(2, LogAction::Truncate { offset: 0 })?;
         assert_eq!(

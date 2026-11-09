@@ -19,7 +19,9 @@ use wincode::{SchemaRead, SchemaWrite};
 
 use crate::client::ClientId;
 use crate::server::{Command, CommandResult, ReplicaId};
-use crate::utils::{Bitmap, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry};
+use crate::utils::{
+    Bitmap, HANDSHAKE_TIMEOUT, SummersetError, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry,
+};
 
 /// External API request ID type.
 pub type RequestId = u64;
@@ -386,7 +388,7 @@ impl ExternalApiAcceptorTask {
         mut stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
-        let id = match stream.read_u64().await {
+        let id = match time::timeout(HANDSHAKE_TIMEOUT, stream.read_u64()).await? {
             Ok(id) => id,
             Err(e) => {
                 return logged_err!("error receiving new client ID: {}", e);

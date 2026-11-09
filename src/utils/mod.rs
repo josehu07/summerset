@@ -34,7 +34,7 @@ pub use rscoding::RSCodeword;
 #[cfg(test)]
 pub(crate) use safetcp::test_addr_at_offset;
 pub(crate) use safetcp::{
-    safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
+    HANDSHAKE_TIMEOUT, safe_tcp_read, safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
 };
 pub use stopwatch::Stopwatch;
 pub use timer::Timer;

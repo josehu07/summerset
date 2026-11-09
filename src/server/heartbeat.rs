@@ -36,6 +36,10 @@ pub(crate) struct Heartbeater {
     /// Receiver side of the heartbeat timeout channel.
     rx_timeout: mpsc::UnboundedReceiver<ReplicaId>,
 
+    /// Sender side of the heartbeat timeout channel, kept so that the channel
+    /// stays open even with no hear timers (in a single-replica group).
+    _tx_timeout: mpsc::UnboundedSender<ReplicaId>,
+
     /// Minimum hearing timeout interval.
     hear_timeout_min: Duration,
 
@@ -115,6 +119,7 @@ impl Heartbeater {
             _population: population,
             hear_timers,
             rx_timeout,
+            _tx_timeout: tx_timeout,
             hear_timeout_min,
             hear_timeout_max,
             send_interval,
@@ -142,10 +147,8 @@ impl Heartbeater {
                             }
                             return Ok(HeartbeatEvent::HearTimeout {peer});
                         }
-                        return logged_err!(
-                            "peer {} not found in hear_timers",
-                            peer
-                        );
+                        pf_error!("peer {} not found in hear_timers", peer);
+                        continue;
                     }
                     return logged_err!("all timeout channel senders closed");
                 },
@@ -281,4 +284,25 @@ impl Heartbeater {
     }
 }
 
-// TODO: add Heartbeater module unit tests after fleshing it up
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn single_replica_no_events() -> Result<(), SummersetError> {
+        // with no peers to hear from, events never come, instead of errors
+        let mut heartbeater = Heartbeater::new_and_setup(
+            0,
+            1,
+            Duration::from_millis(100),
+            Duration::from_millis(200),
+            Duration::from_millis(50),
+        )?;
+        assert!(
+            time::timeout(Duration::from_secs(1), heartbeater.get_event())
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+}
