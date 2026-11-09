@@ -132,7 +132,7 @@ impl Cluster {
                 .unwrap()
                 .block_on(async {
                     let mut replica = protocol
-                        .new_server_replica_setup(api_addr, p2p_addr, manager, Some(&config))
+                        .new_server_replica_setup(api_addr, p2p_addr, manager, None, Some(&config))
                         .await?;
                     replica.run(rx_term.clone()).await
                 })

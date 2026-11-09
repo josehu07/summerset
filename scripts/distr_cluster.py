@@ -160,7 +160,15 @@ def wait_manager_setup(proc: utils.proc.DrainedPopen) -> None:
     )
 
 
-def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
+def compose_server_cmd(
+    protocol: str,
+    api_port: int,
+    p2p_port: int,
+    manager: str,
+    replica: int,
+    config: str | None,
+    release: bool,
+) -> list[str]:
     cmd = [f"./target/{'release' if release else 'debug'}/summerset_server"]
     cmd += [
         "-p",
@@ -173,6 +181,8 @@ def compose_server_cmd(protocol, api_port, p2p_port, manager, config, release):
         str(p2p_port),
         "-m",
         manager,
+        "--id",
+        str(replica),
     ]
     if config is not None and len(config) > 0:
         cmd += ["--config", config]
@@ -214,6 +224,7 @@ def launch_servers(
             SERVER_API_PORT(partition, replica),
             SERVER_P2P_PORT(partition, replica),
             manager_addr,
+            replica,
             config_with_defaults(
                 protocol,
                 config,

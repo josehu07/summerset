@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 use log::{self, LevelFilter};
-use summerset::{SmrProtocol, SummersetError, exit_with_parent, logger_init, pf_error};
+use summerset::{ReplicaId, SmrProtocol, SummersetError, exit_with_parent, logger_init, pf_error};
 use tokio::runtime::Builder;
 use tokio::sync::watch;
 
@@ -47,6 +47,11 @@ struct CliArgs {
     /// Cluster manager oracle's server-facing address.
     #[arg(short, long)]
     manager: SocketAddr,
+
+    /// Server ID to request from the manager, tying the server to its durable
+    /// state across restarts; if not given, the first vacant ID is assigned.
+    #[arg(long)]
+    id: Option<ReplicaId>,
 
     /// Number of tokio worker threads.
     #[arg(long, default_value_t = 16)]
@@ -147,7 +152,7 @@ fn server_main() -> Result<(), SummersetError> {
         // event loop logic
         runtime.block_on(async move {
             let mut replica = protocol
-                .new_server_replica_setup(api_addr, p2p_addr, args.manager, config_str)
+                .new_server_replica_setup(api_addr, p2p_addr, args.manager, args.id, config_str)
                 .await?;
 
             if replica.run(rx_term_clone).await? {
@@ -198,6 +203,7 @@ mod arg_tests {
             api_port: 40103,
             p2p_port: 40203,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 2,
             config: String::new(),
         };
@@ -213,6 +219,7 @@ mod arg_tests {
             api_port: 1023,
             p2p_port: 40200,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 2,
             config: String::new(),
         };
@@ -228,6 +235,7 @@ mod arg_tests {
             api_port: 40100,
             p2p_port: 1023,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 2,
             config: String::new(),
         };
@@ -243,6 +251,7 @@ mod arg_tests {
             api_port: 40100,
             p2p_port: 40100,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 2,
             config: String::new(),
         };
@@ -258,6 +267,7 @@ mod arg_tests {
             api_port: 40100,
             p2p_port: 40200,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 2,
             config: String::new(),
         };
@@ -273,6 +283,7 @@ mod arg_tests {
             api_port: 40100,
             p2p_port: 40200,
             manager: "127.0.0.1:40000".parse()?,
+            id: None,
             threads: 1,
             config: String::new(),
         };

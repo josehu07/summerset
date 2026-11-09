@@ -7,18 +7,19 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
+use tokio::time;
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::protocols::SmrProtocol;
 use crate::server::ReplicaId;
 use crate::utils::{
-    ConfNum, Faults, RespondersConf, SummersetError, safe_tcp_read, safe_tcp_write,
-    tcp_bind_with_retry,
+    ConfNum, Faults, HANDSHAKE_TIMEOUT, RespondersConf, SummersetError, safe_tcp_read,
+    safe_tcp_write, tcp_bind_with_retry,
 };
 
 /// Control message from/to servers. Control traffic could be bidirectional:
@@ -109,12 +110,13 @@ pub(crate) struct ServerReigner {
 // ServerReigner public API implementation
 impl ServerReigner {
     /// Creates a new server-facing controller module. Spawns the server
-    /// acceptor task. Creates a pair of ID assignment channels. Creates
+    /// acceptor task. Creates a pair of ID assignment channels, carrying the
+    /// requested ID (if any) and the assignment (`None` if failed). Creates
     /// a recv channel for buffering incoming control messages.
     pub(crate) async fn new_and_setup(
         srv_addr: SocketAddr,
-        tx_id_assign: mpsc::UnboundedSender<()>,
-        rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+        tx_id_assign: mpsc::UnboundedSender<Option<ReplicaId>>,
+        rx_id_result: mpsc::UnboundedReceiver<Option<(ReplicaId, u8)>>,
     ) -> Result<Self, SummersetError> {
         let (tx_recv, rx_recv) = mpsc::unbounded_channel();
 
@@ -178,8 +180,8 @@ impl ServerReigner {
 
 /// `ServerReigner` server acceptor task.
 struct ServerReignerAcceptorTask {
-    tx_id_assign: mpsc::UnboundedSender<()>,
-    rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+    tx_id_assign: mpsc::UnboundedSender<Option<ReplicaId>>,
+    rx_id_result: mpsc::UnboundedReceiver<Option<(ReplicaId, u8)>>,
 
     tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
     tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>>,
@@ -194,8 +196,8 @@ struct ServerReignerAcceptorTask {
 impl ServerReignerAcceptorTask {
     /// Creates the server acceptor task.
     fn new(
-        tx_id_assign: mpsc::UnboundedSender<()>,
-        rx_id_result: mpsc::UnboundedReceiver<(ReplicaId, u8)>,
+        tx_id_assign: mpsc::UnboundedSender<Option<ReplicaId>>,
+        rx_id_result: mpsc::UnboundedReceiver<Option<(ReplicaId, u8)>>,
 
         tx_recv: mpsc::UnboundedSender<(ReplicaId, CtrlMsg)>,
         tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<CtrlMsg>>>,
@@ -225,13 +227,15 @@ impl ServerReignerAcceptorTask {
         mut stream: TcpStream,
         addr: SocketAddr,
     ) -> Result<(), SummersetError> {
+        // receive the server ID it requests, if any
+        let requested = time::timeout(HANDSHAKE_TIMEOUT, stream.read_u8()).await??;
+        let requested = (requested != ReplicaId::MAX).then_some(requested);
+
         // communicate with the manager's main task to get assigned server ID
-        self.tx_id_assign.send(())?;
-        let (id, population) = self
-            .rx_id_result
-            .recv()
-            .await
-            .ok_or(SummersetError::msg("failed to get server ID assignment"))?;
+        self.tx_id_assign.send(requested)?;
+        let Some((id, population)) = self.rx_id_result.recv().await.flatten() else {
+            return logged_err!("failed to get server ID assignment");
+        };
 
         // first send server ID assignment
         if let Err(e) = stream.write_u8(id).await {
@@ -551,7 +555,7 @@ mod tests {
         let replica0 = tokio::spawn(async move {
             // replica 0
             setup_bar0.wait().await;
-            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(19)).await?;
+            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(19), None).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -575,7 +579,7 @@ mod tests {
             // replica 1
             setup_bar1.wait().await;
             server1_bar1.wait().await;
-            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(19)).await?;
+            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(19), None).await?;
             assert_eq!(hub.me, 1);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -603,7 +607,7 @@ mod tests {
         setup_bar.wait().await;
         // recv message from server 0
         rx_id_assign.recv().await;
-        tx_id_result.send((0, 2))?;
+        tx_id_result.send(Some((0, 2)))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);
         assert_eq!(
@@ -625,7 +629,7 @@ mod tests {
         )?;
         // recv message from server 1
         rx_id_assign.recv().await;
-        tx_id_result.send((1, 2))?;
+        tx_id_result.send(Some((1, 2)))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 1);
         assert_eq!(
@@ -657,7 +661,7 @@ mod tests {
         let replica = tokio::spawn(async move {
             // replica
             barrier2.wait().await;
-            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(119)).await?;
+            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(119), None).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager without waiting for its reply
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -685,7 +689,7 @@ mod tests {
         barrier.wait().await;
         // recv first message from server
         rx_id_assign.recv().await;
-        tx_id_result.send((0, 1))?;
+        tx_id_result.send(Some((0, 1)))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);
         assert_eq!(
@@ -720,7 +724,7 @@ mod tests {
         let replica0 = tokio::spawn(async move {
             // replica 0
             barrier2.wait().await;
-            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(219)).await?;
+            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(219), None).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -741,7 +745,7 @@ mod tests {
             hub.send_ctrl(CtrlMsg::Leave)?;
             assert_eq!(hub.recv_ctrl().await?, CtrlMsg::LeaveReply);
             time::sleep(Duration::from_millis(100)).await;
-            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(219)).await?;
+            let mut hub = ControlHub::new_and_setup(test_addr_at_offset(219), None).await?;
             assert_eq!(hub.me, 0);
             // send a message to manager
             hub.send_ctrl(CtrlMsg::NewServerJoin {
@@ -769,7 +773,7 @@ mod tests {
         barrier.wait().await;
         // recv message from server 0
         rx_id_assign.recv().await;
-        tx_id_result.send((0, 1))?;
+        tx_id_result.send(Some((0, 1)))?;
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);
         assert_eq!(
@@ -790,7 +794,7 @@ mod tests {
             id,
         )?;
         rx_id_assign.recv().await;
-        tx_id_result.send((0, 1))?;
+        tx_id_result.send(Some((0, 1)))?;
         // recv message from server 0
         let (id, msg) = reigner.recv_ctrl().await?;
         assert_eq!(id, 0);

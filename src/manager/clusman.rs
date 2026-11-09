@@ -47,10 +47,10 @@ pub struct ClusterManager {
     population: u8,
 
     /// Receiver side of the server ID assignment channel.
-    rx_id_assign: mpsc::UnboundedReceiver<()>,
+    rx_id_assign: mpsc::UnboundedReceiver<Option<ReplicaId>>,
 
     /// Sender side of the server ID assignment result channel.
-    tx_id_result: mpsc::UnboundedSender<(ReplicaId, u8)>,
+    tx_id_result: mpsc::UnboundedSender<Option<(ReplicaId, u8)>>,
 
     /// Information of current active servers.
     servers_info: HashMap<ReplicaId, ServerInfo>,
@@ -109,17 +109,28 @@ impl ClusterManager {
         })
     }
 
-    /// Assign the first vacant server ID to a new server.
-    fn assign_server_id(&mut self) -> Result<(), SummersetError> {
-        for id in 0..self.population {
-            if !self.assigned_ids.contains(&id) {
-                self.tx_id_result.send((id, self.population))?;
-                self.assigned_ids.insert(id);
-                return Ok(());
+    /// Assigns a server ID to a new server: the requested one if given, else
+    /// the first vacant one.
+    fn assign_server_id(&mut self, requested: Option<ReplicaId>) -> Result<(), SummersetError> {
+        let id = match requested {
+            // a server requesting an assigned ID is taken as that server
+            // rejoining (e.g., restarted after a crash), superseding its info
+            Some(id) if id < self.population => {
+                self.servers_info.remove(&id);
+                Some(id)
             }
-        }
+            Some(_) => None,
+            None => (0..self.population).find(|id| !self.assigned_ids.contains(id)),
+        };
 
-        logged_err!("no server ID < population left available")
+        // always replies, so that the server does not wait forever
+        self.tx_id_result.send(id.map(|id| (id, self.population)))?;
+        if let Some(id) = id {
+            self.assigned_ids.insert(id);
+            Ok(())
+        } else {
+            logged_err!("no server ID available for request {:?}", requested)
+        }
     }
 
     /// Main event loop logic of the cluster manager. Breaks out of the loop
@@ -128,36 +139,29 @@ impl ClusterManager {
         loop {
             tokio::select! {
                 // receiving server ID assignment request
-                _ = self.rx_id_assign.recv() => {
-                    if let Err(e) = self.assign_server_id() {
+                requested = self.rx_id_assign.recv() => {
+                    let Some(requested) = requested else {
+                        return logged_err!("ID assignment channel has been closed");
+                    };
+                    if let Err(e) = self.assign_server_id(requested) {
                         pf_error!("error assigning new server ID: {}", e);
                     }
                 },
 
-                // receiving server control message
+                // receiving server control message; fails only if the task
+                // behind it is gone, in which case exit
                 ctrl_msg = self.server_reigner.recv_ctrl() => {
-                    if let Err(_e) = ctrl_msg {
-                        // NOTE: commented out to prevent console lags
-                        //       during benchmarking
-                        // pf_error!("error receiving ctrl msg: {}", e);
-                        continue;
-                    }
-                    let (server, msg) = ctrl_msg.unwrap();
+                    let (server, msg) = ctrl_msg?;
                     if let Err(e) = self.handle_ctrl_msg(server, msg).await {
                         pf_error!("error handling ctrl msg <- {}: {}",
                                        server, e);
                     }
                 },
 
-                // receiving client control request
+                // receiving client control request; fails only if the task
+                // behind it is gone, in which case exit
                 ctrl_req = self.client_reactor.recv_req() => {
-                    if let Err(_e) = ctrl_req {
-                        // NOTE: commented out to prevent console lags
-                        //       during benchmarking
-                        // pf_error!("error receiving ctrl req: {}", e);
-                        continue;
-                    }
-                    let (client, req) = ctrl_req.unwrap();
+                    let (client, req) = ctrl_req?;
                     if let Err(e) = self.handle_ctrl_req(client, req).await {
                         pf_error!("error handling ctrl req <- {}: {}",
                                        client, e);
@@ -395,8 +399,8 @@ impl ClusterManager {
             self.servers_info.remove(&s);
 
             // wait for the new server ID assignment request from it
-            self.rx_id_assign.recv().await;
-            if let Err(e) = self.assign_server_id() {
+            let requested = self.rx_id_assign.recv().await.flatten();
+            if let Err(e) = self.assign_server_id(requested) {
                 return logged_err!("error assigning new server ID: {}", e);
             }
 

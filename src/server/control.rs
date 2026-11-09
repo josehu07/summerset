@@ -3,7 +3,7 @@
 use std::net::SocketAddr;
 
 use bytes::BytesMut;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
@@ -38,13 +38,17 @@ impl ControlHub {
     /// Creates a new control message handler module. Connects to the cluster
     /// manager and getting assigned my server ID. Spawns the control messenger
     /// task. Creates a send channel for proactively sending control messages
-    /// and a recv channel for buffering incoming control messages. Returns the
-    /// assigned server ID on success.
-    pub(crate) async fn new_and_setup(manager: SocketAddr) -> Result<Self, SummersetError> {
+    /// and a recv channel for buffering incoming control messages. Requests
+    /// server ID `id` if given. Returns the assigned server ID on success.
+    pub(crate) async fn new_and_setup(
+        manager: SocketAddr,
+        id: Option<ReplicaId>,
+    ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and receive my assigned server ID
         pf_debug!("connecting to manager '{}'...", manager);
         let mut stream = tcp_connect_with_retry(manager, 150).await?;
-        let id = stream.read_u8().await?; // first receive assigned server ID
+        stream.write_u8(id.unwrap_or(ReplicaId::MAX)).await?; // request ID, if any
+        let id = stream.read_u8().await?; // then receive assigned server ID
         let population = stream.read_u8().await?; // then receive population
         pf_debug!("assigned server ID: {} of {}", id, population);
 

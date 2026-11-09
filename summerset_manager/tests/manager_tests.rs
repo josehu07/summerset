@@ -116,7 +116,13 @@ fn spawn_server(manager: SocketAddr, wal: &Path) {
             .unwrap()
             .block_on(async {
                 let mut replica = SmrProtocol::RepNothing
-                    .new_server_replica_setup(free_addr(), free_addr(), manager, Some(&config))
+                    .new_server_replica_setup(
+                        free_addr(),
+                        free_addr(),
+                        manager,
+                        None,
+                        Some(&config),
+                    )
                     .await?;
                 replica.run(rx_term.clone()).await
             })

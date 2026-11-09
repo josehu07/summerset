@@ -781,10 +781,11 @@ impl GenericReplica for CrosswordReplica {
         api_addr: SocketAddr,
         p2p_addr: SocketAddr,
         manager: SocketAddr,
+        id: Option<ReplicaId>,
         config_str: Option<&str>,
     ) -> Result<Self, SummersetError> {
         // connect to the cluster manager and get assigned a server ID
-        let mut control_hub = ControlHub::new_and_setup(manager).await?;
+        let mut control_hub = ControlHub::new_and_setup(manager, id).await?;
         let id = control_hub.me;
         let population = control_hub.population;
 

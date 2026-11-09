@@ -20,7 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration};
 use wincode::{SchemaRead, SchemaWrite};
 
@@ -406,8 +406,8 @@ struct TransportHubAcceptorTask<Msg> {
 
     tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
-    tx_exit: mpsc::UnboundedSender<ReplicaId>,
-    rx_exit: mpsc::UnboundedReceiver<ReplicaId>,
+    tx_exit: mpsc::UnboundedSender<(ReplicaId, task::Id)>,
+    rx_exit: mpsc::UnboundedReceiver<(ReplicaId, task::Id)>,
 }
 
 impl<Msg> TransportHubAcceptorTask<Msg>
@@ -490,8 +490,11 @@ where
         }
         let id = id.unwrap();
 
-        if self.peer_messenger_handles.contains_key(&id) {
-            return logged_err!("duplicate peer ID listened: {}", id);
+        // a peer reconnecting under the same ID (e.g., restarted after a
+        // crash) supersedes its previous connection, which may not have
+        // noticed the crash yet
+        if let Some((_, messenger)) = self.peer_messenger_handles.remove(&id) {
+            messenger.abort();
         }
 
         let (tx_send, rx_send) = mpsc::unbounded_channel();
@@ -514,16 +517,16 @@ where
         Ok(())
     }
 
-    /// Removes handles of a left peer connection.
-    fn remove_left_peer(&mut self, id: ReplicaId) -> Result<(), SummersetError> {
-        if !self.tx_sends.contains_key(&id) {
-            return logged_err!("peer {} not found among connected ones", id);
+    /// Removes handles of a left peer connection, unless a newer connection
+    /// of the same peer has superseded it.
+    fn remove_left_peer(&mut self, id: ReplicaId, messenger: task::Id) {
+        if self
+            .peer_messenger_handles
+            .remove_if(&id, |_, handle| handle.id() == messenger)
+            .is_some()
+        {
+            self.tx_sends.remove(&id);
         }
-        self.tx_sends.remove(&id);
-
-        self.peer_messenger_handles.remove(&id);
-
-        Ok(())
     }
 
     /// Starts the peer acceptor task loop.
@@ -566,13 +569,9 @@ where
                 },
 
                 // a peer messenger task exits
-                id = self.rx_exit.recv() => {
-                    let id = id.unwrap();
-                    if let Err(e) = self.remove_left_peer(
-                        id,
-                    ) {
-                        pf_error!("error removing left peer {}: {}", id, e);
-                    }
+                exited = self.rx_exit.recv() => {
+                    let (id, messenger) = exited.unwrap();
+                    self.remove_left_peer(id, messenger);
                 },
             }
         }
@@ -601,7 +600,7 @@ struct TransportHubMessengerTask<Msg> {
 
     tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
-    tx_exit: mpsc::UnboundedSender<ReplicaId>,
+    tx_exit: mpsc::UnboundedSender<(ReplicaId, task::Id)>,
 }
 
 // TransportHub peer_messenger task implementation
@@ -617,7 +616,7 @@ where
         rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
-        tx_exit: mpsc::UnboundedSender<ReplicaId>,
+        tx_exit: mpsc::UnboundedSender<(ReplicaId, task::Id)>,
     ) -> Self {
         let (conn_read, conn_write) = conn.into_split();
 
@@ -813,7 +812,7 @@ where
             }
         }
 
-        if let Err(e) = self.tx_exit.send(self.id) {
+        if let Err(e) = self.tx_exit.send((self.id, task::id())) {
             pf_error!("error sending exit signal for {}: {}", self.id, e);
         } else {
             // keep the send channel open (discarding messages to the departed
@@ -991,6 +990,34 @@ mod tests {
         let connect = hub0.connect_to_peer(1, test_addr_at_offset(131));
         let res = time::timeout(Duration::from_secs(5), connect).await;
         assert!(res.map_err(SummersetError::msg)?.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn peer_reconnect_supersedes() -> Result<(), SummersetError> {
+        let mut hub0: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 2, test_addr_at_offset(140), HashMap::new()).await?;
+        let mut stale: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(1, 2, test_addr_at_offset(141), HashMap::new()).await?;
+        stale.connect_to_peer(0, test_addr_at_offset(140)).await?;
+        // peer 1 restarts while its previous connection is still open, and
+        // the new connection takes over
+        let mut hub1: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(1, 2, test_addr_at_offset(142), HashMap::new()).await?;
+        hub1.connect_to_peer(0, test_addr_at_offset(140)).await?;
+        hub1.send_msg(TestMsg("hello".into()), 0)?;
+        let recv = time::timeout(Duration::from_secs(5), hub0.recv_msg()).await;
+        assert_eq!(
+            recv.map_err(SummersetError::msg)??,
+            (1, TestMsg("hello".into()))
+        );
+        hub0.send_msg(TestMsg("world".into()), 1)?;
+        let recv = time::timeout(Duration::from_secs(5), hub1.recv_msg()).await;
+        assert_eq!(
+            recv.map_err(SummersetError::msg)??,
+            (0, TestMsg("world".into()))
+        );
+        assert!(stale.try_recv_msg().is_err()); // got nothing
         Ok(())
     }
 

@@ -133,7 +133,13 @@ async fn start(dir: &Path) -> (SocketAddr, Box<dyn GenericEndpoint>) {
             .unwrap()
             .block_on(async {
                 let mut replica = SmrProtocol::RepNothing
-                    .new_server_replica_setup(free_addr(), free_addr(), srv_addr, Some(&config))
+                    .new_server_replica_setup(
+                        free_addr(),
+                        free_addr(),
+                        srv_addr,
+                        None,
+                        Some(&config),
+                    )
                     .await?;
                 replica.run(rx_term.clone()).await
             })

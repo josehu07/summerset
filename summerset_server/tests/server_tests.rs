@@ -107,10 +107,9 @@ async fn request(ep: &mut dyn GenericEndpoint, id: u64, cmd: Command) -> Command
     }
 }
 
-/// Starts an in-process manager and the server executable with given extra
-/// config (`+`-prefixed), returning the server and a client endpoint connected
-/// to it once it has joined.
-async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
+/// Starts an in-process manager of a single-server cluster, returning its
+/// server-facing and client-facing addresses.
+async fn start_manager() -> (SocketAddr, SocketAddr) {
     let (srv_addr, cli_addr) = (free_addr(), free_addr());
     let mut manager =
         within(SmrProtocol::RepNothing.new_cluster_manager_setup(srv_addr, cli_addr, 1))
@@ -121,13 +120,33 @@ async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
         let _tx_term = tx_term; // run until the test ends
         manager.run(rx_term).await
     });
+    (srv_addr, cli_addr)
+}
 
-    let server = spawn(&mut exe(&format!(
-        "-p RepNothing -b 127.0.0.1 -a {} -i {} -m {srv_addr} --threads 2 --config backer_path='{}'{config}",
+/// Composes args for the server executable to join the manager at `srv_addr`
+/// as server `id`, with fresh ports, its files under `dir`, and given extra
+/// config (`+`-prefixed).
+fn server_args(dir: &Path, srv_addr: SocketAddr, id: u8, config: &str) -> String {
+    format!(
+        "-p RepNothing -b 127.0.0.1 -a {} -i {} -m {srv_addr} --id {id} --threads 2 --config backer_path='{}'{config}",
         free_addr().port(),
         free_addr().port(),
         dir.join("wal").display()
-    )));
+    )
+}
+
+/// Starts an in-process manager and the server executable with given extra
+/// config (`+`-prefixed), returning the server and a client endpoint connected
+/// to it once it has joined.
+async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
+    let (srv_addr, cli_addr) = start_manager().await;
+    let server = spawn(&mut exe(&server_args(dir, srv_addr, 0, config)));
+    (server, connect_client(cli_addr).await)
+}
+
+/// Returns a client endpoint of the manager at `cli_addr`, connected to the
+/// server once it has joined.
+async fn connect_client(cli_addr: SocketAddr) -> Box<dyn GenericEndpoint> {
     let mut ep = within(SmrProtocol::RepNothing.new_client_endpoint(cli_addr, None))
         .await
         .unwrap();
@@ -140,7 +159,7 @@ async fn start(dir: &Path, config: &str) -> (Child, Box<dyn GenericEndpoint>) {
     })
     .await;
     within(ep.connect()).await.unwrap();
-    (server, ep)
+    ep
 }
 
 #[tokio::test]
@@ -185,6 +204,39 @@ async fn reset_restarts_in_place() {
             value: Some("v".into())
         }
     );
+}
+
+#[tokio::test]
+async fn killed_server_rejoins() {
+    let dir = TempDir::new().unwrap();
+    let (srv_addr, cli_addr) = start_manager().await;
+    let args = server_args(dir.path(), srv_addr, 0, "");
+    let mut server = spawn(&mut exe(&args));
+    let mut ep = connect_client(cli_addr).await;
+    request(ep.as_mut(), 0, put_command("k", "v")).await;
+    within(ep.leave(false)).await.unwrap();
+
+    // a real crash, unknown to the manager: restarted under its ID, the server
+    // rejoins with its durable state
+    within(server.kill()).await.unwrap();
+    let _server = spawn(&mut exe(&args));
+    within(ep.connect()).await.unwrap();
+    let get = Command::Get { key: "k".into() };
+    assert_eq!(
+        request(ep.as_mut(), 1, get).await,
+        CommandResult::Get {
+            value: Some("v".into())
+        }
+    );
+}
+
+#[tokio::test]
+async fn unavailable_id_rejected() {
+    let dir = TempDir::new().unwrap();
+    let (srv_addr, _) = start_manager().await;
+    // the manager replies to the request instead of leaving it waiting
+    let args = server_args(dir.path(), srv_addr, 1, "");
+    assert!(!exits_ok(&mut spawn(&mut exe(&args))).await);
 }
 
 #[tokio::test]
