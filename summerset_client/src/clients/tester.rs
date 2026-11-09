@@ -244,7 +244,7 @@ impl ClientTester {
     /// Sends a control request to the manager and waits for its reply, failing
     /// if there is none within a generous bound (e.g., as a server died).
     async fn ctrl(&mut self, req: CtrlRequest) -> Result<CtrlReply, SummersetError> {
-        self.driver.ctrl_stub().send_req_insist(&req)?;
+        self.driver.ctrl_stub().send_req_insist(&req).await?;
         time::timeout(
             Duration::from_secs(30),
             self.driver.ctrl_stub().recv_reply(),

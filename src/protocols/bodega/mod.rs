@@ -946,6 +946,10 @@ pub(crate) struct BodegaClient {
     /// with retrying.
     last_server_id: Option<ReplicaId>,
 
+    /// Read falling back on the leader after a failed read-only optimization,
+    /// kept until sent so that a cancelled `recv_reply()` resumes it.
+    read_retry: Option<ApiRequest>,
+
     /// Map from all pending read commands' request IDs -> their command key
     /// and their corresponding try-leader timer.
     pending_reads: HashMap<RequestId, (String, Timer)>,
@@ -994,6 +998,7 @@ impl GenericEndpoint for BodegaClient {
             curr_server_id,
             near_server_id: None,
             last_server_id: None,
+            read_retry: None,
             pending_reads: HashMap::new(),
             tx_try_leader,
             rx_try_leader,
@@ -1010,10 +1015,9 @@ impl GenericEndpoint for BodegaClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-        while !sent {
-            sent = self.ctrl_stub.send_req(None)?;
-        }
+        self.ctrl_stub
+            .send_req_insist(&CtrlRequest::QueryInfo)
+            .await?;
 
         let reply = self.ctrl_stub.recv_reply().await?;
         if let CtrlReply::QueryInfo {
@@ -1063,10 +1067,10 @@ impl GenericEndpoint for BodegaClient {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to all servers
         for (id, api_stub) in self.api_stubs.drain() {
-            let mut sent = api_stub.borrow_mut().send_req(Some(&ApiRequest::Leave))?;
-            while !sent {
-                sent = api_stub.borrow_mut().send_req(None)?;
-            }
+            api_stub
+                .borrow_mut()
+                .send_req_insist(&ApiRequest::Leave)
+                .await?;
 
             // NOTE: commented out the following wait to avoid accidental
             //       hanging upon leaving
@@ -1076,10 +1080,7 @@ impl GenericEndpoint for BodegaClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            while !sent {
-                sent = self.ctrl_stub.send_req(None)?;
-            }
+            self.ctrl_stub.send_req_insist(&CtrlRequest::Leave).await?;
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
             pf_debug!("left manager connection");
@@ -1096,7 +1097,7 @@ impl GenericEndpoint for BodegaClient {
                 if let Some(last_server_id) = self.last_server_id {
                     last_server_id
                 } else {
-                    return logged_err!("last_server_id not set when retrying");
+                    return Ok(true); // nothing blocked left to retry
                 }
             }
             Some(req) if req.read_only().is_some() && self.near_server_id.is_some() => {
@@ -1163,6 +1164,23 @@ impl GenericEndpoint for BodegaClient {
         // loop instead of recursing on read-only retries, which could repeat
         // many times under leader churn and overflow the stack
         loop {
+            // send a read falling back on the leader once no earlier send is
+            // blocked; if this one blocks too, it is retried as such
+            if self.read_retry.is_some() {
+                if self.last_server_id.is_some() && !self.send_req(None)? {
+                    time::sleep(Duration::from_millis(5)).await; // slack
+                    continue;
+                }
+                let req = self.read_retry.take().unwrap();
+                let curr = self.curr_server_id;
+                let Some(api_stub) = self.api_stubs.get(&curr) else {
+                    return logged_err!("server_id {} not in api_stubs", curr);
+                };
+                if !api_stub.borrow_mut().send_req(Some(&req))? {
+                    self.last_server_id = Some(curr);
+                }
+            }
+
             if !self.api_stubs.contains_key(&self.curr_server_id) {
                 return Err(SummersetError::msg(format!(
                     "server_id {} not in api_stubs",
@@ -1289,20 +1307,10 @@ impl GenericEndpoint for BodegaClient {
                     if read_cmd.read_only().is_none() {
                         return logged_err!("non-Get command found in reply rq_retry");
                     }
-                    while self.last_server_id.is_some() {
-                        self.send_req(None)?;
-                        if self.last_server_id.is_some() {
-                            time::sleep(Duration::from_millis(5)).await; // slack
-                        }
-                    }
-                    self.api_stubs
-                        .get(&self.curr_server_id)
-                        .unwrap()
-                        .borrow_mut()
-                        .send_req(Some(&ApiRequest::Req {
-                            id: req_id,
-                            cmd: read_cmd,
-                        }))?;
+                    self.read_retry = Some(ApiRequest::Req {
+                        id: req_id,
+                        cmd: read_cmd,
+                    });
                     continue;
                 }
             }

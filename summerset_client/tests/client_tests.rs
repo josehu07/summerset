@@ -100,6 +100,7 @@ async fn run_client(manager: SocketAddr, utility: &str, params: &str) -> bool {
 async fn servers(ep: &mut dyn GenericEndpoint) -> HashMap<ReplicaId, ServerInfo> {
     ep.ctrl_stub()
         .send_req_insist(&CtrlRequest::QueryInfo)
+        .await
         .unwrap();
     match within(ep.ctrl_stub().recv_reply()).await.unwrap() {
         CtrlReply::QueryInfo { servers_info, .. } => servers_info,

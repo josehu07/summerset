@@ -490,10 +490,9 @@ impl GenericEndpoint for ChainRepClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-        while !sent {
-            sent = self.ctrl_stub.send_req(None)?;
-        }
+        self.ctrl_stub
+            .send_req_insist(&CtrlRequest::QueryInfo)
+            .await?;
 
         let reply = self.ctrl_stub.recv_reply().await?;
         if let CtrlReply::QueryInfo {
@@ -560,10 +559,7 @@ impl GenericEndpoint for ChainRepClient {
             self.mid_api_stubs.insert(self.tail_id, api_stub);
         }
         for (id, mut api_stub) in self.mid_api_stubs.drain() {
-            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
-            while !sent {
-                sent = api_stub.send_req(None)?;
-            }
+            api_stub.send_req_insist(&ApiRequest::Leave).await?;
 
             // NOTE: commented out the following wait to avoid accidental
             //       hanging upon leaving
@@ -573,10 +569,7 @@ impl GenericEndpoint for ChainRepClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            while !sent {
-                sent = self.ctrl_stub.send_req(None)?;
-            }
+            self.ctrl_stub.send_req_insist(&CtrlRequest::Leave).await?;
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
             pf_debug!("left manager connection");
@@ -594,11 +587,14 @@ impl GenericEndpoint for ChainRepClient {
 
         debug_assert!(self.head_api_stub.is_some());
         debug_assert!(self.tail_api_stub.is_some());
-        if read_only {
-            self.tail_api_stub.as_mut().unwrap().send_req(req)
+        let success = if read_only {
+            self.tail_api_stub.as_mut().unwrap().send_req(req)?
         } else {
-            self.head_api_stub.as_mut().unwrap().send_req(req)
-        }
+            self.head_api_stub.as_mut().unwrap().send_req(req)?
+        };
+        // a retry goes to the same server as the failed send
+        self.last_read_only = !success && read_only;
+        Ok(success)
     }
 
     async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {

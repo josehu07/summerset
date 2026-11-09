@@ -325,10 +325,9 @@ impl GenericEndpoint for RepNothingClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-        while !sent {
-            sent = self.ctrl_stub.send_req(None)?;
-        }
+        self.ctrl_stub
+            .send_req_insist(&CtrlRequest::QueryInfo)
+            .await?;
 
         let reply = self.ctrl_stub.recv_reply().await?;
         if let CtrlReply::QueryInfo {
@@ -364,10 +363,7 @@ impl GenericEndpoint for RepNothingClient {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to current connected server
         if let Some(mut api_stub) = self.api_stub.take() {
-            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
-            while !sent {
-                sent = api_stub.send_req(None)?;
-            }
+            api_stub.send_req_insist(&ApiRequest::Leave).await?;
 
             while api_stub.recv_reply().await? != ApiReply::Leave {}
             pf_debug!("left current server connection");
@@ -375,10 +371,7 @@ impl GenericEndpoint for RepNothingClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            while !sent {
-                sent = self.ctrl_stub.send_req(None)?;
-            }
+            self.ctrl_stub.send_req_insist(&CtrlRequest::Leave).await?;
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
             pf_debug!("left manager connection");

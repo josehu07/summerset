@@ -810,6 +810,10 @@ pub(crate) struct RSPaxosClient {
     /// Current server ID to talk to.
     server_id: ReplicaId,
 
+    /// Last server ID I sent something to unsuccessfully; used here to help
+    /// with retrying.
+    last_server_id: Option<ReplicaId>,
+
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
@@ -839,6 +843,7 @@ impl GenericEndpoint for RSPaxosClient {
             _config: config,
             servers: HashMap::new(),
             server_id: init_server_id,
+            last_server_id: None,
             ctrl_stub,
             api_stubs: HashMap::new(),
         })
@@ -851,10 +856,9 @@ impl GenericEndpoint for RSPaxosClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-        while !sent {
-            sent = self.ctrl_stub.send_req(None)?;
-        }
+        self.ctrl_stub
+            .send_req_insist(&CtrlRequest::QueryInfo)
+            .await?;
 
         let reply = self.ctrl_stub.recv_reply().await?;
         if let CtrlReply::QueryInfo {
@@ -890,10 +894,7 @@ impl GenericEndpoint for RSPaxosClient {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to all servers
         for (id, mut api_stub) in self.api_stubs.drain() {
-            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
-            while !sent {
-                sent = api_stub.send_req(None)?;
-            }
+            api_stub.send_req_insist(&ApiRequest::Leave).await?;
 
             // NOTE: commented out the following wait to avoid accidental
             //       hanging upon leaving
@@ -903,10 +904,7 @@ impl GenericEndpoint for RSPaxosClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            while !sent {
-                sent = self.ctrl_stub.send_req(None)?;
-            }
+            self.ctrl_stub.send_req_insist(&CtrlRequest::Leave).await?;
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
             pf_debug!("left manager connection");
@@ -916,15 +914,23 @@ impl GenericEndpoint for RSPaxosClient {
     }
 
     fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
-        if self.api_stubs.contains_key(&self.server_id) {
-            self.api_stubs
-                .get_mut(&self.server_id)
-                .unwrap()
-                .send_req(req)
+        // a retry goes to where the last send failed, even if since redirected
+        let server_id = if req.is_some() {
+            self.server_id
+        } else if let Some(last_server_id) = self.last_server_id {
+            last_server_id
+        } else {
+            return Ok(true); // nothing blocked left to retry
+        };
+
+        if let Some(api_stub) = self.api_stubs.get_mut(&server_id) {
+            let success = api_stub.send_req(req)?;
+            self.last_server_id = if success { None } else { Some(server_id) };
+            Ok(success)
         } else {
             Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
-                self.server_id
+                server_id
             )))
         }
     }

@@ -91,7 +91,7 @@ async fn exits_ok(child: &mut Child) -> bool {
 
 /// Sends a control request to the manager and returns its reply.
 async fn ctrl(ep: &mut dyn GenericEndpoint, req: CtrlRequest) -> CtrlReply {
-    ep.ctrl_stub().send_req_insist(&req).unwrap();
+    ep.ctrl_stub().send_req_insist(&req).await.unwrap();
     within(ep.ctrl_stub().recv_reply()).await.unwrap()
 }
 
@@ -475,6 +475,6 @@ async fn bit_flips_fail_recovery() {
         servers: HashSet::from([0]),
         power_loss: false,
     };
-    ep.ctrl_stub().send_req_insist(&crash).unwrap();
+    ep.ctrl_stub().send_req_insist(&crash).await.unwrap();
     assert!(!exits_ok(&mut server).await);
 }

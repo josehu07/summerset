@@ -682,6 +682,10 @@ pub(crate) struct RaftClient {
     /// Current server ID to talk to.
     server_id: ReplicaId,
 
+    /// Last server ID I sent something to unsuccessfully; used here to help
+    /// with retrying.
+    last_server_id: Option<ReplicaId>,
+
     /// Control API stub to the cluster manager.
     ctrl_stub: ClientCtrlStub,
 
@@ -711,6 +715,7 @@ impl GenericEndpoint for RaftClient {
             _config: config,
             servers: HashMap::new(),
             server_id: init_server_id,
+            last_server_id: None,
             ctrl_stub,
             api_stubs: HashMap::new(),
         })
@@ -723,10 +728,9 @@ impl GenericEndpoint for RaftClient {
         }
 
         // ask the manager about the list of active servers
-        let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::QueryInfo))?;
-        while !sent {
-            sent = self.ctrl_stub.send_req(None)?;
-        }
+        self.ctrl_stub
+            .send_req_insist(&CtrlRequest::QueryInfo)
+            .await?;
 
         let reply = self.ctrl_stub.recv_reply().await?;
         if let CtrlReply::QueryInfo {
@@ -762,10 +766,7 @@ impl GenericEndpoint for RaftClient {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError> {
         // send leave notification to all servers
         for (id, mut api_stub) in self.api_stubs.drain() {
-            let mut sent = api_stub.send_req(Some(&ApiRequest::Leave))?;
-            while !sent {
-                sent = api_stub.send_req(None)?;
-            }
+            api_stub.send_req_insist(&ApiRequest::Leave).await?;
 
             // NOTE: commented out the following wait to avoid accidental
             //       hanging upon leaving
@@ -775,10 +776,7 @@ impl GenericEndpoint for RaftClient {
 
         // if permanently leaving, send leave notification to the manager
         if permanent {
-            let mut sent = self.ctrl_stub.send_req(Some(&CtrlRequest::Leave))?;
-            while !sent {
-                sent = self.ctrl_stub.send_req(None)?;
-            }
+            self.ctrl_stub.send_req_insist(&CtrlRequest::Leave).await?;
 
             while self.ctrl_stub.recv_reply().await? != CtrlReply::Leave {}
             pf_debug!("left manager connection");
@@ -788,15 +786,23 @@ impl GenericEndpoint for RaftClient {
     }
 
     fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError> {
-        if self.api_stubs.contains_key(&self.server_id) {
-            self.api_stubs
-                .get_mut(&self.server_id)
-                .unwrap()
-                .send_req(req)
+        // a retry goes to where the last send failed, even if since redirected
+        let server_id = if req.is_some() {
+            self.server_id
+        } else if let Some(last_server_id) = self.last_server_id {
+            last_server_id
+        } else {
+            return Ok(true); // nothing blocked left to retry
+        };
+
+        if let Some(api_stub) = self.api_stubs.get_mut(&server_id) {
+            let success = api_stub.send_req(req)?;
+            self.last_server_id = if success { None } else { Some(server_id) };
+            Ok(success)
         } else {
             Err(SummersetError::msg(format!(
                 "server_id {} not in api_stubs",
-                self.server_id
+                server_id
             )))
         }
     }
@@ -848,5 +854,67 @@ impl GenericEndpoint for RaftClient {
 
     fn ctrl_stub(&mut self) -> &mut ClientCtrlStub {
         &mut self.ctrl_stub
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{self, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::server::Command;
+    use crate::utils::test_addr_at_offset;
+
+    #[tokio::test]
+    async fn retry_goes_to_blocked_server() -> Result<(), SummersetError> {
+        // stubs connected to a fake manager and two fake servers
+        let manager = TcpListener::bind(test_addr_at_offset(184)).await?;
+        let (ctrl_stub, _mconn) = tokio::join!(
+            ClientCtrlStub::new_by_connect(test_addr_at_offset(184)),
+            async {
+                let (mut conn, _) = manager.accept().await?;
+                conn.write_u64(7).await.map(|()| conn) // assign client ID
+            }
+        );
+        let (mut api_stubs, mut conns) = (HashMap::new(), vec![]);
+        for s in 0..2 {
+            let listener = TcpListener::bind(test_addr_at_offset(185 + u16::from(s))).await?;
+            let addr = listener.local_addr()?;
+            let (stub, conn) =
+                tokio::join!(ClientApiStub::new_by_connect(7, addr), listener.accept());
+            api_stubs.insert(s, stub?);
+            conns.push(conn?.0);
+        }
+        let mut client = RaftClient {
+            id: 7,
+            population: 2,
+            _config: ClientConfigRaft::default(),
+            servers: HashMap::new(),
+            server_id: 0,
+            last_server_id: None,
+            ctrl_stub: ctrl_stub?,
+            api_stubs,
+        };
+
+        // fill up the connection to server 0, then get redirected to server 1
+        let key = "k".repeat(1 << 16);
+        let req = ApiRequest::Req {
+            id: 0,
+            cmd: Command::Get { key },
+        };
+        while client.send_req(Some(&req))? {}
+        client.server_id = 1;
+
+        // the retry still finishes at server 0, once it reads
+        let mut conn = conns.swap_remove(0);
+        tokio::spawn(async move { io::copy(&mut conn, &mut io::sink()).await });
+        while !client.send_req(None)? {
+            time::sleep(Duration::from_millis(1)).await;
+        }
+        // nothing left blocked at server 0
+        let stub = client.api_stubs.get_mut(&0).unwrap();
+        assert!(stub.send_req(Some(&req)).is_ok());
+        Ok(())
     }
 }

@@ -171,7 +171,8 @@ impl ClientMess {
         if self.servers_info.is_none() {
             self.driver
                 .ctrl_stub()
-                .send_req_insist(&CtrlRequest::QueryInfo)?;
+                .send_req_insist(&CtrlRequest::QueryInfo)
+                .await?;
 
             let reply = self.driver.ctrl_stub().recv_reply().await?;
             match reply {
@@ -192,7 +193,7 @@ impl ClientMess {
     /// Pause the list of servers.
     async fn pause_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::PauseServers { servers };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
+        self.driver.ctrl_stub().send_req_insist(&req).await?;
 
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         if let CtrlReply::PauseServers { .. } = reply {
@@ -205,7 +206,7 @@ impl ClientMess {
     /// Resume the list of servers.
     async fn resume_servers(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
         let req = CtrlRequest::ResumeServers { servers };
-        self.driver.ctrl_stub().send_req_insist(&req)?;
+        self.driver.ctrl_stub().send_req_insist(&req).await?;
 
         let reply = self.driver.ctrl_stub().recv_reply().await?;
         if let CtrlReply::ResumeServers { .. } = reply {

@@ -34,6 +34,9 @@ pub trait GenericEndpoint {
     async fn leave(&mut self, permanent: bool) -> Result<(), SummersetError>;
 
     /// Sends a request to the service according to protocol-specific logic.
+    /// Returns `Ok(false)` if it could not be fully sent yet, in which case
+    /// calls with `req == None` retry it on the same connection until returning
+    /// `Ok(true)` (as they also do if nothing is left to retry).
     fn send_req(&mut self, req: Option<&ApiRequest>) -> Result<bool, SummersetError>;
 
     /// Receives a reply from the service according to protocol-specific logic.

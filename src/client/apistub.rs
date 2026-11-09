@@ -77,6 +77,17 @@ impl ClientApiStub {
         Ok(no_retry)
     }
 
+    /// Sends a request to established server connection, retrying whenever the
+    /// connection becomes writable upon `WouldBlock` failures.
+    pub(crate) async fn send_req_insist(&mut self, req: &ApiRequest) -> Result<(), SummersetError> {
+        let mut sent = self.send_req(Some(req))?;
+        while !sent {
+            self.conn_write.writable().await?;
+            sent = self.send_req(None)?;
+        }
+        Ok(())
+    }
+
     /// Receives a reply from established server connection.
     pub(crate) async fn recv_reply(&mut self) -> Result<ApiReply, SummersetError> {
         let reply = safe_tcp_read(&mut self.reply_buf, &mut self.conn_read).await?;
@@ -86,4 +97,52 @@ impl ClientApiStub {
     }
 }
 
-// Unit tests are done together with `server::external`.
+// More unit tests are done together with `server::external`.
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+    use tokio::time::{self, Duration};
+
+    use super::*;
+    use crate::server::Command;
+    use crate::utils::test_addr_at_offset;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_insist_waits_for_reader() -> Result<(), SummersetError> {
+        let listener = TcpListener::bind(test_addr_at_offset(183)).await?;
+        let req = ApiRequest::Req {
+            id: 0,
+            cmd: Command::Put {
+                key: "k".into(),
+                value: "v".repeat(1 << 16),
+            },
+        };
+        // the server starts reading only after a while
+        let reader = tokio::spawn({
+            let req = req.clone();
+            async move {
+                let (mut conn, _) = listener.accept().await?;
+                conn.read_u64().await?; // client ID
+                time::sleep(Duration::from_millis(100)).await;
+                let mut read_buf = BytesMut::new();
+                for _ in 0..64 {
+                    assert_eq!(
+                        safe_tcp_read::<ApiRequest, _>(&mut read_buf, &mut conn).await?,
+                        req
+                    );
+                }
+                Ok::<_, SummersetError>(())
+            }
+        });
+        let mut stub = ClientApiStub::new_by_connect(7, test_addr_at_offset(183)).await?;
+        for _ in 0..64 {
+            stub.send_req_insist(&req).await?;
+        }
+        time::timeout(Duration::from_secs(5), reader)
+            .await
+            .map_err(SummersetError::msg)???;
+        Ok(())
+    }
+}

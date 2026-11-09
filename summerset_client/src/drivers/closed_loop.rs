@@ -4,7 +4,7 @@ use summerset::{
     ApiReply, ApiRequest, ClientCtrlStub, ClientId, Command, CommandResult, ConfChange,
     GenericEndpoint, RequestId, SummersetError, Timer, logged_err, pf_debug, pf_error,
 };
-use tokio::time::{Duration, Instant};
+use tokio::time::{self, Duration, Instant};
 
 use crate::drivers::DriverReply;
 
@@ -44,15 +44,14 @@ impl DriverClosedLoop {
         self.endpoint.leave(permanent).await
     }
 
-    /// Attempts to send a request, retrying immediately if receiving
-    /// `WouldBlock` failure. This shortcut is used here because TCP write
-    /// blocking is not expected with a closed-loop client.
-    fn send_req_insist(&mut self, req: &ApiRequest) -> Result<(), SummersetError> {
-        let mut success = self.endpoint.send_req(Some(req))?;
-        while !success {
-            success = self.endpoint.send_req(None)?;
+    /// Attempts to send a request, retrying shortly after upon `WouldBlock`
+    /// failures (rarely happening with a closed-loop client).
+    async fn send_req_insist(&mut self, req: &ApiRequest) -> Result<(), SummersetError> {
+        let mut sent = self.endpoint.send_req(Some(req))?;
+        while !sent {
+            time::sleep(Duration::from_millis(1)).await;
+            sent = self.endpoint.send_req(None)?;
         }
-
         Ok(())
     }
 
@@ -82,7 +81,8 @@ impl DriverClosedLoop {
         self.send_req_insist(&ApiRequest::Req {
             id: req_id,
             cmd: Command::Get { key: key.into() },
-        })?;
+        })
+        .await?;
         let issue_ts = Instant::now();
 
         loop {
@@ -150,7 +150,8 @@ impl DriverClosedLoop {
                 key: key.into(),
                 value: value.into(),
             },
-        })?;
+        })
+        .await?;
         let issue_ts = Instant::now();
 
         loop {
@@ -208,7 +209,8 @@ impl DriverClosedLoop {
         let req_id = self.next_req;
         self.next_req += 1;
 
-        self.send_req_insist(&ApiRequest::Conf { id: req_id, delta })?;
+        self.send_req_insist(&ApiRequest::Conf { id: req_id, delta })
+            .await?;
 
         loop {
             let reply = self.recv_reply_timed().await?;

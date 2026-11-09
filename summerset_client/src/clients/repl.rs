@@ -329,7 +329,7 @@ impl ClientRepl {
 
     /// Makes a control request to the manager and wait for the reply.
     async fn make_ctrl_req(&mut self, req: CtrlRequest) -> Result<CtrlReply, SummersetError> {
-        self.driver.ctrl_stub().send_req_insist(&req)?;
+        self.driver.ctrl_stub().send_req_insist(&req).await?;
         self.driver.ctrl_stub().recv_reply().await
     }
 

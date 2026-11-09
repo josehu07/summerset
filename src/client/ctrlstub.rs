@@ -76,15 +76,14 @@ impl ClientCtrlStub {
         Ok(no_retry)
     }
 
-    /// Sends a request to established manager connection, retrying immediately
-    /// on `WouldBlock` failure. This shortcut should only be used in places
-    /// where TCP write blocking is not expected.
-    pub fn send_req_insist(&mut self, req: &CtrlRequest) -> Result<(), SummersetError> {
-        let mut success = self.send_req(Some(req))?;
-        while !success {
-            success = self.send_req(None)?;
+    /// Sends a request to established manager connection, retrying whenever
+    /// the connection becomes writable upon `WouldBlock` failures.
+    pub async fn send_req_insist(&mut self, req: &CtrlRequest) -> Result<(), SummersetError> {
+        let mut sent = self.send_req(Some(req))?;
+        while !sent {
+            self.conn_write.writable().await?;
+            sent = self.send_req(None)?;
         }
-
         Ok(())
     }
 

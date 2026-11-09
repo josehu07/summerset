@@ -651,7 +651,11 @@ impl ClientBench {
             let mut retries = 10; // hardcoded
             for key in keys_pool {
                 loop {
-                    while self.driver.issue_put(key, val)?.is_none() {}
+                    let mut req_id = self.driver.issue_put(key, val)?;
+                    while req_id.is_none() {
+                        time::sleep(Duration::from_millis(1)).await;
+                        req_id = self.driver.issue_retry()?;
+                    }
 
                     if let DriverReply::Success { .. } = self.driver.wait_reply().await? {
                         break;

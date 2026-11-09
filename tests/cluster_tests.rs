@@ -165,7 +165,7 @@ impl Cluster {
 
 /// Sends a control request to the manager and returns its reply.
 async fn ctrl(ep: &mut dyn GenericEndpoint, req: CtrlRequest) -> CtrlReply {
-    ep.ctrl_stub().send_req_insist(&req).unwrap();
+    ep.ctrl_stub().send_req_insist(&req).await.unwrap();
     within(ep.ctrl_stub().recv_reply()).await.unwrap()
 }
 
