@@ -109,8 +109,6 @@ impl CrosswordReplica {
     }
 
     /// Get the proper assignment policy given data size and `peer_alive` count.
-    // NOTE: if data_size == exactly `usize::MAX` this will fail; won't bother
-    //       to account for this rare case right now
     #[inline]
     #[allow(clippy::too_many_arguments, clippy::ref_option)]
     pub(super) fn pick_assignment_policy<'a>(
@@ -164,17 +162,23 @@ impl CrosswordReplica {
                 .enumerate()
                 .map(|(i, spr)| (spr, majority + fault_tolerance - i as u8))
             {
-                let load_size = ((data_size / rs_data_shards as usize) + 1) * spr as usize;
+                let load_size = (data_size / usize::from(rs_data_shards))
+                    .saturating_add(1)
+                    .saturating_mul(usize::from(spr));
                 let mut peer_times: Vec<f64> = linreg_model
                     .values()
                     .map(|model| model.predict(load_size))
                     .collect();
-                peer_times.sort_by(|x, y| x.partial_cmp(y).unwrap());
-                config_times.push((spr, peer_times[q as usize - 2]));
+                peer_times.sort_by(f64::total_cmp);
+                // time to hear from the fastest q-1 peers (none if q is 1)
+                let time = usize::from(q)
+                    .checked_sub(2)
+                    .map_or(0.0, |i| peer_times.get(i).copied().unwrap_or(f64::INFINITY));
+                config_times.push((spr, time));
             }
             config_times
                 .iter()
-                .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+                .min_by(|x, y| x.1.total_cmp(&y.1))
                 .unwrap()
                 .0
         } else {
@@ -210,7 +214,7 @@ impl CrosswordReplica {
                 // approximate size as the PeerMsg type's stack size + shards
                 // payload size
                 #[allow(clippy::cast_precision_loss)]
-                let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
+                let elapsed_ms: f64 = tr.saturating_sub(ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap()
@@ -240,7 +244,7 @@ impl CrosswordReplica {
             if id == hb_id {
                 debug_assert!(tr >= ts);
                 #[allow(clippy::cast_precision_loss)]
-                let elapsed_ms: f64 = (tr - ts) as f64 / 1000.0;
+                let elapsed_ms: f64 = tr.saturating_sub(ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap() // heartbeat size ~= 0
@@ -288,7 +292,7 @@ impl CrosswordReplica {
             }
         }
 
-        if now_us - self.last_linreg_print >= 3_000_000 {
+        if now_us.saturating_sub(self.last_linreg_print) >= 3_000_000 {
             pf_info!(
                 "linreg {}",
                 Self::linreg_models_to_string(&self.linreg_model)

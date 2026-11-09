@@ -119,6 +119,7 @@ where
         let peer_listener = tcp_bind_with_retry(p2p_addr, 15).await?;
         let mut acceptor = TransportHubAcceptorTask::new(
             me,
+            population,
             tx_recv.clone(),
             peer_listener,
             tx_sends.clone(),
@@ -394,6 +395,7 @@ where
 /// `TransportHub` peer acceptor task.
 struct TransportHubAcceptorTask<Msg> {
     me: ReplicaId,
+    population: u8,
 
     tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
     tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
@@ -418,6 +420,7 @@ where
     #[allow(clippy::too_many_arguments)]
     fn new(
         me: ReplicaId,
+        population: u8,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         peer_listener: TcpListener,
         tx_sends: Arc<DashMap<ReplicaId, mpsc::UnboundedSender<PeerMessage<Msg>>>>,
@@ -432,6 +435,7 @@ where
 
         TransportHubAcceptorTask {
             me,
+            population,
             tx_recv,
             tx_sends,
             peer_listener,
@@ -489,6 +493,9 @@ where
             return logged_err!("error receiving new peer ID: {}", e);
         }
         let id = id.unwrap();
+        if id >= self.population || id == self.me {
+            return logged_err!("invalid new peer ID: {}", id);
+        }
 
         // a peer reconnecting under the same ID (e.g., restarted after a
         // crash) supersedes its previous connection, which may not have
@@ -1018,6 +1025,21 @@ mod tests {
             (0, TestMsg("world".into()))
         );
         assert!(stale.try_recv_msg().is_err()); // got nothing
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_peer_id_rejected() -> Result<(), SummersetError> {
+        let hub: TransportHub<TestMsg> =
+            TransportHub::new_and_setup(0, 2, test_addr_at_offset(160), HashMap::new()).await?;
+        // IDs out of the population or of myself are refused
+        for id in [2, 0] {
+            let mut conn = TcpStream::connect(test_addr_at_offset(160)).await?;
+            conn.write_u8(id).await?;
+            let read = time::timeout(Duration::from_secs(5), conn.read_u8()).await;
+            assert!(read.map_err(SummersetError::msg)?.is_err()); // closed
+        }
+        assert_eq!(hub.current_peers()?.count(), 0);
         Ok(())
     }
 

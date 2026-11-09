@@ -1483,6 +1483,45 @@ impl GenericEndpoint for CrosswordClient {
 
 #[cfg(test)]
 mod tests {
+    mod adaptive {
+        use super::super::*;
+
+        /// Returns the shards per replica the adaptive policy picks, given
+        /// models of the peers.
+        fn pick_spr(population: u8, fault_tolerance: u8, models: Vec<PerfModel>) -> u8 {
+            let majority = population / 2 + 1;
+            let brr: HashMap<u8, Vec<Bitmap>> = (1..=majority)
+                .map(|spr| (spr, vec![Bitmap::from((majority, 0..spr))]))
+                .collect();
+            let linreg_model = (1..).zip(models).collect();
+            CrosswordReplica::pick_assignment_policy(
+                true,
+                true,
+                &brr[&1],
+                &brr,
+                majority,
+                majority,
+                fault_tolerance,
+                1 << 20,
+                &linreg_model,
+                0.0,
+                &None,
+                &Bitmap::new(population, true),
+            )[0]
+            .count()
+        }
+
+        #[test]
+        fn adaptive_policy_tolerates_edge_inputs() {
+            let model = PerfModel::new(1.0, 1.0, 0.0);
+            // a NaN prediction from a degenerate model is never preferred
+            let nan = PerfModel::new(f64::NAN, 1.0, 0.0);
+            assert_eq!(pick_spr(3, 1, vec![nan, model.clone()]), 2);
+            // a quorum needing no peer replies takes no time
+            assert_eq!(pick_spr(2, 0, vec![model]), 2);
+        }
+    }
+
     mod value_id {
         use super::super::*;
         use crate::server::Command;

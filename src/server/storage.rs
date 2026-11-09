@@ -273,8 +273,7 @@ where
         if let Err(e) = metadata {
             return logged_err!("error reading backer file metadata: {}, exiting", e);
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let file_size: usize = metadata.unwrap().len() as usize;
+        let file_size = usize::try_from(metadata.unwrap().len())?;
 
         // whatever the file already holds is considered synced
         faults::record_file_synced(path, file_size);
@@ -431,6 +430,8 @@ where
     ) -> Result<usize, SummersetError> {
         let record = Self::encode_record(entry)?;
         backer.write_all(&record).await?;
+        // wait for the write to reach the OS, as tokio does it in background
+        backer.flush().await?;
 
         if sync {
             backer.sync_data().await?;
@@ -688,6 +689,19 @@ mod tests {
         let (offset_ok, _) =
             Logger::write_entry(&mut backer_file, now_size, &longer, 0, false).await?;
         debug_assert!(!offset_ok);
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn append_reaches_os() -> Result<(), SummersetError> {
+        let file = tempfile::tempfile()?;
+        let probe = file.try_clone()?;
+        let mut backer_file = File::from_std(file);
+        // even unsynced, an append is done only once the OS has it, so that
+        // it survives a process crash
+        let entry = TestEntry("test-entry-dummy-string".into());
+        let size = Logger::append_entry(&mut backer_file, 0, &entry, false).await?;
+        assert_eq!(probe.metadata()?.len(), size as u64);
         Ok(())
     }
 

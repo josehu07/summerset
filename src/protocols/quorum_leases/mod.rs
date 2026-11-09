@@ -580,12 +580,13 @@ impl QuorumLeasesReplica {
         (slot, cmd_idx)
     }
 
-    /// Special composition of a command ID used at read-only shortcuts.
+    /// Special composition of a command ID used at read-only shortcuts. The
+    /// set bit 31 keeps it apart from normal command IDs; as read-only
+    /// commands are executed one at a time, `client` and `req_id` need not
+    /// fit exactly.
     #[inline]
     fn make_ro_command_id(client: ClientId, req_id: RequestId) -> CommandId {
-        debug_assert!(client <= ClientId::from(u32::MAX));
-        debug_assert!(req_id <= RequestId::from(u32::MAX) / 2);
-        ((client << 32) | (1 << 31) | req_id) as CommandId
+        ((client << 32) | (1 << 31) | (req_id & ((1 << 31) - 1))) as CommandId
     }
 }
 

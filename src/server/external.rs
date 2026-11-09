@@ -298,11 +298,20 @@ impl ExternalApi {
     pub(crate) async fn get_req_batch(
         &mut self,
     ) -> Result<Vec<(ClientId, ApiRequest)>, SummersetError> {
-        let mut batch = Vec::with_capacity(self.max_batch_size);
+        let mut batch = vec![];
 
         // ignore ticks with an empty batch
         while batch.is_empty() {
             self.batch_notify.notified().await;
+
+            // reserve room for the requests queued, not the possibly much
+            // larger max batch size
+            let queued = self.rx_req.len();
+            batch.reserve(if self.max_batch_size == 0 {
+                queued
+            } else {
+                queued.min(self.max_batch_size)
+            });
 
             while self.max_batch_size == 0 || batch.len() < self.max_batch_size {
                 match self.rx_req.try_recv() {
@@ -689,6 +698,29 @@ mod tests {
     use crate::client::{ClientApiStub, ClientId};
     use crate::server::{Command, CommandResult};
     use crate::utils::test_addr_at_offset;
+
+    #[tokio::test]
+    async fn batch_sized_by_queued_reqs() -> Result<(), SummersetError> {
+        let mut api = ExternalApi::new_and_setup(
+            0,
+            test_addr_at_offset(170),
+            Duration::from_millis(1),
+            usize::MAX,
+        )
+        .await?;
+        let mut api_stub = ClientApiStub::new_by_connect(2857, test_addr_at_offset(170)).await?;
+        let req = ApiRequest::Req {
+            id: 0,
+            cmd: Command::Get { key: "k".into() },
+        };
+        assert!(api_stub.send_req(Some(&req))?);
+        // a huge max batch size does not get reserved upfront
+        let batch = time::timeout(Duration::from_secs(5), api.get_req_batch()).await;
+        let batch = batch.map_err(SummersetError::msg)??;
+        assert_eq!(batch, vec![(2857, req)]);
+        assert!(batch.capacity() < 1024);
+        Ok(())
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn api_req_reply() -> Result<(), SummersetError> {
