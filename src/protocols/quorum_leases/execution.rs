@@ -51,9 +51,13 @@ impl QuorumLeasesReplica {
             return logged_err!("unexpected API request type");
         }
 
-        // if all commands in this instance have been executed, set status to
-        // Executed and update `exec_bar`
-        if cmd_idx == inst.reqs.len() - 1 {
+        // if all commands in this instance have been executed (trailing config
+        // changes have nothing to execute), set status to Executed and update
+        // `exec_bar`
+        if inst.reqs[cmd_idx + 1..]
+            .iter()
+            .all(|(_, req)| !matches!(req, ApiRequest::Req { .. }))
+        {
             inst.status = Status::Executed;
             pf_debug!("executed all cmds in instance at slot {}", slot);
 

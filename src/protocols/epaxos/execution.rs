@@ -112,18 +112,8 @@ impl EPaxosReplica {
 
                 if sync_exec {
                     self.insts[row][col - self.start_col].status = Status::Executed;
-
                     // update index of the first non-executed instance
-                    if col == self.exec_bars[row] {
-                        while self.exec_bars[row] < self.start_col + self.insts[row].len() {
-                            if self.insts[row][self.exec_bars[row] - self.start_col].status
-                                < Status::Executed
-                            {
-                                break;
-                            }
-                            self.exec_bars[row] += 1;
-                        }
-                    }
+                    self.advance_exec_bar(row, col);
                 } else {
                     self.insts[row][col - self.start_col].status = Status::Executing;
                 }
@@ -172,20 +162,22 @@ impl EPaxosReplica {
         if cmd_idx == inst.reqs.len() - 1 {
             inst.status = Status::Executed;
             pf_debug!("executed all cmds in instance at slot {}", slot);
-
             // update index of the first non-executed instance
-            if col == self.exec_bars[row] {
-                while self.exec_bars[row] < self.start_col + self.insts[row].len() {
-                    if self.insts[row][self.exec_bars[row] - self.start_col].status
-                        < Status::Executed
-                    {
-                        break;
-                    }
-                    self.exec_bars[row] += 1;
-                }
-            }
+            self.advance_exec_bar(row, col);
         }
 
         Ok(())
+    }
+
+    /// If `exec_bars[row]` is at `col`, advances it past the instances
+    /// executed, which may come out of order.
+    pub(super) fn advance_exec_bar(&mut self, row: usize, col: usize) {
+        if col == self.exec_bars[row] {
+            while self.exec_bars[row] < self.start_col + self.insts[row].len()
+                && self.insts[row][self.exec_bars[row] - self.start_col].status >= Status::Executed
+            {
+                self.exec_bars[row] += 1;
+            }
+        }
     }
 }

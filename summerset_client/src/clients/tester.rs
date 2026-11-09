@@ -9,8 +9,8 @@ use rand::RngExt;
 use rand::distr::Alphanumeric;
 use serde::Deserialize;
 use summerset::{
-    CommandResult, CtrlReply, CtrlRequest, Faults, GenericEndpoint, ReplicaId, SmrProtocol,
-    SummersetError, logged_err, parsed_config, pf_debug, pf_error,
+    CommandResult, ConfChange, CtrlReply, CtrlRequest, Faults, GenericEndpoint, ReplicaId,
+    SmrProtocol, SummersetError, logged_err, parsed_config, pf_debug, pf_error,
 };
 use tokio::time::{self, Duration};
 
@@ -29,6 +29,7 @@ static ALL_TESTS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|| {
         ("leader_node_pause", false),
         ("node_pause_resume", false),
         ("snapshot_reset", false),
+        ("snapshot_progress", false),
         ("lossy_network", false),
         ("minority_partition", false),
         ("leader_partition", false),
@@ -294,11 +295,14 @@ impl ClientTester {
     }
 
     /// Force some server(s) to take a new snapshot.
-    async fn force_snapshot(&mut self, servers: HashSet<ReplicaId>) -> Result<(), SummersetError> {
+    async fn force_snapshot(
+        &mut self,
+        servers: HashSet<ReplicaId>,
+    ) -> Result<HashMap<ReplicaId, usize>, SummersetError> {
         let req = CtrlRequest::TakeSnapshot { servers };
         let reply = self.ctrl(req).await?;
-        if let CtrlReply::TakeSnapshot { .. } = reply {
-            Ok(())
+        if let CtrlReply::TakeSnapshot { snapshot_up_to } = reply {
+            Ok(snapshot_up_to)
         } else {
             logged_err!("unexpected control reply type")
         }
@@ -425,6 +429,26 @@ impl ClientTester {
             );
             return Ok(());
         }
+        // protocols that keep no log to compact, coded ones whose followers
+        // hold only shards and so execute nothing, and EPaxos, whose snapshot
+        // point is held back by idle rows
+        if (self.protocol.skips_faulty_tests()
+            || matches!(
+                self.protocol,
+                SmrProtocol::RSPaxos
+                    | SmrProtocol::Crossword
+                    | SmrProtocol::CRaft
+                    | SmrProtocol::EPaxos
+            ))
+            && name == "snapshot_progress"
+        {
+            cprintln!(
+                "{:>20} | <yellow>{:^6}</> | protocol can't advance snapshots",
+                name,
+                "SKIP"
+            );
+            return Ok(());
+        }
         if self.protocol.skips_faulty_tests() && NODE_FAULT_TESTS.contains(&name) {
             cprintln!(
                 "{:>20} | <yellow>{:^6}</> | protocol can't handle faults",
@@ -457,6 +481,7 @@ impl ClientTester {
                 "leader_node_pause" => self.test_leader_node_pause().await,
                 "node_pause_resume" => self.test_node_pause_resume().await,
                 "snapshot_reset" => self.test_snapshot_reset().await,
+                "snapshot_progress" => self.test_snapshot_progress().await,
                 "lossy_network" => self.test_lossy_network().await,
                 "minority_partition" => self.test_minority_partition().await,
                 "leader_partition" => self.test_leader_partition().await,
@@ -736,6 +761,38 @@ impl ClientTester {
         self.driver.connect().await?;
         self.checked_get("Shawn", Some(Some(&v1)), 0).await?;
         self.checked_get("Jose", Some(Some(&v1)), 0).await?;
+        Ok(())
+    }
+
+    /// Snapshots keep advancing past instances with nothing to execute, such
+    /// as ones of only a config change.
+    async fn test_snapshot_progress(&mut self) -> Result<(), SummersetError> {
+        if self.protocol == SmrProtocol::QuorumLeases {
+            // a config change of nothing, replicated in a batch of its own
+            let delta = ConfChange::default();
+            loop {
+                match self.driver.conf(delta.clone()).await? {
+                    DriverReply::Conf { .. } => break,
+                    DriverReply::Redirect { .. } => {
+                        time::sleep(Duration::from_millis(500)).await;
+                        // retry
+                    }
+                    reply => return logged_err!("config change failed: {:?}", reply),
+                }
+            }
+        }
+        let mut starts = vec![];
+        for _ in 0..2 {
+            self.checked_put("Jose", &Self::gen_rand_string(8), None, 0)
+                .await?;
+            time::sleep(Duration::from_millis(500)).await;
+            starts.push(self.force_snapshot(HashSet::new()).await?);
+        }
+        for (server, start) in &starts[0] {
+            if starts[1].get(server).is_none_or(|next| next <= start) {
+                return logged_err!("server {} snapshot stuck at {}", server, start);
+            }
+        }
         Ok(())
     }
 

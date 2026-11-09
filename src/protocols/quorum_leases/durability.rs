@@ -215,6 +215,7 @@ impl QuorumLeasesReplica {
                     }
                 } else if inst.status == Status::Committed {
                     let mut conf_changes = vec![];
+                    let mut submitted = false;
                     for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate() {
                         #[allow(clippy::match_wildcard_for_single_variants)]
                         match req {
@@ -223,6 +224,7 @@ impl QuorumLeasesReplica {
                                     Self::make_command_id(self.commit_bar, cmd_idx),
                                     cmd.clone(),
                                 )?;
+                                submitted = true;
                             }
                             ApiRequest::Conf { id: req_id, delta } => {
                                 conf_changes.push((*client, *req_id, delta.clone()));
@@ -235,6 +237,15 @@ impl QuorumLeasesReplica {
                         inst.reqs.len(),
                         self.commit_bar
                     );
+
+                    // if only config changes in the batch, nothing to execute,
+                    // so advance `exec_bar` here if at it
+                    if !submitted {
+                        inst.status = Status::Executed;
+                        if self.exec_bar == self.commit_bar {
+                            self.exec_bar += 1;
+                        }
+                    }
 
                     // if there're read leaseholder roles config changes in the
                     // request batch, maybe apply

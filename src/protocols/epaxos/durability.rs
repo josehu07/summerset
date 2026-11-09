@@ -121,11 +121,14 @@ impl EPaxosReplica {
         if col == self.commit_bars[row] {
             let mut advanced = false;
             while self.commit_bars[row] < self.start_col + self.insts[row].len() {
-                let inst = &mut self.insts[row][self.commit_bars[row] - self.start_col];
+                let col = self.commit_bars[row];
+                let inst = &mut self.insts[row][col - self.start_col];
                 if inst.status < Status::Committed {
                     break;
                 } else if inst.reqs.is_empty() {
                     inst.status = Status::Executed;
+                    // nothing to execute, so advance `exec_bars` here if at it
+                    self.advance_exec_bar(row, col);
                 }
                 self.commit_bars[row] += 1;
                 advanced = true;
