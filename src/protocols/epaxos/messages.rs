@@ -58,7 +58,12 @@ impl EPaxosReplica {
 
             // record update to instance status & data
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::PreAccepting),
+                LogCtx::PreAccept {
+                    slot,
+                    ballot,
+                    seq,
+                    deps: deps.clone(),
+                },
                 LogAction::Append {
                     entry: WalEntry::PreAcceptSlot {
                         slot,
@@ -163,7 +168,7 @@ impl EPaxosReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::Commit { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot {
                             slot,
@@ -213,7 +218,7 @@ impl EPaxosReplica {
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogCtx::Accept { slot, ballot },
                     LogAction::Append {
                         entry: WalEntry::AcceptSlot {
                             slot,
@@ -305,7 +310,7 @@ impl EPaxosReplica {
 
             // record update to instance status & data
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Accepting),
+                LogCtx::Accept { slot, ballot },
                 LogAction::Append {
                     entry: WalEntry::AcceptSlot {
                         slot,
@@ -374,7 +379,7 @@ impl EPaxosReplica {
 
             // record commit event
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Committed),
+                LogCtx::Commit { slot },
                 LogAction::Append {
                     entry: WalEntry::CommitSlot {
                         slot,
@@ -460,7 +465,7 @@ impl EPaxosReplica {
 
             // record commit event
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Committed),
+                LogCtx::Commit { slot },
                 LogAction::Append {
                     entry: WalEntry::CommitSlot {
                         slot,
@@ -625,7 +630,7 @@ impl EPaxosReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::Commit { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot {
                             slot,
@@ -677,7 +682,10 @@ impl EPaxosReplica {
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogCtx::Accept {
+                        slot,
+                        ballot: inst.bal,
+                    },
                     LogAction::Append {
                         entry: WalEntry::AcceptSlot {
                             slot,
@@ -731,7 +739,12 @@ impl EPaxosReplica {
 
                 // record update to instance status & data
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::PreAccepting),
+                    LogCtx::PreAccept {
+                        slot,
+                        ballot: inst.bal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                    },
                     LogAction::Append {
                         entry: WalEntry::PreAcceptSlot {
                             slot,

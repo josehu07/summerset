@@ -1,26 +1,30 @@
 //! `RS-Paxos` -- durable logging.
 
 use super::*;
-use crate::server::{ApiRequest, LogActionId, LogResult};
+use crate::server::{ApiRequest, LogResult};
 use crate::utils::SummersetError;
 
 // RSPaxosReplica durable WAL logging
 impl RSPaxosReplica {
     /// Handler of `PrepareBal` logging result chan recv.
-    fn handle_logged_prepare_bal(&mut self, slot: usize) -> Result<(), SummersetError> {
+    fn handle_logged_prepare_bal(
+        &mut self,
+        slot: usize,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
             "finished PrepareBal logging for slot {} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            ballot
         );
 
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(inst.prep_inflight > 0);
         inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
-        if inst.status != Status::Preparing || inst.prep_inflight > 0 {
+        if inst.status != Status::Preparing || inst.bal != ballot || inst.prep_inflight > 0 {
             // ignore if instance has moved on, or if a newer PrepareBal (whose
             // ballot is what a reply would claim) is not yet durable
             return Ok(());
@@ -86,16 +90,26 @@ impl RSPaxosReplica {
     }
 
     /// Handler of `AcceptData` logging result chan recv.
-    fn handle_logged_accept_data(&mut self, slot: usize) -> Result<(), SummersetError> {
+    fn handle_logged_accept_data(
+        &mut self,
+        slot: usize,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         pf_trace!(
             "finished AcceptData logging for slot {} bal {}",
             slot,
-            self.insts[slot - self.start_slot].bal
+            ballot
         );
+
+        // an older completion must not acknowledge what the instance has
+        // accepted since, which is not durable yet
         let inst = &self.insts[slot - self.start_slot];
+        if inst.bal != ballot {
+            return Ok(());
+        }
 
         if self.is_leader() {
             // on leader, finishing the logging of an AcceptData entry
@@ -193,36 +207,30 @@ impl RSPaxosReplica {
     /// Synthesized handler of durable logging result chan recv.
     pub(super) async fn handle_log_result(
         &mut self,
-        action_id: LogActionId,
+        log_ctx: LogCtx,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let (slot, entry_type) = Self::split_log_action_id(action_id);
+        let LogResult::Append { offset, now_size } = log_result else {
+            return logged_err!("unexpected log result type: {:?}", log_result);
+        };
+        debug_assert!(now_size >= self.wal_offset);
+        self.wal_offset = now_size;
+
+        let slot = log_ctx.slot();
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
         debug_assert!(slot < self.start_slot + self.insts.len());
+        // entries complete in log order, so the first one of the instance
+        // tells where its entries start
+        self.insts[slot - self.start_slot]
+            .wal_offset
+            .get_or_insert(offset);
 
-        if let LogResult::Append { now_size } = log_result {
-            debug_assert!(now_size >= self.wal_offset);
-            // update first wal_offset of slot
-            let inst = &mut self.insts[slot - self.start_slot];
-            if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
-                inst.wal_offset = self.wal_offset;
-            }
-            debug_assert!(inst.wal_offset <= self.wal_offset);
-            // then update self.wal_offset
-            self.wal_offset = now_size;
-        } else {
-            return logged_err!("unexpected log result type: {:?}", log_result);
-        }
-
-        match entry_type {
-            Status::Preparing => self.handle_logged_prepare_bal(slot),
-            Status::Accepting => self.handle_logged_accept_data(slot),
-            Status::Committed => self.handle_logged_commit_slot(slot),
-            _ => {
-                logged_err!("unexpected log entry type: {:?}", entry_type)
-            }
+        match log_ctx {
+            LogCtx::PrepareBal { slot, ballot } => self.handle_logged_prepare_bal(slot, ballot),
+            LogCtx::AcceptData { slot, ballot } => self.handle_logged_accept_data(slot, ballot),
+            LogCtx::CommitSlot { slot } => self.handle_logged_commit_slot(slot),
         }
     }
 }

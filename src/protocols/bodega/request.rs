@@ -229,7 +229,10 @@ impl BodegaReplica {
         // record update to largest accepted ballot and corresponding data
         inst.voted = (inst.bal, req_batch.clone());
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Accepting),
+            LogCtx::AcceptData {
+                slot,
+                ballot: inst.bal,
+            },
             LogAction::Append {
                 entry: WalEntry::AcceptData {
                     slot,

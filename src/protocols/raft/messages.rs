@@ -105,19 +105,20 @@ impl RaftReplica {
                 first_new = slot;
                 break;
             } else if self.log[slot - self.start_slot].term != new_entry.term {
-                let cut_offset = self.log[slot - self.start_slot].log_offset;
-                // do this truncation in-place for simplicity
-                let (old_results, result) = self
-                    .storage_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Truncate { offset: cut_offset },
-                    )
-                    .await?;
-                for (old_id, old_result) in old_results {
-                    self.handle_log_result(old_id, old_result).await?;
+                // the conflicting entry's append may still be in flight, so wait
+                // for it to learn where the entry starts
+                for (old_ctx, old_result) in self.storage_hub.barrier().await? {
+                    self.handle_log_result(old_ctx, old_result).await?;
                     self.heard_heartbeat(leader, term).await?;
                 }
+                let Some(cut_offset) = self.log[slot - self.start_slot].log_offset else {
+                    return logged_err!("log offset of slot {} unknown", slot);
+                };
+                // do this truncation in-place for simplicity
+                let (_, result) = self
+                    .storage_hub
+                    .do_sync_action(LogAction::Truncate { offset: cut_offset })
+                    .await?;
                 if let LogResult::Truncate {
                     offset_ok: true,
                     now_size,
@@ -143,11 +144,15 @@ impl RaftReplica {
             .enumerate()
             .map(|(s, e)| (s + first_new, e))
         {
-            entry.log_offset = 0;
+            entry.log_offset = None;
 
             self.log.push(entry.clone());
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, prev_slot + num_entries, Role::Follower),
+                LogCtx::FollowerAppend {
+                    slot,
+                    end_slot: prev_slot + num_entries,
+                    term: self.curr_term,
+                },
                 LogAction::Append {
                     entry: DurEntry::LogEntry { entry },
                     sync: self.config.logger_sync,
@@ -401,9 +406,11 @@ impl RaftReplica {
         // candidate's log is as up-to-date as mine, grant vote
         #[allow(clippy::collapsible_if)]
         if self.voted_for.is_none() || (self.voted_for.unwrap() == candidate) {
-            if last_term >= self.log.last().unwrap().term
-                || (last_term == self.curr_term
-                    && last_slot + 1 >= self.start_slot + self.log.len())
+            // the candidate's log is as up-to-date as mine if it ends with a
+            // higher term, or with the same term and no shorter
+            let my_last_term = self.log.last().unwrap().term;
+            if last_term > my_last_term
+                || (last_term == my_last_term && last_slot + 1 >= self.start_slot + self.log.len())
             {
                 self.transport_hub.send_msg(
                     PeerMsg::RequestVoteReply {
@@ -426,14 +433,11 @@ impl RaftReplica {
                 self.voted_for = Some(candidate);
                 let (old_results, result) = self
                     .storage_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Write {
-                            entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
-                            offset: 0,
-                            sync: self.config.logger_sync,
-                        },
-                    )
+                    .do_sync_action(LogAction::Write {
+                        entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    })
                     .await?;
                 for (old_id, old_result) in old_results {
                     self.handle_log_result(old_id, old_result).await?;

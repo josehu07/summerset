@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::client::ClientId;
-use crate::server::{ApiRequest, LogAction, LogActionId, ReplicaId};
+use crate::server::{ApiRequest, LogAction, ReplicaId};
 use crate::utils::{Bitmap, SummersetError};
 
 // SimplePushReplica peer-peer messages handling
@@ -31,7 +31,7 @@ impl SimplePushReplica {
             reqs: req_batch.clone(),
         };
         self.storage_hub.submit_action(
-            inst_idx as LogActionId,
+            inst_idx,
             LogAction::Append {
                 entry: wal_entry,
                 sync: true,

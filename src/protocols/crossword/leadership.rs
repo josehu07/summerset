@@ -135,7 +135,10 @@ impl CrosswordReplica {
                 // record update to largest prepare ballot
                 inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogCtx::PrepareBal {
+                        slot,
+                        ballot: self.bal_prep_sent,
+                    },
                     LogAction::Append {
                         entry: WalEntry::PrepareBal {
                             slot,
@@ -239,10 +242,41 @@ impl CrosswordReplica {
         Ok(())
     }
 
+    /// Re-sends reconstruction reads, once per hearing timeout, for committed
+    /// instances that still lack enough shards to execute, as earlier reads
+    /// (e.g., the ones at step-up) may have got lost.
+    fn retrigger_reconstructs(&mut self) -> Result<(), SummersetError> {
+        if !self.is_leader()
+            || self.recon_retry.elapsed() < Duration::from_millis(self.config.hb_hear_timeout_min)
+        {
+            return Ok(());
+        }
+        self.recon_retry = Instant::now();
+        let recon_slots: Vec<(usize, Bitmap)> = (self.exec_bar..self.start_slot + self.insts.len())
+            .filter_map(|slot| {
+                let inst = &self.insts[slot - self.start_slot];
+                (inst.status == Status::Committed
+                    && inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards())
+                .then(|| (slot, inst.reqs_cw.avail_shards_map()))
+            })
+            .collect();
+        for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
+            self.transport_hub.bcast_msg(
+                PeerMsg::Reconstruct {
+                    slots_excl: chunk.to_vec(),
+                },
+                None,
+            )?;
+            pf_debug!("re-sent Reconstruct messages for {} slots", chunk.len());
+        }
+        Ok(())
+    }
+
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
         self.retrigger_accepts()?;
+        self.retrigger_reconstructs()?;
 
         let now_us = self.startup_time.elapsed().as_micros();
         self.transport_hub.bcast_msg(
@@ -340,12 +374,10 @@ impl CrosswordReplica {
         // all slots up to received commit_bar are safe to commit; submit their
         // commands for execution
         if commit_bar > self.commit_bar {
-            while self.start_slot + self.insts.len() < commit_bar {
-                self.insts.push(self.null_instance()?);
-            }
-
+            // only slots I know of can commit; padding the log with null slots
+            // instead would hide those a new leader's Prepare phase learns of
             let mut commit_cnt = 0;
-            for slot in self.commit_bar..commit_bar {
+            for slot in self.commit_bar..commit_bar.min(self.start_slot + self.insts.len()) {
                 let inst = &mut self.insts[slot - self.start_slot];
                 if inst.bal < ballot || inst.status < Status::Accepting {
                     break;
@@ -359,7 +391,7 @@ impl CrosswordReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::CommitSlot { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,
@@ -497,7 +529,11 @@ impl CrosswordReplica {
 
                 // record update to largest accepted ballot and corresponding data
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Accepting),
+                    LogCtx::AcceptData {
+                        slot,
+                        ballot: inst.bal,
+                        value_id,
+                    },
                     LogAction::Append {
                         entry: WalEntry::AcceptData {
                             slot,

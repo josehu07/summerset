@@ -3,7 +3,7 @@
 use std::cmp;
 
 use super::*;
-use crate::server::{LogActionId, LogResult};
+use crate::server::LogResult;
 use crate::utils::{Bitmap, SummersetError};
 
 // CRaftReplica durable logging
@@ -12,17 +12,16 @@ impl CRaftReplica {
     async fn handle_logged_leader_append(
         &mut self,
         slot: usize,
-        slot_e: usize,
+        term: Term,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot || self.role != Role::Leader {
+        if slot < self.start_slot || self.role != Role::Leader || term != self.curr_term {
             return Ok(()); // ignore if outdated
         }
         pf_trace!(
-            "finished leader append logging for slot {} <= {}",
+            "finished leader append logging for slot {} term {}",
             slot,
-            slot_e
+            term
         );
-        debug_assert_eq!(slot, slot_e);
 
         // broadcast AppendEntries messages to followers, each containing just
         // the one shard of each entry for that follower
@@ -117,8 +116,11 @@ impl CRaftReplica {
         &mut self,
         slot: usize,
         slot_e: usize,
+        term: Term,
     ) -> Result<(), SummersetError> {
-        if slot < self.start_slot || self.role != Role::Follower {
+        // a completion from an older term must not acknowledge entries to a
+        // newer leader
+        if slot < self.start_slot || self.role != Role::Follower || term != self.curr_term {
             return Ok(()); // ignore if outdated
         }
         pf_trace!(
@@ -154,33 +156,30 @@ impl CRaftReplica {
     /// Synthesized handler of durable logging result chan recv.
     pub(super) async fn handle_log_result(
         &mut self,
-        action_id: LogActionId,
+        log_ctx: LogCtx,
         log_result: LogResult<DurEntry>,
     ) -> Result<(), SummersetError> {
-        let (slot, slot_e, entry_type) = Self::split_log_action_id(action_id);
+        let LogResult::Append { offset, now_size } = log_result else {
+            return logged_err!("unexpected log result type: {:?}", log_result);
+        };
+        debug_assert!(now_size > self.log_offset);
+        self.log_offset = now_size;
+
+        let slot = log_ctx.slot();
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
         }
-        debug_assert!(slot_e < self.start_slot + self.log.len());
+        debug_assert!(slot < self.start_slot + self.log.len());
+        self.log[slot - self.start_slot].log_offset = Some(offset);
 
-        if let LogResult::Append { now_size } = log_result {
-            let entry = &mut self.log[slot - self.start_slot];
-            if entry.log_offset != self.log_offset {
-                // entry has incorrect log_offset bookkept; update it
-                entry.log_offset = self.log_offset;
-            }
-            debug_assert!(now_size > self.log_offset);
-            self.log_offset = now_size;
-        } else {
-            return logged_err!("unexpected log result type: {:?}", log_result);
-        }
-
-        #[allow(clippy::match_wildcard_for_single_variants)]
-        match entry_type {
-            Role::Follower => self.handle_logged_follower_append(slot, slot_e),
-            Role::Leader => self.handle_logged_leader_append(slot, slot_e).await,
-            _ => {
-                logged_err!("unexpected log entry type: {:?}", entry_type)
+        match log_ctx {
+            LogCtx::FollowerAppend {
+                slot,
+                end_slot,
+                term,
+            } => self.handle_logged_follower_append(slot, end_slot, term),
+            LogCtx::LeaderAppend { slot, term } => {
+                self.handle_logged_leader_append(slot, term).await
             }
         }
     }

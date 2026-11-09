@@ -93,7 +93,10 @@ impl RSPaxosReplica {
             .subset_copy(&Bitmap::from((self.population, vec![self.id])), false)?;
         inst.voted = (inst.bal, subset_copy.clone());
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Accepting),
+            LogCtx::AcceptData {
+                slot,
+                ballot: inst.bal,
+            },
             LogAction::Append {
                 entry: WalEntry::AcceptData {
                     slot,

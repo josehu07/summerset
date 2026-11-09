@@ -189,7 +189,10 @@ impl BodegaReplica {
             // record update to largest prepare ballot
             inst.prep_inflight += 1;
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Preparing),
+                LogCtx::PrepareBal {
+                    slot,
+                    ballot: self.bal_prep_sent,
+                },
                 LogAction::Append {
                     entry: WalEntry::PrepareBal {
                         slot,

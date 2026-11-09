@@ -37,8 +37,8 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub, ExternalApi,
-    GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, LeaseMsg, LeaseNum, LogActionId,
-    ReplicaId, RequestId, StateMachine, StorageHub, TransportHub,
+    GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, LeaseMsg, LeaseNum, ReplicaId,
+    RequestId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -250,7 +250,7 @@ struct Instance {
     external: bool,
 
     /// Offset of first durable WAL log entry related to this instance.
-    wal_offset: usize,
+    wal_offset: Option<usize>,
 
     /// Number of in-flight (not yet durable) `PrepareBal` WAL writes; a
     /// Prepare reply is only valid once the latest one is durable.
@@ -272,6 +272,37 @@ enum WalEntry {
 
     /// Records an event of committing the instance at index.
     CommitSlot { slot: usize },
+}
+
+impl WalEntry {
+    /// Slot index of the entry.
+    fn slot(&self) -> usize {
+        match self {
+            Self::PrepareBal { slot, .. }
+            | Self::AcceptData { slot, .. }
+            | Self::CommitSlot { slot } => *slot,
+        }
+    }
+}
+
+/// Context of a WAL logging action, given back with its result to tell what
+/// the logged entry was about.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum LogCtx {
+    PrepareBal { slot: usize, ballot: Ballot },
+    AcceptData { slot: usize, ballot: Ballot },
+    CommitSlot { slot: usize },
+}
+
+impl LogCtx {
+    /// Slot index of the logged entry.
+    fn slot(self) -> usize {
+        match self {
+            Self::PrepareBal { slot, .. }
+            | Self::AcceptData { slot, .. }
+            | Self::CommitSlot { slot } => slot,
+        }
+    }
 }
 
 /// Snapshot file entry type.
@@ -412,7 +443,7 @@ pub(crate) struct MultiPaxosReplica {
     state_machine: StateMachine,
 
     /// `StorageHub` module.
-    storage_hub: StorageHub<WalEntry>,
+    storage_hub: StorageHub<WalEntry, LogCtx>,
 
     /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
@@ -536,7 +567,7 @@ impl MultiPaxosReplica {
             leader_bk: None,
             replica_bk: None,
             external: false,
-            wal_offset: 0,
+            wal_offset: None,
             prep_inflight: 0,
         }
     }
@@ -562,33 +593,6 @@ impl MultiPaxosReplica {
     #[inline]
     fn make_greater_ballot(&self, bal: Ballot) -> Ballot {
         self.make_unique_ballot((bal >> 8) + 1)
-    }
-
-    /// Compose `LogActionId` from slot index & entry type.
-    /// Uses the `Status` enum type to represent different entry types.
-    #[inline]
-    fn make_log_action_id(slot: usize, entry_type: Status) -> LogActionId {
-        let type_num = match entry_type {
-            Status::Preparing => 1,
-            Status::Accepting => 2,
-            Status::Committed => 3,
-            _ => panic!("unknown log entry type {:?}", entry_type),
-        };
-        ((slot << 2) | type_num) as LogActionId
-    }
-
-    /// Decompose `LogActionId` into slot index & entry type.
-    #[inline]
-    fn split_log_action_id(log_action_id: LogActionId) -> (usize, Status) {
-        let slot = (log_action_id >> 2) as usize;
-        let type_num = log_action_id & ((1 << 2) - 1);
-        let entry_type = match type_num {
-            1 => Status::Preparing,
-            2 => Status::Accepting,
-            3 => Status::Committed,
-            _ => panic!("unknown log entry type num {}", type_num),
-        };
-        (slot, entry_type)
     }
 
     /// Compose `CommandId` from slot index & command index within.
@@ -843,10 +847,9 @@ impl GenericReplica for MultiPaxosReplica {
                         pf_error!("error getting log result: {}", e);
                         continue;
                     }
-                    let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
-                        pf_error!("error handling log result {}: {}",
-                                           action_id, e);
+                    let (log_ctx, log_result) = log_result.unwrap();
+                    if let Err(e) = self.handle_log_result(log_ctx, log_result).await {
+                        pf_error!("error handling log result {:?}: {}", log_ctx, e);
                     }
                 },
 

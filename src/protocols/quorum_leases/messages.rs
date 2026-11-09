@@ -72,7 +72,7 @@ impl QuorumLeasesReplica {
                 // record update to largest prepare ballot
                 inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogCtx::PrepareBal { slot, ballot },
                     LogAction::Append {
                         entry: WalEntry::PrepareBal { slot, ballot },
                         sync: self.config.logger_sync,
@@ -176,7 +176,10 @@ impl QuorumLeasesReplica {
                 // record update to largest prepare ballot
                 inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(this_slot, Status::Preparing),
+                    LogCtx::PrepareBal {
+                        slot: this_slot,
+                        ballot: self.bal_prep_sent,
+                    },
                     LogAction::Append {
                         entry: WalEntry::PrepareBal {
                             slot: this_slot,
@@ -245,7 +248,10 @@ impl QuorumLeasesReplica {
                         // record update to largest accepted ballot and its
                         // corresponding data
                         self.storage_hub.submit_action(
-                            Self::make_log_action_id(this_slot, Status::Accepting),
+                            LogCtx::AcceptData {
+                                slot: this_slot,
+                                ballot,
+                            },
                             LogAction::Append {
                                 entry: WalEntry::AcceptData {
                                     slot: this_slot,
@@ -333,7 +339,7 @@ impl QuorumLeasesReplica {
             // record update to instance ballot & data
             inst.voted = (ballot, reqs.clone());
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Accepting),
+                LogCtx::AcceptData { slot, ballot },
                 LogAction::Append {
                     entry: WalEntry::AcceptData { slot, ballot, reqs },
                     sync: self.config.logger_sync,
@@ -461,7 +467,7 @@ impl QuorumLeasesReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::CommitSlot { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,
@@ -519,7 +525,7 @@ impl QuorumLeasesReplica {
 
                         // record commit event
                         self.storage_hub.submit_action(
-                            Self::make_log_action_id(slot, Status::Committed),
+                            LogCtx::CommitSlot { slot },
                             LogAction::Append {
                                 entry: WalEntry::CommitSlot { slot },
                                 sync: self.config.logger_sync,

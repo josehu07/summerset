@@ -30,14 +30,11 @@ impl RaftReplica {
             // also make the two critical fields durable, synchronously
             let (old_results, result) = self
                 .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Write {
-                        entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
-                        offset: 0,
-                        sync: self.config.logger_sync,
-                    },
-                )
+                .do_sync_action(LogAction::Write {
+                    entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
+                    offset: 0,
+                    sync: self.config.logger_sync,
+                })
                 .await?;
             for (old_id, old_result) in old_results {
                 self.handle_log_result(old_id, old_result).await?;
@@ -118,14 +115,11 @@ impl RaftReplica {
         // also make the two critical fields durable, synchronously
         let (old_results, result) = self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Write {
-                    entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
-                    offset: 0,
-                    sync: self.config.logger_sync,
-                },
-            )
+            .do_sync_action(LogAction::Write {
+                entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
+                offset: 0,
+                sync: self.config.logger_sync,
+            })
             .await?;
         for (old_id, old_result) in old_results {
             self.handle_log_result(old_id, old_result).await?;

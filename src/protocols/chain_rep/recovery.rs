@@ -50,12 +50,9 @@ impl ChainRepReplica {
         loop {
             match self
                 .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Read {
-                        offset: self.wal_offset,
-                    },
-                )
+                .do_sync_action(LogAction::Read {
+                    offset: self.wal_offset,
+                })
                 .await?
                 .1
             {
@@ -63,7 +60,10 @@ impl ChainRepReplica {
                     entry: Some(entry),
                     end_offset,
                 } => {
+                    let slot = entry.slot;
                     self.recover_apply_entry(entry).await?;
+                    // rebuild where the entry's records start
+                    self.log[slot].wal_offset.get_or_insert(self.wal_offset);
                     // update log offset
                     self.wal_offset = end_offset;
                 }
@@ -82,12 +82,9 @@ impl ChainRepReplica {
             offset_ok: true, ..
         } = self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Truncate {
-                    offset: self.wal_offset,
-                },
-            )
+            .do_sync_action(LogAction::Truncate {
+                offset: self.wal_offset,
+            })
             .await?
             .1
         {

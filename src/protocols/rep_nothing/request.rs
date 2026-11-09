@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::client::ClientId;
-use crate::server::{ApiRequest, LogAction, LogActionId};
+use crate::server::{ApiRequest, LogAction};
 use crate::utils::SummersetError;
 
 // RepNothingReplica client requests entrance
@@ -26,7 +26,7 @@ impl RepNothingReplica {
         // submit log action to make this instance durable
         let wal_entry = WalEntry { reqs: req_batch };
         self.storage_hub.submit_action(
-            inst_idx as LogActionId,
+            inst_idx,
             LogAction::Append {
                 entry: wal_entry,
                 sync: self.config.logger_sync,

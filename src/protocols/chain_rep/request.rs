@@ -61,7 +61,7 @@ impl ChainRepReplica {
             self.log[slot].reqs.clone_from(&req_batch);
 
             self.storage_hub.submit_action(
-                slot as LogActionId,
+                slot,
                 LogAction::Append {
                     entry: WalEntry {
                         slot,

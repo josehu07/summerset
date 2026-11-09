@@ -31,15 +31,12 @@ impl RaftReplica {
         }
 
         // write the collection to snapshot file
-        if let LogResult::Append { now_size } = self
+        if let LogResult::Append { now_size, .. } = self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Append {
-                    entry: SnapEntry::KVPairSet { pairs },
-                    sync: self.config.logger_sync,
-                },
-            )
+            .do_sync_action(LogAction::Append {
+                entry: SnapEntry::KVPairSet { pairs },
+                sync: self.config.logger_sync,
+            })
             .await?
             .1
         {
@@ -52,20 +49,15 @@ impl RaftReplica {
 
     /// Discard everything lower than `start_slot` in durable log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
-        // do a dummy sync read to force all previously submitted log actions
-        // to be processed
+        // wait for all previously submitted log actions to be processed
         debug_assert_ne!(self.log.len(), 0);
-        let (old_results, _) = self
-            .storage_hub
-            .do_sync_action(0, LogAction::Read { offset: 0 })
-            .await?;
-        for (old_id, old_result) in old_results {
-            self.handle_log_result(old_id, old_result).await?;
+        for (old_ctx, old_result) in self.storage_hub.barrier().await? {
+            self.handle_log_result(old_ctx, old_result).await?;
         }
 
-        // cut at the first entry's log_offset
-        debug_assert_ne!(self.log[0].log_offset, 0);
-        let cut_offset = self.log[0].log_offset;
+        // cut at the first entry's log_offset, keeping everything if unknown
+        debug_assert!(self.log[0].log_offset.is_some());
+        let cut_offset = self.log[0].log_offset.unwrap_or(0);
 
         // discard the log after meta_end and before cut_offset
         if cut_offset > 0 {
@@ -76,13 +68,10 @@ impl RaftReplica {
                 now_size,
             } = self
                 .storage_hub
-                .do_sync_action(
-                    0,
-                    LogAction::Discard {
-                        offset: cut_offset,
-                        keep: self.log_meta_end,
-                    },
-                )
+                .do_sync_action(LogAction::Discard {
+                    offset: cut_offset,
+                    keep: self.log_meta_end,
+                })
                 .await?
                 .1
             {
@@ -95,9 +84,9 @@ impl RaftReplica {
 
         // update entry.log_offset for all remaining in-mem entries
         for entry in &mut self.log {
-            if entry.log_offset > 0 {
-                debug_assert!(entry.log_offset >= cut_offset);
-                entry.log_offset -= cut_offset - self.log_meta_end;
+            if let Some(log_offset) = entry.log_offset.as_mut() {
+                debug_assert!(*log_offset >= cut_offset);
+                *log_offset -= cut_offset - self.log_meta_end;
             }
         }
 
@@ -142,16 +131,13 @@ impl RaftReplica {
         // write new slot info entry to the head of snapshot
         match self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Write {
-                    entry: SnapEntry::SlotInfo {
-                        start_slot: new_start_slot,
-                    },
-                    offset: 0,
-                    sync: self.config.logger_sync,
+            .do_sync_action(LogAction::Write {
+                entry: SnapEntry::SlotInfo {
+                    start_slot: new_start_slot,
                 },
-            )
+                offset: 0,
+                sync: self.config.logger_sync,
+            })
             .await?
             .1
         {
@@ -192,10 +178,7 @@ impl RaftReplica {
         // start_slot index
         match self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Read { offset: 0 },
-            )
+            .do_sync_action(LogAction::Read { offset: 0 })
             .await?
             .1
         {
@@ -217,12 +200,9 @@ impl RaftReplica {
                 loop {
                     match self
                         .snapshot_hub
-                        .do_sync_action(
-                            0, // using 0 as dummy log action ID
-                            LogAction::Read {
-                                offset: self.snap_offset,
-                            },
-                        )
+                        .do_sync_action(LogAction::Read {
+                            offset: self.snap_offset,
+                        })
                         .await?
                         .1
                     {
@@ -270,14 +250,11 @@ impl RaftReplica {
                     now_size,
                 } = self
                     .snapshot_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Write {
-                            entry: SnapEntry::SlotInfo { start_slot: 0 },
-                            offset: 0,
-                            sync: self.config.logger_sync,
-                        },
-                    )
+                    .do_sync_action(LogAction::Write {
+                        entry: SnapEntry::SlotInfo { start_slot: 0 },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    })
                     .await?
                     .1
                 {

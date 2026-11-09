@@ -768,6 +768,9 @@ impl ClientTester {
         let v1 = Self::gen_rand_string(8);
         self.checked_put("Jose", &v1, Some(Some(&v0)), 0).await?;
         self.checked_get("Jose", Some(Some(&v1)), 0).await?;
+        // keep it cut off past its hearing timeout, so that it steps up with a
+        // higher ballot and disrupts the others once healed
+        time::sleep(Duration::from_millis(2500)).await;
         // heal and give the replica time to catch up
         self.inject_faults(HashSet::new(), Faults::default())
             .await?;

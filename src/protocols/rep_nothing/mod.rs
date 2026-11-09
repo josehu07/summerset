@@ -97,7 +97,7 @@ pub(crate) struct RepNothingReplica {
     state_machine: StateMachine,
 
     /// `StorageHub` module.
-    storage_hub: StorageHub<WalEntry>,
+    storage_hub: StorageHub<WalEntry, usize>,
 
     /// In-memory log of instances.
     insts: Vec<Instance>,

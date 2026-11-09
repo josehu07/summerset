@@ -128,12 +128,9 @@ impl QuorumLeasesReplica {
         loop {
             match self
                 .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Read {
-                        offset: self.wal_offset,
-                    },
-                )
+                .do_sync_action(LogAction::Read {
+                    offset: self.wal_offset,
+                })
                 .await?
                 .1
             {
@@ -141,7 +138,14 @@ impl QuorumLeasesReplica {
                     entry: Some(entry),
                     end_offset,
                 } => {
+                    let slot = entry.slot();
                     self.recover_apply_entry(entry).await?;
+                    // rebuild where the instance's entries start
+                    if slot >= self.start_slot && slot < self.start_slot + self.insts.len() {
+                        self.insts[slot - self.start_slot]
+                            .wal_offset
+                            .get_or_insert(self.wal_offset);
+                    }
                     // update log offset
                     self.wal_offset = end_offset;
                 }
@@ -168,12 +172,9 @@ impl QuorumLeasesReplica {
             offset_ok: true, ..
         } = self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Truncate {
-                    offset: self.wal_offset,
-                },
-            )
+            .do_sync_action(LogAction::Truncate {
+                offset: self.wal_offset,
+            })
             .await?
             .1
         {

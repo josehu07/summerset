@@ -161,7 +161,10 @@ impl MultiPaxosReplica {
             // record update to largest prepare ballot
             inst.prep_inflight += 1;
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Preparing),
+                LogCtx::PrepareBal {
+                    slot,
+                    ballot: self.bal_prep_sent,
+                },
                 LogAction::Append {
                     entry: WalEntry::PrepareBal {
                         slot,
@@ -401,12 +404,10 @@ impl MultiPaxosReplica {
         commit_bar: usize,
     ) -> Result<(), SummersetError> {
         if commit_bar > self.commit_bar {
-            while self.start_slot + self.insts.len() < commit_bar {
-                self.insts.push(self.null_instance());
-            }
-
+            // only slots I know of can commit; padding the log with null slots
+            // instead would hide those a new leader's Prepare phase learns of
             let mut commit_cnt = 0;
-            for slot in self.commit_bar..commit_bar {
+            for slot in self.commit_bar..commit_bar.min(self.start_slot + self.insts.len()) {
                 let inst = &mut self.insts[slot - self.start_slot];
                 if inst.bal < ballot || inst.status < Status::Accepting {
                     break;
@@ -420,7 +421,7 @@ impl MultiPaxosReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::CommitSlot { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,

@@ -27,7 +27,7 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, CommandResult, ControlHub, ExternalApi, GenericReplica,
-    LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
+    ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::SummersetError;
 
@@ -82,7 +82,7 @@ struct LogEntry {
     reqs: ReqBatch,
 
     /// Offset of first durable WAL log entry related to this entry.
-    wal_offset: usize,
+    wal_offset: Option<usize>,
 }
 
 /// Stable storage WAL log entry type.
@@ -130,7 +130,7 @@ pub(crate) struct ChainRepReplica {
     state_machine: StateMachine,
 
     /// `StorageHub` module.
-    storage_hub: StorageHub<WalEntry>,
+    storage_hub: StorageHub<WalEntry, usize>,
 
     /// `TransportHub` module.
     transport_hub: TransportHub<PeerMsg>,
@@ -189,7 +189,7 @@ impl ChainRepReplica {
         LogEntry {
             status: Status::Null,
             reqs: vec![],
-            wal_offset: 0,
+            wal_offset: None,
         }
     }
 

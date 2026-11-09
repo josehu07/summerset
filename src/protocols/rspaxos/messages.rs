@@ -73,7 +73,7 @@ impl RSPaxosReplica {
                 // record update to largest prepare ballot
                 inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Preparing),
+                    LogCtx::PrepareBal { slot, ballot },
                     LogAction::Append {
                         entry: WalEntry::PrepareBal { slot, ballot },
                         sync: self.config.logger_sync,
@@ -160,7 +160,10 @@ impl RSPaxosReplica {
                 // record update to largest prepare ballot
                 inst.prep_inflight += 1;
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(this_slot, Status::Preparing),
+                    LogCtx::PrepareBal {
+                        slot: this_slot,
+                        ballot: self.bal_prep_sent,
+                    },
                     LogAction::Append {
                         entry: WalEntry::PrepareBal {
                             slot: this_slot,
@@ -271,7 +274,10 @@ impl RSPaxosReplica {
                             .subset_copy(&Bitmap::from((self.population, vec![self.id])), false)?;
                         inst.voted = (ballot, subset_copy.clone());
                         self.storage_hub.submit_action(
-                            Self::make_log_action_id(this_slot, Status::Accepting),
+                            LogCtx::AcceptData {
+                                slot: this_slot,
+                                ballot,
+                            },
                             LogAction::Append {
                                 entry: WalEntry::AcceptData {
                                     slot: this_slot,
@@ -363,7 +369,7 @@ impl RSPaxosReplica {
             // record update to instance ballot & data
             inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
-                Self::make_log_action_id(slot, Status::Accepting),
+                LogCtx::AcceptData { slot, ballot },
                 LogAction::Append {
                     entry: WalEntry::AcceptData {
                         slot,
@@ -496,7 +502,7 @@ impl RSPaxosReplica {
 
                 // record commit event
                 self.storage_hub.submit_action(
-                    Self::make_log_action_id(slot, Status::Committed),
+                    LogCtx::CommitSlot { slot },
                     LogAction::Append {
                         entry: WalEntry::CommitSlot { slot },
                         sync: self.config.logger_sync,

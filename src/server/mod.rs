@@ -18,7 +18,7 @@ pub(crate) use leaseman::{LeaseAction, LeaseGid, LeaseManager, LeaseMsg, LeaseNo
 pub use replica::{GenericReplica, ReplicaId};
 pub(crate) use statemach::StateMachine;
 pub use statemach::{Command, CommandId, CommandResult};
-pub(crate) use storage::{LogAction, LogActionId, LogResult, StorageHub};
+pub(crate) use storage::{LogAction, LogResult, StorageHub};
 pub(crate) use transport::TransportHub;
 
 // TODO: turn Heartbeater into a more organized, channel-oriented module like

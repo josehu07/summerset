@@ -31,15 +31,12 @@ impl BodegaReplica {
         }
 
         // write the collection to snapshot file
-        if let LogResult::Append { now_size } = self
+        if let LogResult::Append { now_size, .. } = self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Append {
-                    entry: SnapEntry::KVPairSet { pairs },
-                    sync: self.config.logger_sync,
-                },
-            )
+            .do_sync_action(LogAction::Append {
+                entry: SnapEntry::KVPairSet { pairs },
+                sync: self.config.logger_sync,
+            })
             .await?
             .1
         {
@@ -52,22 +49,20 @@ impl BodegaReplica {
 
     /// Discard everything older than `start_slot` in durable WAL log.
     async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
-        // do a dummy sync read to force all previously submitted log actions
-        // to be processed
-        let (old_results, _) = self
-            .storage_hub
-            .do_sync_action(0, LogAction::Read { offset: 0 })
-            .await?;
-        for (old_id, old_result) in old_results {
-            self.handle_log_result(old_id, old_result).await?;
+        // wait for all previously submitted log actions to be processed
+        for (old_ctx, old_result) in self.storage_hub.barrier().await? {
+            self.handle_log_result(old_ctx, old_result).await?;
         }
 
-        // get offset to cut the WAL at
-        let cut_offset = if self.insts.is_empty() {
-            self.wal_offset
-        } else {
-            self.insts[0].wal_offset
-        };
+        // get offset to cut the WAL at: the earliest entry of any remaining
+        // instance (all known after the barrier), as a later slot may have
+        // logged before an earlier one
+        let cut_offset = self
+            .insts
+            .iter()
+            .filter_map(|inst| inst.wal_offset)
+            .min()
+            .unwrap_or(self.wal_offset);
 
         // discard the log before cut_offset
         if cut_offset > 0 {
@@ -76,13 +71,10 @@ impl BodegaReplica {
                 now_size,
             } = self
                 .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Discard {
-                        offset: cut_offset,
-                        keep: 0,
-                    },
-                )
+                .do_sync_action(LogAction::Discard {
+                    offset: cut_offset,
+                    keep: 0,
+                })
                 .await?
                 .1
             {
@@ -95,9 +87,9 @@ impl BodegaReplica {
 
         // update inst.wal_offset for all remaining in-mem instances
         for inst in &mut self.insts {
-            if inst.wal_offset > 0 {
-                debug_assert!(inst.wal_offset >= cut_offset);
-                inst.wal_offset -= cut_offset;
+            if let Some(wal_offset) = inst.wal_offset.as_mut() {
+                debug_assert!(*wal_offset >= cut_offset);
+                *wal_offset -= cut_offset;
             }
         }
 
@@ -139,16 +131,13 @@ impl BodegaReplica {
         // write new slot info entry to the head of snapshot
         match self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Write {
-                    entry: SnapEntry::SlotInfo {
-                        start_slot: new_start_slot,
-                    },
-                    offset: 0,
-                    sync: self.config.logger_sync,
+            .do_sync_action(LogAction::Write {
+                entry: SnapEntry::SlotInfo {
+                    start_slot: new_start_slot,
                 },
-            )
+                offset: 0,
+                sync: self.config.logger_sync,
+            })
             .await?
             .1
         {
@@ -185,10 +174,7 @@ impl BodegaReplica {
         // start_slot index
         match self
             .snapshot_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Read { offset: 0 },
-            )
+            .do_sync_action(LogAction::Read { offset: 0 })
             .await?
             .1
         {
@@ -209,12 +195,9 @@ impl BodegaReplica {
                 loop {
                     match self
                         .snapshot_hub
-                        .do_sync_action(
-                            0, // using 0 as dummy log action ID
-                            LogAction::Read {
-                                offset: self.snap_offset,
-                            },
-                        )
+                        .do_sync_action(LogAction::Read {
+                            offset: self.snap_offset,
+                        })
                         .await?
                         .1
                     {
@@ -267,14 +250,11 @@ impl BodegaReplica {
                     now_size,
                 } = self
                     .snapshot_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Write {
-                            entry: SnapEntry::SlotInfo { start_slot: 0 },
-                            offset: 0,
-                            sync: self.config.logger_sync,
-                        },
-                    )
+                    .do_sync_action(LogAction::Write {
+                        entry: SnapEntry::SlotInfo { start_slot: 0 },
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    })
                     .await?
                     .1
                 {

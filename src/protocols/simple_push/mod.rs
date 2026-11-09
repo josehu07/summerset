@@ -121,7 +121,7 @@ pub(crate) struct SimplePushReplica {
     state_machine: StateMachine,
 
     /// `StorageHub` module.
-    storage_hub: StorageHub<WalEntry>,
+    storage_hub: StorageHub<WalEntry, usize>,
 
     /// `TransportHub` module.
     transport_hub: TransportHub<PushMsg>,

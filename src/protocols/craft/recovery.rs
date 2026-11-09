@@ -15,10 +15,7 @@ impl CRaftReplica {
         // necessary durable metadata
         match self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Read { offset: 0 },
-            )
+            .do_sync_action(LogAction::Read { offset: 0 })
             .await?
             .1
         {
@@ -36,12 +33,9 @@ impl CRaftReplica {
                 loop {
                     match self
                         .storage_hub
-                        .do_sync_action(
-                            0, // using 0 as dummy log action ID
-                            LogAction::Read {
-                                offset: self.log_offset,
-                            },
-                        )
+                        .do_sync_action(LogAction::Read {
+                            offset: self.log_offset,
+                        })
                         .await?
                         .1
                     {
@@ -49,7 +43,7 @@ impl CRaftReplica {
                             entry: Some(DurEntry::LogEntry { mut entry }),
                             end_offset,
                         } => {
-                            entry.log_offset = self.log_offset;
+                            entry.log_offset = Some(self.log_offset);
                             entry.external = false; // no re-replying to clients
                             self.log.push(entry);
                             self.log_offset = end_offset; // update log offset
@@ -72,14 +66,11 @@ impl CRaftReplica {
                     now_size,
                 } = self
                     .storage_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Write {
-                            entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
-                            offset: 0,
-                            sync: self.config.logger_sync,
-                        },
-                    )
+                    .do_sync_action(LogAction::Write {
+                        entry: DurEntry::pack_meta(self.curr_term, self.voted_for),
+                        offset: 0,
+                        sync: self.config.logger_sync,
+                    })
                     .await?
                     .1
                 {
@@ -93,7 +84,7 @@ impl CRaftReplica {
                     term: 0,
                     reqs_cw: RSCodeword::from_null(self.majority, self.population - self.majority)?,
                     external: false,
-                    log_offset: 0,
+                    log_offset: None,
                 };
                 self.log.push(null_entry.clone());
                 // ... and write the 0-th dummy entry durably
@@ -102,18 +93,15 @@ impl CRaftReplica {
                     now_size,
                 } = self
                     .storage_hub
-                    .do_sync_action(
-                        0, // using 0 as dummy log action ID
-                        LogAction::Write {
-                            entry: DurEntry::LogEntry { entry: null_entry },
-                            offset: self.log_offset,
-                            sync: self.config.logger_sync,
-                        },
-                    )
+                    .do_sync_action(LogAction::Write {
+                        entry: DurEntry::LogEntry { entry: null_entry },
+                        offset: self.log_offset,
+                        sync: self.config.logger_sync,
+                    })
                     .await?
                     .1
                 {
-                    self.log[0].log_offset = self.log_offset;
+                    self.log[0].log_offset = Some(self.log_offset);
                     self.log_offset = now_size;
                 } else {
                     return logged_err!("unexpected log result type or failed write");
@@ -129,12 +117,9 @@ impl CRaftReplica {
             offset_ok: true, ..
         } = self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Truncate {
-                    offset: self.log_offset,
-                },
-            )
+            .do_sync_action(LogAction::Truncate {
+                offset: self.log_offset,
+            })
             .await?
             .1
         {

@@ -1,13 +1,20 @@
 //! `EPaxos` -- durable logging.
 
 use super::*;
-use crate::server::{LogActionId, LogResult};
+use crate::server::LogResult;
 use crate::utils::SummersetError;
 
 // EPaxosReplica durable WAL logging
 impl EPaxosReplica {
-    /// Handler of `PreAcceptSlot` logging result chan recv.
-    fn handle_logged_pre_accept_slot(&mut self, slot: SlotIdx) -> Result<(), SummersetError> {
+    /// Handler of `PreAcceptSlot` logging result chan recv, replying with the
+    /// `seq` and `deps` logged (which a later re-sent `PreAccept` may update).
+    fn handle_logged_pre_accept_slot(
+        &mut self,
+        slot: SlotIdx,
+        ballot: Ballot,
+        seq: SeqNum,
+        deps: DepSet,
+    ) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
@@ -15,42 +22,49 @@ impl EPaxosReplica {
         pf_trace!(
             "finished PreAcceptSlot logging for slot {} bal {}",
             slot,
-            self.insts[row][col - self.start_col].bal
+            ballot
         );
         let inst = &self.insts[row][col - self.start_col];
+        if inst.bal != ballot {
+            return Ok(()); // ignore if instance has moved on to a higher ballot
+        }
 
         if let Some(LeaderBookkeeping { .. }) = inst.leader_bk {
             // on command leader, finishing the logging of a PreAcceptSlot
             // entry is equivalent to receiving a PreAccept reply from myself
             // (as an acceptor role)
-            self.handle_msg_pre_accept_reply(self.id, slot, inst.bal, inst.seq, inst.deps.clone())?;
+            self.handle_msg_pre_accept_reply(self.id, slot, ballot, seq, deps)?;
         } else if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
             // on follower replica, finishing the logging of a PreAcceptSlot
             // entry leads to sending back a PreAccept reply
-            self.transport_hub.send_msg(
-                PeerMsg::PreAcceptReply {
-                    slot,
-                    ballot: inst.bal,
-                    seq: inst.seq,
-                    deps: inst.deps.clone(),
-                },
-                source,
-            )?;
             pf_trace!(
                 "sent PreAcceptReply -> {} for slot {} bal {} seq {} deps {}",
                 source,
                 slot,
-                inst.bal,
-                inst.seq,
-                inst.deps,
+                ballot,
+                seq,
+                deps,
             );
+            self.transport_hub.send_msg(
+                PeerMsg::PreAcceptReply {
+                    slot,
+                    ballot,
+                    seq,
+                    deps,
+                },
+                source,
+            )?;
         }
 
         Ok(())
     }
 
     /// Handler of `AcceptSlot` logging result chan recv.
-    fn handle_logged_accept_slot(&mut self, slot: SlotIdx) -> Result<(), SummersetError> {
+    fn handle_logged_accept_slot(
+        &mut self,
+        slot: SlotIdx,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
         let (row, col) = slot.unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
@@ -58,9 +72,12 @@ impl EPaxosReplica {
         pf_trace!(
             "finished AcceptSlot logging for slot {} bal {}",
             slot,
-            self.insts[row][col - self.start_col].bal
+            ballot
         );
         let inst = &self.insts[row][col - self.start_col];
+        if inst.bal != ballot {
+            return Ok(()); // ignore if instance has moved on to a higher ballot
+        }
 
         if let Some(LeaderBookkeeping { .. }) = inst.leader_bk {
             // on command leader, finishing the logging of an AcceptSlot entry
@@ -141,37 +158,35 @@ impl EPaxosReplica {
     /// Synthesized handler of durable logging result chan recv.
     pub(super) async fn handle_log_result(
         &mut self,
-        action_id: LogActionId,
+        log_ctx: LogCtx,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let (slot, entry_type) = Self::split_log_action_id(action_id);
-        let (row, col) = slot.unpack();
+        let LogResult::Append { offset, now_size } = log_result else {
+            return logged_err!("unexpected log result type: {:?}", log_result);
+        };
+        debug_assert!(now_size >= self.wal_offset);
+        self.wal_offset = now_size;
+
+        let (row, col) = log_ctx.slot().unpack();
         if col < self.start_col {
             return Ok(()); // ignore if slot index outdated
         }
         debug_assert!(col < self.start_col + self.insts[row].len());
+        // entries complete in log order, so the first one of the instance
+        // tells where its entries start
+        self.insts[row][col - self.start_col]
+            .wal_offset
+            .get_or_insert(offset);
 
-        if let LogResult::Append { now_size } = log_result {
-            debug_assert!(now_size >= self.wal_offset);
-            // update first wal_offset of slot
-            let inst = &mut self.insts[row][col - self.start_col];
-            if inst.wal_offset == 0 || inst.wal_offset > self.wal_offset {
-                inst.wal_offset = self.wal_offset;
-            }
-            debug_assert!(inst.wal_offset <= self.wal_offset);
-            // then update self.wal_offset
-            self.wal_offset = now_size;
-        } else {
-            return logged_err!("unexpected log result type: {:?}", log_result);
-        }
-
-        match entry_type {
-            Status::PreAccepting => self.handle_logged_pre_accept_slot(slot),
-            Status::Accepting => self.handle_logged_accept_slot(slot),
-            Status::Committed => self.handle_logged_commit_slot(slot).await,
-            _ => {
-                logged_err!("unexpected log entry type: {:?}", entry_type)
-            }
+        match log_ctx {
+            LogCtx::PreAccept {
+                slot,
+                ballot,
+                seq,
+                deps,
+            } => self.handle_logged_pre_accept_slot(slot, ballot, seq, deps),
+            LogCtx::Accept { slot, ballot } => self.handle_logged_accept_slot(slot, ballot),
+            LogCtx::Commit { slot } => self.handle_logged_commit_slot(slot).await,
         }
     }
 }

@@ -17,9 +17,6 @@ use wincode::{SchemaRead, SchemaWrite};
 use crate::server::ReplicaId;
 use crate::utils::{CODEC_CONFIG, Codec, SummersetError, faults};
 
-/// Log action ID type.
-pub(crate) type LogActionId = u64;
-
 /// Action command to the logger. File cursor will be positioned at EOF after
 /// every action.
 #[derive(Debug, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
@@ -43,6 +40,9 @@ pub(crate) enum LogAction<Ent> {
     /// Discard the log before given offset, keeping the tail part (and
     /// optionally a fixed head part).
     Discard { offset: usize, keep: usize },
+
+    /// Do nothing, completing once all previously submitted actions have.
+    Barrier,
 }
 
 /// Action result returned by the logger.
@@ -58,8 +58,9 @@ pub(crate) enum LogResult<Ent> {
     /// of file after this.
     Write { offset_ok: bool, now_size: usize },
 
-    /// `now_size` is the size of file after this.
-    Append { now_size: usize },
+    /// `offset` is where the entry starts, and `now_size` is the size of
+    /// file after this.
+    Append { offset: usize, now_size: usize },
 
     /// `ok` is true if truncate successful, else false. `now_size` is the
     /// size of file after this.
@@ -68,28 +69,34 @@ pub(crate) enum LogResult<Ent> {
     /// `ok` is true if discard successful, else false. `now_size` is the size
     /// of file after this.
     Discard { offset_ok: bool, now_size: usize },
+
+    /// All previously submitted actions have completed.
+    Barrier,
 }
 
-/// Durable storage logging module.
-pub(crate) struct StorageHub<Ent> {
+/// Durable storage logging module. Each action submitted asynchronously
+/// carries a context of type `Ctx`, given back along with its result to tell
+/// what the action was about; actions done synchronously carry none.
+pub(crate) struct StorageHub<Ent, Ctx = ()> {
     /// My replica ID.
     _me: ReplicaId,
 
     /// Sender side of the log channel.
-    tx_log: mpsc::UnboundedSender<(LogActionId, LogAction<Ent>)>,
+    tx_log: mpsc::UnboundedSender<(Option<Ctx>, LogAction<Ent>)>,
 
     /// Receiver side of the ack channel.
-    rx_ack: mpsc::UnboundedReceiver<(LogActionId, LogResult<Ent>)>,
+    rx_ack: mpsc::UnboundedReceiver<(Option<Ctx>, LogResult<Ent>)>,
 
     /// Join handle of the logger task.
     _logger_handle: JoinHandle<()>,
 }
 
 // StorageHub public API implementation
-impl<Ent> StorageHub<Ent>
+impl<Ent, Ctx> StorageHub<Ent, Ctx>
 where
     Ent:
         fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + GetSize + Send + Sync + 'static,
+    Ctx: Send + 'static,
 {
     /// Creates a new durable storage logging hub. Spawns the logger task.
     /// Creates a log channel for submitting logging actions to the logger and
@@ -117,7 +124,7 @@ where
         }
         backer_file.seek(SeekFrom::End(0)).await?; // seek to EOF
 
-        let (tx_log, rx_log) = mpsc::unbounded_channel::<(LogActionId, LogAction<Ent>)>();
+        let (tx_log, rx_log) = mpsc::unbounded_channel();
         let (tx_ack, rx_ack) = mpsc::unbounded_channel();
 
         let mut logger = StorageHubLoggerTask::new(rx_log, tx_ack, backer_file, path).await?;
@@ -133,9 +140,8 @@ where
 
     /// Truncates the backing file to empty, as a synchronous action.
     pub(crate) async fn truncate_all(&mut self) -> Result<(), SummersetError> {
-        // using 0 as dummy log action ID
         let (_, result) = self
-            .do_sync_action(0, LogAction::Truncate { offset: 0 })
+            .do_sync_action(LogAction::Truncate { offset: 0 })
             .await?;
         if matches!(
             result,
@@ -150,34 +156,23 @@ where
         }
     }
 
-    /// Submits an action by sending it to the log channel.
+    /// Submits an action with given context by sending it to the log channel.
     pub(crate) fn submit_action(
         &mut self,
-        id: LogActionId,
+        ctx: Ctx,
         action: LogAction<Ent>,
     ) -> Result<(), SummersetError> {
-        self.tx_log.send((id, action)).map_err(SummersetError::msg)
+        self.tx_log
+            .send((Some(ctx), action))
+            .map_err(SummersetError::msg)
     }
 
     /// Waits for the next logging result by receiving from the ack channel.
-    pub(crate) async fn get_result(
-        &mut self,
-    ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
-        if let Some((id, result)) = self.rx_ack.recv().await {
-            Ok((id, result))
-        } else {
-            logged_err!("ack channel has been closed")
-        }
-    }
-
-    /// Try to get the next logging result using `try_recv()`.
-    #[allow(dead_code)]
-    pub(crate) fn try_get_result(
-        &mut self,
-    ) -> Result<(LogActionId, LogResult<Ent>), SummersetError> {
-        match self.rx_ack.try_recv() {
-            Ok((id, result)) => Ok((id, result)),
-            Err(e) => Err(SummersetError::msg(e)),
+    pub(crate) async fn get_result(&mut self) -> Result<(Ctx, LogResult<Ent>), SummersetError> {
+        match self.rx_ack.recv().await {
+            Some((Some(ctx), result)) => Ok((ctx, result)),
+            Some((None, _)) => logged_err!("unexpected result of a synchronous action"),
+            None => logged_err!("ack channel has been closed"),
         }
     }
 
@@ -187,25 +182,36 @@ where
     /// the second element is the result of this sync action.
     pub(crate) async fn do_sync_action(
         &mut self,
-        id: LogActionId,
         action: LogAction<Ent>,
-    ) -> Result<(Vec<(LogActionId, LogResult<Ent>)>, LogResult<Ent>), SummersetError> {
-        self.submit_action(id, action)?;
+    ) -> Result<(Vec<(Ctx, LogResult<Ent>)>, LogResult<Ent>), SummersetError> {
+        self.tx_log
+            .send((None, action))
+            .map_err(SummersetError::msg)?;
         let mut old_results = vec![];
         loop {
-            let (this_id, result) = self.get_result().await?;
-            if this_id == id {
-                return Ok((old_results, result));
+            // results come in submission order, and no other synchronous
+            // action can be pending, so the first one without context is mine
+            match self.rx_ack.recv().await {
+                Some((Some(ctx), result)) => old_results.push((ctx, result)),
+                Some((None, result)) => return Ok((old_results, result)),
+                None => return logged_err!("ack channel has been closed"),
             }
-            old_results.push((this_id, result));
         }
+    }
+
+    /// Waits for all previously submitted actions to complete, returning their
+    /// results not received yet.
+    pub(crate) async fn barrier(&mut self) -> Result<Vec<(Ctx, LogResult<Ent>)>, SummersetError> {
+        let (old_results, result) = self.do_sync_action(LogAction::Barrier).await?;
+        debug_assert!(matches!(result, LogResult::Barrier));
+        Ok(old_results)
     }
 }
 
 /// `StorageHub` durable logger task.
-struct StorageHubLoggerTask<Ent> {
-    rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
-    tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
+struct StorageHubLoggerTask<Ent, Ctx> {
+    rx_log: mpsc::UnboundedReceiver<(Option<Ctx>, LogAction<Ent>)>,
+    tx_ack: mpsc::UnboundedSender<(Option<Ctx>, LogResult<Ent>)>,
 
     backer_file: File,
     /// Backer file size is maintained by the logger.
@@ -216,14 +222,14 @@ struct StorageHubLoggerTask<Ent> {
     synced_size: usize,
 }
 
-impl<Ent> StorageHubLoggerTask<Ent>
+impl<Ent, Ctx> StorageHubLoggerTask<Ent, Ctx>
 where
     Ent: fmt::Debug + Clone + Serialize + DeserializeOwned + Codec + Send + Sync + 'static,
 {
     /// Creates the durable logger task.
     async fn new(
-        rx_log: mpsc::UnboundedReceiver<(LogActionId, LogAction<Ent>)>,
-        tx_ack: mpsc::UnboundedSender<(LogActionId, LogResult<Ent>)>,
+        rx_log: mpsc::UnboundedReceiver<(Option<Ctx>, LogAction<Ent>)>,
+        tx_ack: mpsc::UnboundedSender<(Option<Ctx>, LogResult<Ent>)>,
         backer_file: File,
         path: &Path,
     ) -> Result<Self, SummersetError> {
@@ -438,8 +444,9 @@ where
                 Self::append_entry(&mut self.backer_file, self.file_size, &entry, sync)
                     .await
                     .map(|now_size| {
+                        let offset = self.file_size;
                         self.file_size = now_size;
-                        LogResult::Append { now_size }
+                        LogResult::Append { offset, now_size }
                     })
             }
             LogAction::Truncate { offset } => {
@@ -464,6 +471,7 @@ where
                         }
                     })
             }
+            LogAction::Barrier => Ok(LogResult::Barrier),
         }
     }
 
@@ -471,14 +479,14 @@ where
     async fn run(&mut self) {
         pf_debug!("logger task spawned");
 
-        while let Some((id, action)) = self.rx_log.recv().await {
+        while let Some((ctx, action)) = self.rx_log.recv().await {
             // pf_trace!("log action {:?}", action);
             let syncs = match action {
-                LogAction::Read { .. } => false,
+                LogAction::Read { .. } | LogAction::Barrier => false,
                 LogAction::Write { sync, .. } | LogAction::Append { sync, .. } => sync,
                 LogAction::Truncate { .. } | LogAction::Discard { .. } => true,
             };
-            let write = !matches!(action, LogAction::Read { .. });
+            let write = !matches!(action, LogAction::Read { .. } | LogAction::Barrier);
             let fault = faults::disk_delay_fail(write);
             if let Some((delay, _)) = fault {
                 time::sleep(delay).await;
@@ -504,7 +512,7 @@ where
                 faults::record_file_synced(&self.path, synced_size);
             }
 
-            if let Err(e) = self.tx_ack.send((id, res.unwrap())) {
+            if let Err(e) = self.tx_ack.send((ctx, res.unwrap())) {
                 pf_error!("error sending to tx_ack: {}", e);
             }
         }
@@ -523,6 +531,8 @@ mod tests {
     )]
     struct TestEntry(String);
 
+    type Logger = StorageHubLoggerTask<TestEntry, ()>;
+
     /// Creates an anonymous file that is deleted once closed.
     fn test_temp_file() -> Result<File, SummersetError> {
         Ok(File::from_std(tempfile::tempfile()?))
@@ -533,23 +543,16 @@ mod tests {
         let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let (offset_ok, now_size) =
-            StorageHubLoggerTask::write_entry(&mut backer_file, 0, &entry, 0, false).await?;
+            Logger::write_entry(&mut backer_file, 0, &entry, 0, false).await?;
         debug_assert!(offset_ok);
         let (offset_ok, now_size) =
-            StorageHubLoggerTask::write_entry(&mut backer_file, now_size, &entry, now_size, false)
-                .await?;
+            Logger::write_entry(&mut backer_file, now_size, &entry, now_size, false).await?;
         debug_assert!(offset_ok);
         let (offset_ok, now_size) =
-            StorageHubLoggerTask::write_entry(&mut backer_file, now_size, &entry, 0, true).await?;
+            Logger::write_entry(&mut backer_file, now_size, &entry, 0, true).await?;
         debug_assert!(offset_ok);
-        let (offset_ok, _) = StorageHubLoggerTask::write_entry(
-            &mut backer_file,
-            now_size,
-            &entry,
-            now_size + 10,
-            false,
-        )
-        .await?;
+        let (offset_ok, _) =
+            Logger::write_entry(&mut backer_file, now_size, &entry, now_size + 10, false).await?;
         debug_assert!(!offset_ok);
         Ok(())
     }
@@ -559,11 +562,9 @@ mod tests {
         let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
         let entry_bytes = wincode::config::serialize(&entry, CODEC_CONFIG)?;
-        let mid_size =
-            StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
+        let mid_size = Logger::append_entry(&mut backer_file, 0, &entry, false).await?;
         debug_assert!(mid_size >= entry_bytes.len());
-        let end_size =
-            StorageHubLoggerTask::append_entry(&mut backer_file, mid_size, &entry, true).await?;
+        let end_size = Logger::append_entry(&mut backer_file, mid_size, &entry, true).await?;
         debug_assert!(end_size - mid_size >= entry_bytes.len());
         Ok(())
     }
@@ -572,30 +573,22 @@ mod tests {
     async fn read_entries() -> Result<(), SummersetError> {
         let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid_size =
-            StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
-        let end_size =
-            StorageHubLoggerTask::append_entry(&mut backer_file, mid_size, &entry, true).await?;
+        let mid_size = Logger::append_entry(&mut backer_file, 0, &entry, false).await?;
+        let end_size = Logger::append_entry(&mut backer_file, mid_size, &entry, true).await?;
         assert_eq!(
-            StorageHubLoggerTask::read_entry(&mut backer_file, end_size, mid_size).await?,
+            Logger::read_entry(&mut backer_file, end_size, mid_size).await?,
             (Some(TestEntry("test-entry-dummy-string".into())), end_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::read_entry(&mut backer_file, end_size, 0).await?,
+            Logger::read_entry(&mut backer_file, end_size, 0).await?,
             (Some(TestEntry("test-entry-dummy-string".into())), mid_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::read_entry(
-                &mut backer_file,
-                end_size,
-                mid_size + 10
-            )
-            .await?,
+            Logger::read_entry(&mut backer_file, end_size, mid_size + 10).await?,
             (None, mid_size + 10)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::read_entry(&mut backer_file, mid_size, mid_size - 4)
-                .await?,
+            Logger::read_entry(&mut backer_file, mid_size, mid_size - 4).await?,
             (None, mid_size - 4)
         );
         Ok(())
@@ -610,9 +603,7 @@ mod tests {
         let mut ends = vec![0];
         for _ in 0..3 {
             let end = *ends.last().unwrap();
-            ends.push(
-                StorageHubLoggerTask::append_entry(&mut backer_file, end, &entry, false).await?,
-            );
+            ends.push(Logger::append_entry(&mut backer_file, end, &entry, false).await?);
         }
         let mut image = vec![];
         backer_file.seek(SeekFrom::Start(0)).await?;
@@ -621,9 +612,7 @@ mod tests {
             let mut cut_file = test_temp_file()?;
             cut_file.write_all(&image[..cut]).await?;
             let (mut offset, mut num_read) = (0, 0);
-            while let (Some(read), end) =
-                StorageHubLoggerTask::<TestEntry>::read_entry(&mut cut_file, cut, offset).await?
-            {
+            while let (Some(read), end) = Logger::read_entry(&mut cut_file, cut, offset).await? {
                 assert_eq!(read, entry);
                 (offset, num_read) = (end, num_read + 1);
             }
@@ -639,31 +628,18 @@ mod tests {
     async fn truncate_log() -> Result<(), SummersetError> {
         let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid_offset =
-            StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
-        let end_offset =
-            StorageHubLoggerTask::append_entry(&mut backer_file, mid_offset, &entry, true).await?;
+        let mid_offset = Logger::append_entry(&mut backer_file, 0, &entry, false).await?;
+        let end_offset = Logger::append_entry(&mut backer_file, mid_offset, &entry, true).await?;
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::truncate_log(
-                &mut backer_file,
-                end_offset,
-                mid_offset
-            )
-            .await?,
+            Logger::truncate_log(&mut backer_file, end_offset, mid_offset).await?,
             (true, mid_offset)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::truncate_log(
-                &mut backer_file,
-                mid_offset,
-                end_offset
-            )
-            .await?,
+            Logger::truncate_log(&mut backer_file, mid_offset, end_offset).await?,
             (false, mid_offset)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::truncate_log(&mut backer_file, mid_offset, 0)
-                .await?,
+            Logger::truncate_log(&mut backer_file, mid_offset, 0).await?,
             (true, 0)
         );
         Ok(())
@@ -673,62 +649,29 @@ mod tests {
     async fn discard_log() -> Result<(), SummersetError> {
         let mut backer_file = test_temp_file()?;
         let entry = TestEntry("test-entry-dummy-string".into());
-        let mid1_offset =
-            StorageHubLoggerTask::append_entry(&mut backer_file, 0, &entry, false).await?;
+        let mid1_offset = Logger::append_entry(&mut backer_file, 0, &entry, false).await?;
         let mid2_offset =
-            StorageHubLoggerTask::append_entry(&mut backer_file, mid1_offset, &entry, false)
-                .await?;
-        let end_offset =
-            StorageHubLoggerTask::append_entry(&mut backer_file, mid2_offset, &entry, true).await?;
+            Logger::append_entry(&mut backer_file, mid1_offset, &entry, false).await?;
+        let end_offset = Logger::append_entry(&mut backer_file, mid2_offset, &entry, true).await?;
         let tail_size = end_offset - mid2_offset;
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::discard_log(
-                &mut backer_file,
-                end_offset,
-                mid2_offset,
-                mid1_offset,
-            )
-            .await?,
+            Logger::discard_log(&mut backer_file, end_offset, mid2_offset, mid1_offset,).await?,
             (true, 2 * tail_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::discard_log(
-                &mut backer_file,
-                2 * tail_size,
-                mid1_offset,
-                end_offset,
-            )
-            .await?,
+            Logger::discard_log(&mut backer_file, 2 * tail_size, mid1_offset, end_offset,).await?,
             (false, 2 * tail_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::discard_log(
-                &mut backer_file,
-                2 * tail_size,
-                mid1_offset,
-                0,
-            )
-            .await?,
+            Logger::discard_log(&mut backer_file, 2 * tail_size, mid1_offset, 0,).await?,
             (true, tail_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::discard_log(
-                &mut backer_file,
-                tail_size,
-                end_offset,
-                0
-            )
-            .await?,
+            Logger::discard_log(&mut backer_file, tail_size, end_offset, 0).await?,
             (false, tail_size)
         );
         assert_eq!(
-            StorageHubLoggerTask::<TestEntry>::discard_log(
-                &mut backer_file,
-                tail_size,
-                tail_size,
-                0
-            )
-            .await?,
+            Logger::discard_log(&mut backer_file, tail_size, tail_size, 0).await?,
             (true, 0)
         );
         Ok(())
@@ -748,6 +691,7 @@ mod tests {
             (
                 0,
                 LogResult::Append {
+                    offset: 0,
                     now_size: 8 + entry_bytes.len()
                 }
             )
@@ -784,13 +728,14 @@ mod tests {
         hub.submit_action(0, LogAction::Append { entry, sync: true })?;
         hub.submit_action(1, LogAction::Read { offset: 0 })?;
         assert_eq!(
-            hub.do_sync_action(2, LogAction::Truncate { offset: 0 },)
+            hub.do_sync_action(LogAction::Truncate { offset: 0 })
                 .await?,
             (
                 vec![
                     (
                         0,
                         LogResult::Append {
+                            offset: 0,
                             now_size: 8 + entry_bytes.len()
                         }
                     ),
@@ -807,6 +752,38 @@ mod tests {
                     now_size: 0
                 }
             )
+        );
+        // a barrier waits on, and returns, all earlier results, which tell
+        // where each appended entry starts
+        let entry = TestEntry("ijkl".into());
+        let entry_len = wincode::config::serialize(&entry, CODEC_CONFIG)?.len();
+        hub.submit_action(
+            3,
+            LogAction::Append {
+                entry: entry.clone(),
+                sync: false,
+            },
+        )?;
+        hub.submit_action(4, LogAction::Append { entry, sync: false })?;
+        let results = hub.barrier().await?;
+        assert_eq!(
+            results,
+            vec![
+                (
+                    3,
+                    LogResult::Append {
+                        offset: 0,
+                        now_size: 8 + entry_len
+                    }
+                ),
+                (
+                    4,
+                    LogResult::Append {
+                        offset: 8 + entry_len,
+                        now_size: 2 * (8 + entry_len)
+                    }
+                )
+            ]
         );
         Ok(())
     }

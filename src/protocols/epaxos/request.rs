@@ -56,7 +56,12 @@ impl EPaxosReplica {
 
         // record update to instance status & data
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::PreAccepting),
+            LogCtx::PreAccept {
+                slot,
+                ballot: inst.bal,
+                seq: inst.seq,
+                deps: inst.deps.clone(),
+            },
             LogAction::Append {
                 entry: WalEntry::PreAcceptSlot {
                     slot,

@@ -12,12 +12,9 @@ impl SimplePushReplica {
         loop {
             match self
                 .storage_hub
-                .do_sync_action(
-                    0, // using 0 as dummy log action ID
-                    LogAction::Read {
-                        offset: self.wal_offset,
-                    },
-                )
+                .do_sync_action(LogAction::Read {
+                    offset: self.wal_offset,
+                })
                 .await?
                 .1
             {
@@ -71,12 +68,9 @@ impl SimplePushReplica {
             offset_ok: true, ..
         } = self
             .storage_hub
-            .do_sync_action(
-                0, // using 0 as dummy log action ID
-                LogAction::Truncate {
-                    offset: self.wal_offset,
-                },
-            )
+            .do_sync_action(LogAction::Truncate {
+                offset: self.wal_offset,
+            })
             .await?
             .1
         {

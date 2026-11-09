@@ -30,7 +30,7 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
-    Heartbeater, LogActionId, ReplicaId, StateMachine, StorageHub, TransportHub,
+    Heartbeater, ReplicaId, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::SummersetError;
 
@@ -125,9 +125,9 @@ struct LogEntry {
     external: bool,
 
     /// Offset in durable log file of this entry. This field is not maintained
-    /// in durable storage itself, where it is typically 0. It is maintained
-    /// only in the in-memory log.
-    log_offset: usize,
+    /// in durable storage itself, where it is typically `None`. It is
+    /// maintained only in the in-memory log.
+    log_offset: Option<usize>,
 }
 
 /// Stable storage log entry type.
@@ -173,6 +173,30 @@ impl DurEntry {
             ))
         } else {
             logged_err!("unpacking non Metadata entry")
+        }
+    }
+}
+
+/// Context of a durable logging action, given back with its result to tell
+/// what the logged entry was about.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum LogCtx {
+    /// Leader appending its own new entry at slot.
+    LeaderAppend { slot: usize, term: Term },
+    /// Follower appending the entry at slot out of an `AppendEntries` in term,
+    /// whose entries end at `end_slot`.
+    FollowerAppend {
+        slot: usize,
+        end_slot: usize,
+        term: Term,
+    },
+}
+
+impl LogCtx {
+    /// Slot index of the logged entry.
+    fn slot(self) -> usize {
+        match self {
+            Self::LeaderAppend { slot, .. } | Self::FollowerAppend { slot, .. } => slot,
         }
     }
 }
@@ -276,7 +300,7 @@ pub(crate) struct RaftReplica {
     state_machine: StateMachine,
 
     /// `StorageHub` module.
-    storage_hub: StorageHub<DurEntry>,
+    storage_hub: StorageHub<DurEntry, LogCtx>,
 
     /// `StorageHub` module for the snapshot file.
     snapshot_hub: StorageHub<SnapEntry>,
@@ -347,33 +371,6 @@ pub(crate) struct RaftReplica {
 
 // RaftReplica common helpers
 impl RaftReplica {
-    /// Compose `LogActionId` from (slot, `end_slot`) pair & entry type.
-    /// Uses the `Role` enum type to represent different entry types.
-    #[inline]
-    fn make_log_action_id(slot: usize, slot_e: usize, entry_type: Role) -> LogActionId {
-        #[allow(clippy::match_wildcard_for_single_variants)]
-        let type_num = match entry_type {
-            Role::Follower => 1,
-            Role::Leader => 2,
-            _ => panic!("unknown log entry type {:?}", entry_type),
-        };
-        ((slot << 33) | (slot_e << 2) | type_num) as LogActionId
-    }
-
-    /// Decompose `LogActionId` into (slot, `end_slot`) pair & entry type.
-    #[inline]
-    fn split_log_action_id(log_action_id: LogActionId) -> (usize, usize, Role) {
-        let slot = (log_action_id >> 33) as usize;
-        let slot_e = ((log_action_id & ((1 << 33) - 1)) >> 2) as usize;
-        let type_num = log_action_id & ((1 << 2) - 1);
-        let entry_type = match type_num {
-            1 => Role::Follower,
-            2 => Role::Leader,
-            _ => panic!("unknown log entry type num {}", type_num),
-        };
-        (slot, slot_e, entry_type)
-    }
-
     /// Compose `CommandId` from slot index & command index within.
     #[inline]
     fn make_command_id(slot: usize, cmd_idx: usize) -> CommandId {
@@ -575,10 +572,9 @@ impl GenericReplica for RaftReplica {
                         pf_error!("error getting log result: {}", e);
                         continue;
                     }
-                    let (action_id, log_result) = log_result.unwrap();
-                    if let Err(e) = self.handle_log_result(action_id, log_result).await {
-                        pf_error!("error handling log result {}: {}",
-                                           action_id, e);
+                    let (log_ctx, log_result) = log_result.unwrap();
+                    if let Err(e) = self.handle_log_result(log_ctx, log_result).await {
+                        pf_error!("error handling log result {:?}: {}", log_ctx, e);
                     }
                 },
 

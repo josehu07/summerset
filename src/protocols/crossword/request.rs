@@ -140,7 +140,11 @@ impl CrosswordReplica {
             },
         )?;
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, Status::Accepting),
+            LogCtx::AcceptData {
+                slot,
+                ballot: inst.bal,
+                value_id,
+            },
             LogAction::Append {
                 entry: WalEntry::AcceptData {
                     slot,

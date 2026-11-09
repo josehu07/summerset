@@ -66,7 +66,10 @@ impl CRaftReplica {
         // submit logger action to make this log entry durable
         let slot = self.start_slot + self.log.len();
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, slot, Role::Leader),
+            LogCtx::LeaderAppend {
+                slot,
+                term: self.curr_term,
+            },
             LogAction::Append {
                 entry: DurEntry::LogEntry {
                     entry: LogEntry {
@@ -83,7 +86,7 @@ impl CRaftReplica {
                             )?
                         },
                         external: true,
-                        log_offset: 0,
+                        log_offset: None,
                     },
                 },
                 sync: self.config.logger_sync,
@@ -96,7 +99,7 @@ impl CRaftReplica {
             term: self.curr_term,
             reqs_cw,
             external: true,
-            log_offset: 0,
+            log_offset: None,
         });
 
         Ok(())

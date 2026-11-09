@@ -1,7 +1,7 @@
 //! `ChainRep` -- durable logging.
 
 use super::*;
-use crate::server::{ApiRequest, LogActionId, LogResult};
+use crate::server::{ApiRequest, LogResult};
 use crate::utils::SummersetError;
 
 // ChainRepReplica durable WAL logging
@@ -9,26 +9,20 @@ impl ChainRepReplica {
     /// Handler of durable logging result chan recv.
     pub(super) async fn handle_log_result(
         &mut self,
-        action_id: LogActionId,
+        slot: usize,
         log_result: LogResult<WalEntry>,
     ) -> Result<(), SummersetError> {
-        let slot = usize::try_from(action_id)?;
         debug_assert!(slot < self.log.len());
+        let LogResult::Append { offset, now_size } = log_result else {
+            return logged_err!("unexpected log result type: {:?}", log_result);
+        };
+        debug_assert!(now_size >= self.wal_offset);
+        self.wal_offset = now_size;
+        // entries complete in log order, so the first one of the slot tells
+        // where its records start
+        self.log[slot].wal_offset.get_or_insert(offset);
         if self.log[slot].status != Status::Streaming {
             return Ok(());
-        }
-
-        if let LogResult::Append { now_size } = log_result {
-            debug_assert!(now_size >= self.wal_offset);
-            // update first wal_offset of slot
-            if self.log[slot].wal_offset == 0 || self.log[slot].wal_offset > self.wal_offset {
-                self.log[slot].wal_offset = self.wal_offset;
-            }
-            debug_assert!(self.log[slot].wal_offset <= self.wal_offset);
-            // then update self.wal_offset
-            self.wal_offset = now_size;
-        } else {
-            return logged_err!("unexpected log result type: {:?}", log_result);
         }
         pf_trace!("finished durable logging for slot {}", slot);
 

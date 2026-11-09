@@ -63,14 +63,17 @@ impl RaftReplica {
             term: self.curr_term,
             reqs: req_batch,
             external: true,
-            log_offset: 0,
+            log_offset: None,
         };
         let slot = self.start_slot + self.log.len();
         self.log.push(entry.clone());
 
         // submit logger action to make this log entry durable
         self.storage_hub.submit_action(
-            Self::make_log_action_id(slot, slot, Role::Leader),
+            LogCtx::LeaderAppend {
+                slot,
+                term: self.curr_term,
+            },
             LogAction::Append {
                 entry: DurEntry::LogEntry { entry },
                 sync: self.config.logger_sync,

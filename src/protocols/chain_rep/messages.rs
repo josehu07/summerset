@@ -35,7 +35,7 @@ impl ChainRepReplica {
 
         // record the new log entry durably
         self.storage_hub.submit_action(
-            slot as LogActionId,
+            slot,
             LogAction::Append {
                 entry: WalEntry { slot, reqs },
                 sync: self.config.logger_sync,
