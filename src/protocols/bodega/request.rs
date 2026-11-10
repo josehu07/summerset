@@ -116,19 +116,23 @@ impl BodegaReplica {
                 if let ApiRequest::Req {
                     id: req_id,
                     cmd: Command::Get { key },
-                } = req
+                } = &req
                 {
-                    if self.is_responder_for(&key) {
-                        self.read_on_good_responder(client, req_id, key)?;
+                    if self.is_responder_for(key) {
+                        self.read_on_good_responder(client, *req_id, key.clone())
+                            .await?;
+                        continue;
                     } else if !self.is_leader() || self.bal_prepared == 0 {
                         // not a responder for this key not the leader, so the
                         // same case as the final else branch below
                         // NOTE: a cleaner implementation should certainly merge
                         //       this with that branch and clean up this func a
                         //       bit; it's getting way too long
-                        self.read_on_improper_node(client, req_id, key)?;
+                        self.read_on_improper_node(client, *req_id, key.clone())?;
+                        continue;
                     }
-                    continue;
+                    // otherwise, I'm a (possibly unstable) leader, so the read
+                    // goes through normal consensus as in the final else branch
                 }
                 filtered.push((client, req));
             }

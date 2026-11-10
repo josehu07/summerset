@@ -31,10 +31,17 @@ impl QuorumLeasesReplica {
             }
         }
 
+        // and the client sessions last updated by the instances covered
+        let slots = self.start_slot..new_start_slot;
+        let sessions = self
+            .state_machine
+            .get_sessions(move |cmd_id| slots.contains(&Self::split_command_id(cmd_id).0))
+            .await?;
+
         // write the collection to snapshot file, followed by the current
         // config; it may already include changes in WAL entries kept, which is
         // fine as their replay re-applies them in order
-        let mut entries = vec![SnapEntry::KVPairSet { pairs }];
+        let mut entries = vec![SnapEntry::KVPairSet { pairs, sessions }];
         if self.qlease_ver > 0 {
             entries.push(SnapEntry::QleaseConf {
                 conf_num: self.qlease_ver,
@@ -165,6 +172,7 @@ impl QuorumLeasesReplica {
         // update start_slot and discard all in-memory log instances up to exec_bar
         self.insts.drain(0..(new_start_slot - self.start_slot));
         self.start_slot = new_start_slot;
+        self.highest_slot.retain(|_, slot| *slot >= new_start_slot);
 
         // NOTE: broadcast heartbeats here to appease peers
         self.bcast_heartbeats().await?;
@@ -184,16 +192,18 @@ impl QuorumLeasesReplica {
     /// Applies an entry following the slot info in the snapshot file.
     async fn apply_snapshot_entry(&mut self, entry: SnapEntry) -> Result<(), SummersetError> {
         match entry {
-            SnapEntry::KVPairSet { pairs } => {
+            SnapEntry::KVPairSet { pairs, sessions } => {
                 // execute Put commands on state machine
                 for (key, value) in pairs {
                     self.state_machine
                         .do_sync_cmd(
                             0, // using 0 as dummy command ID
                             Command::Put { key, value },
+                            None,
                         )
                         .await?;
                 }
+                self.state_machine.load_sessions(sessions)?;
             }
             SnapEntry::QleaseConf { conf_num, conf } => {
                 // restore the read leaseholders config

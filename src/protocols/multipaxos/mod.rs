@@ -38,7 +38,7 @@ use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub, ExternalApi,
     GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, LeaseMsg, LeaseNum, ReplicaId,
-    RequestId, StateMachine, StorageHub, TransportHub,
+    RequestId, Session, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, Stopwatch, SummersetError};
 
@@ -220,6 +220,9 @@ struct ReadQueryBookkeeping {
 
     /// The reply with the highest slot number found for each key.
     max_replies: Vec<Option<(usize, Option<String>)>>,
+
+    /// When the quorum read was issued.
+    since: Instant,
 }
 
 /// In-memory instance containing a commands batch.
@@ -322,8 +325,12 @@ enum SnapEntry {
         bal_max_seen: Ballot,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Peer-peer message type.
@@ -824,6 +831,11 @@ impl GenericReplica for MultiPaxosReplica {
 
         // recover the tail-piece memory log & state from durable WAL log
         self.recover_from_wal().await?;
+
+        // after a restart, peers may still hold leases I granted before
+        if self.config.enable_leader_leases && self.wal_offset > 0 {
+            self.lease_manager.assume_unknown_grants()?;
+        }
 
         // kick off peer heartbeats hearing timer
         if !self.config.disable_hb_timer {

@@ -121,9 +121,10 @@ pub(crate) enum LeaseNotice {
 ///
 /// Current implementation uses the push-based guard + promise approach with no
 /// clock synchronization but with the assumption of bounded-error elapsed time
-/// across nodes. Reference in:
+/// across nodes, and of message delays bounded by `T_guard`. Reference in:
 ///   <https://www.cs.cmu.edu/~imoraru/papers/qrl.pdf>
 /// except minor simplifications (e.g., no `seq_ACK`s) thanks to TCP semantics.
+/// Deadlines are checked on the monotonic clock when leases get used.
 ///
 /// It delegates lease refreshing to the existing heartbeats mechanism of the
 /// protocol. It takes care of other things, e.g., expiration, internally.
@@ -154,6 +155,10 @@ pub(crate) struct LeaseManager {
 
     /// Set of peer IDs to which the next heartbeat should be a promise refresh.
     refresh_mark: HashSet<ReplicaId>,
+
+    /// After a restart, timer of the period during which peers may still hold
+    /// leases I granted before.
+    quiet_timer: Option<Timer>,
 
     /// Join handle of the lease manager task.
     _lease_manager_handle: JoinHandle<()>,
@@ -212,15 +217,33 @@ impl LeaseManager {
                 promises_sent,
                 promises_held,
                 refresh_mark: HashSet::new(),
+                quiet_timer: None,
                 _lease_manager_handle: lease_manager_handle,
             },
             tx_notice_clone,
         ))
     }
 
-    /// Gets the set of replicas I've currently granted promise to.
+    /// After a restart, assumes that peers may still hold leases I granted
+    /// before, until those must have expired (`T_guard + T_lease` from now,
+    /// same as the timer of a first promise).
+    pub(crate) fn assume_unknown_grants(&mut self) -> Result<(), SummersetError> {
+        let timer = Timer::default();
+        timer.kickoff(2 * self.expire_timeout)?;
+        self.quiet_timer = Some(timer);
+        Ok(())
+    }
+
+    /// Gets the set of replicas I've currently granted promise to, or might
+    /// have before a restart.
     #[allow(dead_code)]
     pub(crate) fn grant_set(&self) -> Bitmap {
+        if self.quiet_timer.as_ref().is_some_and(Timer::active) {
+            let mut map = Bitmap::new(self.population, true);
+            map.set(self.me, false).unwrap();
+            return map;
+        }
+
         let mut map = Bitmap::new(self.population, false);
         for entry in self.promises_sent.iter() {
             map.set(*entry.key(), true).unwrap();
@@ -228,21 +251,29 @@ impl LeaseManager {
         map
     }
 
-    /// Gets the set of replicas I'm currently holding promises from.
+    /// Gets the set of replicas I'm currently holding promises from, checking
+    /// their deadlines right now (rather than relying on expirations that get
+    /// processed only later).
     #[allow(dead_code)]
     pub(crate) fn lease_set(&self) -> Bitmap {
         let mut map = Bitmap::new(self.population, false);
         for entry in self.promises_held.iter() {
-            map.set(*entry.key(), true).unwrap();
+            if entry.value().active() {
+                map.set(*entry.key(), true).unwrap();
+            }
         }
         map
     }
 
     /// Gets the number of promises currently held (implicitly always including
-    /// self so always >= 1).
+    /// self so always >= 1), checking their deadlines right now.
     #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn lease_cnt(&self) -> u8 {
-        1 + self.promises_held.len() as u8
+        1 + self
+            .promises_held
+            .iter()
+            .filter(|entry| entry.value().active())
+            .count() as u8
     }
 
     /// Adds a lease notice to be taken care of by the lease manager by sending
@@ -260,7 +291,22 @@ impl LeaseManager {
     /// Waits for a lease action to be treated by the protocol implementation,
     /// probably leading to sending some messages.
     pub(crate) async fn get_action(&mut self) -> Result<(LeaseNum, LeaseAction), SummersetError> {
-        if let Some((lease_num, action)) = self.rx_action.recv().await {
+        let action = if let Some(quiet_timer) = self.quiet_timer.as_ref() {
+            tokio::select! {
+                action = self.rx_action.recv() => action,
+                () = quiet_timer.timeout() => {
+                    // grants from before a restart must have timed out; tell
+                    // waiters on `grant_set()` to re-check it
+                    self.quiet_timer = None;
+                    let peer = (self.me + 1) % self.population;
+                    return Ok((0, LeaseAction::GrantTimeout { peer }));
+                }
+            }
+        } else {
+            self.rx_action.recv().await
+        };
+
+        if let Some((lease_num, action)) = action {
             if let LeaseAction::NextRefresh { peer } = action {
                 // bookkeep refresh_mark set internally
                 self.refresh_mark.insert(peer);
@@ -292,7 +338,7 @@ impl LeaseManager {
                 && self.refresh_mark.remove(&peer)
             {
                 let (timer, revoking) = entry.value();
-                if !revoking {
+                if !revoking && !timer.exploded() {
                     timer.extend(self.expire_timeout)?;
                     to_refresh.set(peer, true)?;
                 }
@@ -441,8 +487,11 @@ impl LeaseManagerLogicTask {
             // remove existing guard about this peer if exists
             self.guards_sent.remove(&peer);
 
-            // also ignore if not currently in promises_sent
-            if !self.promises_sent.contains_key(&peer) {
+            // mark the promise being revoked, so that it is no longer refreshed;
+            // ignore if not currently in promises_sent
+            if let Some(mut entry) = self.promises_sent.get_mut(&peer) {
+                entry.1 = true;
+            } else {
                 bcast_peers.set(peer, false)?;
             }
         }
@@ -730,6 +779,16 @@ impl LeaseManagerLogicTask {
         lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
+        // ignore a stale timeout of a timer re-armed since it exploded
+        let rearmed = self.guards_sent.get(&peer).map(|timer| !timer.exploded());
+        let rearmed = rearmed.or_else(|| {
+            self.promises_sent
+                .get(&peer)
+                .map(|entry| !entry.value().0.exploded())
+        });
+        if rearmed == Some(true) {
+            return Ok(());
+        }
         pf_debug!("lease grant timeout @ {} -> {}", lease_num, peer);
 
         // remove existing guard or promise sent to this peer
@@ -748,6 +807,16 @@ impl LeaseManagerLogicTask {
         lease_num: LeaseNum,
         peer: ReplicaId,
     ) -> Result<(), SummersetError> {
+        // ignore a stale timeout of a timer re-armed since it exploded
+        let rearmed = self.guards_held.get(&peer).map(|timer| !timer.exploded());
+        let rearmed = rearmed.or_else(|| {
+            self.promises_held
+                .get(&peer)
+                .map(|timer| !timer.value().exploded())
+        });
+        if rearmed == Some(true) {
+            return Ok(());
+        }
         pf_debug!("leaseholder timeout @ {} <- {}", lease_num, peer);
 
         // remove existing guard or promise held from this peer
@@ -1024,6 +1093,37 @@ mod tests {
                 Err(err) => Err(err.into()),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn revoking_stops_refresh() -> Result<(), SummersetError> {
+        let (mut leaseman, _) =
+            LeaseManager::new_and_setup(0, 2, Duration::from_millis(600), Duration::ZERO)?;
+        // grant to 1, with its replies fed in, until a refresh is due
+        leaseman.add_notice(
+            7,
+            LeaseNotice::NewGrants {
+                peers: None,
+                accept_bar: None,
+            },
+        )?;
+        assert_eq!(leaseman.get_action().await?, (7, LeaseAction::HigherNumber));
+        leaseman.get_action().await?; // Guard
+        let msg = LeaseMsg::GuardReply;
+        leaseman.add_notice(7, LeaseNotice::RecvLeaseMsg { peer: 1, msg })?;
+        leaseman.get_action().await?; // Promise
+        let msg = LeaseMsg::PromiseReply { held: true };
+        leaseman.add_notice(7, LeaseNotice::RecvLeaseMsg { peer: 1, msg })?;
+        assert_eq!(
+            leaseman.get_action().await?,
+            (7, LeaseAction::NextRefresh { peer: 1 })
+        );
+
+        // once being revoked, the promise is no longer refreshed
+        leaseman.add_notice(7, LeaseNotice::DoRevoke { peers: None })?;
+        leaseman.get_action().await?; // Revoke
+        assert_eq!(leaseman.attempt_refresh(None)?.count(), 0);
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

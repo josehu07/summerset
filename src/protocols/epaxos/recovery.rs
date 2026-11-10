@@ -10,6 +10,21 @@ impl EPaxosReplica {
     #[allow(clippy::too_many_lines)]
     async fn recover_apply_entry(&mut self, entry: WalEntry) -> Result<(), SummersetError> {
         match entry {
+            WalEntry::PrepareBal { slot, ballot } => {
+                let (row, col) = slot.unpack();
+                if col < self.start_col {
+                    return Ok(()); // ignore if slot index outdated
+                }
+                // locate instance in memory, filling in null instances if needed
+                while self.start_col + self.insts[row].len() <= col {
+                    let inst = self.null_instance();
+                    self.insts[row].push(inst);
+                }
+                // restore the promise
+                let inst = &mut self.insts[row][col - self.start_col];
+                inst.bal = inst.bal.max(ballot);
+            }
+
             WalEntry::PreAcceptSlot {
                 slot,
                 ballot,
@@ -28,7 +43,8 @@ impl EPaxosReplica {
                 }
                 // update instance state
                 let inst = &mut self.insts[row][col - self.start_col];
-                inst.bal = ballot;
+                inst.bal = inst.bal.max(ballot);
+                inst.vbal = ballot;
                 inst.status = Status::PreAccepting;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -59,7 +75,8 @@ impl EPaxosReplica {
                 }
                 // update instance state
                 let inst = &mut self.insts[row][col - self.start_col];
-                inst.bal = ballot;
+                inst.bal = inst.bal.max(ballot);
+                inst.vbal = ballot;
                 inst.status = Status::Accepting;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -90,7 +107,8 @@ impl EPaxosReplica {
                 }
                 // update instance state
                 let inst = &mut self.insts[row][col - self.start_col];
-                inst.bal = ballot;
+                inst.bal = inst.bal.max(ballot);
+                inst.vbal = ballot;
                 inst.status = Status::Committed;
                 inst.seq = seq;
                 inst.deps = deps;

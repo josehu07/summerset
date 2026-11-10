@@ -1,8 +1,5 @@
 //! `EPaxos` -- snapshotting & GC.
 
-use std::cmp;
-use std::collections::HashMap;
-
 use super::*;
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, LogResult};
@@ -10,159 +7,14 @@ use crate::utils::SummersetError;
 
 // EPaxosReplica snapshotting & GC logic
 impl EPaxosReplica {
-    /// Dump new key-value pairs to snapshot file.
-    // TODO: the current snapshot dumping mechanism is not fully functional as
-    //       we need to take care of the case when there's a dependency from
-    //       the left side of new_start_col to the right side of it.
-    async fn snapshot_dump_kv_pairs(
-        &mut self,
-        _new_start_col: usize,
-    ) -> Result<(), SummersetError> {
-        // collect all key-value pairs put up to exec_bar
-        let pairs = HashMap::new(); // dummy for now
-
-        // write the collection to snapshot file
-        if let LogResult::Append { now_size, .. } = self
-            .snapshot_hub
-            .do_sync_action(LogAction::Append {
-                entry: SnapEntry::KVPairSet { pairs },
-                sync: self.config.logger_sync,
-            })
-            .await?
-            .1
-        {
-            self.snap_offset = now_size;
-            Ok(())
-        } else {
-            logged_err!("unexpected log result type")
-        }
-    }
-
-    /// Discard everything older than `start_col` in durable WAL log.
-    async fn snapshot_discard_log(&mut self) -> Result<(), SummersetError> {
-        // wait for all previously submitted log actions to be processed
-        for (old_ctx, old_result) in self.storage_hub.barrier().await? {
-            self.handle_log_result(old_ctx, old_result).await?;
-        }
-
-        // get offset to cut the WAL at: the earliest entry of any remaining
-        // instance (all known after the barrier), as a later slot may have
-        // logged before an earlier one
-        let cut_offset = self
-            .insts
-            .iter()
-            .flatten()
-            .filter_map(|inst| inst.wal_offset)
-            .min()
-            .unwrap_or(self.wal_offset);
-
-        // discard the log before cut_offset
-        if cut_offset > 0 {
-            if let LogResult::Discard {
-                offset_ok: true,
-                now_size,
-            } = self
-                .storage_hub
-                .do_sync_action(LogAction::Discard {
-                    offset: cut_offset,
-                    keep: 0,
-                })
-                .await?
-                .1
-            {
-                debug_assert_eq!(self.wal_offset - cut_offset, now_size);
-                self.wal_offset = now_size;
-            } else {
-                return logged_err!("unexpected log result type or failed discard");
-            }
-        }
-
-        // update inst.wal_offset for all remaining in-mem instances
-        for insts in &mut self.insts {
-            for inst in insts {
-                if let Some(wal_offset) = inst.wal_offset.as_mut() {
-                    debug_assert!(*wal_offset >= cut_offset);
-                    *wal_offset -= cut_offset;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Take a snapshot up to current min(`exec_bars`), then discard the in-mem
-    /// log up to that index as well as outdate entries in the durable WAL file.
-    //
-    // NOTE: the current implementation does not guard against crashes in the
-    //       middle of taking a snapshot. Production quality implementations
-    //       should make the snapshotting action "atomic".
-    //
-    // NOTE: the current implementation does not take care of InstallSnapshot
-    //       messages (which is needed when some lagging follower has some slot
-    //       which all other peers have snapshotted); we assume here that failed
-    //       Accept messages will be retried indefinitely until success before
-    //       its associated data gets discarded from peer's memory.
-    pub(super) async fn take_new_snapshot(&mut self) -> Result<(), SummersetError> {
-        let exec_min = *self.exec_bars.iter().min().unwrap();
-        pf_debug!(
-            "taking new snapshot: start {} exec {} snap {}",
-            self.start_col,
-            exec_min,
-            self.snap_bar
-        );
-        debug_assert!(exec_min >= self.start_col);
-
-        let new_start_col = cmp::min(self.snap_bar, exec_min);
-        if new_start_col == self.start_col {
-            return Ok(());
-        }
-
-        // NOTE: broadcast heartbeats here to appease peers
-        self.bcast_heartbeats().await?;
-
-        // collect and dump all Puts in executed instances
-        self.snapshot_dump_kv_pairs(new_start_col).await?;
-
-        // write new slot info entry to the head of snapshot
-        match self
-            .snapshot_hub
-            .do_sync_action(LogAction::Write {
-                entry: SnapEntry::SlotInfo {
-                    start_col: new_start_col,
-                },
-                offset: 0,
-                sync: self.config.logger_sync,
-            })
-            .await?
-            .1
-        {
-            LogResult::Write {
-                offset_ok: true, ..
-            } => {}
-            _ => {
-                return logged_err!("unexpected log result type or failed write");
-            }
-        }
-
-        // update start_slot and discard all in-memory log instances up to exec_bar
-        for insts in &mut self.insts {
-            insts.drain(0..(new_start_col - self.start_col));
-        }
-        self.start_col = new_start_col;
-
-        // NOTE: broadcast heartbeats here to appease peers
-        self.bcast_heartbeats().await?;
-
-        // discarding everything older than start_slot in WAL log
-        self.snapshot_discard_log().await?;
-
-        // reset the heartbeat hearing timer
-        if !self.config.disable_hb_timer {
-            self.heartbeater.kickoff_hear_timer(None)?;
-        }
-
-        pf_info!("took snapshot up to: start {}", self.start_col);
-        Ok(())
+    /// Would take a snapshot and discard the log up to it, but is disabled:
+    /// columns do not make cuts closed under dependencies (an instance left
+    /// of a cut may depend on ones right of it, executed before it), and
+    /// dumping key-value pairs by column loses their execution order. Proper
+    /// snapshots need cuts along the execution order, e.g., of the state
+    /// machine itself.
+    pub(super) fn take_new_snapshot(&self) {
+        pf_debug!("snapshots disabled, staying at start {}", self.start_col);
     }
 
     /// Recover initial state from durable storage snapshot file.
@@ -209,6 +61,7 @@ impl EPaxosReplica {
                                     .do_sync_cmd(
                                         0, // using 0 as dummy command ID
                                         Command::Put { key, value },
+                                        None,
                                     )
                                     .await?;
                             }

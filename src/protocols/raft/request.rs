@@ -1,7 +1,7 @@
 //! `Raft` -- client request entrance.
 
 use super::*;
-use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult};
 use crate::utils::SummersetError;
 
 // RaftReplica client requests entrance
@@ -58,29 +58,7 @@ impl RaftReplica {
             }
         }
 
-        // append an entry to in-memory log
-        let entry = LogEntry {
-            term: self.curr_term,
-            reqs: req_batch,
-            external: true,
-            log_offset: None,
-        };
-        let slot = self.start_slot + self.log.len();
-        self.log.push(entry.clone());
-
-        // submit logger action to make this log entry durable
-        self.storage_hub.submit_action(
-            LogCtx::LeaderAppend {
-                slot,
-                term: self.curr_term,
-            },
-            LogAction::Append {
-                entry: DurEntry::LogEntry { entry },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        pf_trace!("submitted leader append log action for slot {}", slot);
-
-        Ok(())
+        // append an entry to my log, making it durable
+        self.append_new_entry(req_batch, true)
     }
 }

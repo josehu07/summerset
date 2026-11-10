@@ -1,7 +1,5 @@
 //! `Raft` -- durable logging.
 
-use std::cmp;
-
 use super::*;
 use crate::server::LogResult;
 use crate::utils::SummersetError;
@@ -36,47 +34,9 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
             }
-            let mut entries: Vec<LogEntry> = self
-                .log
-                .iter()
-                .take(slot + 1 - self.start_slot)
-                .skip(self.try_next_slot[&peer] - self.start_slot)
-                .cloned()
-                .map(|e| LogEntry {
-                    external: false,
-                    ..e
-                })
-                .collect();
 
             if slot >= self.try_next_slot[&peer] {
-                // NOTE: here breaking long AppendEntries into chunks to keep
-                //       peers heartbeated
-                let mut now_prev_slot = prev_slot;
-                while !entries.is_empty() {
-                    let end = cmp::min(entries.len(), self.config.msg_chunk_size);
-                    let chunk = entries.drain(0..end).collect();
-
-                    let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
-                    self.transport_hub.send_msg(
-                        PeerMsg::AppendEntries {
-                            term: self.curr_term,
-                            prev_slot: now_prev_slot,
-                            prev_term: now_prev_term,
-                            entries: chunk,
-                            leader_commit: self.last_commit,
-                            last_snap: self.last_snap,
-                        },
-                        peer,
-                    )?;
-                    pf_trace!(
-                        "sent AppendEntries -> {} with slots {} - {}",
-                        peer,
-                        now_prev_slot + 1,
-                        now_prev_slot + end
-                    );
-
-                    now_prev_slot += end;
-                }
+                self.send_append_entries(peer, self.try_next_slot[&peer], slot)?;
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers

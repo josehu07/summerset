@@ -3,7 +3,7 @@
 use std::cmp;
 
 use super::*;
-use crate::server::{ApiRequest, LogAction, LogResult, ReplicaId};
+use crate::server::{LogAction, LogResult, ReplicaId};
 use crate::utils::SummersetError;
 
 // RaftReplica peer-peer messages handling
@@ -29,25 +29,22 @@ impl RaftReplica {
                 term
             );
         }
-        if self.check_term(leader, term).await? || self.role != Role::Follower {
-            if term == self.curr_term && self.role == Role::Candidate {
-                // a little hack to promptly obey the elected leader if I
-                // started an election with the same term number at roughly
-                // the same time
-                self.curr_term -= 1;
-                self.check_term(leader, term).await?;
-            } else {
-                return Ok(());
-            }
+        self.check_term(leader, term).await?;
+        if term == self.curr_term && self.role == Role::Candidate {
+            // a leader got elected in my term, so obey it (keeping my vote)
+            self.role = Role::Follower;
+            pf_info!("converted back to follower");
+        } else if term == self.curr_term && self.role == Role::Leader {
+            return logged_err!("another leader {} in my term {}", leader, term);
         }
 
         // reply false if term smaller than mine, or if my log does not
-        // contain an entry at prev_slot matching prev_term
-        if !entries.is_empty()
-            && (term < self.curr_term
-                || prev_slot < self.start_slot
-                || prev_slot >= self.start_slot + self.log.len()
-                || self.log[prev_slot - self.start_slot].term != prev_term)
+        // contain an entry at prev_slot matching prev_term; heartbeats are
+        // checked as well, as their success commits up to prev_slot
+        if term < self.curr_term
+            || prev_slot < self.start_slot
+            || prev_slot >= self.start_slot + self.log.len()
+            || self.log[prev_slot - self.start_slot].term != prev_term
         {
             // figure out the conflict info to send back
             let conflict_term =
@@ -80,9 +77,10 @@ impl RaftReplica {
                 prev_slot
             );
 
-            if term >= self.curr_term {
+            if term == self.curr_term {
                 // also refresh heartbeat timer here since the "decrementing"
                 // procedure for a lagging follower might take long
+                self.leader = Some(leader);
                 self.heard_heartbeat(leader, term).await?;
             }
             return Ok(());
@@ -94,8 +92,10 @@ impl RaftReplica {
         self.heard_heartbeat(leader, term).await?;
 
         // check if any existing entry conflicts with a new one in `entries`.
-        // If so, truncate everything at and after that entry
-        let mut first_new = prev_slot + 1;
+        // If so, truncate everything at and after that entry; entries I
+        // already have (e.g., when retransmitted) are not appended again
+        let num_entries = entries.len();
+        let mut first_new = prev_slot + 1 + num_entries;
         for (slot, new_entry) in entries
             .iter()
             .enumerate()
@@ -138,7 +138,7 @@ impl RaftReplica {
 
         // append new entries into my log, and submit logger actions to make
         // new entries durable
-        let (num_entries, mut num_appended) = (entries.len(), 0);
+        let mut num_appended = 0;
         for (slot, mut entry) in entries
             .drain((first_new - prev_slot - 1)..entries.len())
             .enumerate()
@@ -163,42 +163,24 @@ impl RaftReplica {
             num_appended += 1;
         }
 
-        // even if no entries appended, also send back AppendEntriesReply
-        // as a follower-to-leader reverse heardbeat for peer health
-        // tracking purposes
+        // if no entries appended, reply right away (also as a reverse
+        // heartbeat for peer health tracking), acknowledging only entries
+        // already durable; otherwise, the last append's completion replies
         if num_appended == 0 {
             self.transport_hub.send_msg(
                 PeerMsg::AppendEntriesReply {
                     term: self.curr_term,
-                    end_slot: first_new - 1,
+                    end_slot: cmp::min(prev_slot + num_entries, self.last_durable_slot()),
                     conflict: None,
                 },
                 leader,
             )?;
         }
 
-        // if leader_commit is larger than my last_commit, update last_commit
+        // if leader_commit is larger than my last_commit, commit up to it, but
+        // not beyond the entries known to match the leader's
         if leader_commit > self.last_commit {
-            let mut new_commit = cmp::min(leader_commit, prev_slot + entries.len());
-            new_commit = cmp::min(new_commit, self.start_slot + self.log.len() - 1);
-
-            // submit newly committed entries for state machine execution
-            for slot in (self.last_commit + 1)..=new_commit {
-                let entry = &self.log[slot - self.start_slot];
-                for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
-                    if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine
-                            .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
-                    }
-                }
-                pf_trace!(
-                    "submitted {} exec commands for slot {}",
-                    entry.reqs.len(),
-                    slot
-                );
-            }
-
-            self.last_commit = new_commit;
+            self.commit_up_to(cmp::min(leader_commit, prev_slot + num_entries))?;
         }
 
         // if last_snap is larger than mine, update last_snap
@@ -227,8 +209,9 @@ impl RaftReplica {
                 if conflict.is_none() { "ok" } else { "fail" }
             );
         }
-        if self.check_term(peer, term).await? || self.role != Role::Leader {
-            return Ok(());
+        if self.check_term(peer, term).await? || self.role != Role::Leader || term < self.curr_term
+        {
+            return Ok(()); // ignore if outdated
         }
         self.heard_heartbeat(peer, term).await?;
 
@@ -264,22 +247,7 @@ impl RaftReplica {
             }
 
             // submit newly committed commands, if any, for execution
-            for slot in (self.last_commit + 1)..=new_commit {
-                let entry = &self.log[slot - self.start_slot];
-                for (cmd_idx, (_, req)) in entry.reqs.iter().enumerate() {
-                    if let ApiRequest::Req { cmd, .. } = req {
-                        self.state_machine
-                            .submit_cmd(Self::make_command_id(slot, cmd_idx), cmd.clone())?;
-                    }
-                }
-                pf_trace!(
-                    "submitted {} exec commands for slot {}",
-                    entry.reqs.len(),
-                    slot
-                );
-            }
-
-            self.last_commit = new_commit;
+            self.commit_up_to(new_commit)?;
 
             // also check if any additional entries are safe to snapshot
             for slot in (self.last_snap + 1)..=end_slot {
@@ -319,46 +287,8 @@ impl RaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 return Ok(());
             }
-            let mut entries: Vec<LogEntry> = self
-                .log
-                .iter()
-                .take(end_slot + 1 - self.start_slot)
-                .skip(self.next_slot[&peer] - self.start_slot)
-                .cloned()
-                .map(|e| LogEntry {
-                    external: false,
-                    ..e
-                })
-                .collect();
-
-            // NOTE: here breaking long AppendEntries into chunks to keep
-            //       peers heartbeated
-            let mut now_prev_slot = prev_slot;
-            while !entries.is_empty() {
-                let end = cmp::min(entries.len(), self.config.msg_chunk_size);
-                let chunk = entries.drain(0..end).collect();
-
-                let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
-                self.transport_hub.send_msg(
-                    PeerMsg::AppendEntries {
-                        term: self.curr_term,
-                        prev_slot: now_prev_slot,
-                        prev_term: now_prev_term,
-                        entries: chunk,
-                        leader_commit: self.last_commit,
-                        last_snap: self.last_snap,
-                    },
-                    peer,
-                )?;
-                pf_trace!(
-                    "sent AppendEntries -> {} with slots {} - {}",
-                    peer,
-                    now_prev_slot + 1,
-                    now_prev_slot + end
-                );
-
-                now_prev_slot += end;
-            }
+            let to = cmp::min(end_slot, self.start_slot + self.log.len() - 1);
+            self.send_append_entries(peer, self.next_slot[&peer], to)?;
 
             // update try_next_slot to avoid blindly sending the same
             // entries again on future triggers
@@ -412,24 +342,12 @@ impl RaftReplica {
             if last_term > my_last_term
                 || (last_term == my_last_term && last_slot + 1 >= self.start_slot + self.log.len())
             {
-                self.transport_hub.send_msg(
-                    PeerMsg::RequestVoteReply {
-                        term: self.curr_term,
-                        granted: true,
-                    },
-                    candidate,
-                )?;
-                pf_trace!(
-                    "sent RequestVoteReply -> {} term {} granted",
-                    candidate,
-                    self.curr_term
-                );
-
                 // hear a heartbeat here to prevent me from starting an
                 // election soon
                 self.heard_heartbeat(candidate, term).await?;
 
-                // update voted_for and make the field durable, synchronously
+                // update voted_for and make the field durable, synchronously,
+                // before granting the vote
                 self.voted_for = Some(candidate);
                 let (old_results, result) = self
                     .storage_hub
@@ -450,6 +368,19 @@ impl RaftReplica {
                 } else {
                     return logged_err!("unexpected log result type or failed write");
                 }
+
+                self.transport_hub.send_msg(
+                    PeerMsg::RequestVoteReply {
+                        term: self.curr_term,
+                        granted: true,
+                    },
+                    candidate,
+                )?;
+                pf_trace!(
+                    "sent RequestVoteReply -> {} term {} granted",
+                    candidate,
+                    self.curr_term
+                );
             }
         }
 
@@ -469,8 +400,12 @@ impl RaftReplica {
             term,
             if granted { "granted" } else { "false" }
         );
-        if self.check_term(peer, term).await? || self.role != Role::Candidate {
-            return Ok(());
+        if self.check_term(peer, term).await?
+            || self.role != Role::Candidate
+            || term < self.curr_term
+            || !granted
+        {
+            return Ok(()); // only count granted votes of my current election
         }
 
         // bookkeep this vote

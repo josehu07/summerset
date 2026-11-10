@@ -1,10 +1,8 @@
 //! `CRaft` -- durable logging.
 
-use std::cmp;
-
 use super::*;
 use crate::server::LogResult;
-use crate::utils::{Bitmap, SummersetError};
+use crate::utils::SummersetError;
 
 // CRaftReplica durable logging
 impl CRaftReplica {
@@ -37,67 +35,9 @@ impl CRaftReplica {
             if prev_slot >= self.start_slot + self.log.len() {
                 continue;
             }
-            let mut entries: Vec<LogEntry> = self
-                .log
-                .iter()
-                .take(slot + 1 - self.start_slot)
-                .skip(self.try_next_slot[&peer] - self.start_slot)
-                .map(|e| {
-                    if self.full_copy_mode {
-                        debug_assert!(e.reqs_cw.avail_data_shards() >= self.majority);
-                        LogEntry {
-                            term: e.term,
-                            reqs_cw: e
-                                .reqs_cw
-                                .subset_copy(
-                                    &Bitmap::from((self.population, 0..self.majority)),
-                                    false,
-                                )
-                                .unwrap(),
-                            external: false,
-                            log_offset: e.log_offset,
-                        }
-                    } else {
-                        LogEntry {
-                            term: e.term,
-                            reqs_cw: e
-                                .reqs_cw
-                                .subset_copy(&Bitmap::from((self.population, vec![peer])), false)
-                                .unwrap(),
-                            external: false,
-                            log_offset: e.log_offset,
-                        }
-                    }
-                })
-                .collect();
 
             if slot >= self.try_next_slot[&peer] {
-                let mut now_prev_slot = prev_slot;
-                while !entries.is_empty() {
-                    let end = cmp::min(entries.len(), self.config.msg_chunk_size);
-                    let chunk = entries.drain(0..end).collect();
-
-                    let now_prev_term = self.log[now_prev_slot - self.start_slot].term;
-                    self.transport_hub.send_msg(
-                        PeerMsg::AppendEntries {
-                            term: self.curr_term,
-                            prev_slot: now_prev_slot,
-                            prev_term: now_prev_term,
-                            entries: chunk,
-                            leader_commit: self.last_commit,
-                            last_snap: self.last_snap,
-                        },
-                        peer,
-                    )?;
-                    pf_trace!(
-                        "sent AppendEntries -> {} with slots {} - {}",
-                        peer,
-                        now_prev_slot + 1,
-                        now_prev_slot + end
-                    );
-
-                    now_prev_slot += end;
-                }
+                self.send_append_entries(peer, self.try_next_slot[&peer], slot)?;
 
                 // update try_next_slot to avoid blindly sending the same
                 // entries again on future triggers
@@ -120,7 +60,11 @@ impl CRaftReplica {
     ) -> Result<(), SummersetError> {
         // a completion from an older term must not acknowledge entries to a
         // newer leader
-        if slot < self.start_slot || self.role != Role::Follower || term != self.curr_term {
+        if slot < self.start_slot
+            || slot_e >= self.start_slot + self.log.len()
+            || self.role != Role::Follower
+            || term != self.curr_term
+        {
             return Ok(()); // ignore if outdated
         }
         pf_trace!(
@@ -140,6 +84,7 @@ impl CRaftReplica {
                     term: self.curr_term,
                     end_slot: slot_e,
                     conflict: None,
+                    full_copy: self.log[slot_e - self.start_slot].full_copy,
                 },
                 leader,
             )?;

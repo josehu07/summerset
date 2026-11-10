@@ -125,7 +125,7 @@ impl CrosswordReplica {
         qdisc_info: &Option<QdiscInfo>,
         peer_alive: &Bitmap,
     ) -> &'a Vec<Bitmap> {
-        // if unbalanced assignment is used, don't enable adaptability and also
+        // if a custom assignment is used, don't enable adaptability and also
         // skip peer_alive count checking
         if !assignment_balanced {
             return init_assignment;
@@ -193,7 +193,9 @@ impl CrosswordReplica {
             fault_tolerance,
             peer_alive.count(),
         );
-        brr_assignments.get(&cmp::max(best_spr, min_spr)).unwrap()
+        brr_assignments
+            .get(&cmp::max(best_spr, min_spr))
+            .unwrap_or(init_assignment)
     }
 
     /// Records a new datapoint for Accept RTT time.

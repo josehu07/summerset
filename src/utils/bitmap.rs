@@ -130,6 +130,13 @@ impl Bitmap {
         }
     }
 
+    /// Returns true if every flag set in another bitmap is also set in self.
+    #[inline]
+    #[must_use]
+    pub fn is_superset(&self, other: &Self) -> bool {
+        self.0.is_superset(&other.0)
+    }
+
     /// Clears all flags in the bitmap to 0.
     #[inline]
     pub fn clear(&mut self) {

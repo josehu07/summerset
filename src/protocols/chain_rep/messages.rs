@@ -77,11 +77,13 @@ impl ChainRepReplica {
                 if self.log[self.prop_bar].reqs.is_empty() {
                     self.log[self.prop_bar].status = Status::Executed;
                 } else {
-                    for (cmd_idx, (_, req)) in self.log[self.prop_bar].reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
+                    for (cmd_idx, (client, req)) in self.log[self.prop_bar].reqs.iter().enumerate()
+                    {
+                        if let ApiRequest::Req { id: req_id, cmd } = req {
                             self.state_machine.submit_cmd(
                                 Self::make_command_id(self.prop_bar, cmd_idx, false),
                                 cmd.clone(),
+                                Some((*client, *req_id)),
                             )?;
                         }
                     }

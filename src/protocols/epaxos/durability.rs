@@ -6,6 +6,59 @@ use crate::utils::SummersetError;
 
 // EPaxosReplica durable WAL logging
 impl EPaxosReplica {
+    /// Handler of `PrepareBal` logging result chan recv, replying to the
+    /// explicit prepare with what I have accepted.
+    fn handle_logged_prepare_bal(
+        &mut self,
+        slot: SlotIdx,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        let (row, col) = slot.unpack();
+        if col < self.start_col {
+            return Ok(()); // ignore if slot index outdated
+        }
+        pf_trace!(
+            "finished PrepareBal logging for slot {} bal {}",
+            slot,
+            ballot
+        );
+        let inst = &self.insts[row][col - self.start_col];
+        if inst.bal != ballot {
+            return Ok(()); // ignore if a higher ballot has been promised since
+        }
+
+        let (vbal, status, seq) = (inst.vbal, inst.status, inst.seq);
+        let (deps, reqs) = (inst.deps.clone(), inst.reqs.clone());
+        if ballot & 0xff == u64::from(self.id + 1) {
+            // a ballot of mine: my own promise as the one explicitly preparing
+            self.handle_msg_exp_prepare_reply(
+                self.id, slot, ballot, vbal, status, seq, deps, reqs,
+            )?;
+        } else if let Some(ReplicaBookkeeping { source }) = inst.replica_bk {
+            pf_trace!(
+                "sent ExpPrepareReply -> {} for slot {} bal {} seq {} deps {}",
+                source,
+                slot,
+                vbal,
+                seq,
+                deps,
+            );
+            self.transport_hub.send_msg(
+                PeerMsg::ExpPrepareReply {
+                    slot,
+                    new_ballot: ballot,
+                    voted_bal: vbal,
+                    voted_status: status,
+                    voted_seq: seq,
+                    voted_deps: deps,
+                    voted_reqs: reqs,
+                },
+                source,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Handler of `PreAcceptSlot` logging result chan recv, replying with the
     /// `seq` and `deps` logged (which a later re-sent `PreAccept` may update).
     fn handle_logged_pre_accept_slot(
@@ -182,6 +235,7 @@ impl EPaxosReplica {
             .get_or_insert(offset);
 
         match log_ctx {
+            LogCtx::PrepareBal { slot, ballot } => self.handle_logged_prepare_bal(slot, ballot),
             LogCtx::PreAccept {
                 slot,
                 ballot,

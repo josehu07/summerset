@@ -18,12 +18,16 @@ impl QuorumLeasesReplica {
                 || self.config.sim_read_lease)
     }
 
-    /// Wait on lease actions until I'm sure I'm no longer granting to a peer.
+    /// Wait on lease actions until I'm sure I'm no longer granting to a peer,
+    /// or to any peer if `None` (e.g., when the old leader is unknown).
     pub(super) async fn ensure_llease_revoked(
         &mut self,
-        peer: ReplicaId,
+        peer: Option<ReplicaId>,
     ) -> Result<(), SummersetError> {
-        while self.llease_manager.grant_set().get(peer)? {
+        while match peer {
+            Some(peer) => self.llease_manager.grant_set().get(peer)?,
+            None => self.llease_manager.grant_set().count() > 0,
+        } {
             loop {
                 let (lease_num, lease_action) = self.llease_manager.get_action().await?;
 

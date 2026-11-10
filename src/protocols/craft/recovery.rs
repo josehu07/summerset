@@ -83,6 +83,7 @@ impl CRaftReplica {
                 let null_entry = LogEntry {
                     term: 0,
                     reqs_cw: RSCodeword::from_null(self.majority, self.population - self.majority)?,
+                    full_copy: false,
                     external: false,
                     log_offset: None,
                 };

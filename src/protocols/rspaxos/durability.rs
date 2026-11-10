@@ -1,7 +1,7 @@
 //! `RS-Paxos` -- durable logging.
 
 use super::*;
-use crate::server::{ApiRequest, LogResult};
+use crate::server::LogResult;
 use crate::utils::SummersetError;
 
 // RSPaxosReplica durable WAL logging
@@ -24,7 +24,10 @@ impl RSPaxosReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(inst.prep_inflight > 0);
         inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
-        if inst.status != Status::Preparing || inst.bal != ballot || inst.prep_inflight > 0 {
+        if (inst.status != Status::Preparing && inst.status < Status::Committed)
+            || inst.bal != ballot
+            || inst.prep_inflight > 0
+        {
             // ignore if instance has moved on, or if a newer PrepareBal (whose
             // ballot is what a reply would claim) is not yet durable
             return Ok(());
@@ -152,53 +155,7 @@ impl RSPaxosReplica {
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
-            while self.commit_bar < self.start_slot + self.insts.len() {
-                let inst = &mut self.insts[self.commit_bar - self.start_slot];
-                if inst.status < Status::Committed {
-                    break;
-                }
-
-                if inst.reqs_cw.avail_shards() < self.majority {
-                    // can't execute if I don't have the complete request batch
-                    pf_debug!(
-                        "postponing execution for slot {} (shards {}/{})",
-                        slot,
-                        inst.reqs_cw.avail_shards(),
-                        self.majority
-                    );
-                    break;
-                } else if inst.reqs_cw.avail_data_shards() < self.majority {
-                    // have enough shards but need reconstruction
-                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                }
-                let reqs = inst.reqs_cw.get_data()?;
-
-                // submit commands in committed instance to the state machine
-                // for execution
-                if reqs.is_empty() {
-                    inst.status = Status::Executed;
-                    // nothing to execute, so advance `exec_bar` here if at it
-                    if self.exec_bar == self.commit_bar {
-                        self.exec_bar += 1;
-                    }
-                } else if inst.status == Status::Committed {
-                    for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
-                                cmd.clone(),
-                            )?;
-                        }
-                    }
-                    pf_trace!(
-                        "submitted {} exec commands for slot {}",
-                        reqs.len(),
-                        self.commit_bar
-                    );
-                }
-
-                self.commit_bar += 1;
-            }
+            self.advance_commit_bar()?;
         }
 
         Ok(())

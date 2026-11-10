@@ -24,7 +24,10 @@ impl MultiPaxosReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(inst.prep_inflight > 0);
         inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
-        if inst.status != Status::Preparing || inst.bal != ballot || inst.prep_inflight > 0 {
+        if (inst.status != Status::Preparing && inst.status < Status::Committed)
+            || inst.bal != ballot
+            || inst.prep_inflight > 0
+        {
             // ignore if instance has moved on, or if a newer PrepareBal (whose
             // ballot is what a reply would claim) is not yet durable
             return Ok(());
@@ -190,11 +193,12 @@ impl MultiPaxosReplica {
                         self.exec_bar += 1;
                     }
                 } else if inst.status == Status::Committed {
-                    for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
+                    for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate() {
+                        if let ApiRequest::Req { id: req_id, cmd } = req {
                             self.state_machine.submit_cmd(
                                 Self::make_command_id(self.commit_bar, cmd_idx),
                                 cmd.clone(),
+                                Some((*client, *req_id)),
                             )?;
                         }
                     }

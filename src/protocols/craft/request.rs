@@ -1,8 +1,8 @@
 //! `CRaft` -- client request entrance.
 
 use super::*;
-use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
-use crate::utils::{Bitmap, RSCodeword, SummersetError};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult};
+use crate::utils::SummersetError;
 
 // CRaftReplica client requests entrance
 impl CRaftReplica {
@@ -58,50 +58,7 @@ impl CRaftReplica {
             }
         }
 
-        // compute the complete Reed-Solomon codeword for the batch data
-        let mut reqs_cw =
-            RSCodeword::from_data(req_batch, self.majority, self.population - self.majority)?;
-        reqs_cw.compute_parity(Some(&self.rs_coder))?;
-
-        // submit logger action to make this log entry durable
-        let slot = self.start_slot + self.log.len();
-        self.storage_hub.submit_action(
-            LogCtx::LeaderAppend {
-                slot,
-                term: self.curr_term,
-            },
-            LogAction::Append {
-                entry: DurEntry::LogEntry {
-                    entry: LogEntry {
-                        term: self.curr_term,
-                        reqs_cw: if self.full_copy_mode {
-                            reqs_cw.subset_copy(
-                                &Bitmap::from((self.population, 0..self.majority)),
-                                false,
-                            )?
-                        } else {
-                            reqs_cw.subset_copy(
-                                &Bitmap::from((self.population, vec![self.id])),
-                                false,
-                            )?
-                        },
-                        external: true,
-                        log_offset: None,
-                    },
-                },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        pf_trace!("submitted leader append log action for slot {}", slot);
-
-        // append an entry to in-memory log
-        self.log.push(LogEntry {
-            term: self.curr_term,
-            reqs_cw,
-            external: true,
-            log_offset: None,
-        });
-
-        Ok(())
+        // append an entry to my log, making my copy of it durable
+        self.append_new_entry(req_batch, true)
     }
 }

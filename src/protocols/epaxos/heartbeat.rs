@@ -91,9 +91,8 @@ impl EPaxosReplica {
                 exp_prepare_voteds: HashMap::new(),
             });
 
-            // broadcast ExpPrepare messages to all peers. Note that the
-            // instance state on my own replica is not updated; my reply to
-            // myself will be part of the set of ExpPrepareReplies
+            // broadcast ExpPrepare messages to all peers; my own reply to
+            // myself comes once my promise of it is durable
             self.transport_hub
                 .bcast_msg(PeerMsg::ExpPrepare { slot, new_ballot }, None)?;
             pf_trace!(
@@ -105,20 +104,9 @@ impl EPaxosReplica {
             prepares.push((slot, new_ballot));
         }
 
-        // also "reply" to ExpPrepares to myself
+        // also promise to my own ExpPrepares
         for (slot, new_ballot) in prepares {
-            let (row, col) = slot.unpack();
-            let inst = &self.insts[row][col - self.start_col];
-            self.handle_msg_exp_prepare_reply(
-                self.id,
-                slot,
-                new_ballot,
-                inst.bal,
-                inst.status,
-                inst.seq,
-                inst.deps.clone(),
-                inst.reqs.clone(),
-            )?;
+            self.promise_exp_prepare(slot, new_ballot)?;
         }
 
         Ok(())
@@ -141,6 +129,9 @@ impl EPaxosReplica {
             let Some(leader_bk) = inst.leader_bk.as_ref() else {
                 continue;
             };
+            if inst.bal != inst.vbal {
+                continue; // a higher ballot has been promised to another
+            }
 
             let slot = SlotIdx(self.id, col);
             let (seq, deps, reqs) = (inst.seq, inst.deps.clone(), inst.reqs.clone());
@@ -182,6 +173,61 @@ impl EPaxosReplica {
             );
         }
 
+        Ok(())
+    }
+
+    /// Re-sends `CommitNotice`s, once per hearing timeout, of the committed
+    /// instances a peer has not executed yet in my row (or in rows of peers
+    /// that seem down, which I may have committed by explicit prepares), as
+    /// it may have missed them.
+    fn retrigger_commits(
+        &mut self,
+        peer: ReplicaId,
+        exec_bars: &[usize],
+    ) -> Result<(), SummersetError> {
+        let timeout = Duration::from_millis(self.config.hb_hear_timeout_min);
+        if self
+            .commit_retry
+            .get(&peer)
+            .is_some_and(|since| since.elapsed() < timeout)
+        {
+            return Ok(());
+        }
+        self.commit_retry.insert(peer, Instant::now());
+
+        for (row, &exec_bar) in exec_bars.iter().enumerate() {
+            let owner = ReplicaId::try_from(row)?;
+            if owner != self.id && self.heartbeater.peer_alive().get(owner)? {
+                continue;
+            }
+            let from = exec_bar.max(self.start_col);
+            let to = self.commit_bars[row].min(from + self.config.msg_chunk_size);
+            for col in from..to {
+                let inst = &self.insts[row][col - self.start_col];
+                if inst.status < Status::Committed {
+                    continue;
+                }
+                self.transport_hub.send_msg(
+                    PeerMsg::CommitNotice {
+                        slot: SlotIdx(owner, col),
+                        ballot: inst.vbal,
+                        seq: inst.seq,
+                        deps: inst.deps.clone(),
+                        reqs: inst.reqs.clone(),
+                    },
+                    peer,
+                )?;
+            }
+            if from < to {
+                pf_debug!(
+                    "re-sent CommitNotices -> {} for row {} cols {} - {}",
+                    peer,
+                    row,
+                    from,
+                    to - 1
+                );
+            }
+        }
         Ok(())
     }
 
@@ -241,7 +287,18 @@ impl EPaxosReplica {
         if !self.config.disable_hb_timer {
             self.heartbeater.kickoff_hear_timer(Some(peer))?;
         }
-        if exec_bars.len() != self.exec_bars.len() || exec_bars < self.exec_bars {
+        if exec_bars.len() != self.exec_bars.len() {
+            return Ok(());
+        }
+        if peer != self.id
+            && exec_bars
+                .iter()
+                .zip(&self.commit_bars)
+                .any(|(&exec_bar, &commit_bar)| exec_bar < commit_bar)
+        {
+            self.retrigger_commits(peer, &exec_bars)?;
+        }
+        if exec_bars < self.exec_bars {
             return Ok(());
         }
 

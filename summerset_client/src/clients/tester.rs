@@ -36,6 +36,8 @@ static ALL_TESTS: LazyLock<Vec<(&'static str, bool)>> = LazyLock::new(|| {
         ("non_leader_crash", false),
         ("leader_node_crash", false),
         ("clock_drift", false),
+        ("duplicate_failover", false),
+        ("b2b_leader_crashes", false),
     ]
 });
 
@@ -356,7 +358,8 @@ impl ClientTester {
         let param = self.params.fault_seed;
         let seed = *self.fault_seed.get_or_insert_with(|| {
             if param == 0 {
-                rand::rng().random()
+                // within the range of TOML integers, so it can be passed back
+                rand::rng().random_range(1..=(u64::MAX >> 1))
             } else {
                 param
             }
@@ -413,13 +416,15 @@ impl ClientTester {
     async fn do_test_by_name(&mut self, name: &str) -> Result<(), SummersetError> {
         const NODE_PAUSE_TESTS: [&str; 3] =
             ["non_leader_pause", "leader_node_pause", "node_pause_resume"];
-        const NODE_FAULT_TESTS: [&str; 6] = [
+        const NODE_FAULT_TESTS: [&str; 8] = [
             "lossy_network",
             "minority_partition",
             "leader_partition",
             "non_leader_crash",
             "leader_node_crash",
             "clock_drift",
+            "duplicate_failover",
+            "b2b_leader_crashes",
         ];
         if self.protocol.skips_faulty_tests() && NODE_PAUSE_TESTS.contains(&name) {
             cprintln!(
@@ -429,17 +434,9 @@ impl ClientTester {
             );
             return Ok(());
         }
-        // protocols that keep no log to compact, coded ones whose followers
-        // hold only shards and so execute nothing, and EPaxos, whose snapshot
+        // protocols that keep no log to compact, and EPaxos, whose snapshot
         // point is held back by idle rows
-        if (self.protocol.skips_faulty_tests()
-            || matches!(
-                self.protocol,
-                SmrProtocol::RSPaxos
-                    | SmrProtocol::Crossword
-                    | SmrProtocol::CRaft
-                    | SmrProtocol::EPaxos
-            ))
+        if (self.protocol.skips_faulty_tests() || self.protocol == SmrProtocol::EPaxos)
             && name == "snapshot_progress"
         {
             cprintln!(
@@ -488,6 +485,8 @@ impl ClientTester {
                 "non_leader_crash" => self.test_non_leader_crash().await,
                 "leader_node_crash" => self.test_leader_node_crash().await,
                 "clock_drift" => self.test_clock_drift().await,
+                "duplicate_failover" => self.test_duplicate_failover().await,
+                "b2b_leader_crashes" => self.test_b2b_leader_crashes().await,
                 _ => logged_err!("unrecognized test name '{}'", name),
             }
         };
@@ -897,6 +896,58 @@ impl ClientTester {
             let (key, v) = (format!("Key{i}"), Self::gen_rand_string(8));
             self.checked_put(&key, &v, Some(None), 1).await?;
             self.checked_get(&key, Some(Some(&v)), 1).await?;
+        }
+        Ok(())
+    }
+
+    /// Puts a key repeatedly while every peer message gets duplicated and
+    /// reordered; after the leader then crashes, the next leader must hold
+    /// exactly the latest value.
+    async fn test_duplicate_failover(&mut self) -> Result<(), SummersetError> {
+        let faults = Faults {
+            msg_dup_pct: 100,
+            msg_delay_ms: 1,
+            msg_jitter_ms: 50,
+            ..self.seeded_faults()
+        };
+        self.inject_faults(HashSet::new(), faults).await?;
+        let mut last: Option<String> = None;
+        for _ in 0..8 {
+            let v = Self::gen_rand_string(8);
+            self.checked_put("Jose", &v, Some(last.as_deref()), 1)
+                .await?;
+            last = Some(v);
+        }
+        self.inject_faults(HashSet::new(), Faults::default())
+            .await?;
+
+        let leader = self.pick_server(true).await?;
+        self.driver.leave(false).await?;
+        self.crash_servers(HashSet::from([leader])).await?;
+        time::sleep(Duration::from_secs(3)).await;
+        self.driver.connect().await?;
+        self.checked_get("Jose", Some(last.as_deref()), 1).await?;
+        let v = Self::gen_rand_string(8);
+        self.checked_put("Jose", &v, Some(last.as_deref()), 1)
+            .await?;
+        Ok(())
+    }
+
+    /// Leader replica crashes twice in a row, each next leader having to carry
+    /// over what the previous ones accepted.
+    async fn test_b2b_leader_crashes(&mut self) -> Result<(), SummersetError> {
+        let mut last: Option<String> = None;
+        for _ in 0..2 {
+            let v = Self::gen_rand_string(8);
+            self.checked_put("Jose", &v, Some(last.as_deref()), 1)
+                .await?;
+            let leader = self.pick_server(true).await?;
+            self.driver.leave(false).await?;
+            self.crash_servers(HashSet::from([leader])).await?;
+            time::sleep(Duration::from_secs(3)).await;
+            self.driver.connect().await?;
+            self.checked_get("Jose", Some(Some(&v)), 1).await?;
+            last = Some(v);
         }
         Ok(())
     }

@@ -45,6 +45,7 @@ impl ChainRepReplica {
                             true,
                         ),
                         cmd,
+                        None,
                     )?;
                 }
             }

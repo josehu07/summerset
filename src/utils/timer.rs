@@ -87,13 +87,17 @@ impl Timer {
 
     /// Extends the timer with the given duration beyond current deadline (or
     /// beyond now if current deadline already in the past). Behaves similarly
-    /// to `kickoff()`.
+    /// to `kickoff()`, except that an exploded timer is not extended, as what
+    /// it timed has already ended.
     pub fn extend(&self, dur: Duration) -> Result<(), SummersetError> {
         if dur.is_zero() {
             return Err(SummersetError::msg(format!(
                 "invalid timeout duration {:?}",
                 dur
             )));
+        }
+        if self.exploded() {
+            return Ok(());
         }
 
         let dur = faults::clock_drifted(dur);
@@ -107,8 +111,6 @@ impl Timer {
                 *ddl = Some(Instant::now() + dur);
             }
         });
-
-        self.exploded.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -140,6 +142,17 @@ impl Timer {
     #[must_use]
     pub fn exploded(&self) -> bool {
         self.exploded.load(Ordering::Acquire)
+    }
+
+    /// Checks if the timer is kicked-off with its deadline not yet reached,
+    /// as of now rather than when the sleeper task wakes up to explode it.
+    #[must_use]
+    pub fn active(&self) -> bool {
+        !self.exploded()
+            && self
+                .deadline_tx
+                .borrow()
+                .is_some_and(|ddl| ddl > Instant::now())
     }
 }
 

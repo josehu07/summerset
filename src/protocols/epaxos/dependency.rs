@@ -280,8 +280,9 @@ impl EPaxosReplica {
             return Some((Status::Accepting, seq, deps, reqs));
         }
 
-        // has at lease N/2 identical replies for row's default ballot and
-        // none of those are from row peer itself
+        // has at least N/2 identical replies for row's default ballot and
+        // none of those are from row peer itself, which a fast-path commit
+        // (over N-1 replicas) leaves in any majority
         let has_enough_identical =
             if leader_bk.exp_prepare_max_bal == Self::make_default_ballot(slot_row) {
                 let voteds: Vec<(&SeqNum, &DepSet, &ReqBatch)> = leader_bk
@@ -298,7 +299,7 @@ impl EPaxosReplica {
                 if voteds.len() < (simple_quorum_cnt - 1) as usize {
                     None
                 } else {
-                    Self::get_enough_identical(voteds, simple_quorum_cnt).0
+                    Self::get_enough_identical(voteds, simple_quorum_cnt - 1).0
                 }
             } else {
                 None

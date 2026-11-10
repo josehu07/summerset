@@ -26,15 +26,11 @@ impl BodegaReplica {
         self.bal_max_seen = new_bal;
         self.bodega_conf = new_conf;
 
-        // clear peers' accept_bar information
-        for (&peer, bar) in &mut self.peer_accept_bar {
-            if peer == self.id {
-                *bar = self.accept_bar;
-            } else {
-                *bar = usize::MAX;
-            }
-        }
-        self.peer_accept_max = usize::MAX;
+        // count peers' accept_bar information only on the new config, which
+        // may have been heard already while revoking
+        self.peer_accept_bar
+            .insert(self.id, (new_bal, self.accept_bar));
+        self.update_peer_accept_max();
 
         // initiate granting leases for the new config
         self.initiate_conf_leases().await?;
@@ -114,6 +110,28 @@ impl BodegaReplica {
         )?;
 
         Ok(())
+    }
+
+    /// Updates `peer_accept_max` as the minimum of the maximums of majority
+    /// sets of `accept_bar`s, counting only those on my current config.
+    fn update_peer_accept_max(&mut self) {
+        let mut peer_accept_bars: Vec<usize> = self
+            .peer_accept_bar
+            .values()
+            .map(|&(bal, bar)| {
+                if bal == self.bal_max_seen {
+                    bar
+                } else {
+                    usize::MAX
+                }
+            })
+            .collect();
+        peer_accept_bars.sort_unstable();
+        let peer_accept_max = peer_accept_bars[self.quorum_cnt as usize - 1];
+        if peer_accept_max != self.peer_accept_max {
+            self.peer_accept_max = peer_accept_max;
+            pf_debug!("peer_accept_max updated: {}", self.peer_accept_max);
+        }
     }
 
     /// Things to do when stepping up as leader in a new config. Assumes both
@@ -262,19 +280,12 @@ impl BodegaReplica {
             }
 
             LeaseAction::GuardAcceptBar { peer, accept_bar } => {
-                // update this peer's accept_bar information, and then update
-                // peer_accept_max as the minimum of the maximums of majority sets
-                if let Some(old_bar) = self.peer_accept_bar.insert(peer, accept_bar)
-                    && accept_bar < old_bar
-                {
-                    let mut peer_accept_bars: Vec<usize> =
-                        self.peer_accept_bar.values().copied().collect();
-                    peer_accept_bars.sort_unstable();
-                    let peer_accept_max = peer_accept_bars[self.quorum_cnt as usize - 1];
-                    if peer_accept_max < self.peer_accept_max {
-                        self.peer_accept_max = peer_accept_max;
-                        pf_debug!("peer_accept_max updated: {}", self.peer_accept_max);
-                    }
+                // update this peer's accept_bar information on the config of
+                // this lease number, and then update peer_accept_max
+                let (old_num, old_bar) = self.peer_accept_bar[&peer];
+                if lease_num > old_num || (lease_num == old_num && accept_bar < old_bar) {
+                    self.peer_accept_bar.insert(peer, (lease_num, accept_bar));
+                    self.update_peer_accept_max();
                 }
             }
 

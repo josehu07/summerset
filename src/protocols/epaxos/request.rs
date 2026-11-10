@@ -34,6 +34,7 @@ impl EPaxosReplica {
             let inst = &mut self.insts[row][col - self.start_col];
             debug_assert_eq!(inst.status, Status::Null);
             inst.bal = ballot;
+            inst.vbal = ballot;
             inst.seq = seq;
             inst.deps = deps;
             inst.reqs.clone_from(&req_batch);

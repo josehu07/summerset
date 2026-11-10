@@ -50,9 +50,9 @@ impl EPaxosReplica {
     }
 
     /// Handler of `TakeSnapshot` control message.
-    async fn handle_ctrl_take_snapshot(&mut self) -> Result<(), SummersetError> {
+    fn handle_ctrl_take_snapshot(&mut self) -> Result<(), SummersetError> {
         pf_warn!("server told to take snapshot");
-        self.take_new_snapshot().await?;
+        self.take_new_snapshot();
 
         self.control_hub.send_ctrl(CtrlMsg::SnapshotUpTo {
             new_start: self.start_col,
@@ -85,7 +85,7 @@ impl EPaxosReplica {
             }
 
             CtrlMsg::TakeSnapshot => {
-                self.handle_ctrl_take_snapshot().await?;
+                self.handle_ctrl_take_snapshot()?;
                 Ok(None)
             }
 

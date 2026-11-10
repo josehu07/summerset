@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::mem;
 
 use rand::prelude::*;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use super::*;
 use crate::server::ReplicaId;
@@ -44,14 +44,14 @@ impl CrosswordReplica {
         }
 
         // greedily considers my peers, starting from the one with my ID + 1,
-        // until enough number of shards covered
+        // until enough number of shards covered; the leader who initially
+        // replicated this instance to me is only asked as the last resort
         let mut targets_excl = HashMap::new();
-        for p in (me + 1)..(me + population) {
-            let peer = p % population;
-            if peer == src_peer {
-                // skip leader who initially replicated this instance to me
-                continue;
-            }
+        let peers = ((me + 1)..(me + population))
+            .map(|p| p % population)
+            .filter(|&p| p != src_peer)
+            .chain((src_peer != me).then_some(src_peer));
+        for peer in peers {
             if !peer_alive.get(peer).unwrap() {
                 // skip peers that I don't think are alive right now
                 continue;
@@ -82,7 +82,9 @@ impl CrosswordReplica {
 
     /// Triggers gossiping for my missing shards in committed but not-yet-
     /// executed instances: fetch missing shards from peers, preferring
-    /// follower peers that hold data shards.
+    /// follower peers that hold data shards. Instances still missing shards a
+    /// hearing timeout after being requested (e.g., replies got lost, or peers
+    /// had nothing to send yet) get requested again.
     pub(super) fn trigger_gossiping(&mut self) -> Result<(), SummersetError> {
         // maintain a map from peer ID to send to -> slots_excl to send
         let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Bitmap)>> =
@@ -93,20 +95,35 @@ impl CrosswordReplica {
             }
         }
 
-        let mut slot_up_to = self.gossip_bar;
-        let until_slot = if self.start_slot + self.insts.len() > self.config.gossip_tail_ignores {
-            self.start_slot + self.insts.len() - self.config.gossip_tail_ignores
+        // skip the tail while new instances keep coming, as slower followers
+        // may still be receiving their own shards; repair it once idle
+        let end_slot = self.start_slot + self.insts.len();
+        let until_slot = if end_slot == self.gossip_last_end {
+            end_slot
         } else {
-            0
+            end_slot.saturating_sub(self.config.gossip_tail_ignores)
         };
-        for slot in self.gossip_bar..until_slot {
-            slot_up_to = slot;
+        self.gossip_last_end = end_slot;
+
+        // request again what is overdue, otherwise only what is new
+        let from_slot = if self.gossip_retry.elapsed()
+            >= Duration::from_millis(self.config.hb_hear_timeout_min)
+        {
+            self.gossip_retry = Instant::now();
+            self.commit_bar
+        } else {
+            cmp::max(self.gossip_bar, self.commit_bar)
+        };
+        let mut slot_up_to = from_slot;
+        for slot in from_slot..until_slot {
             {
                 let inst = &self.insts[slot - self.start_slot];
+                if inst.status < Status::Committed {
+                    break;
+                }
+                slot_up_to = slot + 1;
                 if inst.status >= Status::Executed {
                     continue;
-                } else if inst.status < Status::Committed {
-                    break;
                 }
             }
 
@@ -164,14 +181,14 @@ impl CrosswordReplica {
         }
 
         // update gossip_bar
-        if slot_up_to > self.gossip_bar {
+        if slot_up_to > from_slot {
             pf_debug!(
                 "triggered gossiping: slots {} - {}",
-                self.gossip_bar,
+                from_slot,
                 slot_up_to - 1
             );
-            self.gossip_bar = slot_up_to;
         }
+        self.gossip_bar = cmp::max(self.gossip_bar, slot_up_to);
 
         Ok(())
     }

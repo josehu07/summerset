@@ -4,7 +4,7 @@ use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-use crate::server::{ApiRequest, LogAction, ReplicaId};
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // RSPaxosReplica peer-peer messages handling
@@ -55,15 +55,21 @@ impl RSPaxosReplica {
             for slot in trigger_slot..=endprep_slot {
                 let inst = &mut self.insts[slot - self.start_slot];
                 debug_assert!(inst.bal <= ballot);
-                if inst.bal == ballot && (inst.status > Status::Preparing || inst.prep_inflight > 0)
+                if inst.bal == ballot
+                    && ((inst.status > Status::Preparing && inst.status < Status::Committed)
+                        || inst.prep_inflight > 0)
                 {
                     // duplicate (re-sent) Prepare of what I've moved past or am already
                     // logging; will reply when that in-flight PrepareBal becomes durable
                     continue;
                 }
 
+                // committed instances keep their status, but still reply with
+                // their value (once the promise is durable)
                 inst.bal = ballot;
-                inst.status = Status::Preparing;
+                if inst.status < Status::Committed {
+                    inst.status = Status::Preparing;
+                }
                 inst.replica_bk = Some(ReplicaBookkeeping {
                     source: peer,
                     trigger_slot,
@@ -182,15 +188,13 @@ impl RSPaxosReplica {
             {
                 let inst = &mut self.insts[slot - self.start_slot];
 
-                // ignore spurious duplications and outdated replies
-                if (inst.status != Status::Preparing) || (ballot < inst.bal) {
-                    return Ok(());
-                }
-                debug_assert_eq!(inst.bal, ballot);
-                debug_assert!(self.bal_max_seen >= ballot);
-
-                // bookkeep this Prepare reply
-                if let Some((bal, val)) = voted {
+                // bookkeep this Prepare reply, unless spuriously duplicated or
+                // outdated, or the instance has moved on (e.g., committed out
+                // of order), in which case the reply still counts the peer
+                if inst.status == Status::Preparing
+                    && ballot == inst.bal
+                    && let Some((bal, val)) = voted
+                {
                     debug_assert!(inst.leader_bk.is_some());
                     let leader_bk = inst.leader_bk.as_mut().unwrap();
                     #[allow(clippy::comparison_chain)]
@@ -357,24 +361,34 @@ impl RSPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert!(inst.bal <= ballot);
 
+            // committed instances keep their status and data, as the value accepted
+            // at a higher ballot is the same one
             inst.bal = ballot;
-            inst.status = Status::Accepting;
-            inst.reqs_cw = reqs_cw;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                trigger_slot: 0,
-                endprep_slot: 0,
-            });
+            inst.voted = (ballot, reqs_cw.clone());
+            if inst.status < Status::Committed {
+                inst.status = Status::Accepting;
+                inst.reqs_cw = reqs_cw;
+            } else if inst.status < Status::Executed {
+                inst.reqs_cw.absorb_other(reqs_cw)?;
+            }
+            if let Some(replica_bk) = inst.replica_bk.as_mut() {
+                replica_bk.source = peer;
+            } else {
+                inst.replica_bk = Some(ReplicaBookkeeping {
+                    source: peer,
+                    trigger_slot: 0,
+                    endprep_slot: 0,
+                });
+            }
 
             // record update to instance ballot & data
-            inst.voted = (ballot, inst.reqs_cw.clone());
             self.storage_hub.submit_action(
                 LogCtx::AcceptData { slot, ballot },
                 LogAction::Append {
                     entry: WalEntry::AcceptData {
                         slot,
                         ballot,
-                        reqs_cw: inst.reqs_cw.clone(),
+                        reqs_cw: inst.voted.1.clone(),
                     },
                     sync: self.config.logger_sync,
                 },
@@ -519,16 +533,20 @@ impl RSPaxosReplica {
         Ok(())
     }
 
-    /// Handler of Reconstruct message from leader.
+    /// Handler of Reconstruct message from leader or a follower.
     fn handle_msg_reconstruct(
         &mut self,
         peer: ReplicaId,
-        slots: Vec<usize>,
+        slots_excl: Vec<(usize, Bitmap)>,
     ) -> Result<(), SummersetError> {
-        pf_trace!("received Reconstruct <- {} for slots {:?}", peer, slots);
+        pf_trace!(
+            "received Reconstruct <- {} for {} slots",
+            peer,
+            slots_excl.len()
+        );
         let mut slots_data = HashMap::new();
 
-        for slot in slots {
+        for (slot, mut subset) in slots_excl {
             if slot < self.start_slot {
                 // TODO: this has one caveat: a new leader trying to do
                 //       reconstruction reads might find that all other peers
@@ -547,12 +565,17 @@ impl RSPaxosReplica {
             let inst = &mut self.insts[slot - self.start_slot];
 
             // ignore spurious duplications; also ignore if I have nothing to send back
-            if inst.status < Status::Accepting || inst.reqs_cw.avail_shards() == 0 {
+            if inst.status < Status::Accepting {
+                continue;
+            }
+            subset.flip(); // exclude unwanted shards the sender already has
+            let reply_cw = inst.reqs_cw.subset_copy(&subset, false)?;
+            if reply_cw.avail_shards() == 0 {
                 continue;
             }
 
             // send back my ballot for this slot and the available shards
-            slots_data.insert(slot, (inst.bal, inst.reqs_cw.clone()));
+            slots_data.insert(slot, (inst.bal, reply_cw));
         }
 
         if !slots_data.is_empty() {
@@ -585,58 +608,15 @@ impl RSPaxosReplica {
             debug_assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
             let inst = &mut self.insts[slot - self.start_slot];
 
-            // if reply not outdated and ballot is up-to-date
+            // if reply not outdated and ballot is up-to-date, absorb the shards
+            // from this replica
             if inst.status < Status::Executed && ballot >= inst.bal {
-                // absorb the shards from this replica
                 inst.reqs_cw.absorb_other(reqs_cw)?;
-
-                // if enough shards have been gathered, can push execution forward
-                if slot == self.commit_bar {
-                    while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
-                        if inst.status < Status::Committed
-                            || inst.reqs_cw.avail_shards() < self.majority
-                        {
-                            break;
-                        }
-
-                        if inst.reqs_cw.avail_data_shards() < self.majority {
-                            // have enough shards but need reconstruction
-                            inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                        }
-                        let reqs = inst.reqs_cw.get_data()?;
-
-                        // submit commands in committed instance to the state machine
-                        // for execution
-                        if reqs.is_empty() {
-                            inst.status = Status::Executed;
-                            // nothing to execute, so advance `exec_bar` here if at it
-                            if self.exec_bar == self.commit_bar {
-                                self.exec_bar += 1;
-                            }
-                        } else {
-                            for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                                if let ApiRequest::Req { cmd, .. } = req {
-                                    self.state_machine.submit_cmd(
-                                        Self::make_command_id(self.commit_bar, cmd_idx),
-                                        cmd.clone(),
-                                    )?;
-                                }
-                            }
-                            pf_trace!(
-                                "submitted {} exec commands for slot {}",
-                                reqs.len(),
-                                self.commit_bar
-                            );
-                        }
-
-                        self.commit_bar += 1;
-                    }
-                }
             }
         }
 
-        Ok(())
+        // if enough shards have been gathered, can push execution forward
+        self.advance_commit_bar()
     }
 
     /// Synthesized handler of receiving message from peer.
@@ -667,7 +647,7 @@ impl RSPaxosReplica {
             PeerMsg::AcceptReply { slot, ballot } => {
                 self.handle_msg_accept_reply(peer, slot, ballot)
             }
-            PeerMsg::Reconstruct { slots } => self.handle_msg_reconstruct(peer, slots),
+            PeerMsg::Reconstruct { slots_excl } => self.handle_msg_reconstruct(peer, slots_excl),
             PeerMsg::ReconstructReply { slots_data } => {
                 self.handle_msg_reconstruct_reply(peer, slots_data)
             }

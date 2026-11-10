@@ -29,7 +29,7 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
-    Heartbeater, ReplicaId, StateMachine, StorageHub, TransportHub,
+    Heartbeater, ReplicaId, Session, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
@@ -273,8 +273,12 @@ enum SnapEntry {
         bal_max_seen: Ballot,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Peer-peer message type.
@@ -320,8 +324,11 @@ enum PeerMsg {
     /// Accept reply from replica to leader.
     AcceptReply { slot: usize, ballot: Ballot },
 
-    /// Reconstruction read from new leader to replicas.
-    Reconstruct { slots: Vec<usize> },
+    /// Reconstruction read from new leader or a follower to replicas.
+    Reconstruct {
+        /// List of slots and correspondingly the shards to exclude.
+        slots_excl: Vec<(usize, Bitmap)>,
+    },
 
     /// Reconstruction read reply from replica to leader.
     ReconstructReply {
@@ -413,6 +420,10 @@ pub(crate) struct RSPaxosReplica {
 
     /// When reconstruction reads were last re-sent.
     recon_retry: Instant,
+
+    /// Index of the first instance not yet read for reconstruction on a
+    /// follower.
+    recon_bar: usize,
 
     /// Index of the first non-executed instance.
     /// It is always true that `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
@@ -656,6 +667,7 @@ impl GenericReplica for RSPaxosReplica {
             commit_bar: 0,
             accept_retry: (Instant::now(), 0),
             recon_retry: Instant::now(),
+            recon_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })

@@ -34,8 +34,8 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, Command, CommandId, CommandResult, ControlHub, ExternalApi,
-    GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, ReplicaId, RequestId, StateMachine,
-    StorageHub, TransportHub,
+    GenericReplica, HeartbeatEvent, Heartbeater, LeaseManager, ReplicaId, RequestId, Session,
+    StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{Bitmap, RespondersConf, SummersetError, Timer};
 
@@ -300,8 +300,12 @@ enum SnapEntry {
         bal_max_seen: Ballot,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Peer-peer message type.
@@ -443,9 +447,10 @@ pub(crate) struct BodegaReplica {
     /// Index of the first non-Accepted instance.
     accept_bar: usize,
 
-    /// Map from peer ID (including my self) who replied to my Prepare -> its
-    /// `accept_bar` then; this is for safe stable leader leases purpose.
-    peer_accept_bar: HashMap<ReplicaId, usize>,
+    /// Map from peer ID (including my self) -> ballot of the config it Guarded
+    /// leases on and its `accept_bar` then; this is for safe stable leader
+    /// leases purpose.
+    peer_accept_bar: HashMap<ReplicaId, (Ballot, usize)>,
 
     /// Minimum of the max `accept_bar` among any majority set of `peer_accept_bar`;
     /// this is for safe stable leader leases purpose.
@@ -732,7 +737,7 @@ impl GenericReplica for BodegaReplica {
             bal_prepared: 0,
             bal_max_seen: 0,
             accept_bar: 0,
-            peer_accept_bar: (0..population).map(|s| (s, usize::MAX)).collect(),
+            peer_accept_bar: (0..population).map(|s| (s, (0, usize::MAX))).collect(),
             peer_accept_max: usize::MAX,
             commit_bar: 0,
             accept_retry: (Instant::now(), 0),
@@ -756,6 +761,11 @@ impl GenericReplica for BodegaReplica {
 
         // recover the tail-piece memory log & state from durable WAL log
         self.recover_from_wal().await?;
+
+        // after a restart, peers may still hold leases I granted before
+        if self.wal_offset > 0 {
+            self.lease_manager.assume_unknown_grants()?;
+        }
 
         // kick off peer heartbeats hearing timer
         self.refresh_heartbeat_timer(None)?;

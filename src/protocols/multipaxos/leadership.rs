@@ -38,7 +38,9 @@ impl MultiPaxosReplica {
                             peers: Some(Bitmap::from((self.population, vec![old_leader]))),
                         },
                     )?;
-                    self.ensure_lease_revoked(old_leader).await?;
+                    self.ensure_lease_revoked(Some(old_leader)).await?;
+                } else if self.leader.is_none() {
+                    self.ensure_lease_revoked(None).await?;
                 }
 
                 // initiate granting to new leader
@@ -202,9 +204,7 @@ impl MultiPaxosReplica {
 
         // before moving on, ensure that any lease to old leader has either
         // been RevokeReplied or timed out
-        if self.config.enable_leader_leases
-            && let Some(old_leader) = old_leader
-        {
+        if self.config.enable_leader_leases {
             self.ensure_lease_revoked(old_leader).await?;
         }
 
@@ -246,6 +246,7 @@ impl MultiPaxosReplica {
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
         self.retrigger_accepts()?;
+        self.expire_quorum_reads()?;
 
         // check and send lease promise refresh to leader
         if self.config.enable_leader_leases

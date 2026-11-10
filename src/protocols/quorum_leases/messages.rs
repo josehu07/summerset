@@ -54,15 +54,21 @@ impl QuorumLeasesReplica {
             for slot in trigger_slot..=endprep_slot {
                 let inst = &mut self.insts[slot - self.start_slot];
                 debug_assert!(inst.bal <= ballot);
-                if inst.bal == ballot && (inst.status > Status::Preparing || inst.prep_inflight > 0)
+                if inst.bal == ballot
+                    && ((inst.status > Status::Preparing && inst.status < Status::Committed)
+                        || inst.prep_inflight > 0)
                 {
                     // duplicate (re-sent) Prepare of what I've moved past or am already
                     // logging; will reply when that in-flight PrepareBal becomes durable
                     continue;
                 }
 
+                // committed instances keep their status, but still reply with
+                // their value (once the promise is durable)
                 inst.bal = ballot;
-                inst.status = Status::Preparing;
+                if inst.status < Status::Committed {
+                    inst.status = Status::Preparing;
+                }
                 inst.replica_bk = Some(ReplicaBookkeeping {
                     source: peer,
                     trigger_slot,
@@ -198,15 +204,13 @@ impl QuorumLeasesReplica {
             {
                 let inst = &mut self.insts[slot - self.start_slot];
 
-                // ignore spurious duplications and outdated replies
-                if (inst.status != Status::Preparing) || (ballot < inst.bal) {
-                    return Ok(());
-                }
-                debug_assert_eq!(inst.bal, ballot);
-                debug_assert!(self.bal_max_seen >= ballot);
-
-                // bookkeep this Prepare reply
-                if let Some((bal, val)) = voted {
+                // bookkeep this Prepare reply, unless spuriously duplicated or
+                // outdated, or the instance has moved on (e.g., committed out
+                // of order), in which case the reply still counts the peer
+                if inst.status == Status::Preparing
+                    && ballot == inst.bal
+                    && let Some((bal, val)) = voted
+                {
                     debug_assert!(inst.leader_bk.is_some());
                     let leader_bk = inst.leader_bk.as_mut().unwrap();
                     if bal > leader_bk.prepare_max_bal {
@@ -243,6 +247,7 @@ impl QuorumLeasesReplica {
                         .filter(|(_, i)| i.status == Status::Preparing)
                     {
                         inst.status = Status::Accepting;
+                        inst.voted = (ballot, inst.reqs.clone());
                         pf_debug!("enter Accept phase for slot {} bal {}", this_slot, inst.bal);
 
                         // record update to largest accepted ballot and its
@@ -322,9 +327,13 @@ impl QuorumLeasesReplica {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert!(inst.bal <= ballot);
 
+            // committed instances keep their status and data, as the value accepted
+            // at a higher ballot is the same one
             inst.bal = ballot;
-            inst.status = Status::Accepting;
-            inst.reqs.clone_from(&reqs);
+            if inst.status < Status::Committed {
+                inst.status = Status::Accepting;
+                inst.reqs.clone_from(&reqs);
+            }
             Self::refresh_highest_slot(slot, &reqs, &mut self.highest_slot);
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;

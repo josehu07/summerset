@@ -15,6 +15,7 @@ mod recovery;
 mod request;
 mod snapshot;
 
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -30,7 +31,7 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
-    Heartbeater, ReplicaId, StateMachine, StorageHub, TransportHub,
+    Heartbeater, LogAction, ReplicaId, Session, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::SummersetError;
 
@@ -211,8 +212,12 @@ enum SnapEntry {
         start_slot: usize,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Peer-peer message type.
@@ -385,6 +390,121 @@ impl RaftReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// Slot of the last durable entry. All entries up to it are durable, as
+    /// appends of new entries at the log end complete in order.
+    fn last_durable_slot(&self) -> usize {
+        let pending = self
+            .log
+            .iter()
+            .rev()
+            .take_while(|e| e.log_offset.is_none())
+            .count();
+        self.start_slot + self.log.len() - 1 - pending
+    }
+
+    /// Appends a new entry of my term to my log as the leader, submitting the
+    /// logger action to make it durable.
+    fn append_new_entry(&mut self, reqs: ReqBatch, external: bool) -> Result<(), SummersetError> {
+        let entry = LogEntry {
+            term: self.curr_term,
+            reqs,
+            external,
+            log_offset: None,
+        };
+        let slot = self.start_slot + self.log.len();
+        self.log.push(entry.clone());
+        self.storage_hub.submit_action(
+            LogCtx::LeaderAppend {
+                slot,
+                term: self.curr_term,
+            },
+            LogAction::Append {
+                entry: DurEntry::LogEntry { entry },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        pf_trace!("submitted leader append log action for slot {}", slot);
+        Ok(())
+    }
+
+    /// Sends `AppendEntries` with my entries from `from` to `to` (inclusive)
+    /// to a peer, in chunks to keep it heartbeated.
+    fn send_append_entries(
+        &mut self,
+        peer: ReplicaId,
+        from: usize,
+        to: usize,
+    ) -> Result<(), SummersetError> {
+        for chunk_from in (from..=to).step_by(self.config.msg_chunk_size) {
+            let chunk_to = cmp::min(chunk_from + self.config.msg_chunk_size - 1, to);
+            let entries = self.log[(chunk_from - self.start_slot)..=(chunk_to - self.start_slot)]
+                .iter()
+                .map(|e| LogEntry {
+                    external: false,
+                    ..e.clone()
+                })
+                .collect();
+            let prev_slot = chunk_from - 1;
+            self.transport_hub.send_msg(
+                PeerMsg::AppendEntries {
+                    term: self.curr_term,
+                    prev_slot,
+                    prev_term: self.log[prev_slot - self.start_slot].term,
+                    entries,
+                    leader_commit: self.last_commit,
+                    last_snap: self.last_snap,
+                },
+                peer,
+            )?;
+            pf_trace!(
+                "sent AppendEntries -> {} with slots {} - {}",
+                peer,
+                chunk_from,
+                chunk_to
+            );
+        }
+        Ok(())
+    }
+
+    /// Marks entries up to `new_commit` committed, submitting their commands
+    /// for execution.
+    fn commit_up_to(&mut self, new_commit: usize) -> Result<(), SummersetError> {
+        for slot in (self.last_commit + 1)..=new_commit {
+            let entry = &self.log[slot - self.start_slot];
+            for (cmd_idx, (client, req)) in entry.reqs.iter().enumerate() {
+                if let ApiRequest::Req { id: req_id, cmd } = req {
+                    self.state_machine.submit_cmd(
+                        Self::make_command_id(slot, cmd_idx),
+                        cmd.clone(),
+                        Some((*client, *req_id)),
+                    )?;
+                }
+            }
+            pf_trace!(
+                "submitted {} exec commands for slot {}",
+                entry.reqs.len(),
+                slot
+            );
+        }
+        if new_commit > self.last_commit {
+            self.last_commit = new_commit;
+            self.advance_last_exec();
+        }
+        Ok(())
+    }
+
+    /// Advances `last_exec` past committed entries with nothing to execute,
+    /// such as the no-ops of new leaders.
+    fn advance_last_exec(&mut self) {
+        while self.last_exec < self.last_commit
+            && self.log[self.last_exec + 1 - self.start_slot]
+                .reqs
+                .is_empty()
+        {
+            self.last_exec += 1;
+        }
     }
 }
 

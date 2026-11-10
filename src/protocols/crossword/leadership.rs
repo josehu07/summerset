@@ -533,6 +533,7 @@ impl CrosswordReplica {
                         slot,
                         ballot: inst.bal,
                         value_id,
+                        shards: subset_copy.avail_shards_map(),
                     },
                     LogAction::Append {
                         entry: WalEntry::AcceptData {

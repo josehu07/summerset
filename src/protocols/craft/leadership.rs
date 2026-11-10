@@ -69,10 +69,9 @@ impl CRaftReplica {
     }
 
     /// Switch between normal "1 shard per replica" mode and full-copy mode.
-    /// If falling back to full-copy, also re-persist and re-send all shards
-    /// in my current log.
-    #[allow(clippy::too_many_lines, clippy::unnecessary_wraps)]
-    pub(super) fn switch_assignment_mode(
+    /// If falling back to full-copy as the leader, also upgrades uncommitted
+    /// entries to full copies, re-persisting and re-sending them.
+    pub(super) async fn switch_assignment_mode(
         &mut self,
         to_full_copy: bool,
     ) -> Result<(), SummersetError> {
@@ -84,52 +83,41 @@ impl CRaftReplica {
             if to_full_copy { "full-copy" } else { "1-shard" }
         );
         self.full_copy_mode = to_full_copy;
-
-        if to_full_copy {
-            // you might already notice that such fallback mechanism does not
-            // guarantee to guard against extra failures during this period
-
-            // TODO: should re-persist all data shards, but not really that
-            //       important for evaluation; skipped in current implementation
-
-            // re-send AppendEntries covering all entries, containing all
-            // data shards of each entry, to followers
-            // NOTE: not doing this right now as the liveness guarantee under
-            //       concurrent failures is already weakened; not necessary to
-            //       guard against this corner case of non-concurrent failures
-            // let entries = self
-            //     .log
-            //     .iter()
-            //     .skip(1)
-            //     .map(|e| LogEntry {
-            //         term: e.term,
-            //         reqs_cw: e
-            //             .reqs_cw
-            //             .subset_copy(
-            //                 Bitmap::from(
-            //                     self.population,
-            //                     (0..self.majority).collect(),
-            //                 ),
-            //                 false,
-            //             )
-            //             .unwrap(),
-            //         external: false,
-            //         log_offset: e.log_offset,
-            //     })
-            //     .collect();
-            // self.transport_hub.bcast_msg(
-            //     PeerMsg::AppendEntries {
-            //         term: self.curr_term,
-            //         prev_slot: self.start_slot,
-            //         prev_term: self.log[0].term,
-            //         entries,
-            //         leader_commit: self.last_commit,
-            //         last_snap: self.last_snap,
-            //     },
-            //     None,
-            // )?;
+        if !to_full_copy || self.role != Role::Leader {
+            return Ok(());
         }
 
+        // with too many peers down, uncommitted single-shard entries may never
+        // gather the acks they need, so upgrade those I have the data of
+        let mut first_upgraded = None;
+        for slot in (self.commit_known + 1)..(self.start_slot + self.log.len()) {
+            let entry = &mut self.log[slot - self.start_slot];
+            if !entry.full_copy && entry.reqs_cw.avail_shards() >= self.majority {
+                if entry.reqs_cw.avail_data_shards() < self.majority {
+                    entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                }
+                entry.full_copy = true;
+                first_upgraded.get_or_insert(slot);
+            }
+        }
+        let Some(from) = first_upgraded else {
+            return Ok(());
+        };
+
+        // re-persist my copies of them, then re-send them to followers, whose
+        // earlier acks do not cover the upgrade
+        self.rewrite_log_from(from).await?;
+        let to = self.start_slot + self.log.len() - 1;
+        for peer in 0..self.population {
+            let peer_from = cmp::min(self.next_slot[&peer], from);
+            if peer == self.id || peer_from <= self.start_slot {
+                continue;
+            }
+            *self.next_slot.get_mut(&peer).unwrap() = peer_from;
+            *self.match_slot.get_mut(&peer).unwrap() = cmp::min(self.match_slot[&peer], from - 1);
+            self.send_append_entries(peer, peer_from, to)?;
+            *self.try_next_slot.get_mut(&peer).unwrap() = to + 1;
+        }
         Ok(())
     }
 
@@ -160,26 +148,8 @@ impl CRaftReplica {
             self.heartbeater.kickoff_hear_timer(None)?;
         }
 
-        // send RequestVote messages to all other peers
-        let last_slot = self.start_slot + self.log.len() - 1;
-        debug_assert!(last_slot >= self.start_slot);
-        let last_term = self.log[last_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::RequestVote {
-                term: self.curr_term,
-                last_slot,
-                last_term,
-            },
-            None,
-        )?;
-        pf_trace!(
-            "broadcast RequestVote with term {} last {} term {}",
-            self.curr_term,
-            last_slot,
-            last_term
-        );
-
-        // also make the two critical fields durable, synchronously
+        // make the two critical fields durable, synchronously, before asking
+        // for votes
         let (old_results, result) = self
             .storage_hub
             .do_sync_action(LogAction::Write {
@@ -199,6 +169,25 @@ impl CRaftReplica {
         } else {
             return logged_err!("unexpected log result type or failed write");
         }
+
+        // send RequestVote messages to all other peers
+        let last_slot = self.start_slot + self.log.len() - 1;
+        debug_assert!(last_slot >= self.start_slot);
+        let last_term = self.log[last_slot - self.start_slot].term;
+        self.transport_hub.bcast_msg(
+            PeerMsg::RequestVote {
+                term: self.curr_term,
+                last_slot,
+                last_term,
+            },
+            None,
+        )?;
+        pf_trace!(
+            "broadcast RequestVote with term {} last {} term {}",
+            self.curr_term,
+            last_slot,
+            last_term
+        );
 
         Ok(())
     }
@@ -223,7 +212,9 @@ impl CRaftReplica {
             *slot = 0;
         }
 
-        // clear peers' heartbeat reply counters, and broadcast a heartbeat now
+        // clear peers' heartbeat reply counters, and broadcast a heartbeat now;
+        // as a new leader, I decide on the assignment mode afresh
+        self.full_copy_mode = false;
         self.heartbeater.clear_reply_cnts(None)?;
         self.bcast_heartbeats().await?;
 
@@ -236,17 +227,23 @@ impl CRaftReplica {
             slot.external = true;
         }
 
+        // append a no-op entry of my term, so that entries of earlier terms
+        // get committed along with it even without new client requests
+        self.append_new_entry(vec![], false)?;
+
         Ok(())
     }
 
-    /// Broadcasts empty `AppendEntries` messages as heartbeats to all peers.
+    /// Sends empty `AppendEntries` messages as heartbeats to all peers, each
+    /// checking the peer's log at its last known matching point.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
+        self.retrigger_reconstructs()?;
         for peer in 0..self.population {
             if peer == self.id {
                 continue;
             }
             let prev_slot = cmp::min(
-                self.try_next_slot[&peer] - 1,
+                self.next_slot[&peer] - 1,
                 self.start_slot + self.log.len() - 1,
             );
             debug_assert!(prev_slot >= self.start_slot);
@@ -257,7 +254,7 @@ impl CRaftReplica {
                     prev_slot,
                     prev_term,
                     entries: vec![],
-                    leader_commit: self.last_commit,
+                    leader_commit: self.commit_known,
                     last_snap: self.last_snap,
                 },
                 peer,
@@ -276,7 +273,7 @@ impl CRaftReplica {
             && self.population - self.heartbeater.peer_alive().count()
                 >= self.config.fault_tolerance
         {
-            self.switch_assignment_mode(true)?;
+            self.switch_assignment_mode(true).await?;
         }
 
         // pf_trace!("broadcast heartbeats term {}", self.curr_term);
@@ -297,7 +294,7 @@ impl CRaftReplica {
             // if self.population - self.heartbeater.peer_alive().count()
             //     < self.config.fault_tolerance
             // {
-            //     self.switch_assignment_mode(false)?;
+            //     self.switch_assignment_mode(false).await?;
             // }
         }
 

@@ -13,6 +13,7 @@ mod recovery;
 mod request;
 mod snapshot;
 
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -22,16 +23,16 @@ use get_size::GetSize;
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
+use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
 use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
-    Heartbeater, ReplicaId, StateMachine, StorageHub, TransportHub,
+    Heartbeater, LogAction, LogResult, ReplicaId, Session, StateMachine, StorageHub, TransportHub,
 };
-use crate::utils::{RSCodeword, SummersetError};
+use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 /// Configuration parameters struct.
 #[derive(Debug, Clone, Deserialize)]
@@ -125,6 +126,11 @@ struct LogEntry {
     /// Shards of a batch of client requests.
     reqs_cw: RSCodeword<ReqBatch>,
 
+    /// True if replicated as full copies (all data shards to each replica),
+    /// else as one shard per replica; set by the leader appending (or
+    /// upgrading) it.
+    full_copy: bool,
+
     /// True if from external client, else false.
     external: bool,
 
@@ -215,8 +221,12 @@ enum SnapEntry {
         start_slot: usize,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Peer-peer message type.
@@ -241,6 +251,9 @@ enum PeerMsg {
         /// If success, `None`; otherwise, contains a pair of the conflicting
         /// entry's term and my first index for that term.
         conflict: Option<(Term, usize)>,
+        /// Whether my entry at `end_slot` is a full copy, telling apart acks
+        /// from before the entry got upgraded to full-copy replication.
+        full_copy: bool,
     },
 
     /// `RequestVote` from leader to followers.
@@ -253,13 +266,16 @@ enum PeerMsg {
     /// `RequestVote` reply from follower to leader.
     RequestVoteReply { term: Term, granted: bool },
 
-    /// Reconstruction read from new leader to followers.
-    Reconstruct { slots: Vec<(usize, Term)> },
+    /// Reconstruction read from the leader or a follower to peers.
+    Reconstruct {
+        /// List of slots, their entries' terms, and the shards to exclude.
+        slots: Vec<(usize, Term, Bitmap)>,
+    },
 
-    /// Reconstruction read reply from follower to leader.
+    /// Reconstruction read reply from a peer.
     ReconstructReply {
-        /// Map from slot -> req batch shards data the follower has.
-        slots_data: HashMap<usize, RSCodeword<ReqBatch>>,
+        /// Map from slot -> term and req batch shards data the peer has.
+        slots_data: HashMap<usize, (Term, RSCodeword<ReqBatch>)>,
     },
 }
 
@@ -354,6 +370,10 @@ pub(crate) struct CRaftReplica {
     snapshot_interval: Interval,
 
     /// Slot index of highest log entry known to be committed.
+    commit_known: usize,
+
+    /// Slot index of highest committed log entry submitted for execution,
+    /// which waits for entries to have enough shards.
     last_commit: usize,
 
     /// Slot index of highest log entry applied to state machine.
@@ -362,6 +382,9 @@ pub(crate) struct CRaftReplica {
     /// Slot index of highest log entry for which a Reconstruct has been sent.
     /// This is a soft state and affects nothing about correctness.
     last_recon: usize,
+
+    /// When reconstruction reads were last re-sent.
+    recon_retry: Instant,
 
     /// For each server, index of the next log entry to send.
     next_slot: HashMap<ReplicaId, usize>,
@@ -410,6 +433,278 @@ impl CRaftReplica {
         let slot = (command_id >> 32) as usize;
         let cmd_idx = (command_id & ((1 << 32) - 1)) as usize;
         (slot, cmd_idx)
+    }
+
+    /// Slot of the last durable entry. All entries up to it are durable, as
+    /// appends of new entries at the log end complete in order.
+    fn last_durable_slot(&self) -> usize {
+        let pending = self
+            .log
+            .iter()
+            .rev()
+            .take_while(|e| e.log_offset.is_none())
+            .count();
+        self.start_slot + self.log.len() - 1 - pending
+    }
+
+    /// The copy of an entry that replica `peer` keeps, according to how the
+    /// entry is replicated.
+    fn entry_for(&self, entry: &LogEntry, peer: ReplicaId) -> Result<LogEntry, SummersetError> {
+        let shards = if entry.full_copy {
+            Bitmap::from((self.population, 0..self.majority))
+        } else {
+            Bitmap::from((self.population, vec![peer]))
+        };
+        Ok(LogEntry {
+            term: entry.term,
+            reqs_cw: entry.reqs_cw.subset_copy(&shards, false)?,
+            full_copy: entry.full_copy,
+            external: false,
+            log_offset: entry.log_offset,
+        })
+    }
+
+    /// Highest slot up to which entries can be committed: it is of my term,
+    /// and every entry up to it has acks from enough replicas for how it is
+    /// replicated (a majority for full copies, more for single shards).
+    fn commit_point(&self) -> usize {
+        let mut commit = self.commit_known;
+        for slot in (self.commit_known + 1)..(self.start_slot + self.log.len()) {
+            let entry = &self.log[slot - self.start_slot];
+            let match_cnt = 1 + self.match_slot.values().filter(|&&s| s >= slot).count();
+            let required = if entry.full_copy {
+                self.majority
+            } else {
+                self.majority + self.config.fault_tolerance
+            };
+            if match_cnt < usize::from(required) {
+                break;
+            }
+            if entry.term == self.curr_term {
+                commit = slot;
+            }
+        }
+        commit
+    }
+
+    /// Appends a new entry of my term to my log as the leader, submitting the
+    /// logger action to make my copy of it durable.
+    fn append_new_entry(&mut self, reqs: ReqBatch, external: bool) -> Result<(), SummersetError> {
+        // compute the complete Reed-Solomon codeword for the batch data
+        let mut reqs_cw =
+            RSCodeword::from_data(reqs, self.majority, self.population - self.majority)?;
+        reqs_cw.compute_parity(Some(&self.rs_coder))?;
+        let entry = LogEntry {
+            term: self.curr_term,
+            reqs_cw,
+            full_copy: self.full_copy_mode,
+            external,
+            log_offset: None,
+        };
+
+        let slot = self.start_slot + self.log.len();
+        self.storage_hub.submit_action(
+            LogCtx::LeaderAppend {
+                slot,
+                term: self.curr_term,
+            },
+            LogAction::Append {
+                entry: DurEntry::LogEntry {
+                    entry: self.entry_for(&entry, self.id)?,
+                },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        pf_trace!("submitted leader append log action for slot {}", slot);
+        self.log.push(entry);
+        Ok(())
+    }
+
+    /// Sends `AppendEntries` with the peer's copies of my entries from `from`
+    /// to `to` (inclusive) to it, in chunks to keep it heartbeated.
+    fn send_append_entries(
+        &mut self,
+        peer: ReplicaId,
+        from: usize,
+        to: usize,
+    ) -> Result<(), SummersetError> {
+        for chunk_from in (from..=to).step_by(self.config.msg_chunk_size) {
+            let chunk_to = cmp::min(chunk_from + self.config.msg_chunk_size - 1, to);
+            let entries = self.log[(chunk_from - self.start_slot)..=(chunk_to - self.start_slot)]
+                .iter()
+                .map(|e| self.entry_for(e, peer))
+                .collect::<Result<_, _>>()?;
+            let prev_slot = chunk_from - 1;
+            self.transport_hub.send_msg(
+                PeerMsg::AppendEntries {
+                    term: self.curr_term,
+                    prev_slot,
+                    prev_term: self.log[prev_slot - self.start_slot].term,
+                    entries,
+                    leader_commit: self.commit_known,
+                    last_snap: self.last_snap,
+                },
+                peer,
+            )?;
+            pf_trace!(
+                "sent AppendEntries -> {} with slots {} - {}",
+                peer,
+                chunk_from,
+                chunk_to
+            );
+        }
+        Ok(())
+    }
+
+    /// Re-persists my copies of the entries from slot `from` on, as the
+    /// durable log mirrors the in-mem one (e.g., after entries there got
+    /// upgraded to full copies).
+    async fn rewrite_log_from(&mut self, from: usize) -> Result<(), SummersetError> {
+        // wait for in-flight appends, to learn where the entry at `from` starts
+        let hb_peer = self.leader.unwrap_or(self.id);
+        for (old_ctx, old_result) in self.storage_hub.barrier().await? {
+            self.handle_log_result(old_ctx, old_result).await?;
+            self.heard_heartbeat(hb_peer, self.curr_term).await?;
+        }
+        let Some(cut_offset) = self.log[from - self.start_slot].log_offset else {
+            return logged_err!("log offset of slot {} unknown", from);
+        };
+        let (_, result) = self
+            .storage_hub
+            .do_sync_action(LogAction::Truncate { offset: cut_offset })
+            .await?;
+        if !matches!(
+            result,
+            LogResult::Truncate {
+                offset_ok: true,
+                ..
+            }
+        ) {
+            return logged_err!("unexpected log result type or failed truncate");
+        }
+        self.log_offset = cut_offset;
+
+        for slot in from..(self.start_slot + self.log.len()) {
+            let entry = self.entry_for(&self.log[slot - self.start_slot], self.id)?;
+            let (_, result) = self
+                .storage_hub
+                .do_sync_action(LogAction::Append {
+                    entry: DurEntry::LogEntry { entry },
+                    sync: self.config.logger_sync,
+                })
+                .await?;
+            let LogResult::Append { offset, now_size } = result else {
+                return logged_err!("unexpected log result type");
+            };
+            self.log[slot - self.start_slot].log_offset = Some(offset);
+            self.log_offset = now_size;
+        }
+        pf_debug!("re-persisted log from slot {}", from);
+        Ok(())
+    }
+
+    /// Learns that entries up to `commit` are committed, and submits those
+    /// with enough shards for execution in order.
+    fn commit_up_to(&mut self, commit: usize) -> Result<(), SummersetError> {
+        self.commit_known = cmp::max(self.commit_known, commit);
+        while self.last_commit < self.commit_known {
+            let slot = self.last_commit + 1;
+            let entry = &mut self.log[slot - self.start_slot];
+            if entry.reqs_cw.avail_shards() < self.majority {
+                // can't execute if I don't have the complete request batch
+                pf_trace!("postponing execution for slot {}", slot);
+                break;
+            } else if entry.reqs_cw.avail_data_shards() < self.majority {
+                // have enough shards but need reconstruction
+                entry.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+            }
+            let reqs = entry.reqs_cw.get_data()?;
+            for (cmd_idx, (client, req)) in reqs.iter().enumerate() {
+                if let ApiRequest::Req { id: req_id, cmd } = req {
+                    self.state_machine.submit_cmd(
+                        Self::make_command_id(slot, cmd_idx),
+                        cmd.clone(),
+                        Some((*client, *req_id)),
+                    )?;
+                }
+            }
+            pf_trace!("submitted {} exec commands for slot {}", reqs.len(), slot);
+            self.last_commit = slot;
+        }
+        self.advance_last_exec()
+    }
+
+    /// Sends reconstruction reads for committed entries that still lack
+    /// enough shards to execute: right away for new ones (where a follower
+    /// reads each shard from the other follower holding it, sparing the
+    /// leader), and again to everyone once per hearing timeout, as earlier
+    /// reads may have got lost.
+    fn retrigger_reconstructs(&mut self) -> Result<(), SummersetError> {
+        let overdue =
+            self.recon_retry.elapsed() >= Duration::from_millis(self.config.hb_hear_timeout_min);
+        let from_slot = if overdue {
+            self.recon_retry = Instant::now();
+            self.last_commit + 1
+        } else {
+            cmp::max(self.last_recon, self.last_commit) + 1
+        };
+
+        let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Term, Bitmap)>> = HashMap::new();
+        for slot in from_slot..=self.commit_known {
+            let entry = &self.log[slot - self.start_slot];
+            let avail = entry.reqs_cw.avail_shards_map();
+            if avail.count() >= self.majority {
+                continue;
+            }
+            let mut needed = self.majority - avail.count();
+            for peer in ((self.id + 1)..(self.id + self.population)).map(|p| p % self.population) {
+                if overdue || self.role == Role::Leader {
+                    recon_slots
+                        .entry(peer)
+                        .or_default()
+                        .push((slot, entry.term, avail.clone()));
+                } else if needed > 0 && self.leader != Some(peer) && !avail.get(peer)? {
+                    let mut excl = Bitmap::new(self.population, true);
+                    excl.set(peer, false)?;
+                    recon_slots
+                        .entry(peer)
+                        .or_default()
+                        .push((slot, entry.term, excl));
+                    needed -= 1;
+                }
+            }
+        }
+        self.last_recon = cmp::max(self.last_recon, self.commit_known);
+
+        for (peer, slots) in recon_slots {
+            for chunk in slots.chunks(self.config.msg_chunk_size) {
+                self.transport_hub.send_msg(
+                    PeerMsg::Reconstruct {
+                        slots: chunk.to_vec(),
+                    },
+                    peer,
+                )?;
+            }
+            pf_debug!(
+                "sent Reconstruct messages -> {} for {} slots",
+                peer,
+                slots.len()
+            );
+        }
+        Ok(())
+    }
+
+    /// Advances `last_exec` past committed entries with nothing to execute,
+    /// such as the no-ops of new leaders.
+    fn advance_last_exec(&mut self) -> Result<(), SummersetError> {
+        while self.last_exec < self.last_commit {
+            let entry = &mut self.log[self.last_exec + 1 - self.start_slot];
+            if !entry.reqs_cw.get_data()?.is_empty() {
+                break;
+            }
+            self.last_exec += 1;
+        }
+        Ok(())
     }
 }
 
@@ -558,9 +853,11 @@ impl GenericReplica for CRaftReplica {
             log: vec![],
             start_slot: 0,
             snapshot_interval,
+            commit_known: 0,
             last_commit: 0,
             last_exec: 0,
             last_recon: 0,
+            recon_retry: Instant::now(),
             next_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 1)) })
                 .collect(),

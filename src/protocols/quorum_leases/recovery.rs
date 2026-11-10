@@ -89,14 +89,15 @@ impl QuorumLeasesReplica {
                         }
                         // execute all commands in this instance on state machine
                         // synchronously
-                        for (_, req) in inst.reqs.clone() {
+                        for (client, req) in inst.reqs.clone() {
                             #[allow(clippy::match_wildcard_for_single_variants)]
                             match req {
-                                ApiRequest::Req { cmd, .. } => {
+                                ApiRequest::Req { id: req_id, cmd } => {
                                     self.state_machine
                                         .do_sync_cmd(
                                             0, // using 0 as dummy command ID
                                             cmd,
+                                            Some((client, req_id)),
                                         )
                                         .await?;
                                 }

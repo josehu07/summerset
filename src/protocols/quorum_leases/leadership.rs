@@ -38,7 +38,9 @@ impl QuorumLeasesReplica {
                             peers: Some(Bitmap::from((self.population, vec![old_leader]))),
                         },
                     )?;
-                    self.ensure_llease_revoked(old_leader).await?;
+                    self.ensure_llease_revoked(Some(old_leader)).await?;
+                } else if self.leader.is_none() {
+                    self.ensure_llease_revoked(None).await?;
                 }
 
                 // initiate granting to new leader
@@ -203,9 +205,7 @@ impl QuorumLeasesReplica {
 
         // before moving on, ensure that any lease to old leader has either
         // been RevokeReplied or timed out
-        if self.config.enable_leader_leases
-            && let Some(old_leader) = old_leader
-        {
+        if self.config.enable_leader_leases {
             self.ensure_llease_revoked(old_leader).await?;
         }
 

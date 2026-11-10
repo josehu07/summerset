@@ -4,57 +4,39 @@ use std::cmp;
 use std::collections::HashMap;
 
 use super::*;
-use crate::server::{ApiRequest, LogAction, ReplicaId};
+use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CrosswordReplica peer-peer messages handling
 impl CrosswordReplica {
-    // Compute the subset coverage of acknowledge pattern `acks` when
-    // considering at most `fault_tolerance` failures.
-    #[inline]
-    fn coverage_under_faults(
-        rs_total_shards: u8,
-        population: u8,
+    /// Computes the number of distinct shards that the acknowledged shard sets
+    /// `acks` still cover after crossing out any `fault_tolerance` of them.
+    pub(super) fn coverage_under_faults(
         acks: &HashMap<ReplicaId, Bitmap>,
         fault_tolerance: u8,
-        assignment_balanced: bool,
     ) -> u8 {
         if acks.len() <= fault_tolerance as usize {
             return 0;
         }
 
-        // if forcing balanced assignment, can compute this using a rather
-        // simple calculation
-        if assignment_balanced {
-            let spr = acks.values().next().unwrap().count();
-            let dj_spr = rs_total_shards / population;
-            #[allow(clippy::cast_possible_truncation)]
-            return (acks.len() as u8 - fault_tolerance - 1) * dj_spr + spr;
-        }
-
         // enumerate all subsets of acks excluding fault number of replicas
         #[allow(clippy::cast_possible_truncation)]
         let cnt = (acks.len() - fault_tolerance as usize) as u32;
-        let servers: Vec<ReplicaId> = acks.keys().copied().collect();
-        let mut min_coverage = rs_total_shards;
-        #[allow(clippy::cast_possible_truncation)]
-        for n in (0..2usize.pow(servers.len() as u32)).filter(|n| n.count_ones() == cnt) {
-            let mut coverage = Bitmap::new(rs_total_shards, false);
-            for (_, server) in servers
+        let shards: Vec<&Bitmap> = acks.values().collect();
+        let mut coverage = shards[0].clone();
+        let mut min_coverage = u8::MAX;
+        for n in (0..1usize << shards.len()).filter(|n| n.count_ones() == cnt) {
+            coverage.clear();
+            for (_, acked) in shards
                 .iter()
                 .enumerate()
-                .filter(|&(i, _)| (n >> i) % 2 == 1)
+                .filter(|&(i, _)| (n >> i) & 1 == 1)
             {
-                for shard in acks[server]
-                    .iter()
-                    .filter_map(|(s, flag)| if flag { Some(s) } else { None })
-                {
-                    coverage.set(shard, true).expect("impossible shard index");
-                }
+                coverage
+                    .union(acked)
+                    .expect("shard sets should be of same size");
             }
-            if coverage.count() < min_coverage {
-                min_coverage = coverage.count();
-            }
+            min_coverage = cmp::min(min_coverage, coverage.count());
         }
         min_coverage
     }
@@ -105,15 +87,21 @@ impl CrosswordReplica {
             for slot in trigger_slot..=endprep_slot {
                 let inst = &mut self.insts[slot - self.start_slot];
                 debug_assert!(inst.bal <= ballot);
-                if inst.bal == ballot && (inst.status > Status::Preparing || inst.prep_inflight > 0)
+                if inst.bal == ballot
+                    && ((inst.status > Status::Preparing && inst.status < Status::Committed)
+                        || inst.prep_inflight > 0)
                 {
                     // duplicate (re-sent) Prepare of what I've moved past or am already
                     // logging; will reply when that in-flight PrepareBal becomes durable
                     continue;
                 }
 
+                // committed instances keep their status, but still reply with
+                // their value (once the promise is durable)
                 inst.bal = ballot;
-                inst.status = Status::Preparing;
+                if inst.status < Status::Committed {
+                    inst.status = Status::Preparing;
+                }
                 inst.replica_bk = Some(ReplicaBookkeeping {
                     source: peer,
                     trigger_slot,
@@ -232,15 +220,13 @@ impl CrosswordReplica {
             {
                 let inst = &mut self.insts[slot - self.start_slot];
 
-                // ignore spurious duplications and outdated replies
-                if (inst.status != Status::Preparing) || (ballot < inst.bal) {
-                    return Ok(());
-                }
-                debug_assert_eq!(inst.bal, ballot);
-                debug_assert!(self.bal_max_seen >= ballot);
-
-                // bookkeep this Prepare reply
-                if let Some(value) = voted {
+                // bookkeep this Prepare reply, unless spuriously duplicated or
+                // outdated, or the instance has moved on (e.g., committed out
+                // of order), in which case the reply still counts the peer
+                if inst.status == Status::Preparing
+                    && ballot == inst.bal
+                    && let Some(value) = voted
+                {
                     debug_assert!(inst.leader_bk.is_some());
                     let leader_bk = inst.leader_bk.as_mut().unwrap();
                     Self::record_prepared_value(&mut leader_bk.prepare_values, value)?;
@@ -330,7 +316,7 @@ impl CrosswordReplica {
                         }
 
                         // if parity shards not computed yet, compute them now
-                        if inst.reqs_cw.avail_shards() < self.population {
+                        if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_shards() {
                             inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
                         }
 
@@ -377,6 +363,7 @@ impl CrosswordReplica {
                                 slot: this_slot,
                                 ballot,
                                 value_id,
+                                shards: subset_copy.avail_shards_map(),
                             },
                             LogAction::Append {
                                 entry: WalEntry::AcceptData {
@@ -479,16 +466,26 @@ impl CrosswordReplica {
                     reqs_cw,
                 },
             )?;
+            // committed instances keep their status and data, as the value accepted
+            // at a higher ballot is the same one
             inst.bal = ballot;
-            inst.status = Status::Accepting;
-            inst.value_id = Some(value_id);
-            inst.reqs_cw = inst.voted.as_ref().unwrap().reqs_cw.clone();
-            inst.assignment = assignment;
-            inst.replica_bk = Some(ReplicaBookkeeping {
-                source: peer,
-                trigger_slot: 0,
-                endprep_slot: 0,
-            });
+            if inst.status < Status::Committed {
+                inst.status = Status::Accepting;
+                inst.value_id = Some(value_id);
+                inst.reqs_cw = inst.voted.as_ref().unwrap().reqs_cw.clone();
+                inst.assignment = assignment;
+            } else if inst.status < Status::Executed && inst.value_id == Some(value_id) {
+                inst.reqs_cw.absorb_other(wal_cw.clone())?;
+            }
+            if let Some(replica_bk) = inst.replica_bk.as_mut() {
+                replica_bk.source = peer;
+            } else {
+                inst.replica_bk = Some(ReplicaBookkeeping {
+                    source: peer,
+                    trigger_slot: 0,
+                    endprep_slot: 0,
+                });
+            }
 
             // [for perf breakdown only]
             if self.config.record_breakdown && self.config.record_size_recv {
@@ -504,6 +501,7 @@ impl CrosswordReplica {
                     slot,
                     ballot,
                     value_id,
+                    shards: wal_cw.avail_shards_map(),
                 },
                 LogAction::Append {
                     entry: WalEntry::AcceptData {
@@ -544,7 +542,11 @@ impl CrosswordReplica {
             let Some(leader_bk) = inst.leader_bk.as_ref() else {
                 continue;
             };
-            if leader_bk.accept_acks.contains_key(&peer) {
+            if leader_bk
+                .accept_acks
+                .get(&peer)
+                .is_some_and(|acked| acked.is_superset(&inst.assignment[peer as usize]))
+            {
                 if adjacent {
                     break;
                 }
@@ -599,7 +601,8 @@ impl CrosswordReplica {
         peer: ReplicaId,
         slot: usize,
         ballot: Ballot,
-        size: usize,
+        value_id: ValueId,
+        shards: &Bitmap,
         reply_ts: Option<SystemTime>,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
@@ -620,37 +623,44 @@ impl CrosswordReplica {
             }
             let is_leader = self.is_leader();
             if is_leader && peer != self.id {
+                // payload size that the corresponding Accept carried
+                let size = shards.count() as usize
+                    * self.insts[slot - self.start_slot].reqs_cw.shard_len();
                 self.record_accept_rtt(peer, self.startup_time.elapsed().as_micros(), slot, size);
             }
             let inst = &mut self.insts[slot - self.start_slot];
 
-            // ignore spurious duplications and outdated replies
-            if !is_leader || (inst.status != Status::Accepting) || (ballot < inst.bal) {
+            // ignore spurious duplications and outdated replies, including
+            // those about a different value
+            if !is_leader
+                || (inst.status != Status::Accepting)
+                || (ballot < inst.bal)
+                || inst.value_id != Some(value_id)
+            {
                 return Ok(());
             }
             debug_assert_eq!(inst.bal, ballot);
             debug_assert!(self.bal_max_seen >= ballot);
             debug_assert!(inst.leader_bk.is_some());
             let leader_bk = inst.leader_bk.as_mut().unwrap();
-            if leader_bk.accept_acks.contains_key(&peer) {
+
+            // bookkeep the shards this Accept reply confirms durable, which
+            // may differ from what the peer is assigned now (e.g., when
+            // replying to an older Accept before a reassignment)
+            let acked = leader_bk
+                .accept_acks
+                .entry(peer)
+                .or_insert_with(|| Bitmap::new(shards.size(), false));
+            if acked.is_superset(shards) {
                 return Ok(());
             }
-
-            // bookkeep this Accept reply
-            leader_bk
-                .accept_acks
-                .insert(peer, inst.assignment[peer as usize].clone());
+            acked.union(shards)?;
 
             // if quorum size reached AND enough number of shards are
             // remembered, mark this instance as committed
             if u8::try_from(leader_bk.accept_acks.len())? >= self.majority
-                && Self::coverage_under_faults(
-                    self.rs_total_shards,
-                    self.population,
-                    &leader_bk.accept_acks,
-                    self.config.fault_tolerance,
-                    self.assignment_balanced,
-                ) >= inst.reqs_cw.num_data_shards()
+                && Self::coverage_under_faults(&leader_bk.accept_acks, self.config.fault_tolerance)
+                    >= inst.reqs_cw.num_data_shards()
             {
                 inst.status = Status::Committed;
                 pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
@@ -780,64 +790,14 @@ impl CrosswordReplica {
                     .expect("peer should exist in experiments")) += reqs_cw.get_size();
             }
 
-            // Same-value shards remain useful regardless of accepted ballot.
+            // same-value shards remain useful regardless of accepted ballot
             if inst.status < Status::Executed && inst.value_id == Some(value_id) {
                 inst.reqs_cw.absorb_other(reqs_cw)?;
-
-                // if enough shards have been gathered, can push execution forward
-                if slot == self.commit_bar {
-                    while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
-                        if inst.status < Status::Committed
-                            || inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards()
-                        {
-                            break;
-                        }
-
-                        if inst.reqs_cw.avail_data_shards() < inst.reqs_cw.num_data_shards() {
-                            // have enough shards but need reconstruction
-                            inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                        }
-                        Self::verify_value_id(
-                            inst.value_id
-                                .expect("committed instance should have an identity"),
-                            &mut inst.reqs_cw,
-                            self.rs_data_shards,
-                            self.rs_total_shards,
-                        )?;
-                        let reqs = inst.reqs_cw.get_data()?;
-
-                        // submit commands in committed instance to the state machine
-                        // for execution
-                        if reqs.is_empty() {
-                            inst.status = Status::Executed;
-                            // nothing to execute, so advance `exec_bar` here if at it
-                            if self.exec_bar == self.commit_bar {
-                                self.exec_bar += 1;
-                            }
-                        } else {
-                            for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                                if let ApiRequest::Req { cmd, .. } = req {
-                                    self.state_machine.submit_cmd(
-                                        Self::make_command_id(self.commit_bar, cmd_idx),
-                                        cmd.clone(),
-                                    )?;
-                                }
-                            }
-                            pf_trace!(
-                                "submitted {} exec commands for slot {}",
-                                reqs.len(),
-                                self.commit_bar
-                            );
-                        }
-
-                        self.commit_bar += 1;
-                    }
-                }
             }
         }
 
-        Ok(())
+        // if enough shards have been gathered, can push execution forward
+        self.advance_commit_bar()
     }
 
     /// Synthesized handler of receiving message from peer.
@@ -873,9 +833,10 @@ impl CrosswordReplica {
             PeerMsg::AcceptReply {
                 slot,
                 ballot,
-                size,
+                value_id,
+                shards,
                 reply_ts,
-            } => self.handle_msg_accept_reply(peer, slot, ballot, size, reply_ts),
+            } => self.handle_msg_accept_reply(peer, slot, ballot, value_id, &shards, reply_ts),
             PeerMsg::Reconstruct { slots_excl } => self.handle_msg_reconstruct(peer, slots_excl),
             PeerMsg::ReconstructReply { slots_data } => {
                 self.handle_msg_reconstruct_reply(peer, slots_data)

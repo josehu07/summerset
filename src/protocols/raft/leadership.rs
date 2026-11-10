@@ -93,26 +93,8 @@ impl RaftReplica {
             self.heartbeater.kickoff_hear_timer(None)?;
         }
 
-        // send RequestVote messages to all other peers
-        let last_slot = self.start_slot + self.log.len() - 1;
-        debug_assert!(last_slot >= self.start_slot);
-        let last_term = self.log[last_slot - self.start_slot].term;
-        self.transport_hub.bcast_msg(
-            PeerMsg::RequestVote {
-                term: self.curr_term,
-                last_slot,
-                last_term,
-            },
-            None,
-        )?;
-        pf_trace!(
-            "broadcast RequestVote with term {} last {} term {}",
-            self.curr_term,
-            last_slot,
-            last_term
-        );
-
-        // also make the two critical fields durable, synchronously
+        // make the two critical fields durable, synchronously, before asking
+        // for votes
         let (old_results, result) = self
             .storage_hub
             .do_sync_action(LogAction::Write {
@@ -132,6 +114,25 @@ impl RaftReplica {
         } else {
             return logged_err!("unexpected log result type or failed write");
         }
+
+        // send RequestVote messages to all other peers
+        let last_slot = self.start_slot + self.log.len() - 1;
+        debug_assert!(last_slot >= self.start_slot);
+        let last_term = self.log[last_slot - self.start_slot].term;
+        self.transport_hub.bcast_msg(
+            PeerMsg::RequestVote {
+                term: self.curr_term,
+                last_slot,
+                last_term,
+            },
+            None,
+        )?;
+        pf_trace!(
+            "broadcast RequestVote with term {} last {} term {}",
+            self.curr_term,
+            last_slot,
+            last_term
+        );
 
         Ok(())
     }
@@ -169,22 +170,27 @@ impl RaftReplica {
             slot.external = true;
         }
 
+        // append a no-op entry of my term, so that entries of earlier terms
+        // get committed along with it even without new client requests
+        self.append_new_entry(vec![], false)?;
+
         Ok(())
     }
 
-    /// Broadcasts empty `AppendEntries` messages as heartbeats to all peers.
+    /// Sends empty `AppendEntries` messages as heartbeats to all peers, each
+    /// checking the peer's log at its last known matching point.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         for peer in 0..self.population {
             if peer == self.id {
                 continue;
             }
             let prev_slot = cmp::min(
-                self.try_next_slot[&peer] - 1,
+                self.next_slot[&peer] - 1,
                 self.start_slot + self.log.len() - 1,
             );
             debug_assert!(prev_slot >= self.start_slot);
             let prev_term = self.log[prev_slot - self.start_slot].term;
-            self.transport_hub.bcast_msg(
+            self.transport_hub.send_msg(
                 PeerMsg::AppendEntries {
                     term: self.curr_term,
                     prev_slot,
@@ -193,7 +199,7 @@ impl RaftReplica {
                     leader_commit: self.last_commit,
                     last_snap: self.last_snap,
                 },
-                None,
+                peer,
             )?;
         }
 

@@ -44,6 +44,7 @@ impl CRaftReplica {
         if cmd_idx == reqs.len() - 1 {
             pf_debug!("executed all cmds in entry at slot {}", slot);
             self.last_exec = slot;
+            self.advance_last_exec()?;
         }
 
         Ok(())

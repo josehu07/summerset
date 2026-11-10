@@ -37,10 +37,13 @@ impl RepNothingReplica {
         inst.durable = true;
 
         // submit execution commands in order
-        for (cmd_idx, (_, req)) in inst.reqs.iter().enumerate() {
-            if let ApiRequest::Req { cmd, .. } = req {
-                self.state_machine
-                    .submit_cmd(Self::make_command_id(inst_idx, cmd_idx), cmd.clone())?;
+        for (cmd_idx, (client, req)) in inst.reqs.iter().enumerate() {
+            if let ApiRequest::Req { id: req_id, cmd } = req {
+                self.state_machine.submit_cmd(
+                    Self::make_command_id(inst_idx, cmd_idx),
+                    cmd.clone(),
+                    Some((*client, *req_id)),
+                )?;
             }
         }
 

@@ -1,8 +1,8 @@
 //! `Crossword` -- durable logging.
 
 use super::*;
-use crate::server::{ApiRequest, LogResult};
-use crate::utils::SummersetError;
+use crate::server::LogResult;
+use crate::utils::{Bitmap, SummersetError};
 
 // CrosswordReplica durable WAL logging
 impl CrosswordReplica {
@@ -24,7 +24,10 @@ impl CrosswordReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(inst.prep_inflight > 0);
         inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
-        if inst.status != Status::Preparing || inst.bal != ballot || inst.prep_inflight > 0 {
+        if (inst.status != Status::Preparing && inst.status < Status::Committed)
+            || inst.bal != ballot
+            || inst.prep_inflight > 0
+        {
             // ignore if instance has moved on, or if a newer PrepareBal (whose
             // ballot is what a reply would claim) is not yet durable
             return Ok(());
@@ -91,6 +94,7 @@ impl CrosswordReplica {
         slot: usize,
         ballot: Ballot,
         value_id: ValueId,
+        shards: Bitmap,
     ) -> Result<(), SummersetError> {
         if slot < self.start_slot {
             return Ok(()); // ignore if slot index outdated
@@ -112,7 +116,7 @@ impl CrosswordReplica {
             // on leader, finishing the logging of an AcceptData entry
             // is equivalent to receiving an Accept reply from myself
             // (as an acceptor role)
-            self.handle_msg_accept_reply(self.id, slot, inst.bal, 0, None)?;
+            self.handle_msg_accept_reply(self.id, slot, inst.bal, value_id, &shards, None)?;
             // [for perf breakdown only]
             if let Some(sw) = self.bd_stopwatch.as_mut() {
                 let _ = sw.record_now(slot, 2, None);
@@ -125,12 +129,8 @@ impl CrosswordReplica {
                     PeerMsg::AcceptReply {
                         slot,
                         ballot: inst.bal,
-                        // compute payload size of the corresponding Accept
-                        // message from leader: #shards assigned to me times
-                        // size of one shard
-                        size: inst.assignment[self.id as usize].count() as usize
-                            * ((inst.reqs_cw.data_len() / inst.reqs_cw.num_data_shards() as usize)
-                                + 1),
+                        value_id,
+                        shards,
                         reply_ts: if self.config.record_breakdown {
                             Some(SystemTime::now())
                         } else {
@@ -164,53 +164,7 @@ impl CrosswordReplica {
 
         // update index of the first non-committed instance
         if slot == self.commit_bar {
-            while self.commit_bar < self.start_slot + self.insts.len() {
-                let inst = &mut self.insts[self.commit_bar - self.start_slot];
-                if inst.status < Status::Committed {
-                    break;
-                }
-
-                if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards() {
-                    // can't execute if I don't have the complete request batch
-                    pf_debug!(
-                        "postponing execution for slot {} (shards {}/{})",
-                        slot,
-                        inst.reqs_cw.avail_shards(),
-                        inst.reqs_cw.num_data_shards()
-                    );
-                    break;
-                } else if inst.reqs_cw.avail_data_shards() < inst.reqs_cw.num_data_shards() {
-                    // have enough shards but need reconstruction
-                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-                }
-                let reqs = inst.reqs_cw.get_data()?;
-
-                // submit commands in committed instance to the state machine
-                // for execution
-                if reqs.is_empty() {
-                    inst.status = Status::Executed;
-                    // nothing to execute, so advance `exec_bar` here if at it
-                    if self.exec_bar == self.commit_bar {
-                        self.exec_bar += 1;
-                    }
-                } else if inst.status == Status::Committed {
-                    for (cmd_idx, (_, req)) in reqs.iter().enumerate() {
-                        if let ApiRequest::Req { cmd, .. } = req {
-                            self.state_machine.submit_cmd(
-                                Self::make_command_id(self.commit_bar, cmd_idx),
-                                cmd.clone(),
-                            )?;
-                        }
-                    }
-                    pf_trace!(
-                        "submitted {} exec commands for slot {}",
-                        reqs.len(),
-                        self.commit_bar
-                    );
-                }
-
-                self.commit_bar += 1;
-            }
+            self.advance_commit_bar()?;
         }
 
         Ok(())
@@ -245,7 +199,8 @@ impl CrosswordReplica {
                 slot,
                 ballot,
                 value_id,
-            } => self.handle_logged_accept_data(slot, ballot, value_id),
+                shards,
+            } => self.handle_logged_accept_data(slot, ballot, value_id, shards),
             LogCtx::CommitSlot { slot } => self.handle_logged_commit_slot(slot),
         }
     }

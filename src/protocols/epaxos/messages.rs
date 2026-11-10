@@ -34,10 +34,10 @@ impl EPaxosReplica {
             let inst = self.null_instance();
             self.insts[row].push(inst);
         }
-        let inst_bal = self.insts[row][col - self.start_col].bal;
+        let inst = &self.insts[row][col - self.start_col];
 
-        // if ballot is up-to-date:
-        if ballot >= inst_bal {
+        // if ballot is up-to-date (and the instance not committed already):
+        if ballot >= inst.bal && inst.status < Status::Committed {
             // update seq and deps according to my knowledge
             let my_deps = Self::identify_deps(&reqs, self.population, &self.highest_cols);
             deps.union(&my_deps);
@@ -45,6 +45,7 @@ impl EPaxosReplica {
 
             let inst = &mut self.insts[row][col - self.start_col];
             inst.bal = ballot;
+            inst.vbal = ballot;
             inst.status = Status::PreAccepting;
             inst.seq = seq;
             inst.deps = deps.clone();
@@ -128,6 +129,7 @@ impl EPaxosReplica {
         let inst = &mut self.insts[row][col - self.start_col];
         if inst.status != Status::PreAccepting
             || (ballot > 0 && inst.bal != ballot)
+            || inst.bal != inst.vbal
             || inst.leader_bk.is_none()
         {
             return Ok(());
@@ -294,9 +296,10 @@ impl EPaxosReplica {
         }
         let inst = &mut self.insts[row][col - self.start_col];
 
-        // if ballot is up-to-date:
-        if ballot >= inst.bal {
+        // if ballot is up-to-date (and the instance not committed already):
+        if ballot >= inst.bal && inst.status < Status::Committed {
             inst.bal = ballot;
+            inst.vbal = ballot;
             inst.status = Status::Accepting;
             inst.seq = seq;
             inst.deps = deps.clone();
@@ -451,12 +454,13 @@ impl EPaxosReplica {
             let inst = self.null_instance();
             self.insts[row].push(inst);
         }
-        let inst_bal = self.insts[row][col - self.start_col].bal;
+        let inst = &mut self.insts[row][col - self.start_col];
 
-        // if ballot is up-to-date
-        if ballot >= inst_bal {
-            let inst = &mut self.insts[row][col - self.start_col];
-            inst.bal = ballot;
+        // a committed value is final whatever ballots I have seen since, so
+        // just take it if not known yet (e.g., for a re-sent notice)
+        if inst.status < Status::Committed {
+            inst.bal = inst.bal.max(ballot);
+            inst.vbal = ballot;
             inst.status = Status::Committed;
             inst.seq = seq;
             inst.deps = deps.clone();
@@ -514,43 +518,41 @@ impl EPaxosReplica {
         }
         let inst = &mut self.insts[row][col - self.start_col];
 
-        // if ballot is larger than what I've ever seen for this instance:
+        // if ballot is larger than what I've ever seen for this instance,
+        // promise it; will reply once the promise is durable
         if new_ballot > inst.bal {
             if let Some(replica_bk) = inst.replica_bk.as_mut() {
                 replica_bk.source = peer;
             } else {
                 inst.replica_bk = Some(ReplicaBookkeeping { source: peer });
             }
-
-            // send back ExpPrepare reply
-            self.transport_hub.send_msg(
-                PeerMsg::ExpPrepareReply {
-                    slot,
-                    new_ballot,
-                    voted_bal: inst.bal,
-                    voted_status: inst.status,
-                    voted_seq: inst.seq,
-                    voted_deps: inst.deps.clone(),
-                    voted_reqs: inst.reqs.clone(),
-                },
-                peer,
-            )?;
-            pf_trace!(
-                "sent ExpPrepareReply -> {} for slot {} bal {} seq {} deps {}",
-                peer,
-                slot,
-                inst.bal,
-                inst.seq,
-                inst.deps,
-            );
-
-            // refresh the corresponding row's peer's heartbeat timer to
-            // prevent myself from trying to prepare for it immediately soon,
-            // because that peer has likely failed
-            // self.heartbeater
-            //     .kickoff_hear_timer(Some(row as ReplicaId))?;
+            self.promise_exp_prepare(slot, new_ballot)?;
         }
 
+        Ok(())
+    }
+
+    /// Promises a ballot to the explicit prepare of an instance, submitting
+    /// the logger action to make the promise durable.
+    pub(super) fn promise_exp_prepare(
+        &mut self,
+        slot: SlotIdx,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        let (row, col) = slot.unpack();
+        self.insts[row][col - self.start_col].bal = ballot;
+        self.storage_hub.submit_action(
+            LogCtx::PrepareBal { slot, ballot },
+            LogAction::Append {
+                entry: WalEntry::PrepareBal { slot, ballot },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        pf_trace!(
+            "submitted PrepareBal log action for slot {} bal {}",
+            slot,
+            ballot
+        );
         Ok(())
     }
 
@@ -586,7 +588,7 @@ impl EPaxosReplica {
             return Ok(());
         }
         let inst = &mut self.insts[row][col - self.start_col];
-        if new_ballot <= inst.bal || inst.leader_bk.is_none() {
+        if new_ballot != inst.bal || inst.leader_bk.is_none() {
             return Ok(());
         }
         let leader_bk = inst.leader_bk.as_mut().unwrap();
@@ -616,7 +618,7 @@ impl EPaxosReplica {
         ) {
             Some((Status::Committed, seq, deps, reqs)) => {
                 // can commit this slot
-                inst.bal = new_ballot;
+                inst.vbal = new_ballot;
                 inst.status = Status::Committed;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -672,7 +674,7 @@ impl EPaxosReplica {
 
             Some((Status::Accepting, seq, deps, reqs)) => {
                 // need to run Accept phase
-                inst.bal = new_ballot;
+                inst.vbal = new_ballot;
                 inst.status = Status::Accepting;
                 inst.seq = seq;
                 inst.deps = deps;
@@ -727,7 +729,7 @@ impl EPaxosReplica {
 
             Some((Status::PreAccepting, seq, deps, reqs)) => {
                 // need to start over from PreAccept
-                inst.bal = new_ballot;
+                inst.vbal = new_ballot;
                 inst.status = Status::PreAccepting;
                 inst.seq = seq;
                 inst.deps = deps;

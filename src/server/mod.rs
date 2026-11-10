@@ -17,7 +17,7 @@ pub(crate) use heartbeat::{HeartbeatEvent, Heartbeater};
 pub(crate) use leaseman::{LeaseAction, LeaseGid, LeaseManager, LeaseMsg, LeaseNotice, LeaseNum};
 pub use replica::{GenericReplica, ReplicaId};
 pub(crate) use statemach::StateMachine;
-pub use statemach::{Command, CommandId, CommandResult};
+pub use statemach::{Command, CommandId, CommandResult, Session};
 pub(crate) use storage::{LogAction, LogResult, StorageHub};
 pub(crate) use transport::TransportHub;
 

@@ -34,11 +34,18 @@ impl CRaftReplica {
             }
         }
 
+        // and the client sessions last updated by the instances covered
+        let slots = self.start_slot..new_start_slot;
+        let sessions = self
+            .state_machine
+            .get_sessions(move |cmd_id| slots.contains(&Self::split_command_id(cmd_id).0))
+            .await?;
+
         // write the collection to snapshot file
         if let LogResult::Append { now_size, .. } = self
             .snapshot_hub
             .do_sync_action(LogAction::Append {
-                entry: SnapEntry::KVPairSet { pairs },
+                entry: SnapEntry::KVPairSet { pairs, sessions },
                 sync: self.config.logger_sync,
             })
             .await?
@@ -195,6 +202,7 @@ impl CRaftReplica {
                 // recover start_slot info
                 self.start_slot = start_slot;
                 if start_slot > 0 {
+                    self.commit_known = start_slot - 1;
                     self.last_commit = start_slot - 1;
                     self.last_exec = start_slot - 1;
                     self.last_recon = start_slot - 1;
@@ -212,7 +220,7 @@ impl CRaftReplica {
                         .1
                     {
                         LogResult::Read {
-                            entry: Some(SnapEntry::KVPairSet { pairs }),
+                            entry: Some(SnapEntry::KVPairSet { pairs, sessions }),
                             end_offset,
                         } => {
                             // execute Put commands on state machine
@@ -221,9 +229,11 @@ impl CRaftReplica {
                                     .do_sync_cmd(
                                         0, // using 0 as dummy command ID
                                         Command::Put { key, value },
+                                        None,
                                     )
                                     .await?;
                             }
+                            self.state_machine.load_sessions(sessions)?;
                             // update snapshot file offset
                             self.snap_offset = end_offset;
                         }

@@ -53,6 +53,8 @@ pub struct ReplicaConfigEPaxos {
     pub logger_sync: bool,
 
     /// Use optimized fast-path quorum size with modified recovery procedure?
+    /// Its recovery lacks `TryPreAccept`, so it is only safe without
+    /// failures (e.g., for benchmarking).
     // TODO: completely faithful implementation of the recovery procedure
     //       when using the optimized fast quorum size
     pub optimized_quorum: bool,
@@ -87,7 +89,7 @@ impl Default for ReplicaConfigEPaxos {
             max_batch_size: 5000,
             backer_path: "/tmp/summerset.epaxos.wal".into(),
             logger_sync: false,
-            optimized_quorum: true,
+            optimized_quorum: false,
             hb_hear_timeout_min: 1200,
             hb_hear_timeout_max: 2000,
             hb_send_interval_ms: 20,
@@ -205,8 +207,13 @@ impl SlotIdx {
 /// In-memory instance containing a commands batch.
 #[derive(Debug, Clone)]
 struct Instance {
-    /// Ballot number.
+    /// Highest ballot number seen, including ones promised to explicit
+    /// prepares.
     bal: Ballot,
+
+    /// Ballot number at which the status, `seq`, `deps`, and `reqs` were
+    /// accepted.
+    vbal: Ballot,
 
     /// `Instance` status.
     status: Status,
@@ -240,6 +247,9 @@ struct Instance {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, SchemaWrite, SchemaRead, GetSize)]
 #[allow(clippy::enum_variant_names)]
 enum WalEntry {
+    /// Records an update to the largest ballot promised to explicit prepares.
+    PrepareBal { slot: SlotIdx, ballot: Ballot },
+
     /// Records a newly initiated `PreAccept` phase instance.
     PreAcceptSlot {
         slot: SlotIdx,
@@ -272,7 +282,8 @@ impl WalEntry {
     /// Slot index of the entry.
     fn slot(&self) -> SlotIdx {
         match self {
-            Self::PreAcceptSlot { slot, .. }
+            Self::PrepareBal { slot, .. }
+            | Self::PreAcceptSlot { slot, .. }
             | Self::AcceptSlot { slot, .. }
             | Self::CommitSlot { slot, .. } => *slot,
         }
@@ -283,6 +294,10 @@ impl WalEntry {
 /// the logged entry was about.
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum LogCtx {
+    PrepareBal {
+        slot: SlotIdx,
+        ballot: Ballot,
+    },
     PreAccept {
         slot: SlotIdx,
         ballot: Ballot,
@@ -302,9 +317,10 @@ impl LogCtx {
     /// Slot index of the logged entry.
     fn slot(&self) -> SlotIdx {
         match self {
-            Self::PreAccept { slot, .. } | Self::Accept { slot, .. } | Self::Commit { slot } => {
-                *slot
-            }
+            Self::PrepareBal { slot, .. }
+            | Self::PreAccept { slot, .. }
+            | Self::Accept { slot, .. }
+            | Self::Commit { slot } => *slot,
         }
     }
 }
@@ -464,6 +480,9 @@ pub(crate) struct EPaxosReplica {
     /// re-sent.
     accept_retry: (Instant, usize),
 
+    /// Map from peer ID -> when `CommitNotice`s were last re-sent to it.
+    commit_retry: HashMap<ReplicaId, Instant>,
+
     /// Column index of the first non-executed instance of each row.
     /// It is always true that
     ///   `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
@@ -499,6 +518,7 @@ impl EPaxosReplica {
     fn null_instance(&self) -> Instance {
         Instance {
             bal: 0,
+            vbal: 0,
             status: Status::Null,
             seq: 0,
             deps: DepSet::empty(self.population),
@@ -705,6 +725,7 @@ impl GenericReplica for EPaxosReplica {
             snapshot_interval,
             commit_bars: vec![0; population as usize],
             accept_retry: (Instant::now(), 0),
+            commit_retry: HashMap::new(),
             exec_bars: vec![0; population as usize],
             peer_exec_min: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
@@ -786,13 +807,10 @@ impl GenericReplica for EPaxosReplica {
                 // autonomous snapshot taking timeout
                 _ = self.snapshot_interval.tick(), if !paused
                                                       && self.config.snapshot_interval_s > 0 => {
-                    if let Err(e) = self.take_new_snapshot().await {
-                        pf_error!("error taking a new snapshot: {}", e);
-                    } else {
-                        self.control_hub.send_ctrl(
-                            CtrlMsg::SnapshotUpTo { new_start: self.start_col }
-                        )?;
-                    }
+                    self.take_new_snapshot();
+                    self.control_hub.send_ctrl(
+                        CtrlMsg::SnapshotUpTo { new_start: self.start_col }
+                    )?;
                 },
 
                 // manager control message

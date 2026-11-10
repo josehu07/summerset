@@ -16,6 +16,10 @@ pub(crate) struct DriverClosedLoop {
     /// Next request ID, monotonically increasing.
     next_req: RequestId,
 
+    /// Last request sent without a definitive reply (e.g., timed out or
+    /// redirected), whose ID a retry of the same command keeps.
+    unanswered: Option<ApiRequest>,
+
     /// Reply timeout timer.
     timer: Timer,
 
@@ -29,6 +33,7 @@ impl DriverClosedLoop {
         DriverClosedLoop {
             endpoint,
             next_req: 0,
+            unanswered: None,
             timer: Timer::default(),
             timeout,
         }
@@ -73,16 +78,26 @@ impl DriverClosedLoop {
         }
     }
 
-    /// Sends a Get request and waits for its reply.
-    pub(crate) async fn get(&mut self, key: &str) -> Result<DriverReply, SummersetError> {
+    /// Makes the request of a command, keeping the ID of the last request
+    /// left without a definitive reply if retrying it, so that the service
+    /// applies it at most once.
+    fn make_req(&mut self, cmd: Command) -> (RequestId, ApiRequest) {
+        if let Some(ApiRequest::Req { id, cmd: last_cmd }) = &self.unanswered
+            && *last_cmd == cmd
+        {
+            return (*id, ApiRequest::Req { id: *id, cmd });
+        }
         let req_id = self.next_req;
         self.next_req += 1;
+        let req = ApiRequest::Req { id: req_id, cmd };
+        self.unanswered = Some(req.clone());
+        (req_id, req)
+    }
 
-        self.send_req_insist(&ApiRequest::Req {
-            id: req_id,
-            cmd: Command::Get { key: key.into() },
-        })
-        .await?;
+    /// Sends a Get request and waits for its reply.
+    pub(crate) async fn get(&mut self, key: &str) -> Result<DriverReply, SummersetError> {
+        let (req_id, req) = self.make_req(Command::Get { key: key.into() });
+        self.send_req_insist(&req).await?;
         let issue_ts = Instant::now();
 
         loop {
@@ -106,10 +121,12 @@ impl DriverClosedLoop {
                             if let Some(server) = redirect {
                                 return Ok(DriverReply::Redirect { server });
                             }
+                            self.unanswered = None;
                             return Ok(DriverReply::Failure);
                         }
 
                         Some(CommandResult::Get { value }) => {
+                            self.unanswered = None;
                             let latency = Instant::now().duration_since(issue_ts);
                             return Ok(DriverReply::Success {
                                 req_id,
@@ -141,17 +158,11 @@ impl DriverClosedLoop {
         key: &str,
         value: &str,
     ) -> Result<DriverReply, SummersetError> {
-        let req_id = self.next_req;
-        self.next_req += 1;
-
-        self.send_req_insist(&ApiRequest::Req {
-            id: req_id,
-            cmd: Command::Put {
-                key: key.into(),
-                value: value.into(),
-            },
-        })
-        .await?;
+        let (req_id, req) = self.make_req(Command::Put {
+            key: key.into(),
+            value: value.into(),
+        });
+        self.send_req_insist(&req).await?;
         let issue_ts = Instant::now();
 
         loop {
@@ -175,10 +186,12 @@ impl DriverClosedLoop {
                             if let Some(server) = redirect {
                                 return Ok(DriverReply::Redirect { server });
                             }
+                            self.unanswered = None;
                             return Ok(DriverReply::Failure);
                         }
 
                         Some(CommandResult::Put { old_value }) => {
+                            self.unanswered = None;
                             let latency = Instant::now().duration_since(issue_ts);
                             return Ok(DriverReply::Success {
                                 req_id,
@@ -208,6 +221,7 @@ impl DriverClosedLoop {
     pub(crate) async fn conf(&mut self, delta: ConfChange) -> Result<DriverReply, SummersetError> {
         let req_id = self.next_req;
         self.next_req += 1;
+        self.unanswered = None;
 
         self.send_req_insist(&ApiRequest::Conf { id: req_id, delta })
             .await?;

@@ -88,12 +88,13 @@ impl BodegaReplica {
                         }
                         // execute all commands in this instance on state machine
                         // synchronously
-                        for (_, req) in inst.reqs.clone() {
-                            if let ApiRequest::Req { cmd, .. } = req {
+                        for (client, req) in inst.reqs.clone() {
+                            if let ApiRequest::Req { id: req_id, cmd } = req {
                                 self.state_machine
                                     .do_sync_cmd(
                                         0, // using 0 as dummy command ID
                                         cmd,
+                                        Some((client, req_id)),
                                     )
                                     .await?;
                             }

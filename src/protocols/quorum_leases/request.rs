@@ -36,6 +36,7 @@ impl QuorumLeasesReplica {
                         .do_sync_cmd(
                             Self::make_ro_command_id(*client, *req_id),
                             Command::Get { key: key.clone() },
+                            None,
                         )
                         .await?;
                     for (old_id, old_result) in old_results {
@@ -62,7 +63,10 @@ impl QuorumLeasesReplica {
                     cmd: Command::Get { key },
                 } = req
                 {
-                    let (api_reply, is_retry) = match self.inspect_highest_slot(key)? {
+                    let (api_reply, is_retry) = match self
+                        .inspect_latest_write(Self::make_ro_command_id(*client, *req_id), key)
+                        .await?
+                    {
                         None => {
                             // key not seen at all
                             (

@@ -91,27 +91,22 @@ impl CrosswordReplica {
                 // state machine
                 if slot == self.commit_bar {
                     while self.commit_bar < self.start_slot + self.insts.len() {
-                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
-                        if inst.status < Status::Committed {
-                            break;
-                        }
-                        // check number of available shards
-                        if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards() {
+                        if self.insts[self.commit_bar - self.start_slot].status < Status::Committed
+                            || !self.payload_ready(self.commit_bar)?
+                        {
                             // can't execute if I don't have the complete request batch
                             break;
-                        } else if inst.reqs_cw.avail_data_shards() < inst.reqs_cw.num_data_shards()
-                        {
-                            // have enough shards but need reconstruction
-                            inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
                         }
                         // execute all commands in this instance on state machine
                         // synchronously
-                        for (_, req) in inst.reqs_cw.get_data()?.clone() {
-                            if let ApiRequest::Req { cmd, .. } = req {
+                        let inst = &mut self.insts[self.commit_bar - self.start_slot];
+                        for (client, req) in inst.reqs_cw.get_data()?.clone() {
+                            if let ApiRequest::Req { id: req_id, cmd } = req {
                                 self.state_machine
                                     .do_sync_cmd(
                                         0, // using 0 as dummy command ID
                                         cmd,
+                                        Some((client, req_id)),
                                     )
                                     .await?;
                             }

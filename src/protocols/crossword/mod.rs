@@ -17,7 +17,7 @@ mod request;
 mod snapshot;
 
 use std::cmp;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::SystemTime;
@@ -35,7 +35,7 @@ use crate::manager::{CtrlMsg, CtrlReply, CtrlRequest};
 use crate::protocols::SmrProtocol;
 use crate::server::{
     ApiReply, ApiRequest, CommandId, ControlHub, ExternalApi, GenericReplica, HeartbeatEvent,
-    Heartbeater, ReplicaId, StateMachine, StorageHub, TransportHub,
+    Heartbeater, ReplicaId, Session, StateMachine, StorageHub, TransportHub,
 };
 use crate::utils::{
     Bitmap, CODEC_CONFIG, LinearRegressor, PerfModel, QdiscInfo, RSCodeword, Stopwatch,
@@ -235,8 +235,8 @@ struct LeaderBookkeeping {
     /// Shards gathered from Prepare replies, grouped by value identity.
     prepare_values: HashMap<ValueId, AcceptedValue>,
 
-    /// Replicas and their assigned shards which the received Accept
-    /// confirmations cover.
+    /// Replicas and the shards of the value which their Accept replies have
+    /// confirmed durable.
     accept_acks: HashMap<ReplicaId, Bitmap>,
 }
 
@@ -326,7 +326,7 @@ impl WalEntry {
 
 /// Context of a WAL logging action, given back with its result to tell what
 /// the logged entry was about.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum LogCtx {
     PrepareBal {
         slot: usize,
@@ -336,6 +336,8 @@ enum LogCtx {
         slot: usize,
         ballot: Ballot,
         value_id: ValueId,
+        /// Shards of the value persisted by this entry.
+        shards: Bitmap,
     },
     CommitSlot {
         slot: usize,
@@ -344,11 +346,11 @@ enum LogCtx {
 
 impl LogCtx {
     /// Slot index of the logged entry.
-    fn slot(self) -> usize {
+    fn slot(&self) -> usize {
         match self {
             Self::PrepareBal { slot, .. }
             | Self::AcceptData { slot, .. }
-            | Self::CommitSlot { slot } => slot,
+            | Self::CommitSlot { slot } => *slot,
         }
     }
 }
@@ -370,8 +372,12 @@ enum SnapEntry {
         bal_max_seen: Ballot,
     },
 
-    /// Set of key-value pairs to apply to the state.
-    KVPairSet { pairs: HashMap<String, String> },
+    /// Set of key-value pairs to apply to the state, and client sessions as
+    /// of then.
+    KVPairSet {
+        pairs: HashMap<String, String>,
+        sessions: Vec<(ClientId, Session)>,
+    },
 }
 
 /// Heartbeat messages monotonically incrementing ID.
@@ -423,8 +429,9 @@ enum PeerMsg {
     AcceptReply {
         slot: usize,
         ballot: Ballot,
-        /// Data size in bytes that the corresponding Accept carried.
-        size: usize,
+        value_id: ValueId,
+        /// Shards of the value that the replica has durably accepted.
+        shards: Bitmap,
         /// [for perf breakdown only]
         reply_ts: Option<SystemTime>,
     },
@@ -556,13 +563,20 @@ pub(crate) struct CrosswordReplica {
     /// When reconstruction reads were last re-sent.
     recon_retry: Instant,
 
-    /// Index of the first instance starting from which gossiping might be needed.
-    /// The "Gossiped" status is captured by this variable implicitly.
+    /// Index of the first instance not yet requested for gossiping; committed
+    /// instances in [`commit_bar`, `gossip_bar`) that still lack shards get
+    /// requested again once overdue.
     gossip_bar: usize,
+
+    /// When gossiping requests were last re-sent.
+    gossip_retry: Instant,
+
+    /// End of the log at the last gossiping trigger, to tell idle traffic.
+    gossip_last_end: usize,
 
     /// Index of the first non-executed instance.
     /// The following is always true:
-    ///   `exec_bar` <= `gossip_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
+    ///   `exec_bar` <= `commit_bar` <= `start_slot` + `insts.len()`
     exec_bar: usize,
 
     /// Map from peer ID -> its latest `exec_bar` I know; this is for conservative
@@ -938,9 +952,7 @@ impl GenericReplica for CrosswordReplica {
             &config.init_assignment,
         )?;
         let mut max_coverage = Bitmap::new(rs_total_shards, false);
-        let mut nums_assigned: HashSet<u8> = HashSet::new();
         for shards in &init_assignment {
-            nums_assigned.insert(shards.count());
             for (shard, flag) in shards.iter() {
                 if flag {
                     max_coverage.set(shard, true)?;
@@ -948,7 +960,6 @@ impl GenericReplica for CrosswordReplica {
             }
         }
         let assignment_adaptive = config.init_assignment.is_empty();
-        let assignment_balanced = nums_assigned.len() == 1;
         if init_assignment.len() != population as usize || max_coverage.count() < rs_data_shards {
             return logged_err!("invalid init assignment parsed: {:?}", init_assignment);
         }
@@ -957,31 +968,30 @@ impl GenericReplica for CrosswordReplica {
             Self::assignment_to_string(&init_assignment)
         );
 
-        // if restricted to balanced assignments only, pre-fill
-        // `brr_assignments` with balanced round-robin policies
+        // pre-fill `brr_assignments` with balanced round-robin policies; only
+        // an initial assignment being one of them gets adapted, while custom
+        // ones are used as given
         let dj_spr = rs_total_shards / population;
-        let brr_assignments = if assignment_balanced {
-            (dj_spr..=rs_data_shards)
-                .step_by(dj_spr as usize)
-                .map(|spr| {
-                    (
-                        spr,
-                        (0..population)
-                            .map(|r| {
-                                Bitmap::from((
-                                    rs_total_shards,
-                                    ((r * dj_spr)..(r * dj_spr + spr))
-                                        .map(|i| i % rs_total_shards)
-                                        .collect::<Vec<u8>>(),
-                                ))
-                            })
-                            .collect(),
-                    )
-                })
-                .collect()
-        } else {
-            HashMap::new()
-        };
+        let brr_assignments: HashMap<u8, Vec<Bitmap>> = (dj_spr..=rs_data_shards)
+            .step_by(dj_spr as usize)
+            .map(|spr| {
+                (
+                    spr,
+                    (0..population)
+                        .map(|r| {
+                            Bitmap::from((
+                                rs_total_shards,
+                                ((r * dj_spr)..(r * dj_spr + spr))
+                                    .map(|i| i % rs_total_shards)
+                                    .collect::<Vec<u8>>(),
+                            ))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let assignment_balanced =
+            brr_assignments.get(&init_assignment[0].count()) == Some(&init_assignment);
 
         // proactively connect to some peers, then wait for all population
         // have been connected with me
@@ -1055,6 +1065,8 @@ impl GenericReplica for CrosswordReplica {
             accept_retry: (Instant::now(), 0),
             recon_retry: Instant::now(),
             gossip_bar: 0,
+            gossip_retry: Instant::now(),
+            gossip_last_end: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0)) })
@@ -1152,8 +1164,9 @@ impl GenericReplica for CrosswordReplica {
                 // durable logging result
                 log_result = self.storage_hub.get_result(), if !paused => {
                     let (log_ctx, log_result) = log_result?;
+                    let slot = log_ctx.slot();
                     if let Err(e) = self.handle_log_result(log_ctx, log_result).await {
-                        pf_error!("error handling log result {:?}: {}", log_ctx, e);
+                        pf_error!("error handling log result for slot {}: {}", slot, e);
                     }
                 },
 
@@ -1535,7 +1548,7 @@ mod tests {
         use super::super::*;
         use crate::server::Command;
 
-        fn batch(value: &str) -> ReqBatch {
+        pub(super) fn batch(value: &str) -> ReqBatch {
             vec![(
                 7,
                 ApiRequest::Req {
@@ -1548,7 +1561,7 @@ mod tests {
             )]
         }
 
-        fn codeword(reqs: ReqBatch) -> Result<RSCodeword<ReqBatch>, SummersetError> {
+        pub(super) fn codeword(reqs: ReqBatch) -> Result<RSCodeword<ReqBatch>, SummersetError> {
             let mut reqs_cw = RSCodeword::from_data(reqs, 3, 2)?;
             reqs_cw.compute_parity(Some(&ReedSolomon::new(3, 2)?))?;
             Ok(reqs_cw)
@@ -1635,6 +1648,69 @@ mod tests {
             let mut recovered = candidate.reqs_cw.clone();
             recovered.reconstruct_data(Some(&ReedSolomon::new(3, 2)?))?;
             CrosswordReplica::verify_value_id(value_id, &mut recovered, 3, 5)?;
+            Ok(())
+        }
+    }
+
+    mod coverage {
+        use super::super::*;
+        use super::value_id::{batch, codeword};
+
+        fn acks(rows: &[&[u8]]) -> HashMap<ReplicaId, Bitmap> {
+            (0..)
+                .zip(rows)
+                .map(|(r, shards)| (r, Bitmap::from((5, shards.to_vec()))))
+                .collect()
+        }
+
+        #[test]
+        fn counts_shards_actually_acked() {
+            let coverage = CrosswordReplica::coverage_under_faults;
+            // one distinct shard each: any two of three rows hold two shards
+            assert_eq!(coverage(&acks(&[&[0], &[1], &[2]]), 1), 2);
+            // equal-size but overlapping custom rows hold just one in total
+            assert_eq!(coverage(&acks(&[&[0], &[0], &[0]]), 0), 1);
+            // nothing is left after crossing out every row
+            assert_eq!(coverage(&acks(&[&[0, 1, 2]]), 1), 0);
+        }
+
+        #[test]
+        fn surviving_rows_reconstruct() -> Result<(), SummersetError> {
+            // for an uneven custom placement, every set of acked rows passing
+            // the check rebuilds the batch after crossing out any two of them
+            let rows: [&[u8]; 5] = [&[0, 1, 2], &[0, 1], &[2, 3], &[4], &[3, 4]];
+            let reqs = batch("x");
+            let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
+            let full = codeword(reqs)?;
+            let rs = ReedSolomon::new(3, 2)?;
+            let mut passing = 0;
+            for acked in 1..(1u32 << rows.len()) {
+                let acked_rows: Vec<&[u8]> = (0..rows.len())
+                    .filter(|r| (acked >> r) & 1 == 1)
+                    .map(|r| rows[r])
+                    .collect();
+                if CrosswordReplica::coverage_under_faults(&acks(&acked_rows), 2) < 3 {
+                    continue;
+                }
+                passing += 1;
+                for kept in (0..1u32 << acked_rows.len())
+                    .filter(|k| k.count_ones() as usize + 2 == acked_rows.len())
+                {
+                    let mut recovered = RSCodeword::<ReqBatch>::from_null(3, 2)?;
+                    for (_, shards) in acked_rows
+                        .iter()
+                        .enumerate()
+                        .filter(|&(i, _)| (kept >> i) & 1 == 1)
+                    {
+                        recovered.absorb_other(
+                            full.subset_copy(&Bitmap::from((5, shards.to_vec())), false)?,
+                        )?;
+                    }
+                    recovered.reconstruct_data(Some(&rs))?;
+                    CrosswordReplica::verify_value_id(value_id, &mut recovered, 3, 5)?;
+                }
+            }
+            assert!(passing > 0);
             Ok(())
         }
     }

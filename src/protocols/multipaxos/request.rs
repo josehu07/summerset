@@ -34,6 +34,7 @@ impl MultiPaxosReplica {
                         .do_sync_cmd(
                             Self::make_ro_command_id(*client, *req_id),
                             Command::Get { key: key.clone() },
+                            None,
                         )
                         .await?;
                     for (old_id, old_result) in old_results {
@@ -60,6 +61,7 @@ impl MultiPaxosReplica {
                 reads: vec![],
                 rq_acks: Bitmap::new(self.population, false),
                 max_replies: vec![],
+                since: Instant::now(),
             };
 
             for (client, req) in req_batch.iter() {
@@ -69,7 +71,10 @@ impl MultiPaxosReplica {
                 } = req
                 {
                     rq_bk.reads.push((*client, req.clone()));
-                    rq_bk.max_replies.push(self.inspect_highest_slot(key)?);
+                    rq_bk.max_replies.push(
+                        self.inspect_latest_write(Self::make_ro_command_id(*client, *req_id), key)
+                            .await?,
+                    );
 
                     if !strip_read_only {
                         rq_id = (*client, *req_id);

@@ -29,20 +29,17 @@ impl MultiPaxosReplica {
     /// current commit status.
     // NOTE: current implementation might loop through requests in the batch of
     //       that slot at each inspect call; good enough but can be improved
-    pub(super) fn inspect_highest_slot(
-        &self,
-        key: &String,
-    ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
+    pub(super) fn inspect_highest_slot(&self, key: &String) -> Option<(usize, Option<String>)> {
         if let Some(&slot) = self.highest_slot.get(key) {
             if slot < self.start_slot || slot >= self.start_slot + self.insts.len() {
                 // slot has been GCed or not locatable for some reason; we play
                 // safe and return with not-committed status
-                Ok(Some((slot, None)))
+                Some((slot, None))
             } else {
                 let inst = &self.insts[slot - self.start_slot];
                 if inst.status < Status::Committed {
                     // instance not committed on me yet
-                    Ok(Some((slot, None)))
+                    Some((slot, None))
                 } else {
                     // instance committed, return the latest value for the key
                     // in batch
@@ -53,20 +50,72 @@ impl MultiPaxosReplica {
                         } = req
                             && k == key
                         {
-                            return Ok(Some((slot, Some(value.clone()))));
+                            return Some((slot, Some(value.clone())));
                         }
                     }
-                    logged_err!(
-                        "no write to key '{}' at slot {}; wrong highest_slot",
-                        key,
-                        slot
-                    )
+                    // the write seen there got replaced (e.g., by a new leader's
+                    // Prepare); play safe as not committed
+                    Some((slot, None))
                 }
             }
         } else {
             // never seen this key
-            Ok(None)
+            None
         }
+    }
+
+    /// Like `inspect_highest_slot()`, but a key whose writes I know of have
+    /// all been compacted into the snapshot (or recovered from it, thus never
+    /// seen) gets its executed value, as of the slot right before my log.
+    pub(super) async fn inspect_latest_write(
+        &mut self,
+        cmd_id: CommandId,
+        key: &String,
+    ) -> Result<Option<(usize, Option<String>)>, SummersetError> {
+        if self.start_slot == 0
+            || self
+                .highest_slot
+                .get(key)
+                .is_some_and(|&slot| slot >= self.start_slot)
+        {
+            return Ok(self.inspect_highest_slot(key));
+        }
+        let (old_results, cmd_result) = self
+            .state_machine
+            .do_sync_cmd(cmd_id, Command::Get { key: key.clone() }, None)
+            .await?;
+        for (old_id, old_result) in old_results {
+            self.handle_cmd_result(old_id, old_result).await?;
+        }
+        let CommandResult::Get { value } = cmd_result else {
+            return logged_err!("unexpected command result type");
+        };
+        Ok(value.map(|value| (self.start_slot - 1, Some(value))))
+    }
+
+    /// Lets clients retry quorum reads still unanswered after a hearing
+    /// timeout, e.g., when not enough peers are reachable.
+    pub(super) fn expire_quorum_reads(&mut self) -> Result<(), SummersetError> {
+        let timeout = Duration::from_millis(self.config.hb_hear_timeout_min);
+        let expired: Vec<ReadQueryBookkeeping> = self
+            .quorum_reads
+            .extract_if(|_, rq_bk| rq_bk.since.elapsed() >= timeout)
+            .map(|(_, rq_bk)| rq_bk)
+            .collect();
+        for (client, req) in expired.into_iter().flat_map(|rq_bk| rq_bk.reads) {
+            if let ApiRequest::Req {
+                id: req_id,
+                cmd: Command::Get { key },
+            } = req
+            {
+                self.external_api.send_reply(
+                    ApiReply::rq_retry(req_id, Command::Get { key }, self.leader),
+                    client,
+                )?;
+                pf_trace!("replied -> client {} for near-read expired", client);
+            }
+        }
+        Ok(())
     }
 
     /// Handler of `ReadQuery` message from a peer issuer.
@@ -112,6 +161,7 @@ impl MultiPaxosReplica {
                         .do_sync_cmd(
                             Self::make_ro_command_id(client, req_id),
                             Command::Get { key: key.clone() },
+                            None,
                         )
                         .await?;
                     for (old_id, old_result) in old_results {
@@ -151,13 +201,16 @@ impl MultiPaxosReplica {
         } else {
             // no, reply with my latest knowledge about each key in batch
             let mut replies = Vec::with_capacity(reads.len());
-            for (_, req) in reads {
+            for (client, req) in reads {
                 if let ApiRequest::Req {
+                    id: req_id,
                     cmd: Command::Get { key },
-                    ..
                 } = req
                 {
-                    replies.push(self.inspect_highest_slot(&key)?);
+                    replies.push(
+                        self.inspect_latest_write(Self::make_ro_command_id(client, req_id), &key)
+                            .await?,
+                    );
                 } else {
                     return logged_err!("non-Get request in ReadQuery");
                 }
@@ -225,7 +278,7 @@ impl MultiPaxosReplica {
                         },
                         Some((slot, Some(value))) => match *max_reply {
                             None => {
-                                *max_reply = Some((slot, None));
+                                *max_reply = Some((slot, Some(value)));
                             }
                             Some((max_slot, None)) => {
                                 if slot >= max_slot {
