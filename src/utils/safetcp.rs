@@ -274,10 +274,11 @@ fn get_ss_cmd_output() -> Result<String, SummersetError> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use futures::FutureExt;
     use tokio::io::{AsyncWriteExt, duplex};
     use tokio::sync::oneshot;
+
+    use super::*;
 
     /// Frames `payload` as `safe_tcp_write()` sends it.
     fn frame_payload_bytes(payload: &[u8]) -> Vec<u8> {
