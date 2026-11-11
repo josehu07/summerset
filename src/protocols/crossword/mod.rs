@@ -2,10 +2,14 @@
 //!
 //! `MultiPaxos` with flexible Reed-Solomon erasure code sharding that supports
 //! dynamically tunable shard assignment with the correct liveness constraints,
-//! plus follower gossiping for actual usability.
+//! plus follower gossiping for actual usability. Optionally, assignments are
+//! asymmetric with their code schemes picked per instance, committing once a
+//! majority have replied and the shards persisted survive every tolerated
+//! failure.
 
 use wincode::{SchemaRead, SchemaWrite};
 mod adaptive;
+mod asymmetric;
 mod control;
 mod durability;
 mod execution;
@@ -15,8 +19,10 @@ mod messages;
 mod recovery;
 mod request;
 mod snapshot;
+mod tolerance;
 
 use std::cmp;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -28,6 +34,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
+use tolerance::Tolerance;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
@@ -93,8 +100,19 @@ pub struct ReplicaConfigCrossword {
     /// Disable gossiping timer (to force more deterministic perf behavior)?
     pub disable_gossip_timer: bool,
 
-    /// Fault-tolerance level.
+    /// Fault-tolerance level: any this many servers may fail.
     pub fault_tolerance: u8,
+
+    /// Failure domains (e.g., racks) that may also fail as a whole, as
+    /// comma-separated server IDs, separated by '/' (e.g., "3,4/1,2"); for
+    /// asymmetric assignments only.
+    pub fault_domains: String,
+
+    /// Pick an asymmetric assignment and its code scheme per instance?
+    pub asymmetric: bool,
+
+    /// Maximum number of data shards of asymmetric assignments.
+    pub max_data_shards: u8,
 
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
@@ -163,6 +181,9 @@ impl Default for ReplicaConfigCrossword {
             gossip_batch_size: 0,
             disable_gossip_timer: false,
             fault_tolerance: 0,
+            fault_domains: String::new(),
+            asymmetric: false,
+            max_data_shards: 16,
             msg_chunk_size: 10,
             rs_total_shards: 0,
             rs_data_shards: 0,
@@ -473,6 +494,9 @@ pub(crate) struct CrosswordReplica {
     /// Majority quorum size.
     majority: u8,
 
+    /// Failures that committed instances must survive.
+    tolerance: Tolerance,
+
     /// Reed-Solomon total number of shards.
     rs_total_shards: u8,
 
@@ -568,8 +592,9 @@ pub(crate) struct CrosswordReplica {
     /// requested again once overdue.
     gossip_bar: usize,
 
-    /// When gossiping requests were last re-sent.
-    gossip_retry: Instant,
+    /// When gossiping progress was last checked for re-sending requests, and
+    /// `commit_bar` then.
+    gossip_retry: (Instant, usize),
 
     /// End of the log at the last gossiping trigger, to tell idle traffic.
     gossip_last_end: usize,
@@ -595,16 +620,20 @@ pub(crate) struct CrosswordReplica {
     /// Current durable snapshot file offset.
     snap_offset: usize,
 
-    /// Fixed Reed-Solomon coder.
-    rs_coder: ReedSolomon,
+    /// Map from code scheme (data, parity shards) -> its Reed-Solomon coder.
+    rs_coders: HashMap<(u8, u8), ReedSolomon>,
 
-    /// Map from peer ID -> list of pending Accepts (timestamp, slot) for
-    /// perf monitoring.
-    pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize)>>,
+    /// Map from peer ID -> list of pending Accepts (timestamp, slot, size,
+    /// bytes in flight to the peer up to it) for perf monitoring.
+    pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize, usize, usize)>>,
 
-    /// Map from peer ID -> list of pending heartbeats (timestamp, id) for
-    /// perf monitoring.
-    pending_heartbeats: HashMap<ReplicaId, VecDeque<(u128, HeartbeatId)>>,
+    /// Map from peer ID -> list of pending heartbeats (timestamp, id, bytes
+    /// in flight to the peer then) for perf monitoring.
+    pending_heartbeats: HashMap<ReplicaId, VecDeque<(u128, HeartbeatId, usize)>>,
+
+    /// Map from peer ID -> total size of the Accepts pending to it, which
+    /// delay what is sent to it next.
+    inflight_bytes: HashMap<ReplicaId, usize>,
 
     /// Monotonically incrementing ID for heartbeat messages.
     next_hb_id: HeartbeatId,
@@ -620,6 +649,17 @@ pub(crate) struct CrosswordReplica {
 
     /// Map from peer ID -> current saved linear regression perf model.
     linreg_model: HashMap<ReplicaId, PerfModel>,
+
+    /// Map from peer ID -> recent fraction of time it seemed down, as an
+    /// estimate of how likely it fails in the middle of an instance.
+    unreliability: HashMap<ReplicaId, f64>,
+
+    /// Map from (number of data shards, row sizes) of assignments picked ->
+    /// how many times lately, for printing once in a while.
+    asgmt_usage: HashMap<(u8, Vec<u8>), usize>,
+
+    /// Elapsed us of the last console printing of `asgmt_usage`.
+    last_usage_print: u128,
 
     /// Queueing discipline information tracker.
     qdisc_info: Option<QdiscInfo>,
@@ -789,6 +829,39 @@ impl CrosswordReplica {
         }
         Ok(())
     }
+
+    /// Gets the Reed-Solomon coder of a code scheme, creating it if needed;
+    /// none if the scheme has no parity shards.
+    fn rs_coder(
+        coders: &mut HashMap<(u8, u8), ReedSolomon>,
+        num_data_shards: u8,
+        num_parity_shards: u8,
+    ) -> Result<Option<&ReedSolomon>, SummersetError> {
+        if num_parity_shards == 0 {
+            return Ok(None);
+        }
+        Ok(Some(
+            match coders.entry((num_data_shards, num_parity_shards)) {
+                Entry::Occupied(e) => e.into_mut(),
+                Entry::Vacant(e) => e.insert(ReedSolomon::new(
+                    num_data_shards.into(),
+                    num_parity_shards.into(),
+                )?),
+            },
+        ))
+    }
+
+    /// Gets the Reed-Solomon coder of a codeword's code scheme.
+    fn coder_of<'a>(
+        coders: &'a mut HashMap<(u8, u8), ReedSolomon>,
+        reqs_cw: &RSCodeword<ReqBatch>,
+    ) -> Result<Option<&'a ReedSolomon>, SummersetError> {
+        Self::rs_coder(
+            coders,
+            reqs_cw.num_data_shards(),
+            reqs_cw.num_parity_shards(),
+        )
+    }
 }
 
 #[async_trait]
@@ -816,7 +889,8 @@ impl GenericReplica for CrosswordReplica {
                                     snapshot_interval_s, gossip_timeout_min,
                                     gossip_timeout_max, gossip_tail_ignores,
                                     disable_gossip_timer, gossip_batch_size,
-                                    fault_tolerance, msg_chunk_size,
+                                    fault_tolerance, fault_domains,
+                                    asymmetric, max_data_shards, msg_chunk_size,
                                     rs_total_shards, rs_data_shards,
                                     init_assignment, linreg_interval_ms,
                                     linreg_keep_ms, linreg_outlier_ratio,
@@ -919,6 +993,17 @@ impl GenericReplica for CrosswordReplica {
                 config.fault_tolerance
             );
         }
+        if !config.fault_domains.is_empty() && !config.asymmetric {
+            // balanced assignments only account for `fault_tolerance`
+            return logged_err!("config.fault_domains requires config.asymmetric");
+        }
+        let tolerance = Tolerance::new(population, config.fault_tolerance, &config.fault_domains)?;
+        if config.max_data_shards == 0 {
+            return logged_err!(
+                "invalid config.max_data_shards '{}'",
+                config.max_data_shards
+            );
+        }
 
         // parse Reed_Solomon coding scheme
         if config.rs_total_shards % population != 0 {
@@ -938,10 +1023,12 @@ impl GenericReplica for CrosswordReplica {
         }
         let rs_data_shards = cmp::max(config.rs_data_shards, majority);
 
-        // create a Reed-Solomon coder
-        let rs_coder = ReedSolomon::new(
-            rs_data_shards as usize,
-            (rs_total_shards - rs_data_shards) as usize,
+        // create the Reed-Solomon coder of the default scheme
+        let mut rs_coders = HashMap::new();
+        Self::rs_coder(
+            &mut rs_coders,
+            rs_data_shards,
+            rs_total_shards - rs_data_shards,
         )?;
 
         // parse shards assignment policy config string if given
@@ -1036,6 +1123,7 @@ impl GenericReplica for CrosswordReplica {
             id,
             population,
             majority,
+            tolerance,
             rs_total_shards,
             rs_data_shards,
             assignment_adaptive,
@@ -1065,7 +1153,7 @@ impl GenericReplica for CrosswordReplica {
             accept_retry: (Instant::now(), 0),
             recon_retry: Instant::now(),
             gossip_bar: 0,
-            gossip_retry: Instant::now(),
+            gossip_retry: (Instant::now(), 0),
             gossip_last_end: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)
@@ -1074,7 +1162,7 @@ impl GenericReplica for CrosswordReplica {
             snap_bar: 0,
             wal_offset: 0,
             snap_offset: 0,
-            rs_coder,
+            rs_coders,
             pending_accepts: (0..population)
                 .filter_map(|s| {
                     if s == id {
@@ -1083,6 +1171,9 @@ impl GenericReplica for CrosswordReplica {
                         Some((s, VecDeque::new()))
                     }
                 })
+                .collect(),
+            inflight_bytes: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0)) })
                 .collect(),
             pending_heartbeats: (0..population)
                 .filter_map(|s| {
@@ -1117,6 +1208,11 @@ impl GenericReplica for CrosswordReplica {
                     }
                 })
                 .collect(),
+            unreliability: (0..population)
+                .filter_map(|s| if s == id { None } else { Some((s, 0.0)) })
+                .collect(),
+            asgmt_usage: HashMap::new(),
+            last_usage_print: 0,
             qdisc_info: if config.b_to_d_threshold > 0.0 {
                 Some(QdiscInfo::new()?)
             } else {
@@ -1526,6 +1622,7 @@ mod tests {
                 fault_tolerance,
                 1 << 20,
                 &linreg_model,
+                &HashMap::new(),
                 0.0,
                 &None,
                 &Bitmap::new(population, true),
@@ -1656,40 +1753,44 @@ mod tests {
         use super::super::*;
         use super::value_id::{batch, codeword};
 
-        fn acks(rows: &[&[u8]]) -> HashMap<ReplicaId, Bitmap> {
-            (0..)
-                .zip(rows)
-                .map(|(r, shards)| (r, Bitmap::from((5, shards.to_vec()))))
+        fn acks(rows: &[(ReplicaId, &[u8])]) -> HashMap<ReplicaId, Bitmap> {
+            rows.iter()
+                .map(|&(r, shards)| (r, Bitmap::from((5, shards.to_vec()))))
                 .collect()
         }
 
         #[test]
-        fn counts_shards_actually_acked() {
-            let coverage = CrosswordReplica::coverage_under_faults;
+        fn counts_shards_actually_acked() -> Result<(), SummersetError> {
+            let any_one = Tolerance::new(5, 1, "")?;
             // one distinct shard each: any two of three rows hold two shards
-            assert_eq!(coverage(&acks(&[&[0], &[1], &[2]]), 1), 2);
+            let diagonal = acks(&[(0, &[0]), (1, &[1]), (2, &[2])]);
+            assert!(any_one.covers(&diagonal, 2));
+            assert!(!any_one.covers(&diagonal, 3));
             // equal-size but overlapping custom rows hold just one in total
-            assert_eq!(coverage(&acks(&[&[0], &[0], &[0]]), 0), 1);
+            let overlapping = acks(&[(0, &[0]), (1, &[0]), (2, &[0])]);
+            assert!(!Tolerance::new(5, 0, "")?.covers(&overlapping, 2));
             // nothing is left after crossing out every row
-            assert_eq!(coverage(&acks(&[&[0, 1, 2]]), 1), 0);
+            assert!(!any_one.covers(&acks(&[(0, &[0, 1, 2])]), 1));
+            Ok(())
         }
 
         #[test]
         fn surviving_rows_reconstruct() -> Result<(), SummersetError> {
             // for an uneven custom placement, every set of acked rows passing
-            // the check rebuilds the batch after crossing out any two of them
+            // the commit rule rebuilds the batch after crossing out any two
             let rows: [&[u8]; 5] = [&[0, 1, 2], &[0, 1], &[2, 3], &[4], &[3, 4]];
+            let any_two = Tolerance::new(5, 2, "")?;
             let reqs = batch("x");
             let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
             let full = codeword(reqs)?;
             let rs = ReedSolomon::new(3, 2)?;
             let mut passing = 0;
             for acked in 1..(1u32 << rows.len()) {
-                let acked_rows: Vec<&[u8]> = (0..rows.len())
-                    .filter(|r| (acked >> r) & 1 == 1)
-                    .map(|r| rows[r])
+                let acked_rows: Vec<(ReplicaId, &[u8])> = (0..)
+                    .zip(rows)
+                    .filter(|&(r, _)| (acked >> r) & 1 == 1)
                     .collect();
-                if CrosswordReplica::coverage_under_faults(&acks(&acked_rows), 2) < 3 {
+                if !any_two.covers(&acks(&acked_rows), 3) {
                     continue;
                 }
                 passing += 1;
@@ -1697,7 +1798,7 @@ mod tests {
                     .filter(|k| k.count_ones() as usize + 2 == acked_rows.len())
                 {
                     let mut recovered = RSCodeword::<ReqBatch>::from_null(3, 2)?;
-                    for (_, shards) in acked_rows
+                    for (_, (_, shards)) in acked_rows
                         .iter()
                         .enumerate()
                         .filter(|&(i, _)| (kept >> i) & 1 == 1)

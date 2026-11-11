@@ -9,6 +9,7 @@ mod durability;
 mod execution;
 mod leadership;
 mod messages;
+mod reconstruct;
 mod recovery;
 mod request;
 mod snapshot;
@@ -418,8 +419,9 @@ pub(crate) struct RSPaxosReplica {
     /// Accepts below it still unacked by the next round are re-sent.
     accept_retry: (Instant, usize),
 
-    /// When reconstruction reads were last re-sent.
-    recon_retry: Instant,
+    /// When reconstruction progress was last checked for re-sending reads,
+    /// and `commit_bar` then.
+    recon_retry: (Instant, usize),
 
     /// Index of the first instance not yet read for reconstruction on a
     /// follower.
@@ -666,7 +668,7 @@ impl GenericReplica for RSPaxosReplica {
             bal_max_seen: 0,
             commit_bar: 0,
             accept_retry: (Instant::now(), 0),
-            recon_retry: Instant::now(),
+            recon_retry: (Instant::now(), 0),
             recon_bar: 0,
             exec_bar: 0,
             peer_exec_bar: (0..population)

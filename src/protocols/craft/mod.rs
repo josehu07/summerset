@@ -9,6 +9,7 @@ mod durability;
 mod execution;
 mod leadership;
 mod messages;
+mod reconstruct;
 mod recovery;
 mod request;
 mod snapshot;
@@ -383,8 +384,9 @@ pub(crate) struct CRaftReplica {
     /// This is a soft state and affects nothing about correctness.
     last_recon: usize,
 
-    /// When reconstruction reads were last re-sent.
-    recon_retry: Instant,
+    /// When reconstruction progress was last checked for re-sending reads,
+    /// and `last_commit` then.
+    recon_retry: (Instant, usize),
 
     /// For each server, index of the next log entry to send.
     next_slot: HashMap<ReplicaId, usize>,
@@ -634,66 +636,6 @@ impl CRaftReplica {
         self.advance_last_exec()
     }
 
-    /// Sends reconstruction reads for committed entries that still lack
-    /// enough shards to execute: right away for new ones (where a follower
-    /// reads each shard from the other follower holding it, sparing the
-    /// leader), and again to everyone once per hearing timeout, as earlier
-    /// reads may have got lost.
-    fn retrigger_reconstructs(&mut self) -> Result<(), SummersetError> {
-        let overdue =
-            self.recon_retry.elapsed() >= Duration::from_millis(self.config.hb_hear_timeout_min);
-        let from_slot = if overdue {
-            self.recon_retry = Instant::now();
-            self.last_commit + 1
-        } else {
-            cmp::max(self.last_recon, self.last_commit) + 1
-        };
-
-        let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Term, Bitmap)>> = HashMap::new();
-        for slot in from_slot..=self.commit_known {
-            let entry = &self.log[slot - self.start_slot];
-            let avail = entry.reqs_cw.avail_shards_map();
-            if avail.count() >= self.majority {
-                continue;
-            }
-            let mut needed = self.majority - avail.count();
-            for peer in ((self.id + 1)..(self.id + self.population)).map(|p| p % self.population) {
-                if overdue || self.role == Role::Leader {
-                    recon_slots
-                        .entry(peer)
-                        .or_default()
-                        .push((slot, entry.term, avail.clone()));
-                } else if needed > 0 && self.leader != Some(peer) && !avail.get(peer)? {
-                    let mut excl = Bitmap::new(self.population, true);
-                    excl.set(peer, false)?;
-                    recon_slots
-                        .entry(peer)
-                        .or_default()
-                        .push((slot, entry.term, excl));
-                    needed -= 1;
-                }
-            }
-        }
-        self.last_recon = cmp::max(self.last_recon, self.commit_known);
-
-        for (peer, slots) in recon_slots {
-            for chunk in slots.chunks(self.config.msg_chunk_size) {
-                self.transport_hub.send_msg(
-                    PeerMsg::Reconstruct {
-                        slots: chunk.to_vec(),
-                    },
-                    peer,
-                )?;
-            }
-            pf_debug!(
-                "sent Reconstruct messages -> {} for {} slots",
-                peer,
-                slots.len()
-            );
-        }
-        Ok(())
-    }
-
     /// Advances `last_exec` past committed entries with nothing to execute,
     /// such as the no-ops of new leaders.
     fn advance_last_exec(&mut self) -> Result<(), SummersetError> {
@@ -857,7 +799,7 @@ impl GenericReplica for CRaftReplica {
             last_commit: 0,
             last_exec: 0,
             last_recon: 0,
-            recon_retry: Instant::now(),
+            recon_retry: (Instant::now(), 0),
             next_slot: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 1)) })
                 .collect(),

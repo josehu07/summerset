@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::server::{ApiReply, ApiRequest, Command, CommandResult, LogAction};
-use crate::utils::{Bitmap, RSCodeword, SummersetError};
+use crate::server::{ApiReply, ApiRequest, Command, CommandResult};
+use crate::utils::{Bitmap, SummersetError};
 
 // CrosswordReplica client requests entrance
 impl CrosswordReplica {
@@ -69,22 +69,12 @@ impl CrosswordReplica {
             sw.record_now(slot, 0, None)?;
         }
 
-        // identify and compute the complete Reed-Solomon codeword
-        let value_id = Self::value_id(&req_batch, self.rs_data_shards, self.rs_total_shards)?;
-        let mut reqs_cw = RSCodeword::from_data(
-            req_batch,
-            self.rs_data_shards,
-            self.rs_total_shards - self.rs_data_shards,
-        )?;
-        reqs_cw.compute_parity(Some(&self.rs_coder))?;
-
         // create a new instance in the first null slot (or append a new one
-        // at the end if no holes exist); fill it up with incoming data
+        // at the end if no holes exist), and start its Accept phase with the
+        // new value
         {
             let inst = &mut self.insts[slot - self.start_slot];
             debug_assert_eq!(inst.status, Status::Null);
-            inst.reqs_cw = reqs_cw;
-            inst.value_id = Some(value_id);
             inst.leader_bk = Some(LeaderBookkeeping {
                 trigger_slot: 0,
                 endprep_slot: 0,
@@ -93,110 +83,15 @@ impl CrosswordReplica {
                 accept_acks: HashMap::new(),
             });
             inst.external = true;
+            inst.bal = self.bal_prepared;
         }
-
-        // start the Accept phase for this instance
-        let inst = &mut self.insts[slot - self.start_slot];
-        inst.bal = self.bal_prepared;
-        inst.status = Status::Accepting;
 
         // [for perf breakdown only]
         if let Some(sw) = self.bd_stopwatch.as_mut() {
             sw.record_now(slot, 1, None)?;
         }
 
-        let assignment = Self::pick_assignment_policy(
-            self.assignment_adaptive,
-            self.assignment_balanced,
-            &self.init_assignment,
-            &self.brr_assignments,
-            self.rs_data_shards,
-            self.majority,
-            self.config.fault_tolerance,
-            inst.reqs_cw.data_len(),
-            &self.linreg_model,
-            self.config.b_to_d_threshold,
-            &self.qdisc_info,
-            self.heartbeater.peer_alive(),
-        );
-        pf_debug!(
-            "enter Accept phase for slot {} bal {} asgmt {}",
-            slot,
-            inst.bal,
-            Self::assignment_to_string(assignment)
-        );
-
-        // record update to largest accepted ballot and corresponding data
-        let subset_copy = inst
-            .reqs_cw
-            .subset_copy(&assignment[self.id as usize], false)?;
-        inst.assignment.clone_from(assignment);
-        Self::record_acceptance(
-            &mut inst.voted,
-            AcceptedValue {
-                ballot: inst.bal,
-                value_id,
-                reqs_cw: subset_copy.clone(),
-            },
-        )?;
-        self.storage_hub.submit_action(
-            LogCtx::AcceptData {
-                slot,
-                ballot: inst.bal,
-                value_id,
-                shards: subset_copy.avail_shards_map(),
-            },
-            LogAction::Append {
-                entry: WalEntry::AcceptData {
-                    slot,
-                    ballot: inst.bal,
-                    value_id,
-                    // persist only some shards on myself
-                    reqs_cw: subset_copy,
-                    assignment: assignment.clone(),
-                },
-                sync: self.config.logger_sync,
-            },
-        )?;
-        pf_trace!(
-            "submitted AcceptData log action for slot {} bal {}",
-            slot,
-            inst.bal
-        );
-
-        // send Accept messages to all peers, each getting its subset of
-        // shards of data
-        let now_us = self.startup_time.elapsed().as_micros();
-        for peer in 0..self.population {
-            if peer == self.id {
-                continue;
-            }
-            self.transport_hub.send_msg(
-                PeerMsg::Accept {
-                    slot,
-                    ballot: inst.bal,
-                    value_id,
-                    reqs_cw: inst
-                        .reqs_cw
-                        .subset_copy(&assignment[peer as usize], false)?,
-                    assignment: assignment.clone(),
-                },
-                peer,
-            )?;
-            if self.heartbeater.peer_alive().get(peer)? {
-                self.pending_accepts
-                    .get_mut(&peer)
-                    .unwrap()
-                    .push_back((now_us, slot));
-            }
-        }
-        pf_trace!(
-            "broadcast Accept messages for slot {} bal {}",
-            slot,
-            inst.bal
-        );
-
-        Ok(())
+        self.propose_new_value(slot, req_batch)
     }
 
     /// [for stale read profiling]
@@ -206,10 +101,11 @@ impl CrosswordReplica {
         let (mut key, mut ver) = (None, 0);
         for inst in &mut self.insts {
             if inst.status >= Status::Committed
-                && inst.reqs_cw.avail_shards() >= self.rs_data_shards
+                && inst.reqs_cw.avail_shards() >= inst.reqs_cw.num_data_shards()
             {
-                if inst.reqs_cw.avail_data_shards() < self.rs_data_shards {
-                    inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                if inst.reqs_cw.avail_data_shards() < inst.reqs_cw.num_data_shards() {
+                    inst.reqs_cw
+                        .reconstruct_data(Self::coder_of(&mut self.rs_coders, &inst.reqs_cw)?)?;
                 }
 
                 for (_, req) in inst.reqs_cw.get_data()? {

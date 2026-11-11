@@ -1,7 +1,12 @@
 //! `Crossword` -- assignment adaptability.
 
+use std::collections::HashSet;
+
 use super::*;
 use crate::utils::SummersetError;
+
+/// Timespan over which peers' reliability is averaged.
+const RELIABILITY_WINDOW: Duration = Duration::from_secs(30);
 
 // CrosswordReplica linear regression perf monitoring
 impl CrosswordReplica {
@@ -121,6 +126,7 @@ impl CrosswordReplica {
         fault_tolerance: u8,
         data_size: usize,
         linreg_model: &HashMap<ReplicaId, PerfModel>,
+        inflight_bytes: &HashMap<ReplicaId, usize>,
         b_to_d_threshold: f64,
         qdisc_info: &Option<QdiscInfo>,
         peer_alive: &Bitmap,
@@ -165,9 +171,12 @@ impl CrosswordReplica {
                 let load_size = (data_size / usize::from(rs_data_shards))
                     .saturating_add(1)
                     .saturating_mul(usize::from(spr));
+                // behind the bytes in flight to each peer
                 let mut peer_times: Vec<f64> = linreg_model
-                    .values()
-                    .map(|model| model.predict(load_size))
+                    .iter()
+                    .map(|(p, model)| {
+                        model.predict(inflight_bytes.get(p).map_or(0, |&b| b) + load_size)
+                    })
                     .collect();
                 peer_times.sort_by(f64::total_cmp);
                 // time to hear from the fastest q-1 peers (none if q is 1)
@@ -198,50 +207,83 @@ impl CrosswordReplica {
             .unwrap_or(init_assignment)
     }
 
-    /// Records a new datapoint for Accept RTT time.
-    pub(super) fn record_accept_rtt(
+    /// Records an Accept of `size` bytes just sent to a peer as pending,
+    /// behind the bytes already in flight to it.
+    pub(super) fn push_pending_accept(
         &mut self,
         peer: ReplicaId,
-        tr: u128,
+        ts: u128,
         slot: usize,
         size: usize,
     ) {
-        // pop oldest heartbeats sent timestamps out until the corresponding
-        // heartbeat ID is found. Records preceding the matching record will
-        // be discarded forever
-        while let Some((ts, s)) = self.pending_accepts.get_mut(&peer).unwrap().pop_front() {
+        let inflight = self.inflight_bytes.get_mut(&peer).unwrap();
+        *inflight += size;
+        self.pending_accepts
+            .get_mut(&peer)
+            .unwrap()
+            .push_back((ts, slot, size, *inflight));
+    }
+
+    /// Records the heartbeat about to be broadcast as pending to alive peers.
+    pub(super) fn push_pending_heartbeats(&mut self, ts: u128) -> Result<(), SummersetError> {
+        for (&peer, pending) in &mut self.pending_heartbeats {
+            if self.heartbeater.peer_alive().get(peer)? {
+                pending.push_back((ts, self.next_hb_id, self.inflight_bytes[&peer]));
+            }
+        }
+        Ok(())
+    }
+
+    /// Clears the pending Accepts of given slots, or of all if `None`.
+    pub(super) fn clear_pending_accepts(&mut self, slots: Option<&HashSet<usize>>) {
+        for (peer, pending) in &mut self.pending_accepts {
+            pending.retain(|(_, slot, ..)| slots.is_some_and(|slots| !slots.contains(slot)));
+            *self.inflight_bytes.get_mut(peer).unwrap() =
+                pending.iter().map(|&(_, _, size, _)| size).sum();
+        }
+    }
+
+    /// Records a new datapoint for Accept RTT time, against the bytes in
+    /// flight to the peer up to that Accept.
+    pub(super) fn record_accept_rtt(&mut self, peer: ReplicaId, tr: u128, slot: usize) {
+        // pop oldest Accepts sent timestamps out until the corresponding slot
+        // is found. Records preceding the matching record will be discarded
+        // forever
+        let pending = self.pending_accepts.get_mut(&peer).unwrap();
+        let inflight = self.inflight_bytes.get_mut(&peer).unwrap();
+        while let Some((ts, s, size, ahead)) = pending.pop_front() {
             #[allow(clippy::comparison_chain)]
             if s == slot {
                 debug_assert!(tr >= ts);
-                // approximate size as the PeerMsg type's stack size + shards
-                // payload size
+                *inflight = inflight.saturating_sub(size);
                 #[allow(clippy::cast_precision_loss)]
                 let elapsed_ms: f64 = tr.saturating_sub(ts) as f64 / 1000.0;
                 self.regressor
                     .get_mut(&peer)
                     .unwrap()
-                    .append_sample(tr, size, elapsed_ms);
+                    .append_sample(tr, ahead, elapsed_ms);
                 // pf_trace!("append {} ac t {} dp {:?}",
-                //                    peer, tr, (size, elapsed_ms));
+                //                    peer, tr, (ahead, elapsed_ms));
                 break;
             } else if slot < s {
                 // larger slot seen, meaning the send record for slot is
                 // probably lost. Do nothing
-                self.pending_accepts
-                    .get_mut(&peer)
-                    .unwrap()
-                    .push_front((ts, s));
+                pending.push_front((ts, s, size, ahead));
                 break;
             }
+            *inflight = inflight.saturating_sub(size);
         }
     }
 
-    /// Records a new datapoint for heartbeat RTT time.
+    /// Records a new datapoint for heartbeat RTT time, against the bytes in
+    /// flight to the peer then.
     pub(super) fn record_heartbeat_rtt(&mut self, peer: ReplicaId, tr: u128, hb_id: HeartbeatId) {
         // pop oldest heartbeats sent timestamps out until the corresponding
         // heartbeat ID is found. Records preceding the matching record will
         // be discarded forever
-        while let Some((ts, id)) = self.pending_heartbeats.get_mut(&peer).unwrap().pop_front() {
+        while let Some((ts, id, ahead)) =
+            self.pending_heartbeats.get_mut(&peer).unwrap().pop_front()
+        {
             #[allow(clippy::comparison_chain)]
             if id == hb_id {
                 debug_assert!(tr >= ts);
@@ -250,9 +292,9 @@ impl CrosswordReplica {
                 self.regressor
                     .get_mut(&peer)
                     .unwrap() // heartbeat size ~= 0
-                    .append_sample(tr, 0, elapsed_ms);
+                    .append_sample(tr, ahead, elapsed_ms);
                 // pf_trace!("append {} hb t {} dp {:?}",
-                //                    peer, tr, (0, elapsed_ms));
+                //                    peer, tr, (ahead, elapsed_ms));
                 break;
             } else if hb_id < id {
                 // larger ID seen, meaning the send record for hb_id is
@@ -260,7 +302,7 @@ impl CrosswordReplica {
                 self.pending_heartbeats
                     .get_mut(&peer)
                     .unwrap()
-                    .push_front((ts, id));
+                    .push_front((ts, id, ahead));
                 break;
             }
         }
@@ -272,6 +314,19 @@ impl CrosswordReplica {
     pub(super) fn update_linreg_model(&mut self, keep_ms: u64) -> Result<(), SummersetError> {
         let now_us = self.startup_time.elapsed().as_micros();
         let keep_us = now_us.saturating_sub(1000 * u128::from(keep_ms));
+
+        // track the recent fraction of time each peer seemed down, averaged
+        // over the reliability window
+        let weight = Duration::from_millis(self.config.linreg_interval_ms).as_secs_f64()
+            / RELIABILITY_WINDOW.as_secs_f64();
+        for (&peer, unreliability) in &mut self.unreliability {
+            let down = if self.heartbeater.peer_alive().get(peer)? {
+                0.0
+            } else {
+                1.0
+            };
+            *unreliability += (down - *unreliability) * weight.min(1.0);
+        }
 
         for (&peer, regressor) in &mut self.regressor {
             regressor.discard_before(keep_us);
@@ -300,6 +355,20 @@ impl CrosswordReplica {
                 Self::linreg_models_to_string(&self.linreg_model)
             );
             self.last_linreg_print = now_us;
+        }
+        if now_us.saturating_sub(self.last_usage_print) >= 1_000_000 && !self.asgmt_usage.is_empty()
+        {
+            let mut usage: Vec<_> = self.asgmt_usage.drain().collect();
+            usage.sort_by_key(|&(_, cnt)| cmp::Reverse(cnt));
+            pf_info!(
+                "asgmt usage {}",
+                usage
+                    .iter()
+                    .map(|((d, loads), cnt)| format!("{d}:{loads:?}x{cnt}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            self.last_usage_print = now_us;
         }
         Ok(())
     }

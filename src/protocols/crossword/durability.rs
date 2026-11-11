@@ -24,12 +24,11 @@ impl CrosswordReplica {
         let inst = &mut self.insts[slot - self.start_slot];
         debug_assert!(inst.prep_inflight > 0);
         inst.prep_inflight = inst.prep_inflight.saturating_sub(1);
-        if (inst.status != Status::Preparing && inst.status < Status::Committed)
-            || inst.bal != ballot
-            || inst.prep_inflight > 0
-        {
-            // ignore if instance has moved on, or if a newer PrepareBal (whose
-            // ballot is what a reply would claim) is not yet durable
+        if inst.status == Status::Null || inst.bal != ballot || inst.prep_inflight > 0 {
+            // ignore if instance has moved on to another ballot, or if a newer
+            // PrepareBal (whose ballot is what a reply would claim) is not yet
+            // durable; if already accepting at this ballot, still reply, as
+            // the leader may wait on it to complete its Prepare quorum
             return Ok(());
         }
 

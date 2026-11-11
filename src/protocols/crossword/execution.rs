@@ -23,20 +23,14 @@ impl CrosswordReplica {
         let value_id = inst
             .value_id
             .expect("committed instance should have an identity");
-        inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
-        if let Err(e) = Self::verify_value_id(
-            value_id,
-            &mut inst.reqs_cw,
-            self.rs_data_shards,
-            self.rs_total_shards,
-        ) {
+        inst.reqs_cw
+            .reconstruct_data(Self::coder_of(&mut self.rs_coders, &inst.reqs_cw)?)?;
+        let (d, w) = (inst.reqs_cw.num_data_shards(), inst.reqs_cw.num_shards());
+        if let Err(e) = Self::verify_value_id(value_id, &mut inst.reqs_cw, d, w) {
             pf_warn!("dropping unpersisted shards of slot {}: {}", slot, e);
             inst.reqs_cw = match &inst.voted {
                 Some(voted) if voted.value_id == value_id => voted.reqs_cw.clone(),
-                _ => RSCodeword::from_null(
-                    self.rs_data_shards,
-                    self.rs_total_shards - self.rs_data_shards,
-                )?,
+                _ => RSCodeword::from_null(d, w - d)?,
             };
             return Ok(false);
         }

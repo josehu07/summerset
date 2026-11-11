@@ -125,8 +125,19 @@ impl CrosswordReplica {
         );
         debug_assert!(self.exec_bar >= self.start_slot);
 
-        let new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
-        if new_start_slot == self.start_slot {
+        let mut new_start_slot = cmp::min(self.snap_bar, self.exec_bar);
+        if self.is_leader() {
+            // keep the bookkeeping of my Prepare if some entries still wait on
+            // its replies (to be discarded)
+            if let Some(bk) = self.insts[self.exec_bar - self.start_slot..]
+                .iter()
+                .find(|inst| inst.status == Status::Preparing)
+                .and_then(|inst| inst.leader_bk.as_ref())
+            {
+                new_start_slot = cmp::min(new_start_slot, bk.trigger_slot);
+            }
+        }
+        if new_start_slot <= self.start_slot {
             return Ok(());
         }
 

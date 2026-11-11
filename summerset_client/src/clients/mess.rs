@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use summerset::{
-    Bitmap, CommandResult, ConfChange, CtrlReply, CtrlRequest, GenericEndpoint, ReplicaId,
+    Bitmap, CommandResult, ConfChange, CtrlReply, CtrlRequest, Faults, GenericEndpoint, ReplicaId,
     ServerInfo, SummersetError, logged_err, parsed_config, pf_error, pf_info,
 };
 use tokio::time::Duration;
@@ -40,6 +40,13 @@ pub struct ModeParamsMess {
     /// Single-shot write request for experimental purpose.
     /// Expects the format "key:value".
     pub write: String,
+
+    /// Comma-separated bandwidths in Mbps of each server's emulated network
+    /// link (0 for unlimited), injected into all servers as faults.
+    pub link_tput_mbps: String,
+
+    /// Delay in millisecs added to each peer message along with the links.
+    pub link_delay_ms: u64,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -52,6 +59,8 @@ impl Default for ModeParamsMess {
             key_range: "/".into(),
             responder: "/".into(),
             write: String::new(),
+            link_tput_mbps: String::new(),
+            link_delay_ms: 0,
         }
     }
 }
@@ -77,7 +86,8 @@ impl ClientMess {
     ) -> Result<Self, SummersetError> {
         let params = parsed_config!(params_str => ModeParamsMess;
                                       pause, resume, leader,
-                                      key_range, responder, write)?;
+                                      key_range, responder, write,
+                                      link_tput_mbps, link_delay_ms)?;
 
         Ok(ClientMess {
             driver: DriverClosedLoop::new(endpoint, timeout),
@@ -216,6 +226,20 @@ impl ClientMess {
         }
     }
 
+    /// Injects faults into all servers.
+    async fn inject_faults(&mut self, faults: Faults) -> Result<(), SummersetError> {
+        let servers = self.parse_comma_separated("a")?;
+        let req = CtrlRequest::InjectFaults { servers, faults };
+        self.driver.ctrl_stub().send_req_insist(&req).await?;
+
+        let reply = self.driver.ctrl_stub().recv_reply().await?;
+        if let CtrlReply::InjectFaults { .. } = reply {
+            Ok(())
+        } else {
+            logged_err!("unexpected control reply type")
+        }
+    }
+
     /// Make a responders configuration change.
     async fn responders_conf_change(&mut self, conf: ConfChange) -> Result<(), SummersetError> {
         loop {
@@ -278,6 +302,23 @@ impl ClientMess {
             let servers = self.parse_comma_separated(&self.params.resume)?;
             pf_info!("resuming servers {:?}", servers);
             self.resume_servers(servers).await?;
+        }
+
+        // emulated network links
+        if !self.params.link_tput_mbps.is_empty() {
+            let link_tput_mbps = self
+                .params
+                .link_tput_mbps
+                .split(',')
+                .map(|s| s.trim().parse())
+                .collect::<Result<Vec<u32>, _>>()?;
+            let faults = Faults {
+                link_tput_mbps,
+                msg_delay_ms: self.params.link_delay_ms,
+                ..Faults::default()
+            };
+            pf_info!("injecting link faults {:?}", faults);
+            self.inject_faults(faults).await?;
         }
 
         // responders config change

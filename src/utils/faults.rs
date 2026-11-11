@@ -43,6 +43,10 @@ pub struct Faults {
     /// Peers that no outgoing message reaches (a one-way partition).
     pub cut_peers: HashSet<ReplicaId>,
 
+    /// Bandwidth in Mbps of each server's network link (0 for unlimited);
+    /// messages to a peer go out one after another at the slower one's.
+    pub link_tput_mbps: Vec<u32>,
+
     /// Delay added before each storage operation, in millisecs.
     pub disk_delay_ms: u64,
 
@@ -141,6 +145,22 @@ pub(crate) fn msg_copies_delays(peer: ReplicaId) -> Option<Vec<Duration>> {
             })
             .collect(),
     )
+}
+
+/// Time to transmit a message of `bytes` from `me` to `peer` over their
+/// links, if limited.
+pub(crate) fn link_tx_time(me: ReplicaId, peer: ReplicaId, bytes: usize) -> Option<Duration> {
+    if !ACTIVE.load(Ordering::Acquire) {
+        return None;
+    }
+    let st = fault_state();
+    let mbps = [me, peer]
+        .iter()
+        .filter_map(|&s| st.faults.link_tput_mbps.get(s as usize).copied())
+        .filter(|&mbps| mbps > 0)
+        .min()?;
+    let bits = f64::from(u32::try_from(bytes).unwrap_or(u32::MAX)) * 8.0;
+    Some(Duration::from_secs_f64(bits / (f64::from(mbps) * 1e6)))
 }
 
 /// Decides the fault of a storage operation: its delay, and how it fails

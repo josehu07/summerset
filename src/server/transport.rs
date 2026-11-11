@@ -21,13 +21,13 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::task::{self, JoinHandle};
-use tokio::time::{self, Duration};
+use tokio::time::{self, Duration, Instant};
 use wincode::{SchemaRead, SchemaWrite};
 
 use crate::server::{LeaseGid, LeaseMsg, LeaseNotice, LeaseNum, ReplicaId};
 use crate::utils::{
-    Bitmap, Codec, HANDSHAKE_TIMEOUT, SummersetError, faults, safe_tcp_read, safe_tcp_write,
-    tcp_bind_with_retry, tcp_connect_with_retry,
+    Bitmap, CODEC_CONFIG, Codec, HANDSHAKE_TIMEOUT, SummersetError, faults, safe_tcp_read,
+    safe_tcp_write, tcp_bind_with_retry, tcp_connect_with_retry,
 };
 
 /// Peer-peer message wrapper type that includes leave notification variants.
@@ -466,8 +466,8 @@ where
         self.tx_sends.insert(id, tx_send);
 
         let mut messenger = TransportHubMessengerTask::new(
+            self.me,
             id,
-            conn_addr,
             stream,
             rx_send,
             self.tx_recv.clone(),
@@ -483,11 +483,7 @@ where
     }
 
     /// Accepts a new peer connection.
-    async fn accept_new_peer(
-        &mut self,
-        mut stream: TcpStream,
-        addr: SocketAddr,
-    ) -> Result<(), SummersetError> {
+    async fn accept_new_peer(&mut self, mut stream: TcpStream) -> Result<(), SummersetError> {
         let id = time::timeout(HANDSHAKE_TIMEOUT, stream.read_u8()).await?; // receive peer's ID
         if let Err(e) = id {
             return logged_err!("error receiving new peer ID: {}", e);
@@ -508,8 +504,8 @@ where
         self.tx_sends.insert(id, tx_send);
 
         let mut messenger = TransportHubMessengerTask::new(
+            self.me,
             id,
-            addr,
             stream,
             rx_send,
             self.tx_recv.clone(),
@@ -566,11 +562,8 @@ where
                         pf_warn!("error accepting peer connection: {}", e);
                         continue;
                     }
-                    let (stream, addr) = accepted.unwrap();
-                    if let Err(e) = self.accept_new_peer(
-                        stream,
-                        addr,
-                    ).await {
+                    let (stream, _) = accepted.unwrap();
+                    if let Err(e) = self.accept_new_peer(stream).await {
                         pf_error!("error accepting new peer: {}", e);
                     }
                 },
@@ -589,6 +582,9 @@ where
 
 /// `TransportHub` per-peer messenger task.
 struct TransportHubMessengerTask<Msg> {
+    /// My replica ID.
+    me: ReplicaId,
+
     /// Corresponding peer's ID.
     id: ReplicaId,
     /// Corresponding peer's address.
@@ -605,6 +601,11 @@ struct TransportHubMessengerTask<Msg> {
     write_buf_cursor: usize,
     retrying: bool,
 
+    /// Over an emulated link (see `Faults`), the message being transmitted,
+    /// held back until its transmission finishes at the given time; the next
+    /// message is taken only after.
+    paced: Option<(Instant, PeerMessage<Msg>)>,
+
     tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
 
     tx_exit: mpsc::UnboundedSender<(ReplicaId, task::Id)>,
@@ -617,14 +618,17 @@ where
 {
     /// Creates a per-peer messenger task.
     fn new(
+        me: ReplicaId,
         id: ReplicaId,
-        addr: SocketAddr,
         conn: TcpStream,
         rx_send: mpsc::UnboundedReceiver<PeerMessage<Msg>>,
         tx_recv: mpsc::UnboundedSender<(ReplicaId, PeerMessage<Msg>)>,
         tx_leases: HashMap<LeaseGid, mpsc::UnboundedSender<(LeaseNum, LeaseNotice)>>,
         tx_exit: mpsc::UnboundedSender<(ReplicaId, task::Id)>,
     ) -> Self {
+        let addr = conn
+            .peer_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
         let (conn_read, conn_write) = conn.into_split();
 
         let read_buf = BytesMut::with_capacity(8 + 1024);
@@ -633,6 +637,7 @@ where
         let retrying = false;
 
         TransportHubMessengerTask {
+            me,
             id,
             addr,
             conn_read,
@@ -643,6 +648,7 @@ where
             write_buf,
             write_buf_cursor,
             retrying,
+            paced: None,
             tx_leases,
             tx_exit,
         }
@@ -682,7 +688,7 @@ where
         loop {
             tokio::select! {
                 // gets a message to send out
-                msg = self.rx_send.recv(), if !self.retrying => {
+                msg = self.rx_send.recv(), if !self.retrying && self.paced.is_none() => {
                     match msg {
                         Some(PeerMessage::Leave) => {
                             // I decide to leave, notify peers
@@ -704,29 +710,63 @@ where
                             pf_error!("proactively sending LeaveReply msg");
                         },
 
-                        Some(PeerMessage::LeaseMsg { .. } | PeerMessage::Msg { .. }) => {
-                            match Self::write_msg(
-                                &mut self.write_buf,
-                                &mut self.write_buf_cursor,
-                                &self.conn_write,
-                                Some(msg.as_ref().unwrap()),
-                            ) {
-                                Ok(true) => {
-                                    // pf_trace!("sent -> {} msg {:?}", id, msg);
-                                }
-                                Ok(false) => {
-                                    pf_debug!("should start retrying msg send -> {}", self.id);
-                                    self.retrying = true;
-                                }
-                                Err(_e) => {
-                                    // NOTE: commented out to prevent console lags
-                                    //       during benchmarking
-                                    // pf_error!("error sending -> {}: {}", id, e);
+                        Some(msg @ (PeerMessage::LeaseMsg { .. } | PeerMessage::Msg { .. })) => {
+                            let bytes = wincode::config::serialized_size(&msg, CODEC_CONFIG)
+                                .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
+                            if let Some(tx_time) = faults::link_tx_time(self.me, self.id, bytes) {
+                                // over an emulated link, a message arrives once
+                                // fully transmitted
+                                self.paced = Some((Instant::now() + tx_time, msg));
+                            } else {
+                                match Self::write_msg(
+                                    &mut self.write_buf,
+                                    &mut self.write_buf_cursor,
+                                    &self.conn_write,
+                                    Some(&msg),
+                                ) {
+                                    Ok(true) => {
+                                        // pf_trace!("sent -> {} msg {:?}", id, msg);
+                                    }
+                                    Ok(false) => {
+                                        pf_debug!("should start retrying msg send -> {}", self.id);
+                                        self.retrying = true;
+                                    }
+                                    Err(_e) => {
+                                        // NOTE: commented out to prevent console lags
+                                        //       during benchmarking
+                                        // pf_error!("error sending -> {}: {}", id, e);
+                                    }
                                 }
                             }
                         },
 
                         None => break, // channel gets closed and no messages remain
+                    }
+                },
+
+                // finishing transmission over an emulated link
+                () = time::sleep_until(
+                    self.paced.as_ref().map_or_else(Instant::now, |(done, _)| *done)
+                ), if self.paced.is_some() && !self.retrying => {
+                    let (_, msg) = self.paced.take().unwrap();
+                    match Self::write_msg(
+                        &mut self.write_buf,
+                        &mut self.write_buf_cursor,
+                        &self.conn_write,
+                        Some(&msg),
+                    ) {
+                        Ok(true) => {
+                            // pf_trace!("sent -> {} msg {:?}", id, msg);
+                        }
+                        Ok(false) => {
+                            pf_debug!("should start retrying msg send -> {}", self.id);
+                            self.retrying = true;
+                        }
+                        Err(_e) => {
+                            // NOTE: commented out to prevent console lags
+                            //       during benchmarking
+                            // pf_error!("error sending -> {}: {}", id, e);
+                        }
                     }
                 },
 

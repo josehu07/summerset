@@ -9,38 +9,6 @@ use crate::utils::{Bitmap, RSCodeword, SummersetError};
 
 // CrosswordReplica peer-peer messages handling
 impl CrosswordReplica {
-    /// Computes the number of distinct shards that the acknowledged shard sets
-    /// `acks` still cover after crossing out any `fault_tolerance` of them.
-    pub(super) fn coverage_under_faults(
-        acks: &HashMap<ReplicaId, Bitmap>,
-        fault_tolerance: u8,
-    ) -> u8 {
-        if acks.len() <= fault_tolerance as usize {
-            return 0;
-        }
-
-        // enumerate all subsets of acks excluding fault number of replicas
-        #[allow(clippy::cast_possible_truncation)]
-        let cnt = (acks.len() - fault_tolerance as usize) as u32;
-        let shards: Vec<&Bitmap> = acks.values().collect();
-        let mut coverage = shards[0].clone();
-        let mut min_coverage = u8::MAX;
-        for n in (0..1usize << shards.len()).filter(|n| n.count_ones() == cnt) {
-            coverage.clear();
-            for (_, acked) in shards
-                .iter()
-                .enumerate()
-                .filter(|&(i, _)| (n >> i) & 1 == 1)
-            {
-                coverage
-                    .union(acked)
-                    .expect("shard sets should be of same size");
-            }
-            min_coverage = cmp::min(min_coverage, coverage.count());
-        }
-        min_coverage
-    }
-
     /// Handler of Prepare message from leader.
     async fn handle_msg_prepare(
         &mut self,
@@ -241,16 +209,21 @@ impl CrosswordReplica {
                 debug_assert!(trigger_inst.leader_bk.is_some());
                 let trigger_leader_bk = trigger_inst.leader_bk.as_mut().unwrap();
                 trigger_leader_bk.prepare_acks.set(peer, true)?;
-                let prepare_acks_cnt = trigger_leader_bk.prepare_acks.count();
 
-                // if quorum size reached, enter Accept phase for all instances
-                // at and after trigger_slot; for each entry, use the request
-                // batch value with the highest ballot number in quorum
-                if prepare_acks_cnt >= self.majority {
+                // if a majority have replied, enter Accept phase for all
+                // instances at and after trigger_slot; for each entry,
+                // re-propose the value with the highest ballot number heard if
+                // enough of its shards are gathered (across ballots); if not,
+                // once the replies include all survivors of some tolerated
+                // failure, it never committed and the entry gets a null
+                // request batch (the discard rule), else it waits for more
+                if trigger_leader_bk.prepare_acks.count() >= self.majority {
+                    let can_discard = self.tolerance.survived_by(&trigger_leader_bk.prepare_acks);
                     // update bal_prepared
                     debug_assert!(self.bal_prepared <= ballot);
                     self.bal_prepared = ballot;
 
+                    let (mut reproposals, mut discards) = (vec![], vec![]);
                     for (this_slot, inst) in self
                         .insts
                         .iter_mut()
@@ -265,158 +238,227 @@ impl CrosswordReplica {
                             .unwrap()
                             .prepare_values
                             .values()
-                            .max_by_key(|value| value.ballot);
-                        if let Some(candidate) = candidate {
-                            inst.value_id = Some(candidate.value_id);
-                            inst.reqs_cw = candidate.reqs_cw.clone();
-                        } else {
-                            inst.value_id = None;
-                            inst.reqs_cw = RSCodeword::from_null(
-                                self.rs_data_shards,
-                                self.rs_total_shards - self.rs_data_shards,
-                            )?;
-                        }
-
-                        if inst.reqs_cw.avail_shards() >= self.rs_data_shards {
-                            // if quorum size >= majority and enough shards
-                            // of the highest-ballot value are gathered across
-                            // all ballots, reconstruct the original batch
-                            if inst.reqs_cw.avail_data_shards() < self.rs_data_shards {
-                                // have enough shards but need reconstruction
-                                inst.reqs_cw.reconstruct_data(Some(&self.rs_coder))?;
+                            .max_by_key(|value| value.ballot)
+                            .filter(|c| c.reqs_cw.avail_shards() >= c.reqs_cw.num_data_shards());
+                        let Some(candidate) = candidate else {
+                            if can_discard {
+                                discards.push(this_slot);
                             }
-                            Self::verify_value_id(
-                                inst.value_id
-                                    .expect("non-null Prepare value should have an identity"),
-                                &mut inst.reqs_cw,
-                                self.rs_data_shards,
-                                self.rs_total_shards,
-                            )?;
-                        } else if prepare_acks_cnt
-                            >= (self.population - self.config.fault_tolerance)
-                        {
-                            // else, if quorum size >= (N - f) and shards with
-                            // the highest ballot are not enough to reconstruct
-                            // the original data, can choose any value; we just
-                            // fill this instance with a null request batch
-                            let reqs = ReqBatch::new();
-                            inst.value_id = Some(Self::value_id(
-                                &reqs,
-                                self.rs_data_shards,
-                                self.rs_total_shards,
-                            )?);
-                            inst.reqs_cw = RSCodeword::from_data(
-                                reqs,
-                                self.rs_data_shards,
-                                self.rs_total_shards - self.rs_data_shards,
-                            )?;
-                        } else {
-                            // not yet for this instance
                             continue;
+                        };
+
+                        // reconstruct the original batch if needed
+                        inst.value_id = Some(candidate.value_id);
+                        inst.reqs_cw = candidate.reqs_cw.clone();
+                        let (d, w) = (inst.reqs_cw.num_data_shards(), inst.reqs_cw.num_shards());
+                        if inst.reqs_cw.avail_data_shards() < d {
+                            inst.reqs_cw.reconstruct_data(Self::coder_of(
+                                &mut self.rs_coders,
+                                &inst.reqs_cw,
+                            )?)?;
                         }
+                        Self::verify_value_id(candidate.value_id, &mut inst.reqs_cw, d, w)?;
+                        reproposals.push(this_slot);
+                    }
 
-                        // if parity shards not computed yet, compute them now
-                        if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_shards() {
-                            inst.reqs_cw.compute_parity(Some(&self.rs_coder))?;
-                        }
-
-                        inst.status = Status::Accepting;
-                        let assignment = Self::pick_assignment_policy(
-                            self.assignment_adaptive,
-                            self.assignment_balanced,
-                            &self.init_assignment,
-                            &self.brr_assignments,
-                            self.rs_data_shards,
-                            self.majority,
-                            self.config.fault_tolerance,
-                            inst.reqs_cw.data_len(),
-                            &self.linreg_model,
-                            self.config.b_to_d_threshold,
-                            &self.qdisc_info,
-                            self.heartbeater.peer_alive(),
-                        );
-                        pf_debug!(
-                            "enter Accept phase for slot {} bal {} asgmt {}",
-                            this_slot,
-                            inst.bal,
-                            Self::assignment_to_string(assignment)
-                        );
-
-                        // record update to largest accepted ballot and corresponding data
-                        let subset_copy = inst
-                            .reqs_cw
-                            .subset_copy(&assignment[self.id as usize], false)?;
-                        let value_id = inst
-                            .value_id
-                            .expect("Accepting instance should have a value identity");
-                        inst.assignment.clone_from(assignment);
-                        Self::record_acceptance(
-                            &mut inst.voted,
-                            AcceptedValue {
-                                ballot,
-                                value_id,
-                                reqs_cw: subset_copy.clone(),
-                            },
-                        )?;
-                        self.storage_hub.submit_action(
-                            LogCtx::AcceptData {
-                                slot: this_slot,
-                                ballot,
-                                value_id,
-                                shards: subset_copy.avail_shards_map(),
-                            },
-                            LogAction::Append {
-                                entry: WalEntry::AcceptData {
-                                    slot: this_slot,
-                                    ballot,
-                                    value_id,
-                                    reqs_cw: subset_copy,
-                                    assignment: assignment.clone(),
-                                },
-                                sync: self.config.logger_sync,
-                            },
-                        )?;
-                        pf_trace!(
-                            "submitted AcceptData log action for slot {} bal {}",
-                            this_slot,
-                            ballot
-                        );
-
-                        // send Accept messages to all peers
-                        let now_us = self.startup_time.elapsed().as_micros();
-                        for peer in 0..self.population {
-                            if peer == self.id {
-                                continue;
-                            }
-                            self.transport_hub.send_msg(
-                                PeerMsg::Accept {
-                                    slot: this_slot,
-                                    ballot,
-                                    value_id,
-                                    reqs_cw: inst
-                                        .reqs_cw
-                                        .subset_copy(&assignment[peer as usize], false)?,
-                                    assignment: assignment.clone(),
-                                },
-                                peer,
-                            )?;
-                            if self.heartbeater.peer_alive().get(peer)? {
-                                self.pending_accepts
-                                    .get_mut(&peer)
-                                    .unwrap()
-                                    .push_back((now_us, this_slot));
-                            }
-                        }
-                        pf_trace!(
-                            "broadcast Accept messages for slot {} bal {}",
-                            this_slot,
-                            ballot
-                        );
+                    for this_slot in reproposals {
+                        self.repropose_value(this_slot)?;
+                    }
+                    for this_slot in discards {
+                        self.propose_new_value(this_slot, ReqBatch::new())?;
                     }
                 }
             }
         }
 
+        Ok(())
+    }
+
+    /// Picks the assignment for a value of `size` bytes, with the code scheme
+    /// `(d, w)` if given (for a value already encoded), returning the code
+    /// scheme too.
+    pub(super) fn choose_assignment(
+        &mut self,
+        size: usize,
+        scheme: Option<(u8, u8)>,
+    ) -> (u8, u8, Vec<Bitmap>) {
+        let (d, w, rows) = self.pick_assignment(size, scheme);
+        let loads = rows.iter().map(Bitmap::count).collect();
+        *self.asgmt_usage.entry((d, loads)).or_default() += 1;
+        (d, w, rows)
+    }
+
+    /// Helper of `choose_assignment()`.
+    fn pick_assignment(&self, size: usize, scheme: Option<(u8, u8)>) -> (u8, u8, Vec<Bitmap>) {
+        if self.config.asymmetric {
+            // replies are predicted by the perf models of alive peers, behind
+            // the bytes in flight to them, with less reliable ones expected to
+            // delay (by failure detection) as likely as they seem down
+            let penalty =
+                Duration::from_millis(self.config.hb_hear_timeout_min).as_secs_f64() * 1e3;
+            let alive = self.heartbeater.peer_alive();
+            let reply_time = |peer: ReplicaId, bytes: usize| {
+                alive.get(peer).unwrap_or(false).then(|| {
+                    self.linreg_model[&peer].predict(self.inflight_bytes[&peer] + bytes)
+                        + self.unreliability[&peer] * penalty
+                })
+            };
+            if let Some(a) = asymmetric::pick_assignment(
+                self.id,
+                &self.tolerance,
+                self.majority,
+                reply_time,
+                size,
+                self.config.max_data_shards,
+                scheme,
+            ) {
+                return (a.d, a.w, a.rows);
+            }
+        } else if scheme.is_none_or(|s| s == (self.rs_data_shards, self.rs_total_shards)) {
+            let assignment = Self::pick_assignment_policy(
+                self.assignment_adaptive,
+                self.assignment_balanced,
+                &self.init_assignment,
+                &self.brr_assignments,
+                self.rs_data_shards,
+                self.majority,
+                self.config.fault_tolerance,
+                size,
+                &self.linreg_model,
+                &self.inflight_bytes,
+                self.config.b_to_d_threshold,
+                &self.qdisc_info,
+                self.heartbeater.peer_alive(),
+            );
+            return (
+                self.rs_data_shards,
+                self.rs_total_shards,
+                assignment.clone(),
+            );
+        }
+
+        // otherwise (e.g., too many peers down to commit with any of them),
+        // full copies everywhere
+        let (d, w) = scheme.unwrap_or((1, 1));
+        (
+            d,
+            w,
+            vec![Bitmap::from((w, 0..d)); self.population as usize],
+        )
+    }
+
+    /// Encodes a new value for the instance at `slot` under the code scheme
+    /// of the assignment picked for it, then starts its Accept phase.
+    pub(super) fn propose_new_value(
+        &mut self,
+        slot: usize,
+        reqs: ReqBatch,
+    ) -> Result<(), SummersetError> {
+        let size = usize::try_from(wincode::config::serialized_size(&reqs, CODEC_CONFIG)?)?;
+        let (d, w, assignment) = self.choose_assignment(size, None);
+        let value_id = Self::value_id(&reqs, d, w)?;
+        let inst = &mut self.insts[slot - self.start_slot];
+        inst.reqs_cw = RSCodeword::from_data(reqs, d, w - d)?;
+        inst.value_id = Some(value_id);
+        self.accept_value(slot, assignment)
+    }
+
+    /// Re-proposes the value of the instance at `slot`, already encoded, with
+    /// a new assignment under its code scheme.
+    pub(super) fn repropose_value(&mut self, slot: usize) -> Result<(), SummersetError> {
+        let reqs_cw = &self.insts[slot - self.start_slot].reqs_cw;
+        let scheme = (reqs_cw.num_data_shards(), reqs_cw.num_shards());
+        let (_, _, assignment) = self.choose_assignment(reqs_cw.data_len(), Some(scheme));
+        self.accept_value(slot, assignment)
+    }
+
+    /// Starts the Accept phase of the instance at `slot` of my ballot, whose
+    /// complete value is known, with the given assignment: accepts my own
+    /// shards of it, and sends each peer its shards.
+    pub(super) fn accept_value(
+        &mut self,
+        slot: usize,
+        assignment: Vec<Bitmap>,
+    ) -> Result<(), SummersetError> {
+        let inst = &mut self.insts[slot - self.start_slot];
+        let ballot = inst.bal;
+        let value_id = inst
+            .value_id
+            .expect("Accepting instance should have a value identity");
+        if inst.reqs_cw.avail_shards() < inst.reqs_cw.num_shards() {
+            // if parity shards not computed yet, compute them now
+            inst.reqs_cw
+                .compute_parity(Self::coder_of(&mut self.rs_coders, &inst.reqs_cw)?)?;
+        }
+        inst.status = Status::Accepting;
+        pf_debug!(
+            "enter Accept phase for slot {} bal {} asgmt {}",
+            slot,
+            ballot,
+            Self::assignment_to_string(&assignment)
+        );
+
+        // record update to largest accepted ballot and corresponding data
+        let subset_copy = inst
+            .reqs_cw
+            .subset_copy(&assignment[self.id as usize], false)?;
+        Self::record_acceptance(
+            &mut inst.voted,
+            AcceptedValue {
+                ballot,
+                value_id,
+                reqs_cw: subset_copy.clone(),
+            },
+        )?;
+        self.storage_hub.submit_action(
+            LogCtx::AcceptData {
+                slot,
+                ballot,
+                value_id,
+                shards: subset_copy.avail_shards_map(),
+            },
+            LogAction::Append {
+                entry: WalEntry::AcceptData {
+                    slot,
+                    ballot,
+                    value_id,
+                    // persist only my shards
+                    reqs_cw: subset_copy,
+                    assignment: assignment.clone(),
+                },
+                sync: self.config.logger_sync,
+            },
+        )?;
+        pf_trace!(
+            "submitted AcceptData log action for slot {} bal {}",
+            slot,
+            ballot
+        );
+
+        // send Accept messages to all peers, each getting its shards
+        let copies = (0..self.population)
+            .filter(|&p| p != self.id)
+            .map(|p| Ok((p, inst.reqs_cw.subset_copy(&assignment[p as usize], false)?)))
+            .collect::<Result<Vec<_>, SummersetError>>()?;
+        let now_us = self.startup_time.elapsed().as_micros();
+        for (peer, reqs_cw) in copies {
+            let size = usize::from(reqs_cw.avail_shards()) * reqs_cw.shard_len();
+            self.transport_hub.send_msg(
+                PeerMsg::Accept {
+                    slot,
+                    ballot,
+                    value_id,
+                    reqs_cw,
+                    assignment: assignment.clone(),
+                },
+                peer,
+            )?;
+            if self.heartbeater.peer_alive().get(peer)? {
+                self.push_pending_accept(peer, now_us, slot, size);
+            }
+        }
+        pf_trace!("broadcast Accept messages for slot {} bal {}", slot, ballot);
+        self.insts[slot - self.start_slot].assignment = assignment;
         Ok(())
     }
 
@@ -623,10 +665,7 @@ impl CrosswordReplica {
             }
             let is_leader = self.is_leader();
             if is_leader && peer != self.id {
-                // payload size that the corresponding Accept carried
-                let size = shards.count() as usize
-                    * self.insts[slot - self.start_slot].reqs_cw.shard_len();
-                self.record_accept_rtt(peer, self.startup_time.elapsed().as_micros(), slot, size);
+                self.record_accept_rtt(peer, self.startup_time.elapsed().as_micros(), slot);
             }
             let inst = &mut self.insts[slot - self.start_slot];
 
@@ -647,20 +686,25 @@ impl CrosswordReplica {
             // bookkeep the shards this Accept reply confirms durable, which
             // may differ from what the peer is assigned now (e.g., when
             // replying to an older Accept before a reassignment)
-            let acked = leader_bk
-                .accept_acks
-                .entry(peer)
-                .or_insert_with(|| Bitmap::new(shards.size(), false));
-            if acked.is_superset(shards) {
-                return Ok(());
+            // (a peer's first reply counts even if carrying no shards)
+            match leader_bk.accept_acks.entry(peer) {
+                Entry::Occupied(mut acked) => {
+                    if acked.get().is_superset(shards) {
+                        return Ok(());
+                    }
+                    acked.get_mut().union(shards)?;
+                }
+                Entry::Vacant(acked) => {
+                    acked.insert(shards.clone());
+                }
             }
-            acked.union(shards)?;
 
-            // if quorum size reached AND enough number of shards are
-            // remembered, mark this instance as committed
+            // if a majority have replied and the shards confirmed durable
+            // pass the commit rule, mark this instance as committed
             if u8::try_from(leader_bk.accept_acks.len())? >= self.majority
-                && Self::coverage_under_faults(&leader_bk.accept_acks, self.config.fault_tolerance)
-                    >= inst.reqs_cw.num_data_shards()
+                && self
+                    .tolerance
+                    .covers(&leader_bk.accept_acks, inst.reqs_cw.num_data_shards())
             {
                 inst.status = Status::Committed;
                 pf_debug!("committed instance at slot {} bal {}", slot, inst.bal);
@@ -688,116 +732,6 @@ impl CrosswordReplica {
         }
 
         Ok(())
-    }
-
-    /// Handler of Reconstruct message from leader or gossiping peer.
-    fn handle_msg_reconstruct(
-        &mut self,
-        peer: ReplicaId,
-        slots_excl: Vec<(usize, Bitmap)>,
-    ) -> Result<(), SummersetError> {
-        pf_trace!(
-            "received Reconstruct <- {} for {} slots",
-            peer,
-            slots_excl.len()
-        );
-        let mut slots_data = HashMap::new();
-
-        for (slot, mut subset) in slots_excl {
-            if slot < self.start_slot {
-                // TODO: this has one caveat: a new leader trying to do
-                //       reconstruction reads might find that all other peers
-                //       have snapshotted that slot. Proper InstallSnapshot-
-                //       style messages will be needed to deal with this; but
-                //       since this scenario is just too rare and does not
-                //       affect evaluation at all, it will be implemented after
-                //       a rework of the storage backend module
-                continue;
-            }
-
-            // locate instance in memory, filling in null instances if needed
-            while self.start_slot + self.insts.len() <= slot {
-                self.insts.push(self.null_instance()?);
-            }
-            let inst = &mut self.insts[slot - self.start_slot];
-
-            // ignore spurious duplications; also ignore if I have nothing to send back
-            if inst.status < Status::Accepting {
-                continue;
-            }
-            subset.flip(); // exclude unwanted shards the sender already has
-            let reply_cw = inst.reqs_cw.subset_copy(&subset, false)?;
-            if reply_cw.avail_shards() == 0 {
-                continue;
-            }
-
-            let Some(value_id) = inst.value_id else {
-                continue;
-            };
-            slots_data.insert(
-                slot,
-                AcceptedValue {
-                    ballot: inst.bal,
-                    value_id,
-                    reqs_cw: reply_cw,
-                },
-            );
-        }
-
-        if !slots_data.is_empty() {
-            let num_slots = slots_data.len();
-            self.transport_hub
-                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!("sent ReconstructReply -> {} for {} slots", peer, num_slots);
-        }
-        Ok(())
-    }
-
-    /// Handler of Reconstruct reply from replica.
-    fn handle_msg_reconstruct_reply(
-        &mut self,
-        peer: ReplicaId,
-        slots_data: HashMap<usize, AcceptedValue>,
-    ) -> Result<(), SummersetError> {
-        for (
-            slot,
-            AcceptedValue {
-                ballot,
-                value_id,
-                reqs_cw,
-            },
-        ) in slots_data
-        {
-            if slot < self.start_slot {
-                continue; // ignore if slot index outdated
-            }
-            pf_trace!(
-                "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                peer,
-                slot,
-                ballot,
-                reqs_cw.avail_shards_map()
-            );
-            debug_assert!(slot < self.start_slot + self.insts.len());
-            debug_assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
-            let inst = &mut self.insts[slot - self.start_slot];
-
-            // [for perf breakdown only]
-            if self.config.record_breakdown && self.config.record_size_recv {
-                (*self
-                    .bw_accumulators
-                    .get_mut(&peer)
-                    .expect("peer should exist in experiments")) += reqs_cw.get_size();
-            }
-
-            // same-value shards remain useful regardless of accepted ballot
-            if inst.status < Status::Executed && inst.value_id == Some(value_id) {
-                inst.reqs_cw.absorb_other(reqs_cw)?;
-            }
-        }
-
-        // if enough shards have been gathered, can push execution forward
-        self.advance_commit_bar()
     }
 
     /// Synthesized handler of receiving message from peer.

@@ -1,11 +1,10 @@
 //! `CRaft` -- peer-peer messaging.
 
 use std::cmp;
-use std::collections::HashMap;
 
 use super::*;
 use crate::server::{LogAction, LogResult, ReplicaId};
-use crate::utils::{RSCodeword, SummersetError};
+use crate::utils::SummersetError;
 
 // CRaftReplica peer-peer messages handling
 impl CRaftReplica {
@@ -431,83 +430,6 @@ impl CRaftReplica {
         }
 
         Ok(())
-    }
-
-    /// Handler of Reconstruct message from leader.
-    async fn handle_msg_reconstruct(
-        &mut self,
-        peer: ReplicaId,
-        slots: Vec<(usize, Term, Bitmap)>,
-    ) -> Result<(), SummersetError> {
-        pf_trace!("received Reconstruct <- {} for slots {:?}", peer, slots);
-        let mut slots_data = HashMap::new();
-
-        // reconstruction messages also count as heartbeats
-        self.heard_heartbeat(peer, self.curr_term).await?;
-
-        for (slot, term, mut subset) in slots {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.log.len()
-                || term != self.log[slot - self.start_slot].term
-            {
-                // NOTE: this has one caveat: a new leader trying to do
-                //       reconstruction reads might find that all other peers
-                //       have snapshotted that slot. Proper InstallSnapshot-style
-                //       messages will be needed to deal with this; but since
-                //       this scenario is just too rare, it is not implemented yet
-                continue;
-            }
-
-            // term match, send back my available shards the requester lacks
-            subset.flip();
-            let reply_cw = self.log[slot - self.start_slot]
-                .reqs_cw
-                .subset_copy(&subset, false)?;
-            if reply_cw.avail_shards() > 0 {
-                slots_data.insert(slot, (term, reply_cw));
-            }
-        }
-
-        if !slots_data.is_empty() {
-            let num_slots = slots_data.len();
-            self.transport_hub
-                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!("sent ReconstructReply -> {} for {} slots", peer, num_slots);
-        }
-        Ok(())
-    }
-
-    /// Handler of Reconstruct reply from replica.
-    async fn handle_msg_reconstruct_reply(
-        &mut self,
-        peer: ReplicaId,
-        slots_data: HashMap<usize, (Term, RSCodeword<ReqBatch>)>,
-    ) -> Result<(), SummersetError> {
-        // reconstruction messages also count as heartbeats
-        self.heard_heartbeat(peer, self.curr_term).await?;
-
-        for (slot, (term, reqs_cw)) in slots_data {
-            if slot < self.start_slot
-                || slot >= self.start_slot + self.log.len()
-                || self.log[slot - self.start_slot].term != term
-            {
-                continue; // ignore if slot index or entry outdated
-            }
-            pf_trace!(
-                "in ReconstructReply <- {} for slot {} shards {:?}",
-                peer,
-                slot,
-                reqs_cw.avail_shards_map()
-            );
-
-            // absorb the shards from this replica
-            self.log[slot - self.start_slot]
-                .reqs_cw
-                .absorb_other(reqs_cw)?;
-        }
-
-        // if enough shards have been gathered, can push execution forward
-        self.commit_up_to(self.commit_known)
     }
 
     /// Synthesized handler of receiving message from peer.

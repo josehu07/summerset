@@ -142,31 +142,36 @@ impl LinearRegressor {
             //           self.timestamps, self.datapoints, model);
             Ok(model.clone())
         } else {
-            // use all datapoints in the size 0 bucket (i.e., the heartbeat
-            // messages) to estimate delay and jitter
-            let bucket0 = &self.buckets[0];
-            let mut delay = bucket0
-                .iter()
-                .min_by(|dpa, dpb| dpa.2.partial_cmp(&dpb.2).unwrap())
-                .map_or(0.0, |dp| dp.2);
-            let mut jitter =
-                (bucket0.iter().map(|dp| dp.2).sum::<f64>() / bucket0.len() as f64) - delay;
-
-            if delay < 0.0 {
-                delay = 0.0;
-            }
-            if jitter < 0.0 {
-                jitter = 0.0;
-            }
-
             // compute model on current window of datapoints
             let mut xys: Vec<(f64, f64)> = vec![];
             for bucket in &self.buckets {
                 xys.append(&mut bucket.iter().map(|dp| (dp.1 as f64, dp.2)).collect());
             }
-            let mut slope = linear_regression_of(&xys)?.0;
+            let (mut slope, intercept) = linear_regression_of(&xys)?;
             if slope < 0.0 {
                 slope = 0.0;
+            }
+
+            // use all datapoints in the size 0 bucket (i.e., the heartbeat
+            // messages) to estimate delay and jitter; if there are none (e.g.,
+            // as no heartbeat went over an idle link), take the intercept
+            let bucket0 = &self.buckets[0];
+            let (mut delay, mut jitter) = if bucket0.is_empty() {
+                (intercept, 0.0)
+            } else {
+                let delay = bucket0
+                    .iter()
+                    .map(|dp| dp.2)
+                    .min_by(f64::total_cmp)
+                    .unwrap_or(0.0);
+                let mean = bucket0.iter().map(|dp| dp.2).sum::<f64>() / bucket0.len() as f64;
+                (delay, mean - delay)
+            };
+            if delay < 0.0 {
+                delay = 0.0;
+            }
+            if jitter < 0.0 {
+                jitter = 0.0;
             }
 
             // remove potential outliers, where outliers are defined as the

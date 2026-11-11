@@ -1,7 +1,6 @@
 //! `RS-Paxos` -- peer-peer messaging.
 
 use std::cmp;
-use std::collections::HashMap;
 
 use super::*;
 use crate::server::{LogAction, ReplicaId};
@@ -531,92 +530,6 @@ impl RSPaxosReplica {
         }
 
         Ok(())
-    }
-
-    /// Handler of Reconstruct message from leader or a follower.
-    fn handle_msg_reconstruct(
-        &mut self,
-        peer: ReplicaId,
-        slots_excl: Vec<(usize, Bitmap)>,
-    ) -> Result<(), SummersetError> {
-        pf_trace!(
-            "received Reconstruct <- {} for {} slots",
-            peer,
-            slots_excl.len()
-        );
-        let mut slots_data = HashMap::new();
-
-        for (slot, mut subset) in slots_excl {
-            if slot < self.start_slot {
-                // TODO: this has one caveat: a new leader trying to do
-                //       reconstruction reads might find that all other peers
-                //       have snapshotted that slot. Proper InstallSnapshot-
-                //       style messages will be needed to deal with this; but
-                //       since this scenario is just too rare and does not
-                //       affect evaluation at all, it will be implemented after
-                //       a rework of the storage backend module
-                continue;
-            }
-
-            // locate instance in memory, filling in null instances if needed
-            while self.start_slot + self.insts.len() <= slot {
-                self.insts.push(self.null_instance()?);
-            }
-            let inst = &mut self.insts[slot - self.start_slot];
-
-            // ignore spurious duplications; also ignore if I have nothing to send back
-            if inst.status < Status::Accepting {
-                continue;
-            }
-            subset.flip(); // exclude unwanted shards the sender already has
-            let reply_cw = inst.reqs_cw.subset_copy(&subset, false)?;
-            if reply_cw.avail_shards() == 0 {
-                continue;
-            }
-
-            // send back my ballot for this slot and the available shards
-            slots_data.insert(slot, (inst.bal, reply_cw));
-        }
-
-        if !slots_data.is_empty() {
-            let num_slots = slots_data.len();
-            self.transport_hub
-                .send_msg(PeerMsg::ReconstructReply { slots_data }, peer)?;
-            pf_trace!("sent ReconstructReply -> {} for {} slots", peer, num_slots);
-        }
-        Ok(())
-    }
-
-    /// Handler of Reconstruct reply from replica.
-    fn handle_msg_reconstruct_reply(
-        &mut self,
-        peer: ReplicaId,
-        slots_data: HashMap<usize, (Ballot, RSCodeword<ReqBatch>)>,
-    ) -> Result<(), SummersetError> {
-        for (slot, (ballot, reqs_cw)) in slots_data {
-            if slot < self.start_slot {
-                continue; // ignore if slot index outdated
-            }
-            pf_trace!(
-                "in ReconstructReply <- {} for slot {} bal {} shards {:?}",
-                peer,
-                slot,
-                ballot,
-                reqs_cw.avail_shards_map()
-            );
-            debug_assert!(slot < self.start_slot + self.insts.len());
-            debug_assert!(self.insts[slot - self.start_slot].status >= Status::Committed);
-            let inst = &mut self.insts[slot - self.start_slot];
-
-            // if reply not outdated and ballot is up-to-date, absorb the shards
-            // from this replica
-            if inst.status < Status::Executed && ballot >= inst.bal {
-                inst.reqs_cw.absorb_other(reqs_cw)?;
-            }
-        }
-
-        // if enough shards have been gathered, can push execution forward
-        self.advance_commit_bar()
     }
 
     /// Synthesized handler of receiving message from peer.

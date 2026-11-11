@@ -535,8 +535,11 @@ impl ClientBench {
             self.total_cnt += 1;
         }
 
-        // wait for the next reply
-        if self.total_cnt > self.reply_cnt {
+        // wait for the reply if sent (earlier ones are all done with, maybe by
+        // redirects or timeouts), else retry the blocked send shortly after
+        if self.retrying {
+            time::sleep(Duration::from_millis(1)).await;
+        } else {
             let result = self.driver.wait_reply().await?;
             match result {
                 DriverReply::Success {
@@ -592,17 +595,19 @@ impl ClientBench {
                             }
                         }
 
-                        if self.slowdown > 0 {
-                            self.slowdown -= 1;
-                        }
                     }
 
                     DriverReply::Timeout | DriverReply::Failure => {
+                        // pending requests are given up on reconnecting
+                        self.slowdown = 0;
                         self.leave_reconnect().await?;
                     }
 
                     _ => {}
                 }
+
+                // any reply frees up a pending request
+                self.slowdown = self.slowdown.saturating_sub(1);
             }
 
             // send next request

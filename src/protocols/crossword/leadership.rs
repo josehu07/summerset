@@ -1,6 +1,6 @@
 //! `Crossword` -- leader election.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 use crate::manager::CtrlMsg;
@@ -75,9 +75,7 @@ impl CrosswordReplica {
         self.bal_max_seen = self.bal_prep_sent;
 
         // clear pending perf monitoring timestamps
-        for pending in self.pending_accepts.values_mut() {
-            pending.clear();
-        }
+        self.clear_pending_accepts(None);
         for pending in self.pending_heartbeats.values_mut() {
             pending.clear();
         }
@@ -199,11 +197,7 @@ impl CrosswordReplica {
                 },
                 None,
             )?;
-            for (&peer, pending) in &mut self.pending_heartbeats {
-                if self.heartbeater.peer_alive().get(peer)? {
-                    pending.push_back((now_us, self.next_hb_id));
-                }
-            }
+            self.push_pending_heartbeats(now_us)?;
             self.next_hb_id += 1;
         }
 
@@ -242,36 +236,6 @@ impl CrosswordReplica {
         Ok(())
     }
 
-    /// Re-sends reconstruction reads, once per hearing timeout, for committed
-    /// instances that still lack enough shards to execute, as earlier reads
-    /// (e.g., the ones at step-up) may have got lost.
-    fn retrigger_reconstructs(&mut self) -> Result<(), SummersetError> {
-        if !self.is_leader()
-            || self.recon_retry.elapsed() < Duration::from_millis(self.config.hb_hear_timeout_min)
-        {
-            return Ok(());
-        }
-        self.recon_retry = Instant::now();
-        let recon_slots: Vec<(usize, Bitmap)> = (self.exec_bar..self.start_slot + self.insts.len())
-            .filter_map(|slot| {
-                let inst = &self.insts[slot - self.start_slot];
-                (inst.status == Status::Committed
-                    && inst.reqs_cw.avail_shards() < inst.reqs_cw.num_data_shards())
-                .then(|| (slot, inst.reqs_cw.avail_shards_map()))
-            })
-            .collect();
-        for chunk in recon_slots.chunks(self.config.msg_chunk_size) {
-            self.transport_hub.bcast_msg(
-                PeerMsg::Reconstruct {
-                    slots_excl: chunk.to_vec(),
-                },
-                None,
-            )?;
-            pf_debug!("re-sent Reconstruct messages for {} slots", chunk.len());
-        }
-        Ok(())
-    }
-
     /// Broadcasts heartbeats to all replicas.
     pub(super) async fn bcast_heartbeats(&mut self) -> Result<(), SummersetError> {
         self.retrigger_prepares()?;
@@ -289,11 +253,7 @@ impl CrosswordReplica {
             },
             None,
         )?;
-        for (&peer, pending) in &mut self.pending_heartbeats {
-            if self.heartbeater.peer_alive().get(peer)? {
-                pending.push_back((now_us, self.next_hb_id));
-            }
-        }
+        self.push_pending_heartbeats(now_us)?;
 
         // update max heartbeat reply counters and their repetitions seen,
         // and peers' liveness status accordingly
@@ -439,176 +399,66 @@ impl CrosswordReplica {
         Ok(())
     }
 
-    /// Check all instances in the Accepting phase and redo their Accepts
-    /// using the current assignment policy. This is a performance optimization
-    /// for soft fallback triggered when `peer_alive` count decreases.
-    #[allow(clippy::too_many_lines)]
+    /// Redoes the Accept phase of my Accepting instances whose assignment is
+    /// not responsive enough for the peers alive now, under a new assignment
+    /// (of the same code scheme). This is a performance optimization for soft
+    /// fallback triggered when `peer_alive` count decreases.
     fn fallback_redo_accepts(&mut self) -> Result<(), SummersetError> {
-        let now_us = self.startup_time.elapsed().as_micros();
-        let alive_cnt = self.heartbeater.peer_alive().count();
-        let mut new_pending_accepts: HashMap<ReplicaId, VecDeque<(u128, usize)>> = (0..self
-            .population)
-            .filter_map(|s| {
-                if s == self.id {
-                    None
+        let alive = self.heartbeater.peer_alive().clone();
+        let min_spr = Self::min_shards_per_replica(
+            self.rs_data_shards,
+            self.majority,
+            self.config.fault_tolerance,
+            alive.count(),
+        );
+        let redos: HashSet<usize> = (self.start_slot..)
+            .zip(&self.insts)
+            .filter(|(_, inst)| {
+                inst.status == Status::Accepting
+                    && inst.leader_bk.is_some()
+                    && inst.bal == self.bal_prepared
+            })
+            .filter(|(_, inst)| {
+                if self.config.asymmetric {
+                    // can the rows of those alive still pass the commit rule?
+                    let rows = (0..self.population)
+                        .filter(|&p| p == self.id || alive.get(p).unwrap_or(false))
+                        .map(|p| (p, inst.assignment[p as usize].clone()))
+                        .collect();
+                    !self.tolerance.covers(&rows, inst.reqs_cw.num_data_shards())
                 } else {
-                    Some((s, VecDeque::new()))
+                    !self.assignment_balanced || inst.assignment[0].count() < min_spr
                 }
             })
+            .map(|(slot, _)| slot)
             .collect();
+        if redos.is_empty() {
+            return Ok(());
+        }
+        self.clear_pending_accepts(Some(&redos));
 
-        let mut chunk_cnt = 0;
-        for (slot, inst) in self
-            .insts
-            .iter_mut()
-            .enumerate()
-            .map(|(s, i)| (self.start_slot + s, i))
-        {
-            if inst.status == Status::Accepting
-                && let Some(leader_bk) = inst.leader_bk.as_mut()
-            {
-                if self.assignment_balanced
-                    && inst.assignment[0].count()
-                        >= Self::min_shards_per_replica(
-                            self.rs_data_shards,
-                            self.majority,
-                            self.config.fault_tolerance,
-                            alive_cnt,
-                        )
-                {
-                    // the assignment policy used for this instance was already
-                    // responsive for current # of healthy nodes
-                    for (peer, pending) in &mut self.pending_accepts {
-                        while let Some(record) = pending.pop_front() {
-                            if slot == record.1 {
-                                new_pending_accepts.get_mut(peer).unwrap().push_back(record);
-                            }
-                        }
-                    }
-                    continue;
-                }
+        let mut redos: Vec<usize> = redos.into_iter().collect();
+        redos.sort_unstable();
+        let now_us = self.startup_time.elapsed().as_micros();
+        for (i, slot) in redos.into_iter().enumerate() {
+            self.repropose_value(slot)?;
 
-                inst.bal = self.bal_prepared;
-                leader_bk.accept_acks.clear();
-                let assignment = Self::pick_assignment_policy(
-                    self.assignment_adaptive,
-                    self.assignment_balanced,
-                    &self.init_assignment,
-                    &self.brr_assignments,
-                    self.rs_data_shards,
-                    self.majority,
-                    self.config.fault_tolerance,
-                    inst.reqs_cw.data_len(),
-                    &self.linreg_model,
-                    self.config.b_to_d_threshold,
-                    &self.qdisc_info,
-                    self.heartbeater.peer_alive(),
-                );
-                pf_debug!(
-                    "enter Accept phase for slot {} bal {} asgmt {}",
-                    slot,
-                    inst.bal,
-                    Self::assignment_to_string(assignment)
-                );
-
-                let subset_copy = inst
-                    .reqs_cw
-                    .subset_copy(&assignment[self.id as usize], false)?;
-                let value_id = inst
-                    .value_id
-                    .expect("Accepting instance should have a value identity");
-                inst.assignment.clone_from(assignment);
-                Self::record_acceptance(
-                    &mut inst.voted,
-                    AcceptedValue {
-                        ballot: inst.bal,
-                        value_id,
-                        reqs_cw: subset_copy.clone(),
+            // inject heartbeats in the middle to keep peers happy
+            if (i + 1) % self.config.msg_chunk_size == 0 {
+                self.transport_hub.bcast_msg(
+                    PeerMsg::Heartbeat {
+                        id: self.next_hb_id,
+                        ballot: self.bal_max_seen,
+                        commit_bar: self.commit_bar,
+                        exec_bar: self.exec_bar,
+                        snap_bar: self.snap_bar,
                     },
+                    None,
                 )?;
-
-                // record update to largest accepted ballot and corresponding data
-                self.storage_hub.submit_action(
-                    LogCtx::AcceptData {
-                        slot,
-                        ballot: inst.bal,
-                        value_id,
-                        shards: subset_copy.avail_shards_map(),
-                    },
-                    LogAction::Append {
-                        entry: WalEntry::AcceptData {
-                            slot,
-                            ballot: inst.bal,
-                            value_id,
-                            // persist only some shards on myself
-                            reqs_cw: subset_copy,
-                            assignment: assignment.clone(),
-                        },
-                        sync: self.config.logger_sync,
-                    },
-                )?;
-                pf_trace!(
-                    "submitted AcceptData log action for slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
-
-                // send Accept messages to all peers, each getting its subset of
-                // shards of data
-                for peer in 0..self.population {
-                    if peer == self.id {
-                        continue;
-                    }
-                    self.transport_hub.send_msg(
-                        PeerMsg::Accept {
-                            slot,
-                            ballot: inst.bal,
-                            value_id,
-                            reqs_cw: inst
-                                .reqs_cw
-                                .subset_copy(&assignment[peer as usize], false)?,
-                            assignment: assignment.clone(),
-                        },
-                        peer,
-                    )?;
-                    if self.heartbeater.peer_alive().get(peer)? {
-                        self.pending_accepts
-                            .get_mut(&peer)
-                            .unwrap()
-                            .push_back((now_us, slot));
-                    }
-                }
-                pf_trace!(
-                    "broadcast Accept messages for slot {} bal {}",
-                    slot,
-                    inst.bal
-                );
-                chunk_cnt += 1;
-
-                // inject heartbeats in the middle to keep peers happy
-                if chunk_cnt >= self.config.msg_chunk_size {
-                    self.transport_hub.bcast_msg(
-                        PeerMsg::Heartbeat {
-                            id: self.next_hb_id,
-                            ballot: self.bal_max_seen,
-                            commit_bar: self.commit_bar,
-                            exec_bar: self.exec_bar,
-                            snap_bar: self.snap_bar,
-                        },
-                        None,
-                    )?;
-                    for (&peer, pending) in &mut self.pending_heartbeats {
-                        if self.heartbeater.peer_alive().get(peer)? {
-                            pending.push_back((now_us, self.next_hb_id));
-                        }
-                    }
-                    self.next_hb_id += 1;
-                    chunk_cnt = 0;
-                }
+                self.push_pending_heartbeats(now_us)?;
+                self.next_hb_id += 1;
             }
         }
-
-        self.pending_accepts = new_pending_accepts;
         Ok(())
     }
 }

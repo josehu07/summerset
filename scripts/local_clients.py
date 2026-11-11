@@ -41,6 +41,8 @@ UTILITY_PARAM_NAMES = {
         "key_range",
         "responder",
         "write",
+        "link_tput_mbps",
+        "link_delay_ms",
     ],
 }
 
@@ -289,6 +291,14 @@ def main():
         "--write",
         type=str,
         help="colon-separated pair of key & value as a single-shot write",
+    )
+    parser_mess.add_argument(
+        "--link_tput_mbps",
+        type=str,
+        help="comma-separated Mbps of each server's emulated link (0 for unlimited)",
+    )
+    parser_mess.add_argument(
+        "--link_delay_ms", type=int, help="delay added to each peer message with the links"
     )
 
     args = parser.parse_args()

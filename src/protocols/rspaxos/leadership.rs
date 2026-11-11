@@ -1,7 +1,5 @@
 //! `RS-Paxos` -- leader election.
 
-use std::cmp;
-
 use super::*;
 use crate::manager::CtrlMsg;
 use crate::server::{LogAction, ReplicaId};
@@ -249,73 +247,6 @@ impl RSPaxosReplica {
                 },
                 Some(Bitmap::from((self.population, targets))),
             )?;
-        }
-        Ok(())
-    }
-
-    /// Sends reconstruction reads for committed instances that still lack
-    /// enough shards to execute. A follower reads new ones right away, each
-    /// shard from the other follower holding it (sparing the leader); all
-    /// reads are re-sent to everyone once per hearing timeout, as earlier ones
-    /// (e.g., the ones at step-up) may have got lost.
-    pub(super) fn retrigger_reconstructs(&mut self) -> Result<(), SummersetError> {
-        let overdue =
-            self.recon_retry.elapsed() >= Duration::from_millis(self.config.hb_hear_timeout_min);
-        if !overdue && self.is_leader() {
-            return Ok(());
-        }
-        let from_slot = if overdue {
-            self.recon_retry = Instant::now();
-            self.commit_bar
-        } else {
-            cmp::max(self.recon_bar, self.commit_bar)
-        };
-
-        let mut recon_slots: HashMap<ReplicaId, Vec<(usize, Bitmap)>> = HashMap::new();
-        let mut slot_up_to = from_slot;
-        for slot in from_slot..(self.start_slot + self.insts.len()) {
-            let inst = &self.insts[slot - self.start_slot];
-            if inst.status < Status::Committed {
-                break;
-            }
-            slot_up_to = slot + 1;
-            let avail = inst.reqs_cw.avail_shards_map();
-            if inst.status == Status::Executed || avail.count() >= self.majority {
-                continue;
-            }
-            let mut needed = self.majority - avail.count();
-            for peer in ((self.id + 1)..(self.id + self.population)).map(|p| p % self.population) {
-                if overdue {
-                    recon_slots
-                        .entry(peer)
-                        .or_default()
-                        .push((slot, avail.clone()));
-                } else if needed > 0 && self.leader != Some(peer) && !avail.get(peer)? {
-                    let mut excl = Bitmap::new(self.population, true);
-                    excl.set(peer, false)?;
-                    recon_slots.entry(peer).or_default().push((slot, excl));
-                    needed -= 1;
-                }
-            }
-        }
-        if !self.is_leader() {
-            self.recon_bar = cmp::max(self.recon_bar, slot_up_to);
-        }
-
-        for (peer, slots_excl) in recon_slots {
-            for chunk in slots_excl.chunks(self.config.msg_chunk_size) {
-                self.transport_hub.send_msg(
-                    PeerMsg::Reconstruct {
-                        slots_excl: chunk.to_vec(),
-                    },
-                    peer,
-                )?;
-            }
-            pf_debug!(
-                "sent Reconstruct messages -> {} for {} slots",
-                peer,
-                slots_excl.len()
-            );
         }
         Ok(())
     }
