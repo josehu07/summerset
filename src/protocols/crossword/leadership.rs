@@ -419,15 +419,15 @@ impl CrosswordReplica {
                     && inst.bal == self.bal_prepared
             })
             .filter(|(_, inst)| {
-                if self.config.asymmetric {
+                if self.config.force_balanced {
+                    !self.assignment_balanced || inst.assignment[0].count() < min_spr
+                } else {
                     // can the rows of those alive still pass the commit rule?
                     let rows = (0..self.population)
                         .filter(|&p| p == self.id || alive.get(p).unwrap_or(false))
                         .map(|p| (p, inst.assignment[p as usize].clone()))
                         .collect();
                     !self.tolerance.covers(&rows, inst.reqs_cw.num_data_shards())
-                } else {
-                    !self.assignment_balanced || inst.assignment[0].count() < min_spr
                 }
             })
             .map(|(slot, _)| slot)

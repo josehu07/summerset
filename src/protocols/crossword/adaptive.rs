@@ -5,8 +5,8 @@ use std::collections::HashSet;
 use super::*;
 use crate::utils::SummersetError;
 
-/// Timespan over which peers' reliability is averaged.
-const RELIABILITY_WINDOW: Duration = Duration::from_secs(30);
+/// Timespan over which peers' observed downtime is averaged.
+const DOWNTIME_AGG_WINDOW: Duration = Duration::from_secs(30);
 
 // CrosswordReplica linear regression perf monitoring
 impl CrosswordReplica {
@@ -316,16 +316,16 @@ impl CrosswordReplica {
         let keep_us = now_us.saturating_sub(1000 * u128::from(keep_ms));
 
         // track the recent fraction of time each peer seemed down, averaged
-        // over the reliability window
+        // over the downtime window
         let weight = Duration::from_millis(self.config.linreg_interval_ms).as_secs_f64()
-            / RELIABILITY_WINDOW.as_secs_f64();
-        for (&peer, unreliability) in &mut self.unreliability {
+            / DOWNTIME_AGG_WINDOW.as_secs_f64();
+        for (&peer, downtime) in &mut self.downtime_tracked {
             let down = if self.heartbeater.peer_alive().get(peer)? {
                 0.0
             } else {
                 1.0
             };
-            *unreliability += (down - *unreliability) * weight.min(1.0);
+            *downtime += (down - *downtime) * weight.min(1.0);
         }
 
         for (&peer, regressor) in &mut self.regressor {

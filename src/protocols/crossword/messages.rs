@@ -3,6 +3,7 @@
 use std::cmp;
 use std::collections::HashMap;
 
+use super::assignment::TotalShards;
 use super::*;
 use crate::server::{LogAction, ReplicaId};
 use crate::utils::{Bitmap, RSCodeword, SummersetError};
@@ -288,33 +289,17 @@ impl CrosswordReplica {
         (d, w, rows)
     }
 
+    /// Picks the number of data shards of the code scheme for a new value of
+    /// `size` bytes: fine enough for uneven rows and cheap enough to code.
+    fn choose_data_shards(&self, _size: usize) -> u8 {
+        // TODO: adaptively choose instead of always default
+        assignment::DEFAULT_DATA_SHARDS.min(self.config.max_data_shards)
+    }
+
     /// Helper of `choose_assignment()`.
     fn pick_assignment(&self, size: usize, scheme: Option<(u8, u8)>) -> (u8, u8, Vec<Bitmap>) {
-        if self.config.asymmetric {
-            // replies are predicted by the perf models of alive peers, behind
-            // the bytes in flight to them, with less reliable ones expected to
-            // delay (by failure detection) as likely as they seem down
-            let penalty =
-                Duration::from_millis(self.config.hb_hear_timeout_min).as_secs_f64() * 1e3;
-            let alive = self.heartbeater.peer_alive();
-            let reply_time = |peer: ReplicaId, bytes: usize| {
-                alive.get(peer).unwrap_or(false).then(|| {
-                    self.linreg_model[&peer].predict(self.inflight_bytes[&peer] + bytes)
-                        + self.unreliability[&peer] * penalty
-                })
-            };
-            if let Some(a) = asymmetric::pick_assignment(
-                self.id,
-                &self.tolerance,
-                self.majority,
-                reply_time,
-                size,
-                self.config.max_data_shards,
-                scheme,
-            ) {
-                return (a.d, a.w, a.rows);
-            }
-        } else if scheme.is_none_or(|s| s == (self.rs_data_shards, self.rs_total_shards)) {
+        let balanced_scheme = (self.rs_data_shards, self.rs_total_shards);
+        if self.config.force_balanced && scheme.is_none_or(|s| s == balanced_scheme) {
             let assignment = Self::pick_assignment_policy(
                 self.assignment_adaptive,
                 self.assignment_balanced,
@@ -330,16 +315,56 @@ impl CrosswordReplica {
                 &self.qdisc_info,
                 self.heartbeater.peer_alive(),
             );
-            return (
-                self.rs_data_shards,
-                self.rs_total_shards,
-                assignment.clone(),
-            );
+            return (balanced_scheme.0, balanced_scheme.1, assignment.clone());
+        }
+
+        // keep the code scheme of a value already encoded, else pick one,
+        // its parity shards bounded
+        let (d, total) = scheme.map_or_else(
+            || {
+                let d = self.choose_data_shards(size);
+                (
+                    d,
+                    TotalShards::AtMost(d.saturating_add(self.config.max_parity_shards)),
+                )
+            },
+            |(d, w)| (d, TotalShards::Exactly(w)),
+        );
+        if !self.config.force_balanced {
+            // replies are predicted by the perf models of alive peers, behind
+            // the bytes in flight to them, with less reliable ones expected to
+            // delay (by failure detection) as likely as they seem to fail
+            let penalty =
+                Duration::from_millis(self.config.hb_hear_timeout_min).as_secs_f64() * 1e3;
+            let alive = self.heartbeater.peer_alive();
+            let reply_time = |peer: ReplicaId, bytes: usize| {
+                alive.get(peer).unwrap_or(false).then(|| {
+                    self.linreg_model[&peer].predict(self.inflight_bytes[&peer] + bytes)
+                        + self
+                            .reliability_prof
+                            .unreliability(peer, self.downtime_tracked[&peer])
+                            * penalty
+                })
+            };
+            if let Some(a) = assignment::pick_assignment(
+                self.id,
+                &self.tolerance,
+                self.majority,
+                reply_time,
+                size,
+                d,
+                total,
+            ) {
+                return (a.d, a.w, a.rows);
+            }
         }
 
         // otherwise (e.g., too many peers down to commit with any of them),
         // full copies everywhere
-        let (d, w) = scheme.unwrap_or((1, 1));
+        let w = match total {
+            TotalShards::Exactly(w) => w,
+            TotalShards::AtMost(_) => d,
+        };
         (
             d,
             w,

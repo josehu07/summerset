@@ -1,15 +1,16 @@
 //! Replication protocol: `Crossword`.
 //!
-//! `MultiPaxos` with flexible Reed-Solomon erasure code sharding that supports
-//! dynamically tunable shard assignment with the correct liveness constraints,
-//! plus follower gossiping for actual usability. Optionally, assignments are
-//! asymmetric with their code schemes picked per instance, committing once a
-//! majority have replied and the shards persisted survive every tolerated
-//! failure.
+//! `MultiPaxos` with flexible Reed-Solomon erasure code sharding, plus follower
+//! gossiping for actual usability. Per instance, the leader picks a code
+//! scheme and a general (possibly uneven) assignment of its shards to the
+//! replicas, guided by their perf models and reliability profile; an instance
+//! commits once a majority have replied and the shards persisted survive every
+//! tolerated failure. Balanced round-robin assignments (the original Crossword)
+//! can be forced too.
 
 use wincode::{SchemaRead, SchemaWrite};
 mod adaptive;
-mod asymmetric;
+mod assignment;
 mod control;
 mod durability;
 mod execution;
@@ -17,9 +18,9 @@ mod gossiping;
 mod leadership;
 mod messages;
 mod recovery;
+mod reliability;
 mod request;
 mod snapshot;
-mod tolerance;
 
 use std::cmp;
 use std::collections::hash_map::Entry;
@@ -31,10 +32,10 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use get_size::GetSize;
 use reed_solomon_erasure::galois_8::ReedSolomon;
+use reliability::{ReliabilityProfile, Tolerance};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::time::{self, Duration, Instant, Interval, MissedTickBehavior};
-use tolerance::Tolerance;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::client::{ClientApiStub, ClientCtrlStub, ClientId, GenericEndpoint};
@@ -103,25 +104,28 @@ pub struct ReplicaConfigCrossword {
     /// Fault-tolerance level: any this many servers may fail.
     pub fault_tolerance: u8,
 
-    /// Failure domains (e.g., racks) that may also fail as a whole, as
-    /// comma-separated server IDs, separated by '/' (e.g., "3,4/1,2"); for
-    /// asymmetric assignments only.
-    pub fault_domains: String,
+    /// Reliability profile of the servers, as mechanisms separated by ';'
+    /// (see `ReliabilityProfile`), e.g., "domains:3,4;runtime".
+    pub reliability_profile: String,
 
-    /// Pick an asymmetric assignment and its code scheme per instance?
-    pub asymmetric: bool,
-
-    /// Maximum number of data shards of asymmetric assignments.
-    pub max_data_shards: u8,
+    /// Force balanced round-robin assignments of the `rs_*` code scheme (the
+    /// original Crossword)?
+    pub force_balanced: bool,
 
     /// Maximum chunk size (in slots) of any bulk messages.
     pub msg_chunk_size: usize,
 
-    /// Total number of possible shards in a codeword (i.e., codeword width).
-    /// If zero, sets this to == population.
+    /// Total number of shards in a codeword of balanced assignments (i.e.,
+    /// codeword width). If zero, sets this to == population.
     pub rs_total_shards: u8,
-    /// Number of data shards. If zero, sets this to == majority.
+    /// Number of data shards of balanced assignments. If zero, sets this to ==
+    /// majority.
     pub rs_data_shards: u8,
+
+    /// Maximum number of data shards of a code scheme in general.
+    pub max_data_shards: u8,
+    /// Maximum number of parity shards of a code scheme in general.
+    pub max_parity_shards: u8,
 
     /// If non-empty, use this initial shards assignment policy.
     pub init_assignment: String,
@@ -181,9 +185,10 @@ impl Default for ReplicaConfigCrossword {
             gossip_batch_size: 0,
             disable_gossip_timer: false,
             fault_tolerance: 0,
-            fault_domains: String::new(),
-            asymmetric: false,
-            max_data_shards: 16,
+            reliability_profile: "runtime".into(),
+            force_balanced: false,
+            max_data_shards: 64,
+            max_parity_shards: 64,
             msg_chunk_size: 10,
             rs_total_shards: 0,
             rs_data_shards: 0,
@@ -497,6 +502,9 @@ pub(crate) struct CrosswordReplica {
     /// Failures that committed instances must survive.
     tolerance: Tolerance,
 
+    /// Reliability profile of the servers.
+    reliability_prof: ReliabilityProfile,
+
     /// Reed-Solomon total number of shards.
     rs_total_shards: u8,
 
@@ -650,9 +658,8 @@ pub(crate) struct CrosswordReplica {
     /// Map from peer ID -> current saved linear regression perf model.
     linreg_model: HashMap<ReplicaId, PerfModel>,
 
-    /// Map from peer ID -> recent fraction of time it seemed down, as an
-    /// estimate of how likely it fails in the middle of an instance.
-    unreliability: HashMap<ReplicaId, f64>,
+    /// Map from peer ID -> recent fraction of time it seemed down.
+    downtime_tracked: HashMap<ReplicaId, f64>,
 
     /// Map from (number of data shards, row sizes) of assignments picked ->
     /// how many times lately, for printing once in a while.
@@ -889,8 +896,9 @@ impl GenericReplica for CrosswordReplica {
                                     snapshot_interval_s, gossip_timeout_min,
                                     gossip_timeout_max, gossip_tail_ignores,
                                     disable_gossip_timer, gossip_batch_size,
-                                    fault_tolerance, fault_domains,
-                                    asymmetric, max_data_shards, msg_chunk_size,
+                                    fault_tolerance, reliability_profile,
+                                    force_balanced, max_data_shards,
+                                    max_parity_shards, msg_chunk_size,
                                     rs_total_shards, rs_data_shards,
                                     init_assignment, linreg_interval_ms,
                                     linreg_keep_ms, linreg_outlier_ratio,
@@ -993,15 +1001,28 @@ impl GenericReplica for CrosswordReplica {
                 config.fault_tolerance
             );
         }
-        if !config.fault_domains.is_empty() && !config.asymmetric {
+        let reliability_prof = ReliabilityProfile::parse(population, &config.reliability_profile)?;
+        if reliability_prof.adds_crash_sets() && config.force_balanced {
             // balanced assignments only account for `fault_tolerance`
-            return logged_err!("config.fault_domains requires config.asymmetric");
-        }
-        let tolerance = Tolerance::new(population, config.fault_tolerance, &config.fault_domains)?;
-        if config.max_data_shards == 0 {
             return logged_err!(
-                "invalid config.max_data_shards '{}'",
-                config.max_data_shards
+                "config.reliability_profile '{}' adds crash sets, unsupported with \
+                 config.force_balanced",
+                config.reliability_profile
+            );
+        }
+        let tolerance = Tolerance::new(
+            population,
+            config.fault_tolerance,
+            reliability_prof.crash_sets(),
+        )?;
+        if config.max_data_shards == 0
+            || u16::from(config.max_data_shards) + u16::from(config.max_parity_shards)
+                > u16::from(u8::MAX)
+        {
+            return logged_err!(
+                "invalid config.max_data_shards '{}' / max_parity_shards '{}'",
+                config.max_data_shards,
+                config.max_parity_shards
             );
         }
 
@@ -1124,6 +1145,7 @@ impl GenericReplica for CrosswordReplica {
             population,
             majority,
             tolerance,
+            reliability_prof,
             rs_total_shards,
             rs_data_shards,
             assignment_adaptive,
@@ -1208,7 +1230,7 @@ impl GenericReplica for CrosswordReplica {
                     }
                 })
                 .collect(),
-            unreliability: (0..population)
+            downtime_tracked: (0..population)
                 .filter_map(|s| if s == id { None } else { Some((s, 0.0)) })
                 .collect(),
             asgmt_usage: HashMap::new(),
@@ -1761,14 +1783,14 @@ mod tests {
 
         #[test]
         fn counts_shards_actually_acked() -> Result<(), SummersetError> {
-            let any_one = Tolerance::new(5, 1, "")?;
+            let any_one = Tolerance::new(5, 1, vec![])?;
             // one distinct shard each: any two of three rows hold two shards
             let diagonal = acks(&[(0, &[0]), (1, &[1]), (2, &[2])]);
             assert!(any_one.covers(&diagonal, 2));
             assert!(!any_one.covers(&diagonal, 3));
             // equal-size but overlapping custom rows hold just one in total
             let overlapping = acks(&[(0, &[0]), (1, &[0]), (2, &[0])]);
-            assert!(!Tolerance::new(5, 0, "")?.covers(&overlapping, 2));
+            assert!(!Tolerance::new(5, 0, vec![])?.covers(&overlapping, 2));
             // nothing is left after crossing out every row
             assert!(!any_one.covers(&acks(&[(0, &[0, 1, 2])]), 1));
             Ok(())
@@ -1779,7 +1801,7 @@ mod tests {
             // for an uneven custom placement, every set of acked rows passing
             // the commit rule rebuilds the batch after crossing out any two
             let rows: [&[u8]; 5] = [&[0, 1, 2], &[0, 1], &[2, 3], &[4], &[3, 4]];
-            let any_two = Tolerance::new(5, 2, "")?;
+            let any_two = Tolerance::new(5, 2, vec![])?;
             let reqs = batch("x");
             let value_id = CrosswordReplica::value_id(&reqs, 3, 5)?;
             let full = codeword(reqs)?;
