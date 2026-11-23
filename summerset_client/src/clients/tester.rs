@@ -497,7 +497,7 @@ impl ClientTester {
         // the seed of injected faults, if any, allows replaying the test
         let seed = self.fault_seed.map(|seed| format!("seed {seed}"));
         if let Err(ref e) = result {
-            let seed = seed.map(|seed| format!(" ({seed})")).unwrap_or_default();
+            let seed = seed.map_or_default(|seed| format!(" ({seed})"));
             cprintln!("{:>20} | <red>{:^6}</> | {}{}", name, "FAIL", e, seed);
         } else {
             let note = seed.unwrap_or_else(|| "--".into());
