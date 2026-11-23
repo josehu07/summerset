@@ -77,7 +77,8 @@ pub struct ReplicaConfigBodega {
     /// Enable promptive `CommitNotice` sending for committed instances?
     pub urgent_commit_notice: bool,
 
-    /// Enable promptive `AcceptReply` broadcast among non-leader peers?
+    /// Enable early `AcceptNotice` broadcast to responders? As leader, I then
+    /// also hold local reads on writes that responders may serve ahead of me.
     pub urgent_accept_notice: bool,
 
     /// Path to snapshot file.
@@ -190,14 +191,11 @@ struct ReplicaBookkeeping {
     /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
-    /// Follower-to-follower early `AcceptNotices` corresponding ballot.
+    /// Peers' early `AcceptNotices` corresponding ballot.
     accept_notices_bal: Ballot,
 
-    /// Follower-to-follower early `AcceptNotices` received.
+    /// Peers' early `AcceptNotices` received.
     accept_notices: Bitmap,
-
-    /// Follower local read client requests holding queue.
-    holding_reads: ReqBatch,
 }
 
 /// In-memory instance containing a commands batch.
@@ -223,6 +221,10 @@ struct Instance {
 
     /// Follower-side bookkeeping info.
     replica_bk: Option<ReplicaBookkeeping>,
+
+    /// Local read client requests holding queue; kept across Prepare phases,
+    /// as they stay held until its commit.
+    holding_reads: ReqBatch,
 
     /// True if from external client, else false.
     external: bool,
@@ -518,6 +520,7 @@ impl BodegaReplica {
             voted: (0, ReqBatch::new()),
             leader_bk: None,
             replica_bk: None,
+            holding_reads: ReqBatch::new(),
             external: false,
             wal_offset: None,
             prep_inflight: 0,

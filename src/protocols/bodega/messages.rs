@@ -67,19 +67,12 @@ impl BodegaReplica {
                 if inst.status < Status::Committed {
                     inst.status = Status::Preparing;
                 }
-                // reads held on this instance stay held until its commit
-                let holding_reads = inst
-                    .replica_bk
-                    .take()
-                    .map(|replica_bk| replica_bk.holding_reads)
-                    .unwrap_or_default();
                 inst.replica_bk = Some(ReplicaBookkeeping {
                     source: peer,
                     trigger_slot,
                     endprep_slot,
                     accept_notices_bal: 0,
                     accept_notices: Bitmap::new(self.population, false),
-                    holding_reads,
                 });
 
                 // record update to largest prepare ballot
@@ -333,7 +326,6 @@ impl BodegaReplica {
                     endprep_slot: 0,
                     accept_notices_bal: 0,
                     accept_notices: Bitmap::new(self.population, false),
-                    holding_reads: vec![],
                 });
             }
 
@@ -478,13 +470,16 @@ impl BodegaReplica {
                     slot,
                     inst.bal
                 );
+
+                // reads I held on it as leader need not wait for that logging
+                self.release_held_read_reqs(slot)?;
             }
         }
 
         Ok(())
     }
 
-    /// Handler of `AcceptNotice` message from peer follower.
+    /// Handler of `AcceptNotice` message from peer.
     pub(super) fn handle_msg_accept_notice(
         &mut self,
         peer: ReplicaId,
@@ -533,7 +528,6 @@ impl BodegaReplica {
                         endprep_slot: 0,
                         accept_notices_bal: 0,
                         accept_notices: Bitmap::new(self.population, false),
-                        holding_reads: vec![],
                     });
                 }
 
@@ -546,7 +540,7 @@ impl BodegaReplica {
                 replica_bk.accept_notices.set(peer, true)?;
 
                 // if now reached >= majority AcceptNotices, can release held
-                // read reqs
+                // read reqs on keys that they suffice for
                 if replica_bk.accept_notices.count() >= self.quorum_cnt {
                     self.release_held_read_reqs(slot)?;
                 }
