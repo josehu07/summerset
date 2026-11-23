@@ -195,10 +195,13 @@ impl ChainRepReplica {
 
     /// Locate the first null log entry or append one if no holes exist.
     fn first_null_slot(&mut self) -> usize {
-        for s in self.exec_bar..self.log.len() {
-            if self.log[s].status == Status::Null {
-                return s;
-            }
+        if let Some(i) = self
+            .log
+            .iter()
+            .skip(self.exec_bar)
+            .position(|e| e.status == Status::Null)
+        {
+            return self.exec_bar + i;
         }
         self.log.push(Self::null_log_entry());
         self.log.len() - 1

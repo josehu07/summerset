@@ -478,3 +478,83 @@ async fn bit_flips_fail_recovery() {
     ep.ctrl_stub().send_req_insist(&crash).await.unwrap();
     assert!(!exits_ok(&mut server).await);
 }
+
+#[tokio::test]
+async fn early_notices_keep_reads_linearizable() {
+    // all peer messages towards a victim get cut during a write, and reads at
+    // a healthy follower and then at the victim should return as expected
+    // (`None` if held): as victim, the leader cannot commit what all followers
+    // have accepted and may serve, so must not serve the old value anymore; a
+    // follower misses what a majority has accepted, so no one may serve it yet
+    for (victim, expected) in [(0, [Some("new"), None]), (4, [None, Some("old")])] {
+        let dir = TempDir::new().unwrap();
+        let protocol = SmrProtocol::Bodega;
+        let args = |srv_addr, id: u8| {
+            let snapshot = dir.path().join(format!("snap{id}"));
+            let config = format!(
+                "+snapshot_path='{}'+urgent_accept_notice=true",
+                snapshot.display()
+            );
+            server_args(protocol, dir.path(), srv_addr, id, &config)
+        };
+        let (srv_addr, cli_addr) = start_manager(protocol, 5).await;
+        let _servers: Vec<_> = (0..5)
+            .map(|id| spawn(&mut exe(&args(srv_addr, id))))
+            .collect();
+        let mut ep = connect_client(protocol, cli_addr, 5).await;
+
+        // server 0 leads, and all servers are responders for all keys
+        let delta = ConfChange {
+            leader: Some(0),
+            responders: Some(Bitmap::new(5, true)),
+            ..ConfChange::default()
+        };
+        let conf = request_leader(ep.as_mut(), ApiRequest::Conf { id: 0, delta }).await;
+        assert!(matches!(conf, ApiReply::Conf { success: true, .. }));
+        let put = |id, value| ApiRequest::Req {
+            id,
+            cmd: put_command("k0", value),
+        };
+        request_leader(ep.as_mut(), put(1, "old")).await;
+
+        // readers at the follower and at the victim, once leases settle
+        let mut readers = Vec::new();
+        for id in [1, victim] {
+            let config = format!("near_server_id={id}");
+            let mut reader = within(protocol.new_client_endpoint(cli_addr, Some(&config)))
+                .await
+                .unwrap();
+            within(reader.connect()).await.unwrap();
+            readers.push(reader);
+        }
+        time::sleep(Duration::from_millis(500)).await;
+
+        // start a new write under the cut, then read at one after the other
+        let faults = Faults {
+            cut_peers: HashSet::from([victim]),
+            ..Faults::default()
+        };
+        inject_faults(ep.as_mut(), faults).await;
+        assert!(ep.send_req(Some(&put(2, "new"))).unwrap());
+        time::sleep(Duration::from_millis(200)).await;
+        let mut values = Vec::new();
+        for reader in &mut readers {
+            let cmd = Command::Get { key: "k0".into() };
+            assert!(
+                reader
+                    .send_req(Some(&ApiRequest::Req { id: 0, cmd }))
+                    .unwrap()
+            );
+            let reply = time::timeout(Duration::from_millis(300), reader.recv_reply()).await;
+            values.push(match reply {
+                Ok(Ok(ApiReply::Reply {
+                    result: Some(CommandResult::Get { value }),
+                    ..
+                })) => value,
+                _ => None,
+            });
+        }
+        let values: Vec<_> = values.iter().map(Option::as_deref).collect();
+        assert_eq!(values, expected, "victim {victim}");
+    }
+}

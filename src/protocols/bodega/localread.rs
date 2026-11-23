@@ -1,5 +1,7 @@
 //! `Bodega` -- local read optimization related actions.
 
+use std::mem;
+
 use super::*;
 
 impl BodegaReplica {
@@ -54,6 +56,62 @@ impl BodegaReplica {
         Ok(true)
     }
 
+    /// Checks if what an instance writes to a key can be served to reads: it
+    /// has committed, or it is Accepting with `AcceptNotice`s of its ballot
+    /// from a majority (so is bound to commit) that include the leader and all
+    /// other responders for the key (so none of them serves an older value
+    /// anymore). The leader gets no notices, so it waits for the commit.
+    fn is_readable(&self, inst: &Instance, key: &String) -> bool {
+        if inst.status != Status::Accepting {
+            return inst.status >= Status::Committed;
+        }
+        let Some(replica_bk) = inst.replica_bk.as_ref() else {
+            return false;
+        };
+        let notices = &replica_bk.accept_notices;
+        let noticed = |peer| notices.get(peer).unwrap_or(false);
+        replica_bk.accept_notices_bal == inst.bal
+            && notices.count() >= self.quorum_cnt
+            && self.bodega_conf.leader.is_some_and(noticed)
+            && self
+                .bodega_conf
+                .get_responders_by_key(key)
+                .is_some_and(|(responders, _)| {
+                    responders
+                        .iter()
+                        .all(|(r, flag)| !flag || r == self.id || noticed(r))
+                })
+    }
+
+    /// Checks if, with me as leader, responders for a key may get to serve the
+    /// latest write to it ahead of my executed state: early `AcceptNotice`s
+    /// are on, it has follower responders, and the write has not committed in
+    /// order yet. If so, I must serve the key as a responder would.
+    fn responders_may_outrun(&self, key: &String) -> bool {
+        self.config.urgent_accept_notice
+            && self
+                .highest_slot
+                .get(key)
+                .is_some_and(|&slot| slot >= self.commit_bar)
+            && self
+                .bodega_conf
+                .get_responders_by_key(key)
+                .is_some_and(|(responders, _)| {
+                    responders.iter().any(|(r, flag)| flag && r != self.id)
+                })
+    }
+
+    /// Finds the value of the last write to a key in a request batch.
+    fn last_write_to_key<'a>(reqs: &'a ReqBatch, key: &String) -> Option<&'a String> {
+        reqs.iter().rev().find_map(|(_, req)| match req {
+            ApiRequest::Req {
+                cmd: Command::Put { key: k, value },
+                ..
+            } if k == key => Some(value),
+            _ => None,
+        })
+    }
+
     /// Update the `highest_slot` tracking info given a new request batch about
     /// to be saved into a slot.
     pub(super) fn refresh_highest_slot(
@@ -77,7 +135,7 @@ impl BodegaReplica {
     }
 
     /// Get the value at the highest slot index ever seen for a key and whether
-    /// it has been committed (or has seen >= majority `AcceptNotice`s).
+    /// it has been committed (or has seen enough `AcceptNotice`s).
     // NOTE: current implementation might loop through requests in the batch of
     //       that slot at each inspect call; good enough but can be improved
     fn inspect_highest_slot(&self, key: &String) -> Option<(usize, Option<String>)> {
@@ -88,34 +146,13 @@ impl BodegaReplica {
                 Some((slot, None))
             } else {
                 let inst = &self.insts[slot - self.start_slot];
-                if inst.status < Status::Accepting
-                    || (inst.status == Status::Accepting
-                        && (inst.replica_bk.is_none()
-                            || inst // NOTE: can make nested conditions prettier
-                                .replica_bk
-                                .as_ref()
-                                .unwrap()
-                                .accept_notices
-                                .count()
-                                < self.quorum_cnt))
-                {
-                    // instance not bound to be committed on me yet
-                    Some((slot, None))
-                } else {
+                if self.is_readable(inst, key) {
                     // instance committed, return the latest value for the key
-                    // in batch
-                    for (_, req) in inst.reqs.iter().rev() {
-                        if let ApiRequest::Req {
-                            cmd: Command::Put { key: k, value },
-                            ..
-                        } = req
-                            && k == key
-                        {
-                            return Some((slot, Some(value.clone())));
-                        }
-                    }
-                    // the write seen there got replaced (e.g., by a new leader's
-                    // Prepare); play safe as not committed
+                    // in batch; if the write seen there got replaced (e.g., by
+                    // a new leader's Prepare), play safe as not committed
+                    Some((slot, Self::last_write_to_key(&inst.reqs, key).cloned()))
+                } else {
+                    // instance not bound to be committed on me yet
                     Some((slot, None))
                 }
             }
@@ -181,6 +218,10 @@ impl BodegaReplica {
         req_id: RequestId,
         key: String,
     ) -> Result<(), SummersetError> {
+        if self.responders_may_outrun(&key) {
+            return self.read_on_good_responder(client, req_id, key).await;
+        }
+
         // has to use the `do_sync_cmd()` API
         let (old_results, cmd_result) = self
             .state_machine
@@ -205,7 +246,8 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// Read only req on key: I am a responder in a stable config.
+    /// Read only req on key: I am a responder in a stable config, or its
+    /// leader acting as one.
     pub(super) async fn read_on_good_responder(
         &mut self,
         client: ClientId,
@@ -229,12 +271,12 @@ impl BodegaReplica {
                     .checked_sub(self.start_slot)
                     .and_then(|idx| self.insts.get_mut(idx))
                     && inst.status == Status::Accepting
-                    && let Some(replica_bk) = inst.replica_bk.as_mut()
+                    && (inst.replica_bk.is_some() || self.bodega_conf.is_leader(self.id))
                 {
                     // add to this instance slot's holding queue; will be
-                    // released when >= majority AcceptNotices received or the
-                    // CommitNotice from leader received, whichever is eariler
-                    replica_bk.holding_reads.push((
+                    // released when enough AcceptNotices are received or it
+                    // commits, whichever is earlier
+                    inst.holding_reads.push((
                         client,
                         ApiRequest::Req {
                             id: req_id,
@@ -275,84 +317,51 @@ impl BodegaReplica {
         Ok(())
     }
 
-    /// If in Accepting status and >= majority `AcceptNotice`s received (or even
-    /// in Committed status), commit is bound to happen (or has already happened)
-    /// for an instance, so we can now reply to all holding reads. Otherwise,
-    /// this function is called to trigger prompt rejections of held read reqs.
+    /// Replies to the read reqs held on an instance: with the values it writes
+    /// to their keys where those have become readable, or with rejections if
+    /// it has fallen out of Accepting status (so they get retried promptly);
+    /// the rest stay held.
     pub(super) fn release_held_read_reqs(&mut self, slot: usize) -> Result<(), SummersetError> {
-        let inst = &mut self.insts[slot - self.start_slot];
-        if inst.replica_bk.is_none() {
-            return Ok(());
-        }
-        let replica_bk = inst.replica_bk.as_mut().unwrap();
-        if inst.status < Status::Accepting
-            || (inst.status == Status::Accepting
-                && replica_bk.accept_notices.count() < self.quorum_cnt)
-        {
-            for (client, req) in replica_bk.holding_reads.drain(..) {
-                if let ApiRequest::Req {
-                    id: req_id,
-                    cmd: Command::Get { key },
-                } = req
-                {
-                    self.external_api.send_reply(
-                        ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
-                        client,
-                    )?;
-                    pf_trace!("replied -> client {} read-only hfail", client);
-                    // [for access cnt stats only]
-                    if self.config.record_node_cnts {
-                        *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
-                    }
-                }
-            }
-            return Ok(());
-        }
-
-        // commit is bound to happen, can reply with the contained values
-        'reqs_loop: for (client, req) in replica_bk.holding_reads.drain(..) {
-            if let ApiRequest::Req {
+        let idx = slot - self.start_slot;
+        let mut still_held = vec![];
+        for (client, req) in mem::take(&mut self.insts[idx].holding_reads) {
+            let ApiRequest::Req {
                 id: req_id,
                 cmd: Command::Get { key },
-            } = req
-            {
-                // locate the last write in batch for the key
-                for (_, req) in inst.reqs.iter().rev() {
-                    if let ApiRequest::Req {
-                        cmd: Command::Put { key: k, value },
-                        ..
-                    } = req
-                        && k == &key
-                    {
-                        self.external_api.send_reply(
-                            ApiReply::normal(
-                                req_id,
-                                Some(CommandResult::Get {
-                                    value: Some(value.clone()),
-                                }),
-                            ),
-                            client,
-                        )?;
-                        pf_trace!("replied -> client {} read-only hgood", client);
-                        // [for access cnt stats only]
-                        if self.config.record_node_cnts {
-                            *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
-                        }
-                        continue 'reqs_loop;
-                    }
-                }
-                // although should not reach here, playing safe...
-                self.external_api.send_reply(
-                    ApiReply::rq_retry(req_id, Command::Get { key }, self.bodega_conf.leader),
-                    client,
-                )?;
-                pf_trace!("replied -> client {} read-only hfail", client);
-                // [for access cnt stats only]
-                if self.config.record_node_cnts {
-                    *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
-                }
+            } = &req
+            else {
+                continue;
+            };
+
+            let inst = &self.insts[idx];
+            let value = if self.is_readable(inst, key) {
+                // although the write should be found, playing safe...
+                Self::last_write_to_key(&inst.reqs, key)
+            } else if inst.status == Status::Accepting {
+                still_held.push((client, req));
+                continue;
+            } else {
+                None
+            };
+
+            let (api_reply, tag) = if let Some(value) = value {
+                let result = CommandResult::Get {
+                    value: Some(value.clone()),
+                };
+                (ApiReply::normal(*req_id, Some(result)), "hgood")
+            } else {
+                let cmd = Command::Get { key: key.clone() };
+                let leader = self.bodega_conf.leader;
+                (ApiReply::rq_retry(*req_id, cmd, leader), "hfail")
+            };
+            self.external_api.send_reply(api_reply, client)?;
+            pf_trace!("replied -> client {} read-only {}", client, tag);
+            // [for access cnt stats only]
+            if self.config.record_node_cnts {
+                *self.node_cnts_stats.get_mut(&self.id).unwrap() += 1;
             }
         }
+        self.insts[idx].holding_reads = still_held;
 
         Ok(())
     }
