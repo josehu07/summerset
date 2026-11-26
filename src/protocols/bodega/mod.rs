@@ -191,10 +191,11 @@ struct ReplicaBookkeeping {
     /// If in Preparing status, the `endprep_slot` of this Prepare phase.
     endprep_slot: usize,
 
-    /// Peers' early `AcceptNotices` corresponding ballot.
+    /// Early `AcceptNotices` corresponding ballot.
     accept_notices_bal: Ballot,
 
-    /// Peers' early `AcceptNotices` received.
+    /// Early `AcceptNotices` received from peers, plus my own once my accept
+    /// is durable.
     accept_notices: Bitmap,
 }
 

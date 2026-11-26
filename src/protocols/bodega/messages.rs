@@ -530,20 +530,7 @@ impl BodegaReplica {
                         accept_notices: Bitmap::new(self.population, false),
                     });
                 }
-
-                let replica_bk = inst.replica_bk.as_mut().unwrap();
-                debug_assert!(ballot >= replica_bk.accept_notices_bal);
-                if ballot > replica_bk.accept_notices_bal {
-                    replica_bk.accept_notices_bal = ballot;
-                    replica_bk.accept_notices.clear();
-                }
-                replica_bk.accept_notices.set(peer, true)?;
-
-                // if now reached >= majority AcceptNotices, can release held
-                // read reqs on keys that they suffice for
-                if replica_bk.accept_notices.count() >= self.quorum_cnt {
-                    self.release_held_read_reqs(slot)?;
-                }
+                self.record_accept_notice(peer, slot, ballot)?;
             }
 
             // no need to make this update durable; can always restart from a
