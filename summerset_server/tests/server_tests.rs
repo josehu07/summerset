@@ -558,3 +558,54 @@ async fn early_notices_keep_reads_linearizable() {
         assert_eq!(values, expected, "victim {victim}");
     }
 }
+
+#[tokio::test]
+async fn early_notices_count_own_durable_accept() {
+    // server 0 leads a cluster of 3, with server 1 as the only responder
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().display();
+    let protocol = SmrProtocol::Bodega;
+    let (srv_addr, cli_addr) = start_manager(protocol, 3).await;
+    let _servers: Vec<_> = (0..3)
+        .map(|id| {
+            let config = format!("+snapshot_path='{path}/snap{id}'+urgent_accept_notice=true");
+            let args = server_args(protocol, dir.path(), srv_addr, id, &config);
+            spawn(&mut exe(&args))
+        })
+        .collect();
+    let mut ep = connect_client(protocol, cli_addr, 3).await;
+    let delta = ConfChange {
+        leader: Some(0),
+        responders: Some(Bitmap::from((3, vec![1]))),
+        ..ConfChange::default()
+    };
+    request_leader(ep.as_mut(), ApiRequest::Conf { id: 0, delta }).await;
+    let put = |id, value| ApiRequest::Req {
+        id,
+        cmd: put_command("k0", value),
+    };
+    request_leader(ep.as_mut(), put(1, "old")).await;
+    let mut reader = within(protocol.new_client_endpoint(cli_addr, Some("near_server_id=1")))
+        .await
+        .unwrap();
+    within(reader.connect()).await.unwrap();
+    time::sleep(Duration::from_millis(500)).await;
+
+    // followers get slow disks and cannot reach servers 0 and 1, so a new
+    // write cannot commit and server 1 gets no notice but the leader's
+    let faults = Faults {
+        cut_peers: HashSet::from([0, 1]),
+        disk_delay_ms: 700,
+        ..Faults::default()
+    };
+    let servers = HashSet::from([1, 2]);
+    ctrl(ep.as_mut(), CtrlRequest::InjectFaults { servers, faults }).await;
+    assert!(ep.send_req(Some(&put(2, "new"))).unwrap());
+    time::sleep(Duration::from_millis(200)).await;
+
+    // so a read there is held ~500ms, until server 1's own accept is durable
+    let begin = Instant::now();
+    let result = request(reader.as_mut(), 0, Command::Get { key: "k0".into() }).await;
+    assert!(matches!(result, CommandResult::Get { value: Some(v) } if v == "new"));
+    assert!((300..800).contains(&begin.elapsed().as_millis()));
+}

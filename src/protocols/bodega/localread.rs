@@ -56,12 +56,38 @@ impl BodegaReplica {
         Ok(true)
     }
 
+    /// Records an early notice of `peer` having durably accepted an instance at
+    /// `ballot`, where `peer` may be myself once my own accept is logged, and
+    /// releases the read reqs held on it that the notices now suffice for.
+    pub(super) fn record_accept_notice(
+        &mut self,
+        peer: ReplicaId,
+        slot: usize,
+        ballot: Ballot,
+    ) -> Result<(), SummersetError> {
+        let Some(replica_bk) = self.insts[slot - self.start_slot].replica_bk.as_mut() else {
+            return Ok(());
+        };
+        debug_assert!(ballot >= replica_bk.accept_notices_bal);
+        if ballot > replica_bk.accept_notices_bal {
+            replica_bk.accept_notices_bal = ballot;
+            replica_bk.accept_notices.clear();
+        }
+        replica_bk.accept_notices.set(peer, true)?;
+
+        if replica_bk.accept_notices.count() >= self.quorum_cnt {
+            self.release_held_read_reqs(slot)?;
+        }
+        Ok(())
+    }
+
     /// Checks if what an instance writes to a key can be served to reads: it
     /// has committed, or it is Accepting with `AcceptNotice`s of its ballot
-    /// from a majority (so is bound to commit) that include the leader and all
-    /// other responders for the key (so none of them serves an older value
-    /// anymore). The leader gets no notices, so it waits for the commit.
-    fn is_readable(&self, inst: &Instance, key: &String) -> bool {
+    /// from a majority, my own durable accept counting as one (so is bound to
+    /// commit), that include the leader and all other responders for the key
+    /// (so none of them serves an older value anymore). The leader records no
+    /// notices, so it waits for the commit.
+    fn is_locally_readable(&self, inst: &Instance, key: &String) -> bool {
         if inst.status != Status::Accepting {
             return inst.status >= Status::Committed;
         }
@@ -146,7 +172,7 @@ impl BodegaReplica {
                 Some((slot, None))
             } else {
                 let inst = &self.insts[slot - self.start_slot];
-                if self.is_readable(inst, key) {
+                if self.is_locally_readable(inst, key) {
                     // instance committed, return the latest value for the key
                     // in batch; if the write seen there got replaced (e.g., by
                     // a new leader's Prepare), play safe as not committed
@@ -334,7 +360,7 @@ impl BodegaReplica {
             };
 
             let inst = &self.insts[idx];
-            let value = if self.is_readable(inst, key) {
+            let value = if self.is_locally_readable(inst, key) {
                 // although the write should be found, playing safe...
                 Self::last_write_to_key(&inst.reqs, key)
             } else if inst.status == Status::Accepting {

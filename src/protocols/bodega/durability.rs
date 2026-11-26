@@ -179,9 +179,9 @@ impl BodegaReplica {
                     all_responders.union(responders)?;
                 }
 
-                // leader don't need to do this to itself
+                // no need to send one to myself
                 all_responders.set(self.id, false)?;
-                // then broadcast to follower responders
+                // then broadcast to the other responders
                 if all_responders.count() > 0 {
                     self.transport_hub.bcast_msg(
                         PeerMsg::AcceptNotice {
@@ -196,6 +196,12 @@ impl BodegaReplica {
                         slot,
                         inst.bal
                     );
+                }
+
+                // as a follower, my own accept counts as a notice as well,
+                // only now that it is durable
+                if !self.is_leader() {
+                    self.record_accept_notice(self.id, slot, ballot)?;
                 }
             }
         }
